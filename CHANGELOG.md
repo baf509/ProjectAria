@@ -24,6 +24,57 @@ Format:
 
 ---
 
+## [2025-11-29] - Phase 2 - Memory System
+
+### Added
+- Embedding service (`api/aria/memory/embeddings.py`)
+  - Ollama embeddings using Qwen3-8b (4096 dimensions)
+  - Voyage AI fallback provider
+  - Batch embedding support
+- Short-term memory (`api/aria/memory/short_term.py`)
+  - Current conversation context retrieval
+  - Recent conversations context
+  - Token budget management
+- Long-term memory (`api/aria/memory/long_term.py`)
+  - Vector search using MongoDB Atlas Vector Search
+  - Lexical search using MongoDB Atlas Search (BM25)
+  - Hybrid search with Reciprocal Rank Fusion (RRF)
+  - Memory CRUD operations with automatic embedding generation
+  - Access tracking and statistics
+- Memory extraction pipeline (`api/aria/memory/extraction.py`)
+  - LLM-based extraction from conversations
+  - Batch message processing
+  - Source tracking and confidence scoring
+  - Manual extraction from arbitrary text
+- Context builder (`api/aria/core/context.py`)
+  - Memory injection into system prompts
+  - Short-term + long-term memory integration
+  - Relevance-based memory retrieval
+- Memory API routes (`api/aria/api/routes/memories.py`)
+  - List, create, get, update, delete memories
+  - Hybrid search endpoint
+  - Background extraction trigger
+- CLI memory commands
+  - `aria memories list` - List all memories
+  - `aria memories search` - Search with hybrid search
+  - `aria memories add` - Manually add memories
+  - `aria memories extract` - Trigger extraction
+
+### Changed
+- Updated orchestrator (`api/aria/core/orchestrator.py`)
+  - Integrated context builder for memory-aware responses
+  - Automatic memory extraction in background
+  - Access tracking for retrieved memories
+- Updated main app to include memory routes
+- Updated CLI with memory management commands
+- Updated `PROJECT_STATUS.md` to Phase 2
+
+### Notes
+- Requires MongoDB search indexes for vector and lexical search
+- Embeddings require Ollama with embedding model (e.g., qwen3:8b)
+- Memory extraction runs asynchronously to avoid blocking chat
+- Hybrid search combines best of lexical and semantic search
+
 ## [2025-11-29] - Phase 1 - Core Implementation
 
 ### Added

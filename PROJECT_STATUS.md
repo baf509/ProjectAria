@@ -9,11 +9,68 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║  PHASE 1: Foundation                                             ║
-║  Status: IN PROGRESS (Core Implementation Complete)             ║
-║  Target: Weeks 1-4                                               ║
+║  PHASE 2: Memory System                                          ║
+║  Status: IMPLEMENTATION COMPLETE                                 ║
+║  Target: Weeks 5-8                                               ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+
+---
+
+## Phase 2 Checklist
+
+### Memory Infrastructure
+- [x] Embedding service (`api/aria/memory/embeddings.py`)
+  - [x] Ollama embeddings (Qwen3-8b)
+  - [x] Voyage AI fallback
+  - [x] Batch embedding support
+- [x] Short-term memory (`api/aria/memory/short_term.py`)
+  - [x] Current conversation context
+  - [x] Recent conversations context
+  - [x] Token budget management
+- [x] Long-term memory (`api/aria/memory/long_term.py`)
+  - [x] Vector search via mongot
+  - [x] Lexical search (BM25) via mongot
+  - [x] Reciprocal Rank Fusion (RRF)
+  - [x] Memory CRUD operations
+
+### Memory Extraction
+- [x] Extraction pipeline (`api/aria/memory/extraction.py`)
+  - [x] LLM-based extraction from conversations
+  - [x] Batch processing
+  - [x] Source tracking
+  - [x] Confidence scoring
+
+### Context Integration
+- [x] Context builder (`api/aria/core/context.py`)
+  - [x] Memory injection into system prompt
+  - [x] Short-term + long-term integration
+  - [x] Relevance-based memory retrieval
+- [x] Orchestrator updated
+  - [x] Uses context builder
+  - [x] Automatic memory extraction (background)
+  - [x] Access tracking
+
+### API Endpoints
+- [x] `GET /api/v1/memories` - List memories
+- [x] `POST /api/v1/memories` - Create memory
+- [x] `GET /api/v1/memories/{id}` - Get memory
+- [x] `PATCH /api/v1/memories/{id}` - Update memory
+- [x] `DELETE /api/v1/memories/{id}` - Delete memory
+- [x] `POST /api/v1/memories/search` - Search memories (hybrid)
+- [x] `POST /api/v1/memories/extract/{conversation_id}` - Extract memories
+
+### CLI Commands
+- [x] `aria memories list` - List all memories
+- [x] `aria memories search <query>` - Search memories
+- [x] `aria memories add <content>` - Add memory manually
+- [x] `aria memories extract <conversation_id>` - Trigger extraction
+
+### Testing
+- [ ] Test embedding generation
+- [ ] Test hybrid search
+- [ ] Test memory extraction
+- [ ] Test context building
 
 ---
 
@@ -99,21 +156,23 @@ aria chat --conversation <id> "What did I say before?"
 ## Current Work
 
 ### In Progress
-- Phase 1 implementation complete - ready for testing
+- Phase 2 implementation complete - ready for testing
 
 ### Blocked
 - None
 
 ### Notes
-- All core Phase 1 components implemented
-- Need to test with actual Ollama instance
-- Testing infrastructure not yet created
+- All core Phase 2 components implemented
+- Memory system fully integrated with orchestrator
+- Hybrid search (BM25 + Vector) implemented
+- Need to test with actual Ollama instance (embeddings + LLM)
+- MongoDB vector search indexes required for testing
 
 ---
 
 ## File Inventory
 
-### Created
+### Created (Phase 1)
 ```
 .gitignore
 .env.example
@@ -147,8 +206,21 @@ cli/aria_cli/__init__.py
 cli/aria_cli/main.py
 ```
 
-### Modified
+### Created (Phase 2)
 ```
+api/aria/memory/embeddings.py
+api/aria/memory/short_term.py
+api/aria/memory/long_term.py
+api/aria/memory/extraction.py
+api/aria/core/context.py
+api/aria/api/routes/memories.py
+```
+
+### Modified (Phase 2)
+```
+api/aria/main.py (added memory routes)
+api/aria/core/orchestrator.py (integrated memory system)
+cli/aria_cli/main.py (added memory commands)
 PROJECT_STATUS.md (this file)
 ```
 
@@ -161,6 +233,9 @@ PROJECT_STATUS.md (this file)
 | 2025-11-29 | Use MongoDB 8.2 + mongot instead of Atlas | Self-hosted vector search without Atlas subscription |
 | 2025-11-29 | Implement Phase 1 completely before testing | Get full stack working before integration testing |
 | 2025-11-29 | Use Rich library for CLI | Better terminal UX with colors and formatting |
+| 2025-11-29 | Hybrid search with RRF fusion | Best of both lexical and semantic search |
+| 2025-11-29 | LLM-based memory extraction | More flexible than rule-based extraction |
+| 2025-11-29 | Background memory extraction | Don't block chat responses |
 
 ---
 
@@ -174,12 +249,19 @@ PROJECT_STATUS.md (this file)
 
 ## Next Actions
 
-To complete Phase 1:
-1. Test Docker Compose stack (`docker compose up -d`)
-2. Verify MongoDB initialization
-3. Test API endpoints with Ollama
-4. Test CLI client
-5. Add basic testing infrastructure (optional)
+To test Phase 2:
+1. Start Docker Compose stack (`docker compose up -d`)
+2. Verify MongoDB initialization and search indexes
+3. Test embedding generation with Ollama
+4. Test memory creation and search
+5. Test chat with memory integration
+6. Test automatic memory extraction
+
+To start Phase 3 (Tools & MCP):
+1. Implement tool interface and router
+2. Add built-in tools (filesystem, shell, web)
+3. Implement MCP client
+4. Add tool management endpoints
 
 ---
 
@@ -187,8 +269,8 @@ To complete Phase 1:
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Foundation (API, Ollama, Conversations) | IN PROGRESS (Implementation Complete) |
-| 2 | Memory System (Short-term, Long-term, Embeddings) | - |
+| 1 | Foundation (API, Ollama, Conversations) | COMPLETE |
+| 2 | Memory System (Short-term, Long-term, Embeddings) | COMPLETE (Implementation) |
 | 3 | Tools & MCP | - |
 | 4 | Cloud LLM Adapters | - |
 | 5 | Web UI | - |

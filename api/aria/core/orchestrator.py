@@ -1,12 +1,13 @@
 """
 ARIA - Agent Orchestrator
 
-Phase: 1
-Purpose: Main agent loop - processes messages and streams responses
+Phase: 2 (Updated)
+Purpose: Main agent loop - processes messages and streams responses with memory
 
 Related Spec Sections:
 - Section 2.2: Request Flow
-- Section 8: Phase 1 Implementation
+- Section 3: Memory Architecture
+- Section 8: Phase 1 & 2 Implementation
 """
 
 import uuid
@@ -17,14 +18,18 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.llm.manager import llm_manager
-from aria.llm.base import Message, StreamChunk
+from aria.llm.base import StreamChunk
+from aria.core.context import ContextBuilder
+from aria.memory.extraction import MemoryExtractor
 
 
 class Orchestrator:
-    """Main agent orchestration logic."""
+    """Main agent orchestration logic with memory integration."""
 
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
+        self.context_builder = ContextBuilder(db)
+        self.memory_extractor = MemoryExtractor(db)
 
     async def process_message(
         self, conversation_id: str, user_message: str
@@ -55,18 +60,13 @@ class Orchestrator:
             yield StreamChunk(type="error", error="Agent not found")
             return
 
-        # 3. Build message list (system prompt + conversation history + new message)
-        messages = []
-
-        # Add system prompt
-        messages.append(Message(role="system", content=agent["system_prompt"]))
-
-        # Add conversation history (last N messages)
-        for msg in conversation.get("messages", [])[-20:]:
-            messages.append(Message(role=msg["role"], content=msg["content"]))
-
-        # Add new user message
-        messages.append(Message(role="user", content=user_message))
+        # 3. Build message list using context builder (includes memories)
+        messages = await self.context_builder.build_messages(
+            conversation_id=conversation_id,
+            user_message=user_message,
+            agent_config=agent,
+            include_memories=agent.get("capabilities", {}).get("memory_enabled", True),
+        )
 
         # 4. Save user message to conversation
         user_msg_doc = {
@@ -136,3 +136,19 @@ class Orchestrator:
                 },
             },
         )
+
+        # 8. Queue memory extraction if enabled
+        if agent.get("memory_config", {}).get("auto_extract", False):
+            # Note: In production, this should be a proper background task
+            # For now, we'll do it async without blocking
+            try:
+                import asyncio
+                asyncio.create_task(
+                    self.memory_extractor.extract_from_conversation(
+                        conversation_id,
+                        llm_backend=llm_config["backend"],
+                        llm_model=llm_config["model"],
+                    )
+                )
+            except Exception as e:
+                print(f"Failed to queue memory extraction: {e}")

@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aria.config import settings
 from aria.db.mongodb import connect_db, close_db
-from aria.api.routes import health, conversations, agents
+from aria.api.routes import health, conversations, agents, memories
 
 
 @asynccontextmanager
@@ -49,6 +49,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
 app.include_router(agents.router, prefix="/api/v1", tags=["agents"])
+app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 
 
 @app.get("/")

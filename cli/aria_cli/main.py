@@ -283,5 +283,148 @@ def list_agents_cmd():
         sys.exit(1)
 
 
+@cli.group()
+def memories():
+    """Manage memories."""
+    pass
+
+
+@memories.command("list")
+@click.option("--limit", default=50, help="Number of memories to show")
+@click.option("--type", help="Filter by content type")
+def list_memories_cmd(limit, type):
+    """List memories."""
+    try:
+        client = AriaClient()
+        params = {"limit": limit}
+        if type:
+            params["content_type"] = type
+
+        response = client.client.get(
+            f"{client.base_url}/api/v1/memories", params=params
+        )
+        response.raise_for_status()
+        memories_list = response.json()
+
+        if not memories_list:
+            console.print("No memories found.")
+            return
+
+        table = Table(title="Memories")
+        table.add_column("ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Content")
+        table.add_column("Importance", justify="right")
+        table.add_column("Categories")
+
+        for memory in memories_list:
+            table.add_row(
+                memory["id"][:8] + "...",
+                memory["content_type"],
+                memory["content"][:60] + "..."
+                if len(memory["content"]) > 60
+                else memory["content"],
+                f"{memory['importance']:.2f}",
+                ", ".join(memory.get("categories", [])[:2]),
+            )
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@memories.command("search")
+@click.argument("query")
+@click.option("--limit", default=10, help="Number of results")
+def search_memories_cmd(query, limit):
+    """Search memories."""
+    try:
+        client = AriaClient()
+        response = client.client.post(
+            f"{client.base_url}/api/v1/memories/search",
+            json={"query": query, "limit": limit},
+        )
+        response.raise_for_status()
+        results = response.json()
+
+        if not results:
+            console.print("No memories found.")
+            return
+
+        console.print(f"[bold]Found {len(results)} memories:[/bold]\n")
+
+        for i, memory in enumerate(results, 1):
+            console.print(f"[cyan]{i}.[/cyan] [{memory['content_type']}]")
+            console.print(f"   {memory['content']}")
+            console.print(
+                f"   [dim]Importance: {memory['importance']:.2f} | "
+                f"Categories: {', '.join(memory.get('categories', []))}"
+                f"[/dim]\n"
+            )
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@memories.command("add")
+@click.argument("content")
+@click.option("--type", default="fact", help="Memory type (fact, preference, event, skill)")
+@click.option("--importance", default=0.5, type=float, help="Importance (0.0-1.0)")
+@click.option("--categories", help="Comma-separated categories")
+def add_memory_cmd(content, type, importance, categories):
+    """Add a new memory manually."""
+    try:
+        client = AriaClient()
+        data = {
+            "content": content,
+            "content_type": type,
+            "importance": importance,
+            "categories": categories.split(",") if categories else [],
+        }
+
+        response = client.client.post(
+            f"{client.base_url}/api/v1/memories", json=data
+        )
+        response.raise_for_status()
+        memory = response.json()
+
+        console.print(
+            f"[green]✓[/green] Created memory: {memory['id'][:8]}..."
+        )
+        console.print(f"   Type: {memory['content_type']}")
+        console.print(f"   Content: {memory['content']}")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@memories.command("extract")
+@click.argument("conversation_id")
+def extract_memories_cmd(conversation_id):
+    """Extract memories from a conversation."""
+    try:
+        client = AriaClient()
+        response = client.client.post(
+            f"{client.base_url}/api/v1/memories/extract/{conversation_id}"
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        console.print(f"[green]✓[/green] {result['message']}")
+        console.print(
+            f"   Conversation: {result['conversation_id']}"
+        )
+        console.print(
+            "[dim]Extraction is running in the background...[/dim]"
+        )
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()
