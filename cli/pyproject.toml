@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "aria-cli"
+version = "0.2.0"
+description = "ARIA CLI client"
+authors = ["ARIA Contributors"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+httpx = "^0.27.0"
+click = "^8.1.0"
+rich = "^13.7.0"
+
+[tool.poetry.scripts]
+aria = "aria_cli.main:cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
