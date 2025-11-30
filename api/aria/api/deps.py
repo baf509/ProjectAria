@@ -8,6 +8,8 @@ Related Spec Sections:
 - Section 9.4: Dependency Injection
 """
 
+from typing import Annotated
+from fastapi import Depends
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.db.mongodb import get_database
 from aria.core.orchestrator import Orchestrator
@@ -18,8 +20,8 @@ async def get_db() -> AsyncIOMotorDatabase:
     return await get_database()
 
 
-async def get_orchestrator(db: AsyncIOMotorDatabase = None) -> Orchestrator:
+async def get_orchestrator(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)]
+) -> Orchestrator:
     """Get orchestrator instance."""
-    if db is None:
-        db = await get_database()
     return Orchestrator(db)
