@@ -12,6 +12,8 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
       - MONGODB_DATABASE=aria
@@ -20,8 +22,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-ollama}
-      - EMBEDDING_OLLAMA_MODEL=${EMBEDDING_OLLAMA_MODEL:-qwen3:8b}
-      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-4096}
+      - EMBEDDING_OLLAMA_MODEL=${EMBEDDING_OLLAMA_MODEL:-qwen3-embedding:0.6b}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION:-1024}
       - API_HOST=${API_HOST:-0.0.0.0}
       - API_PORT=${API_PORT:-8000}
       - DEBUG=${DEBUG:-false}
@@ -82,20 +84,16 @@ services:
   mongot:
     image: mongodb/mongodb-community-search:0.53.1
     container_name: aria-mongot
-    hostname: mongot
     restart: unless-stopped
-    ports:
-      - "27028:27028"   # Search server port
-      - "9946:9946"     # Metrics port
     environment:
       # mongot connects to mongod to sync data and receive queries
       - MONGOT_DATA_DIR=/data/mongot
     volumes:
       - mongot-data:/data/mongot
+      - ./scripts/mongot-password:/etc/mongot/secrets/passwordFile:ro
     depends_on:
       - mongod
-    networks:
-      - aria-network
+    network_mode: "service:mongod"
 
   # =============================================================================
   # Replica Set Initializer (one-shot)

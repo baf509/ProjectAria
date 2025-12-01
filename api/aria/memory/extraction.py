@@ -38,18 +38,18 @@ Return your response as a JSON array of memory objects. If no significant memori
 
 Example output:
 [
-  {
+  {{
     "content": "User prefers Python over JavaScript for backend development",
     "content_type": "preference",
     "categories": ["coding", "preferences"],
     "importance": 0.7
-  },
-  {
+  }},
+  {{
     "content": "User is working on an AI agent platform called ARIA",
     "content_type": "fact",
     "categories": ["projects", "work"],
     "importance": 0.9
-  }
+  }}
 ]
 
 Conversation messages:

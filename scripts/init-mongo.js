@@ -73,7 +73,7 @@ print("Created tool indexes");
 
 try {
   // Vector Search Index for memories
-  // Qwen3-8b produces 4096-dimensional embeddings
+  // qwen3-embedding:0.6b produces 1024-dimensional embeddings
   db.memories.createSearchIndex({
     name: "memory_vector_index",
     type: "vectorSearch",
@@ -82,7 +82,7 @@ try {
         {
           type: "vector",
           path: "embedding",
-          numDimensions: 4096,
+          numDimensions: 1024,
           similarity: "cosine"
         },
         {
