@@ -10,9 +10,10 @@ Related Spec Sections:
 """
 
 import asyncio
+import struct
 from datetime import datetime
 from typing import Optional
-from bson import ObjectId
+from bson import Binary, ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.memory.embeddings import embedding_service
@@ -71,6 +72,41 @@ class Memory:
             "confidence": self.confidence,
             "verified": self.verified,
         }
+
+
+def embedding_to_binary(embedding: list[float]) -> Binary:
+    """
+    Convert embedding list to BSON Binary for efficient storage.
+
+    Per MongoDB Atlas documentation, this provides compression and
+    efficient storage of vector embeddings.
+
+    Args:
+        embedding: List of float values
+
+    Returns:
+        BSON Binary object with packed float data
+    """
+    # Pack the floats into binary format
+    embedding_bytes = struct.pack(f'{len(embedding)}f', *embedding)
+    # Return as BSON Binary with subtype 0 (generic binary)
+    return Binary(embedding_bytes, subtype=0)
+
+
+def binary_to_embedding(binary_data: Binary) -> list[float]:
+    """
+    Convert BSON Binary back to embedding list.
+
+    Args:
+        binary_data: BSON Binary object containing packed floats
+
+    Returns:
+        List of float values
+    """
+    # Calculate number of floats (each float is 4 bytes)
+    num_floats = len(binary_data) // 4
+    # Unpack the binary data back to floats
+    return list(struct.unpack(f'{num_floats}f', binary_data))
 
 
 class LongTermMemory:
@@ -282,11 +318,14 @@ class LongTermMemory:
         # Generate embedding
         embedding = await embedding_service.embed(content)
 
+        # Convert embedding to BSON Binary for efficient storage
+        embedding_binary = embedding_to_binary(embedding)
+
         # Create memory document
         memory_doc = {
             "content": content,
             "content_type": content_type,
-            "embedding": embedding,
+            "embedding": embedding_binary,
             "embedding_model": settings.embedding_ollama_model,
             "source": source or {"type": "manual"},
             "status": "active",
@@ -321,7 +360,8 @@ class LongTermMemory:
 
         # If content changed, regenerate embedding
         if "content" in updates:
-            updates["embedding"] = await embedding_service.embed(updates["content"])
+            embedding = await embedding_service.embed(updates["content"])
+            updates["embedding"] = embedding_to_binary(embedding)
             updates["embedding_model"] = settings.embedding_ollama_model
 
         result = await self.db.memories.update_one(
