@@ -24,6 +24,115 @@ Format:
 
 ---
 
+## [2025-12-06] - Phase 4 - Cloud LLM Adapters
+
+### Added
+- Anthropic/Claude adapter (`api/aria/llm/anthropic.py`)
+  - Streaming support with proper message formatting
+  - Tool use (function calling) support
+  - Support for all Claude 3 models (Opus, Sonnet, Haiku)
+  - System prompt handling
+  - Error handling with proper error messages
+- OpenAI adapter (`api/aria/llm/openai.py`)
+  - Streaming support with chunk accumulation
+  - Function calling support
+  - Support for GPT-4, GPT-4 Turbo, GPT-3.5
+  - Proper message role handling (including tool role)
+  - Error handling
+- LLM backend availability check (`api/aria/llm/manager.py`)
+  - Check if API keys are configured
+  - Verify SDK packages are installed
+  - Helpful error messages for missing configuration
+- LLM health endpoint (`api/aria/api/routes/health.py`)
+  - `GET /api/v1/health/llm` - Check all LLM backend status
+  - Returns availability and reason for each backend
+
+### Changed
+- Updated LLM manager (`api/aria/llm/manager.py`)
+  - Register Anthropic adapter when API key present
+  - Register OpenAI adapter when API key present
+  - Lazy import of cloud adapters to avoid import errors
+  - Validate API keys before creating adapters
+- Updated orchestrator (`api/aria/core/orchestrator.py`)
+  - Added `_get_llm_with_fallback()` method
+  - Automatic fallback to cloud LLMs on error
+  - User notification when fallback is used
+  - Support for configurable fallback conditions
+- Updated configuration
+  - API keys already present in config (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+  - Already in `.env.example` file
+
+### Notes
+- Cloud LLM packages (anthropic, openai) already in requirements.txt
+- API keys must be set in environment variables
+- Fallback chain configured per agent in agent.fallback_chain
+- Fallback conditions: on_error, on_context_overflow (future)
+- Cloud LLMs automatically used when primary LLM fails
+
+---
+
+## [2025-12-06] - Phase 3 - Tools & MCP
+
+### Added
+- Tool infrastructure (`api/aria/tools/`)
+  - BaseTool abstract class with parameter validation
+  - ToolRouter for tool registration and execution
+  - ToolDefinition and ToolParameter models
+  - ToolResult with status tracking and metadata
+- Built-in tools (`api/aria/tools/builtin/`)
+  - Filesystem tool: read/write files, list directories, manage files
+  - Shell tool: execute commands with timeout and sandboxing
+  - Web tool: HTTP GET requests with size limits
+- MCP (Model Context Protocol) integration (`api/aria/tools/mcp/`)
+  - MCP client with JSON-RPC 2.0 over stdio
+  - MCP manager for multi-server lifecycle management
+  - MCPToolWrapper for BaseTool compatibility
+  - Server health tracking and tool registration
+- Tool management API routes (`api/aria/api/routes/tools.py`)
+  - List tools (with type filtering)
+  - Get tool details
+  - Execute tools directly
+  - MCP server CRUD (add, remove, list)
+  - List tools per MCP server
+  - Tool statistics endpoint
+- CLI tool commands
+  - `aria tools list` - List available tools
+  - `aria tools info <name>` - Show tool details
+  - `aria tools execute <name> <args>` - Execute a tool
+  - `aria mcp list` - List MCP servers
+  - `aria mcp add <id> <command>` - Add MCP server
+  - `aria mcp remove <id>` - Remove MCP server
+  - `aria mcp tools <id>` - List server's tools
+
+### Changed
+- Updated orchestrator (`api/aria/core/orchestrator.py`)
+  - Added tool_router parameter
+  - Tool definitions passed to LLM when tools enabled
+  - Handle tool calls from LLM responses
+  - Execute tools and save results to conversation
+  - Tool results included in streaming response
+- Updated main app (`api/aria/main.py`)
+  - Initialize built-in tools on startup
+  - Register tools with tool router
+  - Shutdown MCP servers on app shutdown
+  - Added tools routes
+- Updated API dependencies (`api/aria/api/deps.py`)
+  - Added get_tool_router() dependency
+  - Added get_mcp_manager() dependency
+  - Pass tool_router to orchestrator
+- Updated CLI with tool and MCP management commands
+- Updated `PROJECT_STATUS.md` to Phase 3
+
+### Notes
+- Tools must be explicitly enabled per agent (capabilities.tools_enabled)
+- Agents can specify which tools they can use (enabled_tools list)
+- Filesystem tool is sandboxed to allowed paths (default: user home)
+- Shell commands can be filtered with allow/deny lists
+- MCP servers communicate via stdio transport
+- Tool execution has configurable timeout (default: 5 minutes)
+
+---
+
 ## [2025-11-29] - Phase 2 - Memory System
 
 ### Added

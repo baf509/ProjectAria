@@ -1,7 +1,7 @@
 """
 ARIA - LLM Manager
 
-Phase: 1
+Phase: 1, 4
 Purpose: LLM backend selection and management
 
 Related Spec Sections:
@@ -11,6 +11,9 @@ Related Spec Sections:
 from aria.llm.base import LLMAdapter
 from aria.llm.ollama import OllamaAdapter
 from aria.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LLMManager:
@@ -29,6 +32,9 @@ class LLMManager:
 
         Returns:
             LLMAdapter instance
+
+        Raises:
+            ValueError: If backend is unknown or API key is missing
         """
         key = f"{backend}:{model}"
 
@@ -37,16 +43,82 @@ class LLMManager:
                 self.adapters[key] = OllamaAdapter(
                     base_url=settings.ollama_url, model=model
                 )
+                logger.info(f"Created Ollama adapter for model: {model}")
+
             elif backend == "anthropic":
-                # TODO: Implement in Phase 4
-                raise NotImplementedError("Anthropic adapter not yet implemented")
+                if not settings.anthropic_api_key:
+                    raise ValueError(
+                        "Anthropic API key not configured. "
+                        "Set ANTHROPIC_API_KEY environment variable."
+                    )
+                try:
+                    from aria.llm.anthropic import AnthropicAdapter
+                    self.adapters[key] = AnthropicAdapter(
+                        api_key=settings.anthropic_api_key, model=model
+                    )
+                    logger.info(f"Created Anthropic adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "anthropic package not installed. "
+                        "Install with: pip install anthropic"
+                    )
+
             elif backend == "openai":
-                # TODO: Implement in Phase 4
-                raise NotImplementedError("OpenAI adapter not yet implemented")
+                if not settings.openai_api_key:
+                    raise ValueError(
+                        "OpenAI API key not configured. "
+                        "Set OPENAI_API_KEY environment variable."
+                    )
+                try:
+                    from aria.llm.openai import OpenAIAdapter
+                    self.adapters[key] = OpenAIAdapter(
+                        api_key=settings.openai_api_key, model=model
+                    )
+                    logger.info(f"Created OpenAI adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. "
+                        "Install with: pip install openai"
+                    )
+
             else:
-                raise ValueError(f"Unknown backend: {backend}")
+                raise ValueError(
+                    f"Unknown backend: {backend}. "
+                    f"Supported: ollama, anthropic, openai"
+                )
 
         return self.adapters[key]
+
+    def is_backend_available(self, backend: str) -> tuple[bool, str]:
+        """
+        Check if a backend is available and configured.
+
+        Returns:
+            (is_available, reason)
+        """
+        if backend == "ollama":
+            return True, "Ollama is always available (local)"
+
+        elif backend == "anthropic":
+            if not settings.anthropic_api_key:
+                return False, "Anthropic API key not configured"
+            try:
+                import anthropic
+                return True, "Anthropic API configured"
+            except ImportError:
+                return False, "anthropic package not installed"
+
+        elif backend == "openai":
+            if not settings.openai_api_key:
+                return False, "OpenAI API key not configured"
+            try:
+                import openai
+                return True, "OpenAI API configured"
+            except ImportError:
+                return False, "openai package not installed"
+
+        else:
+            return False, f"Unknown backend: {backend}"
 
 
 # Global instance

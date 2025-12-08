@@ -38,6 +38,24 @@ services:
       - aria-network
 
   # =============================================================================
+  # ARIA Web UI
+  # =============================================================================
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: aria-ui
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - aria-network
+
+  # =============================================================================
   # MongoDB Community Server 8.2 (mongod)
   # =============================================================================
   # The main database server. Requires replica set for search features.

@@ -158,7 +158,7 @@ When you learn something new about the user (preferences, facts, context), it wi
 Be helpful, accurate, and personable. Use your memory to provide continuity across conversations.`,
     llm: {
       backend: "ollama",
-      model: "gpt-oss:20b",
+      model: "qwen3:8b",
       temperature: 0.7,
       max_tokens: 4096
     },

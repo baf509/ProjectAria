@@ -426,5 +426,233 @@ def extract_memories_cmd(conversation_id):
         sys.exit(1)
 
 
+@cli.group()
+def tools():
+    """Manage tools."""
+    pass
+
+
+@tools.command("list")
+@click.option("--type", help="Filter by tool type (builtin, mcp)")
+def list_tools_cmd(type):
+    """List available tools."""
+    try:
+        client = AriaClient()
+        params = {}
+        if type:
+            params["tool_type"] = type
+
+        response = client.client.get(
+            f"{client.base_url}/api/v1/tools", params=params
+        )
+        response.raise_for_status()
+        tools_list = response.json()
+
+        if not tools_list:
+            console.print("No tools found.")
+            return
+
+        table = Table(title="Tools")
+        table.add_column("Name", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Description")
+        table.add_column("Parameters", justify="right")
+
+        for tool in tools_list:
+            table.add_row(
+                tool["name"],
+                tool["type"],
+                tool["description"][:60] + "..."
+                if len(tool["description"]) > 60
+                else tool["description"],
+                str(len(tool["parameters"])),
+            )
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@tools.command("info")
+@click.argument("tool_name")
+def tool_info_cmd(tool_name):
+    """Show detailed information about a tool."""
+    try:
+        client = AriaClient()
+        response = client.client.get(
+            f"{client.base_url}/api/v1/tools/{tool_name}"
+        )
+        response.raise_for_status()
+        tool = response.json()
+
+        console.print(f"[bold cyan]{tool['name']}[/bold cyan] ({tool['type']})")
+        console.print(f"\n{tool['description']}\n")
+
+        if tool["parameters"]:
+            console.print("[bold]Parameters:[/bold]")
+            for param in tool["parameters"]:
+                required = "[red]*[/red]" if param["required"] else ""
+                console.print(f"  {required}[cyan]{param['name']}[/cyan] ({param['type']})")
+                console.print(f"    {param['description']}")
+                if param.get("default"):
+                    console.print(f"    [dim]Default: {param['default']}[/dim]")
+                console.print()
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@tools.command("execute")
+@click.argument("tool_name")
+@click.argument("arguments", required=False)
+def execute_tool_cmd(tool_name, arguments):
+    """Execute a tool with JSON arguments."""
+    try:
+        client = AriaClient()
+
+        # Parse arguments
+        args = {}
+        if arguments:
+            args = json.loads(arguments)
+
+        console.print(f"[dim]Executing {tool_name}...[/dim]\n")
+
+        response = client.client.post(
+            f"{client.base_url}/api/v1/tools/execute",
+            json={"tool_name": tool_name, "arguments": args},
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        if result["status"] == "success":
+            console.print(f"[green]✓[/green] Tool executed successfully")
+            console.print(f"[dim]Duration: {result['duration_ms']}ms[/dim]\n")
+            console.print("[bold]Output:[/bold]")
+            console.print(result["output"])
+        else:
+            console.print(f"[red]✗[/red] Tool execution failed")
+            console.print(f"[red]Error:[/red] {result['error']}")
+
+    except json.JSONDecodeError:
+        console.print("[red]Error:[/red] Invalid JSON arguments")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@cli.group()
+def mcp():
+    """Manage MCP servers."""
+    pass
+
+
+@mcp.command("list")
+def list_mcp_servers_cmd():
+    """List MCP servers."""
+    try:
+        client = AriaClient()
+        response = client.client.get(
+            f"{client.base_url}/api/v1/mcp/servers"
+        )
+        response.raise_for_status()
+        servers = response.json()
+
+        if not servers:
+            console.print("No MCP servers configured.")
+            return
+
+        table = Table(title="MCP Servers")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Version")
+        table.add_column("Connected", justify="center")
+        table.add_column("Tools", justify="right")
+
+        for server in servers:
+            table.add_row(
+                server["id"],
+                server.get("name", "Unknown"),
+                server.get("version", "-"),
+                "✓" if server["connected"] else "✗",
+                str(server["tool_count"]),
+            )
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@mcp.command("add")
+@click.argument("server_id")
+@click.argument("command", nargs=-1, required=True)
+def add_mcp_server_cmd(server_id, command):
+    """Add an MCP server."""
+    try:
+        client = AriaClient()
+        response = client.client.post(
+            f"{client.base_url}/api/v1/mcp/servers",
+            json={"server_id": server_id, "command": list(command)},
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        console.print(f"[green]✓[/green] {result['message']}")
+        console.print(f"   Tools registered: {result['tool_count']}")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@mcp.command("remove")
+@click.argument("server_id")
+def remove_mcp_server_cmd(server_id):
+    """Remove an MCP server."""
+    try:
+        client = AriaClient()
+        response = client.client.delete(
+            f"{client.base_url}/api/v1/mcp/servers/{server_id}"
+        )
+        response.raise_for_status()
+
+        console.print(f"[green]✓[/green] Removed MCP server: {server_id}")
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@mcp.command("tools")
+@click.argument("server_id")
+def list_mcp_server_tools_cmd(server_id):
+    """List tools provided by an MCP server."""
+    try:
+        client = AriaClient()
+        response = client.client.get(
+            f"{client.base_url}/api/v1/mcp/servers/{server_id}/tools"
+        )
+        response.raise_for_status()
+        tools_list = response.json()
+
+        if not tools_list:
+            console.print(f"No tools found for server: {server_id}")
+            return
+
+        console.print(f"[bold]Tools from {server_id}:[/bold]\n")
+
+        for tool in tools_list:
+            console.print(f"[cyan]{tool['name']}[/cyan]")
+            console.print(f"  {tool['description']}")
+            console.print()
+
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()
