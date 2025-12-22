@@ -71,6 +71,8 @@ async def create_conversation(
     # Get agent (use default if not specified)
     if body.agent_id:
         agent = await db.agents.find_one({"_id": ObjectId(body.agent_id)})
+    elif body.agent_slug:
+        agent = await db.agents.find_one({"slug": body.agent_slug})
     else:
         agent = await db.agents.find_one({"is_default": True})
 

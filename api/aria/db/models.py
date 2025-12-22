@@ -63,6 +63,7 @@ class ConversationStats(BaseModel):
 class ConversationCreate(BaseModel):
     """Request to create a conversation."""
     agent_id: Optional[str] = None
+    agent_slug: Optional[str] = None  # Alternative to agent_id
     title: Optional[str] = None
 
 

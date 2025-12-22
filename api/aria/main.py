@@ -49,12 +49,21 @@ app = FastAPI(
 )
 
 # CORS middleware for web UI
+# Allow common development and deployment origins
+# For Docker: The UI service can access API via internal Docker network
+# For external access: Adjust these origins based on your deployment
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server
+    allow_origins=[
+        "http://localhost:3000",  # Next.js dev server
+        "http://localhost:8000",  # API docs
+        "http://127.0.0.1:3000",
+        "http://aria-ui:3000",  # Docker service name
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"http://.*:3000",  # Allow any host on port 3000
 )
 
 # Include routers
