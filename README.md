@@ -40,22 +40,35 @@ User → FastAPI → Orchestrator → LLM (Ollama/Claude/OpenAI)
 6. **qwen3-embedding for embeddings** - 1024-dimensional, local via Ollama
 7. **Hybrid search** - BM25 + Vector with RRF fusion
 
-## Quick Start (after Phase 1)
+## Quick Start
+
+### Automated Setup (Recommended)
+
+```bash
+# Run the setup script
+./scripts/setup.sh
+```
+
+This installs Docker, Ollama, pulls models, and configures everything.
+
+### Manual Start
 
 ```bash
 # Configure
 cp .env.example .env
-# Edit .env with your Ollama URL
+# Edit .env with your API keys
 
-# Start (MongoDB 8.2 + mongot + API)
+# Start all services
 docker compose up -d
 
-# Wait for services to be healthy
-docker compose ps
+# Access the UI
+open http://localhost:3000
 
-# Chat
+# Or use the CLI
 aria chat "Hello, ARIA!"
 ```
+
+📖 **For detailed instructions, see [GETTING_STARTED.md](GETTING_STARTED.md)**
 
 ## Directory Structure
 
