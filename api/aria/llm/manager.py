@@ -27,7 +27,7 @@ class LLMManager:
         Get or create an LLM adapter.
 
         Args:
-            backend: Backend name ("ollama", "anthropic", "openai")
+            backend: Backend name ("ollama", "anthropic", "openai", "openrouter")
             model: Model name
 
         Returns:
@@ -81,10 +81,28 @@ class LLMManager:
                         "Install with: pip install openai"
                     )
 
+            elif backend == "openrouter":
+                if not settings.openrouter_api_key:
+                    raise ValueError(
+                        "OpenRouter API key not configured. "
+                        "Set OPENROUTER_API_KEY environment variable."
+                    )
+                try:
+                    from aria.llm.openrouter import OpenRouterAdapter
+                    self.adapters[key] = OpenRouterAdapter(
+                        api_key=settings.openrouter_api_key, model=model
+                    )
+                    logger.info(f"Created OpenRouter adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. "
+                        "Install with: pip install openai"
+                    )
+
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: ollama, anthropic, openai"
+                    f"Supported: ollama, anthropic, openai, openrouter"
                 )
 
         return self.adapters[key]
@@ -116,6 +134,15 @@ class LLMManager:
                 return True, "OpenAI API configured"
             except ImportError:
                 return False, "openai package not installed"
+
+        elif backend == "openrouter":
+            if not settings.openrouter_api_key:
+                return False, "OpenRouter API key not configured"
+            try:
+                import openai
+                return True, "OpenRouter API configured"
+            except ImportError:
+                return False, "openai package not installed (required for OpenRouter)"
 
         else:
             return False, f"Unknown backend: {backend}"

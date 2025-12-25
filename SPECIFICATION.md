@@ -32,7 +32,7 @@ ARIA (Autonomous Reasoning & Intelligence Architecture) is a self-hosted AI agen
 
 - **Separates agent identity from LLM** - Memories, tools, and policies persist; LLMs are swappable
 - **Runs locally first** - Ollama for inference, MongoDB for storage, all on user's hardware
-- **Supports cloud fallback** - Anthropic/OpenAI APIs when local models can't handle it
+- **Supports cloud fallback** - Anthropic/OpenAI/OpenRouter APIs when local models can't handle it
 - **Provides computer use** - Both CLI (shell, files) and GUI (screen control) capabilities
 - **Remembers everything** - Short-term context + long-term semantic memory
 
@@ -71,6 +71,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
                               │ Cloud APIs                      │
                               │  • Anthropic Claude             │
                               │  • OpenAI                       │
+                              │  • OpenRouter (multi-provider)  │
                               │  • Voyage AI (embeddings)       │
                               └─────────────────────────────────┘
 ```
@@ -1802,6 +1803,7 @@ OLLAMA_URL=http://localhost:11434
 # Cloud LLMs (optional - for fallback)
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
+OPENROUTER_API_KEY=
 
 # Embeddings
 # Primary: qwen3-embedding via Ollama (1024 dimensions)

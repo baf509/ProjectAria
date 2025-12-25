@@ -19,7 +19,7 @@ grep -A5 "Current Phase" PROJECT_STATUS.md
 ARIA is a local-first AI agent platform with the following key principles:
 - **No framework dependencies** - No LangChain, LlamaIndex, etc. Direct API integration only.
 - **Single-user design** - Personal AI agent, no multi-tenancy or complex auth.
-- **LLM agnostic** - Adapter pattern for Ollama (local), Anthropic, and OpenAI.
+- **LLM agnostic** - Adapter pattern for Ollama (local), Anthropic, OpenAI, and OpenRouter.
 - **Local-first** - Ollama primary, cloud APIs as fallback.
 - **MongoDB 8.2 + mongot** - Self-hosted vector search without Atlas subscription.
 
@@ -63,7 +63,7 @@ All LLM backends implement `LLMAdapter` base class:
 - Message format conversion per provider
 - Tool call support (function calling)
 
-Adapters: `ollama.py`, `anthropic.py`, `openai.py`
+Adapters: `ollama.py`, `anthropic.py`, `openai.py`, `openrouter.py`
 
 Manager handles selection and fallback chain logic.
 
@@ -289,6 +289,7 @@ async def stream_response(generator):
 - `api/aria/llm/ollama.py` - Ollama adapter
 - `api/aria/llm/anthropic.py` - Anthropic/Claude adapter
 - `api/aria/llm/openai.py` - OpenAI/GPT adapter
+- `api/aria/llm/openrouter.py` - OpenRouter unified API adapter
 
 ### Memory System
 
@@ -334,6 +335,7 @@ OLLAMA_URL=http://localhost:11434
 # Cloud LLMs (optional)
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-...
 
 # Embeddings
 EMBEDDING_PROVIDER=ollama
@@ -363,8 +365,23 @@ DEBUG=false
 - ✅ `pydantic` - Data validation
 - ✅ `fastapi` - API framework
 - ✅ `anthropic` - Official SDK
-- ✅ `openai` - Official SDK
+- ✅ `openai` - Official SDK (also used for OpenRouter)
 - ✅ `sse-starlette` - Server-sent events
+
+### API Key Security
+
+**IMPORTANT**: API keys are stored in `.env` file which is git-ignored.
+
+1. Copy `.env.example` to `.env`: `cp .env.example .env`
+2. Add your API keys to `.env`
+3. Never commit `.env` to git (already in `.gitignore`)
+4. The `.env` file is loaded by docker-compose and pydantic-settings
+
+Supported API keys:
+- `ANTHROPIC_API_KEY` - For Claude models
+- `OPENAI_API_KEY` - For GPT models
+- `OPENROUTER_API_KEY` - For unified access to multiple providers
+- `VOYAGE_API_KEY` - For Voyage AI embeddings (fallback)
 
 ### When Making Changes
 

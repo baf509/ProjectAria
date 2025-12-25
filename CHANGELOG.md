@@ -24,6 +24,41 @@ Format:
 
 ---
 
+## [2025-12-25] - Phase 4 - OpenRouter Support
+
+### Added
+- OpenRouter adapter (`api/aria/llm/openrouter.py`)
+  - OpenAI-compatible API for unified access to multiple LLM providers
+  - Supports models from OpenAI, Anthropic, Google, Meta, and more
+  - Streaming support with proper message formatting
+  - Tool use (function calling) support
+  - Optional HTTP-Referer and X-Title headers for app rankings
+  - Uses OpenAI SDK with custom base URL (https://openrouter.ai/api/v1)
+- OpenRouter configuration
+  - `OPENROUTER_API_KEY` environment variable
+  - Added to `.env.example` with other API keys
+  - Configuration in `api/aria/config.py`
+  - Docker compose environment variable pass-through
+
+### Changed
+- Updated LLM manager (`api/aria/llm/manager.py`)
+  - Added "openrouter" backend support
+  - Backend availability check for OpenRouter
+  - Error messages for missing OpenRouter API key
+- Updated documentation
+  - `CLAUDE.md` - Added OpenRouter to adapter list and configuration
+  - `SPECIFICATION.md` - Added OpenRouter to cloud API options
+  - `README.md` - Updated LLM agnostic description
+  - Added API key security section to CLAUDE.md
+
+### Notes
+- OpenRouter reuses the OpenAI SDK (no additional dependencies)
+- Model names in OpenRouter use provider prefixes (e.g., "openai/gpt-4")
+- API keys stored in `.env` file (git-ignored for security)
+- OpenRouter provides cost-effective access to multiple providers through one API
+
+---
+
 ## [2025-12-25] - Documentation & Configuration - CLAUDE.md and Embedding Standardization
 
 ### Added

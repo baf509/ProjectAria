@@ -34,7 +34,7 @@ User → FastAPI → Orchestrator → LLM (Ollama/Claude/OpenAI)
 
 1. **No framework dependencies** - No LangChain, LlamaIndex, etc.
 2. **Single-user** - No auth complexity, personal use only
-3. **LLM agnostic** - Adapter pattern for any backend
+3. **LLM agnostic** - Adapter pattern for Ollama, Anthropic, OpenAI, and OpenRouter
 4. **MongoDB 8.2 + mongot** - Community Server with Vector Search (no Atlas needed)
 5. **Local-first** - Ollama primary, cloud APIs as fallback
 6. **qwen3-embedding for embeddings** - 1024-dimensional, local via Ollama
