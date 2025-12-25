@@ -24,6 +24,47 @@ Format:
 
 ---
 
+## [2025-12-25] - Documentation & Configuration - CLAUDE.md and Embedding Standardization
+
+### Added
+- `CLAUDE.md` - Comprehensive guide for Claude Code sessions
+  - Quick start instructions (PROJECT_STATUS.md, CHANGELOG.md, SPECIFICATION.md)
+  - Architecture overview (core flow, memory system, tools, LLM adapters)
+  - MongoDB 8.2 + mongot setup details
+  - Development commands (Docker, API, UI, CLI, Database)
+  - Code patterns and conventions
+  - Key files reference organized by layer
+  - Configuration examples
+  - Important gotchas and best practices
+  - Current phase summary
+
+### Changed
+- **Embedding configuration standardized across entire codebase**
+  - Model: Changed from `qwen3:8b` to `qwen3-embedding:0.6b`
+  - Dimensions: Changed from 4096 to 1024
+  - Updated files:
+    - `.env.example` - Default embedding model and dimensions
+    - `api/aria/config.py` - Configuration class defaults
+    - `SPECIFICATION.md` - All architecture diagrams, code examples, and index definitions
+    - `README.md` - Key design decisions
+    - `CLAUDE.md` - All embedding references
+- Improved clarity in embedding configuration
+  - Comment: "Using qwen3-embedding:0.6b model with 1024-dimensional embeddings for optimal balance of quality and performance"
+  - Note: docker-compose.yml and scripts/init-mongo.js were already correct at 1024 dims
+
+### Fixed
+- Configuration inconsistencies between environment files, code defaults, and documentation
+- All vector search index definitions now consistently use 1024 dimensions
+- All embedding service references now use correct model name
+
+### Notes
+- This standardization ensures vector search works correctly with actual embedding dimensions
+- MongoDB vector index in `scripts/init-mongo.js` already used 1024 dims
+- Docker compose defaults already used `qwen3-embedding:0.6b`
+- Changes align runtime configuration with actual deployed setup
+
+---
+
 ## [2025-12-06] - Phase 4 - Cloud LLM Adapters
 
 ### Added

@@ -37,7 +37,7 @@ User → FastAPI → Orchestrator → LLM (Ollama/Claude/OpenAI)
 3. **LLM agnostic** - Adapter pattern for any backend
 4. **MongoDB 8.2 + mongot** - Community Server with Vector Search (no Atlas needed)
 5. **Local-first** - Ollama primary, cloud APIs as fallback
-6. **Qwen3-8b for embeddings** - 4096-dimensional, local via Ollama
+6. **qwen3-embedding for embeddings** - 1024-dimensional, local via Ollama
 7. **Hybrid search** - BM25 + Vector with RRF fusion
 
 ## Quick Start (after Phase 1)

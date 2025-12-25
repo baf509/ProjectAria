@@ -27,8 +27,8 @@ class Settings(BaseSettings):
 
     # Embeddings
     embedding_provider: str = "ollama"
-    embedding_ollama_model: str = "qwen3:8b"
-    embedding_dimension: int = 4096
+    embedding_ollama_model: str = "qwen3-embedding:0.6b"
+    embedding_dimension: int = 1024
     voyage_api_key: str = ""
 
     # API

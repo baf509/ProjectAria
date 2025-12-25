@@ -51,7 +51,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
 │ │  • aria-ui (Next.js)                        │                  │ │
 │ │  • mongodb (Atlas Local + Vector Search)    │                  │ │
 │ │  • aria-mcp-manager                         │                  │ │
-│ │  • aria-embeddings (Qwen3-8b)               │ LAN              │ │
+│ │  • aria-embeddings (qwen3-embedding)         │ LAN              │ │
 │ │  • tailscale                                │                  │ │
 │ └─────────────────────────────────────────────│──────────────────┘ │
 └───────────────────────────────────────────────│─────────────────────┘
@@ -384,26 +384,26 @@ class LongTermMemory:
         return [r["memory"] for r in sorted_results]
 ```
 
-### 3.4 Embedding Service (Qwen3-8b)
+### 3.4 Embedding Service (qwen3-embedding)
 
 ```python
 class EmbeddingService:
     """
-    Local embedding generation using Qwen3-8b via Ollama.
+    Local embedding generation using qwen3-embedding via Ollama.
     Can fall back to Voyage AI for quality-critical embeddings.
     """
-    
+
     def __init__(self, config: EmbeddingConfig):
         self.primary = OllamaEmbeddings(
             base_url=config.ollama_url,
-            model="qwen3:8b"  # or specific embedding variant
+            model="qwen3-embedding:0.6b"
         )
         self.fallback = VoyageEmbeddings(
             api_key=config.voyage_api_key,
             model="voyage-3-large"
         ) if config.voyage_api_key else None
-        
-        self.dimension = 4096  # Qwen3-8b embedding dimension
+
+        self.dimension = 1024  # qwen3-embedding dimension
     
     async def embed(
         self,
@@ -476,7 +476,7 @@ class OllamaEmbeddings:
       {
         "type": "vector",
         "path": "embedding",
-        "numDimensions": 4096,  // Qwen3-8b dimension
+        "numDimensions": 1024,  // qwen3-embedding dimension
         "similarity": "cosine"
       },
       {
@@ -613,8 +613,8 @@ db.conversations.createIndex({ "messages.created_at": 1 })
   content_type: String,            // "fact" | "preference" | "event" | "skill" | "document"
   
   // Embeddings
-  embedding: [Number],             // Dense vector (4096 dims for Qwen3-8b)
-  embedding_model: String,         // "qwen3:8b" | "voyage-3-large"
+  embedding: [Number],             // Dense vector (1024 dims for qwen3-embedding)
+  embedding_model: String,         // "qwen3-embedding:0.6b" | "voyage-3-large"
   
   // Source tracking
   source: {
@@ -782,7 +782,7 @@ db.tools.createIndex({ type: 1, status: 1 })
   // Embedding
   embedding: {
     provider: String,              // "ollama" | "voyage"
-    ollama_model: String,          // "qwen3:8b"
+    ollama_model: String,          // "qwen3-embedding:0.6b"
     voyage_api_key: String         // Encrypted
   },
   
@@ -1325,7 +1325,7 @@ aria/
 │       └── main.py
 │
 ├── mcp-servers/                   # Custom MCP servers (Phase 3+)
-│   └── embeddings/                # Qwen3-8b embedding server
+│   └── embeddings/                # qwen3-embedding server
 │       ├── Dockerfile
 │       └── server.py
 │
@@ -1401,7 +1401,7 @@ PROJECT_STATUS.md
 **Deliverables:**
 - [ ] Short-term memory (recent conversation context)
 - [ ] Long-term memory with hybrid search (BM25 + Vector)
-- [ ] Qwen3-8b embedding service
+- [ ] qwen3-embedding service (1024-dim)
 - [ ] Memory extraction pipeline (async background)
 - [ ] Context builder with memory injection
 - [ ] Memory CRUD endpoints
@@ -1804,11 +1804,11 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 
 # Embeddings
-# Primary: Qwen3-8b via Ollama (4096 dimensions)
+# Primary: qwen3-embedding via Ollama (1024 dimensions)
 # Fallback: Voyage AI (if configured)
 EMBEDDING_PROVIDER=ollama
-EMBEDDING_OLLAMA_MODEL=qwen3:8b
-EMBEDDING_DIMENSION=4096
+EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+EMBEDDING_DIMENSION=1024
 VOYAGE_API_KEY=
 
 # API
@@ -1840,8 +1840,8 @@ class Settings(BaseSettings):
     
     # Embeddings
     embedding_provider: str = "ollama"
-    embedding_ollama_model: str = "qwen3:8b"
-    embedding_dimension: int = 4096
+    embedding_ollama_model: str = "qwen3-embedding:0.6b"
+    embedding_dimension: int = 1024
     voyage_api_key: str = ""
     
     # API
@@ -2085,7 +2085,7 @@ print("Created tool indexes");
 
 try {
   // Vector Search Index for memories
-  // Qwen3-8b produces 4096-dimensional embeddings
+  // qwen3-embedding produces 1024-dimensional embeddings
   db.memories.createSearchIndex({
     name: "memory_vector_index",
     type: "vectorSearch",
@@ -2094,7 +2094,7 @@ try {
         {
           type: "vector",
           path: "embedding",
-          numDimensions: 4096,
+          numDimensions: 1024,
           similarity: "cosine"
         },
         {
@@ -2362,7 +2362,7 @@ db.memories.createSearchIndex({
       {
         type: "vector",
         path: "embedding",
-        numDimensions: 4096,  // Qwen3-8b dimension
+        numDimensions: 1024,  // qwen3-embedding dimension
         similarity: "cosine"
       },
       { type: "filter", path: "status" },
@@ -2398,7 +2398,7 @@ db.memories.aggregate([
     $vectorSearch: {
       index: "memory_vector_index",
       path: "embedding",
-      queryVector: [/* your 4096-dim vector */],
+      queryVector: [/* your 1024-dim vector */],
       numCandidates: 100,
       limit: 10
     }
