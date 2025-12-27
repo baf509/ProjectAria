@@ -104,13 +104,42 @@ class OpenRouterAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> AsyncIterator[StreamChunk]:
-        """Stream a completion from OpenRouter."""
+        """
+        Stream a completion from OpenRouter.
 
-        # Convert messages and tools
+        Args:
+            stream: If False, uses non-streaming API and simulates streaming
+        """
+
+        # If non-streaming requested, use complete() and simulate streaming
+        if not stream:
+            try:
+                content, tool_calls_list, usage = await self.complete(
+                    messages, tools, temperature, max_tokens
+                )
+
+                # Yield content as a single chunk
+                if content:
+                    yield StreamChunk(type="text", content=content)
+
+                # Yield tool calls
+                for tc in tool_calls_list:
+                    yield StreamChunk(type="tool_call", tool_call=tc)
+
+                # Yield done with usage
+                yield StreamChunk(type="done", usage=usage)
+                return
+
+            except Exception as e:
+                yield StreamChunk(type="error", error=f"OpenRouter error: {str(e)}")
+                return
+
+        # Convert messages and tools for streaming mode
         openrouter_messages = self._convert_messages(messages)
 
-        # Build request parameters
+        # Build request parameters for streaming
         request_params = {
             "model": self.model,
             "messages": openrouter_messages,
@@ -206,21 +235,86 @@ class OpenRouterAdapter(LLMAdapter):
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 
-        content_parts = []
-        tool_calls = []
-        usage = {}
+        # Convert messages and tools
+        openrouter_messages = self._convert_messages(messages)
 
-        async for chunk in self.stream(messages, tools, temperature, max_tokens):
-            if chunk.type == "text":
-                content_parts.append(chunk.content)
-            elif chunk.type == "tool_call":
-                tool_calls.append(chunk.tool_call)
-            elif chunk.type == "done":
-                usage = chunk.usage
-            elif chunk.type == "error":
-                raise Exception(chunk.error)
+        # Build request parameters
+        # Note: GLM-4.7 uses reasoning tokens before content, so it needs higher max_tokens
+        # Default agent config is 4096 which should be sufficient
+        request_params = {
+            "model": self.model,
+            "messages": openrouter_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": False,  # Non-streaming mode
+        }
 
-        return "".join(content_parts), tool_calls, usage
+        if tools:
+            request_params["tools"] = self._convert_tools(tools)
+
+        try:
+            # Make non-streaming completion request
+            response = await self.client.chat.completions.create(**request_params)
+
+            # Extract content and tool calls
+            message = response.choices[0].message
+
+            # Debug: log the response structure
+            import sys
+            print(f"[DEBUG] Response type: {type(response)}", file=sys.stderr)
+            print(f"[DEBUG] Message type: {type(message)}", file=sys.stderr)
+            print(f"[DEBUG] Message content: {repr(message.content)}", file=sys.stderr)
+            print(f"[DEBUG] Has reasoning: {hasattr(message, 'reasoning')}", file=sys.stderr)
+
+            # Get content - prefer actual content over reasoning
+            content = message.content or ""
+
+            # If no content but has reasoning (GLM-4.7 reasoning mode), use reasoning as fallback
+            if not content:
+                # Try model_dump for Pydantic v2
+                if hasattr(message, 'model_dump'):
+                    message_dict = message.model_dump()
+                    print(f"[DEBUG] model_dump keys: {list(message_dict.keys())}", file=sys.stderr)
+                    print(f"[DEBUG] reasoning from dump: {repr(message_dict.get('reasoning'))}", file=sys.stderr)
+                    content = message_dict.get('reasoning', '')
+                # Try model_extra for extra fields
+                if not content and hasattr(message, 'model_extra'):
+                    print(f"[DEBUG] model_extra: {message.model_extra}", file=sys.stderr)
+                    content = message.model_extra.get('reasoning', '')
+                # Try direct attribute access
+                if not content and hasattr(message, 'reasoning'):
+                    print(f"[DEBUG] direct reasoning: {repr(message.reasoning)}", file=sys.stderr)
+                    content = message.reasoning or ""
+
+            print(f"[DEBUG] Final content: {repr(content)}", file=sys.stderr)
+
+            # Extract tool calls if present
+            tool_calls = []
+            if message.tool_calls:
+                for tc in message.tool_calls:
+                    try:
+                        arguments = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                    tool_calls.append(ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
+                    ))
+
+            # Extract usage
+            usage = {}
+            if response.usage:
+                usage = {
+                    "input_tokens": response.usage.prompt_tokens,
+                    "output_tokens": response.usage.completion_tokens,
+                }
+
+            return content, tool_calls, usage
+
+        except Exception as e:
+            raise Exception(f"OpenRouter error: {str(e)}")
 
     async def health_check(self) -> bool:
         """Check if the OpenRouter API is accessible."""

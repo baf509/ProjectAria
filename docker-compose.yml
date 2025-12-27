@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # =============================================================================
   # ARIA API Service
@@ -101,7 +99,7 @@ services:
   # Runs alongside mongod and syncs data via change streams.
   # https://www.mongodb.com/docs/atlas/atlas-search/
   mongot:
-    image: mongodb/mongodb-community-search:0.53.1
+    image: mongodb/mongodb-community-search:0.55.0
     container_name: aria-mongot
     restart: unless-stopped
     environment:

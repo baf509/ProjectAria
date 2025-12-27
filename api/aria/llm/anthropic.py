@@ -98,6 +98,7 @@ class AnthropicAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from Claude."""
 
@@ -195,6 +196,7 @@ class AnthropicAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 

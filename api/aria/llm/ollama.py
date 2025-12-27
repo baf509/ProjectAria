@@ -37,6 +37,7 @@ class OllamaAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> AsyncIterator[StreamChunk]:
 
         # Convert messages to Ollama format
@@ -126,6 +127,7 @@ class OllamaAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> tuple[str, list[ToolCall], dict]:
 
         content_parts = []

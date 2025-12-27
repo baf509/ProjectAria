@@ -48,7 +48,7 @@ async def health_check(db: AsyncIOMotorDatabase = Depends(get_db)):
 @router.get("/health/llm", response_model=list[LLMStatusResponse])
 async def llm_health_check():
     """Check status of all LLM backends."""
-    backends = ["ollama", "anthropic", "openai"]
+    backends = ["ollama", "anthropic", "openai", "openrouter"]
     statuses = []
 
     for backend in backends:

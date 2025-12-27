@@ -84,9 +84,13 @@ class LLMAdapter(ABC):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        stream: bool = True,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream a completion with optional tool use.
+
+        Args:
+            stream: If False, uses non-streaming API internally (for models with streaming issues)
         Yields StreamChunk objects.
         """
         pass

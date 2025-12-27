@@ -157,14 +157,39 @@ async def send_message(
     body: MessageRequest,
     orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
-    """Send a message and stream the response."""
+    """Send a message and get the response (streaming or non-streaming)."""
 
-    async def event_generator():
-        """Generate SSE events from orchestrator stream."""
-        async for chunk in orchestrator.process_message(conversation_id, body.content):
-            yield {
-                "event": chunk.type,
-                "data": json.dumps(chunk.to_dict()),
-            }
+    if body.stream:
+        # Streaming mode - return SSE stream
+        async def event_generator():
+            """Generate SSE events from orchestrator stream."""
+            async for chunk in orchestrator.process_message(
+                conversation_id, body.content, stream=True
+            ):
+                yield {
+                    "event": chunk.type,
+                    "data": json.dumps(chunk.to_dict()),
+                }
 
-    return EventSourceResponse(event_generator())
+        return EventSourceResponse(event_generator())
+    else:
+        # Non-streaming mode - collect all chunks and return as JSON
+        content_parts = []
+        tool_calls = []
+        usage = {}
+
+        async for chunk in orchestrator.process_message(
+            conversation_id, body.content, stream=False
+        ):
+            if chunk.type == "text":
+                content_parts.append(chunk.content)
+            elif chunk.type == "tool_call":
+                tool_calls.append(chunk.to_dict()["tool_call"])
+            elif chunk.type == "done":
+                usage = chunk.to_dict().get("usage", {})
+
+        return {
+            "content": "".join(content_parts),
+            "tool_calls": tool_calls,
+            "usage": usage,
+        }

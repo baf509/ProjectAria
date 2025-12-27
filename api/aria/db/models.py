@@ -146,6 +146,7 @@ class AgentLLMConfig(BaseModel):
     model: str
     temperature: float = 0.7
     max_tokens: int = 4096
+    force_non_streaming: bool = False  # Force non-streaming mode for models with streaming issues
 
 
 class AgentCreate(BaseModel):

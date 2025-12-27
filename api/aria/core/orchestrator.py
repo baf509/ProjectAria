@@ -85,7 +85,7 @@ class Orchestrator:
         raise RuntimeError("No LLM adapter available")
 
     async def process_message(
-        self, conversation_id: str, user_message: str
+        self, conversation_id: str, user_message: str, stream: bool = True
     ) -> AsyncIterator[StreamChunk]:
         """
         Process a user message and stream the response.
@@ -94,6 +94,7 @@ class Orchestrator:
         Args:
             conversation_id: ID of the conversation
             user_message: User's message content
+            stream: Whether to use streaming mode (can be overridden by agent config)
 
         Yields:
             StreamChunk objects for streaming response
@@ -174,11 +175,15 @@ class Orchestrator:
         usage = {}
 
         try:
+            # Determine streaming mode: agent config can force non-streaming, otherwise use request parameter
+            use_streaming = stream and not llm_config.get("force_non_streaming", False)
+
             async for chunk in adapter.stream(
                 messages,
                 tools=tools if tools else None,
                 temperature=llm_config.get("temperature", 0.7),
                 max_tokens=llm_config.get("max_tokens", 4096),
+                stream=use_streaming,
             ):
                 if chunk.type == "text":
                     assistant_content_parts.append(chunk.content)

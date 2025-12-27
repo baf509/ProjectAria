@@ -1943,7 +1943,7 @@ services:
   # Runs alongside mongod and syncs data via change streams.
   # https://www.mongodb.com/docs/atlas/atlas-search/
   mongot:
-    image: mongodb/mongodb-community-search:0.53.1
+    image: mongodb/mongodb-community-search:0.55.0
     container_name: aria-mongot
     hostname: mongot
     restart: unless-stopped
@@ -2350,7 +2350,7 @@ MongoDB 8.2 Community Edition brings Atlas Search and Vector Search to self-mana
 mongodb/mongodb-community-server:8.2.0-ubi9
 
 # MongoDB Community Search (mongot)
-mongodb/mongodb-community-search:0.53.1
+mongodb/mongodb-community-search:0.55.0
 ```
 
 **Creating Search Indexes:**

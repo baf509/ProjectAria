@@ -24,6 +24,55 @@ Format:
 
 ---
 
+## [2025-12-27] - Phase 5 - Fix Missing UI API Client
+
+### Fixed
+- Created missing `ui/src/lib/api-client.ts` file
+  - Implements complete API client for ARIA API
+  - Methods for health check, conversations, agents, memories, tools, MCP
+  - Streaming message support with Server-Sent Events
+  - TypeScript types integration
+- Resolves UI build errors ("Module not found: Can't resolve '@/lib/api-client'")
+
+### Added
+- Complete API client implementation with:
+  - Health check endpoint
+  - Conversation CRUD and streaming
+  - Agent management
+  - Memory operations and search
+  - Tool listing and execution
+  - MCP server management
+
+### Notes
+- This file was referenced in UI code but was missing from the repository
+- Phase 5 Web UI can now build successfully
+
+---
+
+## [2025-12-27] - Infrastructure - MongoDB Community Search Update
+
+### Changed
+- Updated MongoDB Community Search (mongot) to version 0.55.0 (from 0.53.1)
+  - `docker-compose.yml` - Updated mongot image version
+  - `SPECIFICATION.md` - Updated documentation to reflect latest version
+- Latest mongot version provides improved performance and bug fixes
+
+### Notes
+- Version 0.55.0 is the latest stable release of MongoDB Community Search
+- No breaking changes from 0.53.1 to 0.55.0
+- Existing mongot data volumes remain compatible
+
+---
+
+## [2025-12-27] - Phase 4 - OpenRouter Health Check Fix
+
+### Fixed
+- Added OpenRouter to health check endpoint (`api/aria/api/routes/health.py`)
+  - OpenRouter now included in `/api/v1/health/llm` status checks
+  - Completes OpenRouter integration (was missing from health check backends list)
+
+---
+
 ## [2025-12-25] - Phase 4 - OpenRouter Support
 
 ### Added
