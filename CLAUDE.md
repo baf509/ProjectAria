@@ -67,6 +67,23 @@ Adapters: `ollama.py`, `anthropic.py`, `openai.py`, `openrouter.py`
 
 Manager handles selection and fallback chain logic.
 
+#### OpenRouter Support
+
+OpenRouter provides unified access to multiple LLM providers through a single API:
+- Access Claude, GPT-4, Llama, and many others through one endpoint
+- Single API key for all providers (no need for separate Anthropic/OpenAI keys)
+- Cost-effective routing and automatic model selection
+- Useful when you want access to multiple models without managing separate API keys
+- Configure with `OPENROUTER_API_KEY` in `.env`
+
+**Example models available via OpenRouter:**
+- `anthropic/claude-3.5-sonnet`
+- `openai/gpt-4-turbo`
+- `meta-llama/llama-3.1-70b-instruct`
+- `google/gemini-pro`
+
+The OpenRouter adapter uses the OpenAI SDK internally (OpenRouter is OpenAI-compatible).
+
 ## MongoDB 8.2 + mongot Setup
 
 **Critical**: Uses MongoDB Community Server 8.2 with separate `mongot` service for search.
@@ -406,6 +423,22 @@ Supported API keys:
 - **RRF fusion**: Combines vector + lexical results with k=60
 - **Background extraction**: Memory extraction is async, doesn't block responses
 
+### Embedding Configuration (CRITICAL)
+
+**IMPORTANT**: The embedding model and dimensions are standardized and must not be changed after initial setup:
+
+- **Model**: `qwen3-embedding:0.6b` (NOT `qwen3:8b` or other models)
+- **Dimensions**: 1024 (standardized across all deployments)
+- **Index configuration**: MongoDB vector index must match exactly 1024 dimensions
+- **DO NOT change** embedding model or dimensions after creating memories - requires full database re-embedding
+- **Verify configuration**: Check `EMBEDDING_OLLAMA_MODEL` and `EMBEDDING_DIMENSION` in `.env`
+
+If you need to change embedding models:
+1. Export all existing memories
+2. Drop the `memories` collection
+3. Recreate vector search index with new dimensions
+4. Re-embed and re-import all memories
+
 ### Tool System Gotchas
 
 - **Tool execution timeout**: Default 30 seconds, configurable per tool
@@ -417,6 +450,9 @@ Supported API keys:
 
 See `PROJECT_STATUS.md` for current phase progress. As of last update:
 - **Phase 1-5**: Complete (Foundation, Memory, Tools, Cloud LLMs, Web UI)
+  - Web UI available at http://localhost:3000 (Next.js 14 application)
+  - Docker service: `ui` with hot-reload in development mode
+  - Features: Real-time chat, conversation management, streaming responses
 - **Phase 6+**: Not started (Computer Use CLI/GUI, Voice, Security, RAG, Automation)
 
 ## Testing
@@ -427,3 +463,320 @@ No formal test suite yet. Manual testing via:
 - Docker Compose integration testing
 
 Future phases will add proper test infrastructure.
+
+---
+
+## Current Debugging Status
+
+### Active Issue: Memory Extraction Not Working (2025-12-28)
+
+**Problem**: Memories are not being automatically extracted from conversations. User mentioned "My favorite color is forest green" in conversation `69506f0a52f86511fc969847` but no memory was created.
+
+**What We've Fixed So Far:**
+
+1. ✅ **Updated orchestrator to use BackgroundTasks** (instead of asyncio.create_task)
+   - File: `api/aria/core/orchestrator.py:280-309`
+   - Now properly schedules memory extraction as FastAPI background task
+   - Falls back to asyncio for non-HTTP contexts
+
+2. ✅ **Fixed manual extraction API to use agent's LLM config**
+   - File: `api/aria/api/routes/memories.py:232-251`
+   - Previously used hardcoded `ollama/llama3.2:latest`
+   - Now looks up agent's LLM backend and model
+
+3. ✅ **Updated conversations route to pass BackgroundTasks**
+   - File: `api/aria/api/routes/conversations.py:154-196`
+   - Passes background_tasks to orchestrator in both streaming/non-streaming
+
+**Current Issues Found (from logs):**
+
+```bash
+# Check logs with:
+sudo docker compose logs api --tail=50 | grep -i "memory\|extract\|error"
+```
+
+1. **PRIMARY: OpenRouter out of credits** ⚠️
+   ```
+   Error code: 402 - 'This request requires more credits... can only afford 1658 tokens'
+   ```
+   - Agent uses OpenRouter GLM-4.7 for extraction
+   - Account needs credits: https://openrouter.ai/settings/credits
+
+2. **SECONDARY: Ollama fallback fails**
+   ```
+   Memory extraction error: Ollama HTTP error: 404
+   ```
+   - When OpenRouter fails, tries to fall back to Ollama
+   - Model not found in Ollama container
+   - Container has: `qwen3-embedding:0.6b` (for embeddings)
+   - Missing: `llama3.2:latest` or similar chat model for extraction
+
+3. **TERTIARY: mongot connectivity issues** (intermittent)
+   ```
+   Error connecting to mongot:27028 :: Host not found
+   ```
+   - mongot container IS running: `sudo docker compose ps mongot` shows UP
+   - Network issue between containers (all on `aria-network`)
+   - May be DNS resolution delay
+
+**Environment Status:**
+
+- ✅ API container: Running and restarted with fixes
+- ✅ Ollama container: Running (`aria-ollama`)
+- ✅ mongot container: Running (`aria-mongot`)
+- ✅ Embedding model: `qwen3-embedding:0.6b` available in Ollama
+- ❌ Chat model for extraction: Missing in Ollama
+- ❌ OpenRouter credits: Insufficient
+
+**Agent Configuration:**
+
+```json
+{
+  "name": "ARIA",
+  "is_default": true,
+  "llm": {
+    "backend": "openrouter",
+    "model": "z-ai/glm-4.7"
+  },
+  "capabilities": {
+    "memory_enabled": true,
+    "tools_enabled": false
+  },
+  "memory_config": {
+    "auto_extract": true
+  }
+}
+```
+
+**Next Steps to Resolve:**
+
+Choose ONE of these options:
+
+**Option A: Add OpenRouter Credits** (Quickest)
+- Visit https://openrouter.ai/settings/credits
+- Add credits to account
+- Memory extraction will work immediately
+
+**Option B: Use Local Ollama for Extraction** (Free, recommended)
+```bash
+# Pull a chat model for extraction
+sudo docker exec aria-ollama ollama pull llama3.2:latest
+
+# Update ARIA agent to use Ollama as primary
+curl -X PUT http://localhost:8000/api/v1/agents/694fe8fcdfe230a293ce5f47 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "llm": {
+      "backend": "ollama",
+      "model": "llama3.2:latest",
+      "temperature": 0.7,
+      "max_tokens": 4096
+    },
+    "fallback_chain": [{
+      "backend": "openrouter",
+      "model": "z-ai/glm-4.7",
+      "conditions": {"on_error": true, "max_input_tokens": 100000}
+    }]
+  }'
+```
+
+**Option C: Fix mongot connectivity** (For search, separate issue)
+```bash
+# Restart containers to fix DNS
+sudo docker compose restart api mongot
+
+# Or recreate network
+sudo docker compose down
+sudo docker compose up -d
+```
+
+**Test After Fix:**
+
+```bash
+# Create test conversation
+CONV_ID=$(curl -s -X POST http://localhost:8000/api/v1/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Memory Test"}' | jq -r '.id')
+
+# Send message with memorable fact
+curl -X POST http://localhost:8000/api/v1/conversations/$CONV_ID/messages \
+  -H "Content-Type: application/json" \
+  -d '{"content":"My favorite color is purple","stream":false}'
+
+# Wait for background extraction
+sleep 10
+
+# Check if memory was created
+curl -s http://localhost:8000/api/v1/memories | jq '.[] | select(.content | contains("purple"))'
+
+# Check logs for success
+sudo docker compose logs api --tail=20 | grep "MEMORY EXTRACTION"
+# Should see: "Extracted N memories from conversation..."
+```
+
+**Files Modified During Debug Session:**
+
+- `api/aria/core/orchestrator.py` - Added BackgroundTasks support
+- `api/aria/api/routes/conversations.py` - Pass BackgroundTasks to orchestrator
+- `api/aria/api/routes/memories.py` - Use agent's LLM config for extraction
+- `CHANGELOG.md` - Documented fixes
+- `CLAUDE.md` - This debugging section
+
+---
+
+## Common Issues & Solutions
+
+### Embedding Dimension Mismatch
+
+**Error**: "Vector search failed" or "Index dimension mismatch"
+
+**Solution**: Ensure `EMBEDDING_DIMENSION=1024` in `.env` and MongoDB vector index uses 1024 dimensions
+
+```bash
+# Check your .env file
+grep EMBEDDING .env
+
+# Expected output:
+# EMBEDDING_PROVIDER=ollama
+# EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+# EMBEDDING_DIMENSION=1024
+
+# Verify MongoDB index
+docker exec -it aria-mongod mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
+use aria
+db.memories.getSearchIndexes()
+# Check that numDimensions is 1024
+```
+
+### mongot Not Connected
+
+**Error**: "Search indexes unavailable" or "$vectorSearch not supported"
+
+**Solution**: Verify mongot is running and connected to mongod
+
+```bash
+# Check mongot logs
+docker compose logs mongot
+
+# Verify mongod connection parameter
+docker compose exec mongod mongosh --eval "db.adminCommand({getParameter: 1, mongotHost: 1})"
+# Should show: { mongotHost: "mongot:27028", ok: 1 }
+
+# Check mongot health
+curl http://localhost:9946/metrics
+# Should return Prometheus metrics
+
+# If mongot is not connected, restart services
+docker compose restart mongod mongot
+```
+
+### Ollama Model Not Found
+
+**Error**: "Model qwen3-embedding:0.6b not found" or "Model not available"
+
+**Solution**: Pull the required models via Ollama
+
+```bash
+# Pull embedding model (required for memory system)
+ollama pull qwen3-embedding:0.6b
+
+# Pull LLM model (required for chat)
+ollama pull llama3.2:latest
+
+# Verify models are available
+ollama list | grep -E "qwen3-embedding|llama"
+
+# Expected output:
+# qwen3-embedding:0.6b    ...
+# llama3.2:latest         ...
+```
+
+### Web UI Not Loading
+
+**Error**: "Connection refused" or UI not accessible at localhost:3000
+
+**Solution**: Check if UI service is running
+
+```bash
+# Check UI container status
+docker compose ps ui
+
+# View UI logs
+docker compose logs ui
+
+# If not running, start it
+docker compose up -d ui
+
+# For development with hot-reload
+cd ui
+npm install
+npm run dev
+```
+
+### Memory Search Returns No Results
+
+**Error**: Search works but returns no results despite having memories
+
+**Solution**: Verify search indexes are created and active
+
+```bash
+# Connect to MongoDB
+docker exec -it aria-mongod mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
+
+# Switch to aria database
+use aria
+
+# Check if search indexes exist
+db.memories.getSearchIndexes()
+
+# If empty or missing, indexes weren't created
+# Re-run initialization
+docker compose up mongo-init
+
+# Wait 30 seconds for indexes to become active
+# Check status again
+db.memories.getSearchIndexes()
+```
+
+### API Connection Errors from CLI
+
+**Error**: "Connection refused" or "API not reachable"
+
+**Solution**: Verify API is running and accessible
+
+```bash
+# Check API health
+curl http://localhost:8000/api/v1/health
+
+# If connection refused, check API container
+docker compose ps api
+docker compose logs api
+
+# Restart API if needed
+docker compose restart api
+
+# For CLI, verify API URL configuration
+# Default is http://localhost:8000
+aria health
+```
+
+### Replica Set Not Initialized
+
+**Error**: "not master and slaveOk=false" or "no replset config has been received"
+
+**Solution**: Initialize MongoDB replica set
+
+```bash
+# Connect to MongoDB
+docker exec -it aria-mongod mongosh
+
+# Initialize replica set
+rs.initiate({
+  _id: "rs0",
+  members: [{ _id: 0, host: "mongod:27017" }]
+})
+
+# Verify status
+rs.status()
+# Should show: { ok: 1 }
+```

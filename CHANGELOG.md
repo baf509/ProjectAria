@@ -2,14 +2,14 @@
 
 All notable changes to ARIA will be documented in this file.
 
-Format: 
+Format:
 ```
 ## [Date] - Phase X - [Summary]
 
 ### Added
 - New features
 
-### Changed  
+### Changed
 - Changes to existing features
 
 ### Fixed
@@ -21,6 +21,40 @@ Format:
 ### Notes
 - Important notes for future work
 ```
+
+---
+
+## [2025-12-28] - Phase 2 - Fix Memory Extraction Background Tasks
+
+### Fixed
+- **Memory extraction now uses FastAPI BackgroundTasks instead of asyncio.create_task()**
+  - Orchestrator now accepts `background_tasks` parameter from API routes
+  - Proper lifecycle management for background memory extraction tasks
+  - Prevents memory extraction tasks from being cancelled prematurely
+  - Fallback to asyncio.create_task for non-HTTP contexts (CLI, tests)
+  - Location: `api/aria/core/orchestrator.py:280-309`
+
+- **Manual memory extraction API now uses agent's LLM configuration**
+  - Fixed `/api/v1/memories/extract/{conversation_id}` endpoint
+  - Previously used hardcoded defaults (ollama/llama3.2:latest)
+  - Now correctly looks up and uses the agent's configured LLM backend and model
+  - Ensures extraction works with OpenRouter, Anthropic, OpenAI, etc.
+  - Location: `api/aria/api/routes/memories.py:232-251`
+
+- **Message sending routes now pass BackgroundTasks to orchestrator**
+  - Updated `/api/v1/conversations/{id}/messages` endpoint
+  - Passes BackgroundTasks to orchestrator for proper memory extraction scheduling
+  - Works for both streaming and non-streaming modes
+  - Location: `api/aria/api/routes/conversations.py:154-196`
+
+### Changed
+- Added logging to memory extraction with `[MEMORY EXTRACTION]` prefix for easier debugging
+- Memory extraction errors now print to logs for troubleshooting
+
+### Notes
+- **Action Required**: Restart API container to apply these fixes
+- These fixes resolve the issue where memories were not being automatically extracted from conversations
+- Memory extraction will now work reliably with any LLM backend (Ollama, OpenRouter, Anthropic, OpenAI)
 
 ---
 

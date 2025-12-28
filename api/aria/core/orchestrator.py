@@ -16,6 +16,7 @@ from typing import AsyncIterator, Optional
 from bson import ObjectId
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from fastapi import BackgroundTasks
 
 from aria.llm.manager import llm_manager
 from aria.llm.base import StreamChunk, Tool, Message
@@ -85,7 +86,7 @@ class Orchestrator:
         raise RuntimeError("No LLM adapter available")
 
     async def process_message(
-        self, conversation_id: str, user_message: str, stream: bool = True
+        self, conversation_id: str, user_message: str, stream: bool = True, background_tasks: Optional[BackgroundTasks] = None
     ) -> AsyncIterator[StreamChunk]:
         """
         Process a user message and stream the response.
@@ -278,16 +279,31 @@ class Orchestrator:
 
         # 10. Queue memory extraction if enabled
         if agent.get("memory_config", {}).get("auto_extract", False):
-            # Note: In production, this should be a proper background task
-            # For now, we'll do it async without blocking
-            try:
-                import asyncio
-                asyncio.create_task(
-                    self.memory_extractor.extract_from_conversation(
-                        conversation_id,
-                        llm_backend=llm_config["backend"],
-                        llm_model=llm_config["model"],
+            if background_tasks:
+                # Use FastAPI BackgroundTasks for proper lifecycle management
+                async def run_extraction():
+                    try:
+                        count = await self.memory_extractor.extract_from_conversation(
+                            conversation_id,
+                            llm_backend=llm_config["backend"],
+                            llm_model=llm_config["model"],
+                        )
+                        print(f"[MEMORY EXTRACTION] Extracted {count} memories from conversation {conversation_id}")
+                    except Exception as e:
+                        print(f"[MEMORY EXTRACTION] Error: {e}")
+
+                background_tasks.add_task(run_extraction)
+            else:
+                # Fallback to asyncio.create_task if BackgroundTasks not available
+                # This can happen in non-HTTP contexts (e.g., CLI, tests)
+                try:
+                    import asyncio
+                    asyncio.create_task(
+                        self.memory_extractor.extract_from_conversation(
+                            conversation_id,
+                            llm_backend=llm_config["backend"],
+                            llm_model=llm_config["model"],
+                        )
                     )
-                )
-            except Exception as e:
-                print(f"Failed to queue memory extraction: {e}")
+                except Exception as e:
+                    print(f"Failed to queue memory extraction: {e}")

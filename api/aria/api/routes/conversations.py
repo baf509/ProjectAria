@@ -12,7 +12,7 @@ Related Spec Sections:
 import json
 from datetime import datetime
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from sse_starlette.sse import EventSourceResponse
 
@@ -155,6 +155,7 @@ async def delete_conversation(
 async def send_message(
     conversation_id: str,
     body: MessageRequest,
+    background_tasks: BackgroundTasks,
     orchestrator: Orchestrator = Depends(get_orchestrator),
 ):
     """Send a message and get the response (streaming or non-streaming)."""
@@ -164,7 +165,7 @@ async def send_message(
         async def event_generator():
             """Generate SSE events from orchestrator stream."""
             async for chunk in orchestrator.process_message(
-                conversation_id, body.content, stream=True
+                conversation_id, body.content, stream=True, background_tasks=background_tasks
             ):
                 yield {
                     "event": chunk.type,
@@ -179,7 +180,7 @@ async def send_message(
         usage = {}
 
         async for chunk in orchestrator.process_message(
-            conversation_id, body.content, stream=False
+            conversation_id, body.content, stream=False, background_tasks=background_tasks
         ):
             if chunk.type == "text":
                 content_parts.append(chunk.content)

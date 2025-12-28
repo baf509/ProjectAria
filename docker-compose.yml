@@ -33,6 +33,22 @@ services:
         condition: service_healthy
       mongot:
         condition: service_started
+      ollama:
+        condition: service_started
+    networks:
+      - aria-network
+
+  # =============================================================================
+  # Ollama (Local LLM Inference)
+  # =============================================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: aria-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
     networks:
       - aria-network
 
@@ -136,6 +152,7 @@ volumes:
   mongod-data:
   mongod-config:
   mongot-data:
+  ollama-data:
 
 networks:
   aria-network:

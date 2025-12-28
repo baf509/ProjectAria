@@ -24,16 +24,24 @@ class OllamaEmbeddings:
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.client = httpx.AsyncClient(timeout=60.0)
+        self.client = httpx.AsyncClient(timeout=120.0)
 
     async def embed(self, text: str) -> list[float]:
         """Generate embedding for text."""
-        response = await self.client.post(
-            f"{self.base_url}/api/embeddings",
-            json={"model": self.model, "prompt": text},
-        )
-        response.raise_for_status()
-        return response.json()["embedding"]
+        import sys
+        url = f"{self.base_url}/api/embeddings"
+        print(f"[EMBEDDING] Requesting embedding from {url} with model {self.model}", file=sys.stderr)
+        try:
+            response = await self.client.post(
+                url,
+                json={"model": self.model, "prompt": text},
+            )
+            response.raise_for_status()
+            print(f"[EMBEDDING] Success! Got embedding with {len(response.json()['embedding'])} dimensions", file=sys.stderr)
+            return response.json()["embedding"]
+        except Exception as e:
+            print(f"[EMBEDDING] ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            raise
 
     async def close(self):
         """Close HTTP client."""

@@ -16,6 +16,7 @@ from typing import Optional
 from bson import Binary, ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from aria.config import settings
 from aria.memory.embeddings import embedding_service
 
 

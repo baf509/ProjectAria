@@ -229,10 +229,25 @@ async def extract_memories(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Get agent's LLM configuration
+    agent = await db.agents.find_one(
+        {"_id": ObjectId(conversation["agent_id"])}
+    )
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    llm_config = agent.get("llm", {})
+    llm_backend = llm_config.get("backend", "ollama")
+    llm_model = llm_config.get("model", "llama3.2:latest")
+
     # Schedule extraction as background task
     async def run_extraction():
         extractor = MemoryExtractor(db)
-        count = await extractor.extract_from_conversation(conversation_id)
+        count = await extractor.extract_from_conversation(
+            conversation_id,
+            llm_backend=llm_backend,
+            llm_model=llm_model
+        )
         print(f"Extracted {count} memories from conversation {conversation_id}")
 
     background_tasks.add_task(run_extraction)
