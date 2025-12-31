@@ -15,7 +15,7 @@ services:
     environment:
       - MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
       - MONGODB_DATABASE=aria
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
@@ -45,8 +45,9 @@ services:
     image: ollama/ollama:latest
     container_name: aria-ollama
     restart: unless-stopped
-    ports:
-      - "11434:11434"
+    # Port exposed only within Docker network to avoid WSL2 port forwarding issues
+    # ports:
+    #   - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
     networks:
@@ -64,7 +65,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=http://172.29.164.210:8000
     depends_on:
       - api
     networks:
