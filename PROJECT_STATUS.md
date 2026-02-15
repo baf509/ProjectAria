@@ -246,8 +246,8 @@
 
 ### Memory Infrastructure
 - [x] Embedding service (`api/aria/memory/embeddings.py`)
-  - [x] Ollama embeddings (Qwen3-8b)
-  - [x] Voyage AI fallback
+  - [x] Local embeddings via sentence-transformers service (voyage-4-nano)
+  - [x] Voyage AI cloud fallback
   - [x] Batch embedding support
 - [x] Short-term memory (`api/aria/memory/short_term.py`)
   - [x] Current conversation context
@@ -327,7 +327,7 @@
 
 ### LLM Integration
 - [x] LLM adapter base class (`api/aria/llm/base.py`)
-- [x] Ollama adapter (`api/aria/llm/ollama.py`)
+- [x] llama.cpp adapter (`api/aria/llm/llamacpp.py`)
 - [x] LLM manager (`api/aria/llm/manager.py`)
 - [x] Streaming working
 
@@ -351,7 +351,7 @@
 - [ ] Test infrastructure setup
 - [ ] Health endpoint test
 - [ ] Conversation CRUD tests
-- [ ] Ollama adapter test (mocked)
+- [ ] llama.cpp adapter test (mocked)
 
 ---
 
@@ -365,7 +365,7 @@ docker compose up -d
 
 # 2. Can chat via CLI
 aria chat "Hello!"
-# Returns streaming response from Ollama
+# Returns streaming response from LLM
 
 # 3. Conversations persist
 aria conversations list
@@ -390,7 +390,7 @@ aria chat --conversation <id> "What did I say before?"
 - All core Phase 2 components implemented
 - Memory system fully integrated with orchestrator
 - Hybrid search (BM25 + Vector) implemented
-- Need to test with actual Ollama instance (embeddings + LLM)
+- Need to test with embedding service + LLM
 - MongoDB vector search indexes required for testing
 
 ---
@@ -414,7 +414,7 @@ api/aria/db/mongodb.py
 api/aria/db/models.py
 api/aria/llm/__init__.py
 api/aria/llm/base.py
-api/aria/llm/ollama.py
+api/aria/llm/llamacpp.py
 api/aria/llm/manager.py
 api/aria/core/__init__.py
 api/aria/core/orchestrator.py
@@ -532,7 +532,7 @@ To test Phase 4:
    - Create agent with OpenAI backend
 5. Test fallback chain:
    - Create agent with fallback_chain configured
-   - Disable local Ollama and verify fallback works
+   - Disable local llama.cpp and verify fallback works
 
 To start Phase 5 (Web UI):
 1. Set up Next.js project
@@ -547,7 +547,7 @@ To start Phase 5 (Web UI):
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Foundation (API, Ollama, Conversations) | COMPLETE |
+| 1 | Foundation (API, LLM, Conversations) | COMPLETE |
 | 2 | Memory System (Short-term, Long-term, Embeddings) | COMPLETE |
 | 3 | Tools & MCP (Built-in tools, MCP client) | COMPLETE |
 | 4 | Cloud LLM Adapters (Anthropic, OpenAI, OpenRouter, Fallback) | COMPLETE |

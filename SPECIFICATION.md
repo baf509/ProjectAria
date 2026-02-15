@@ -31,7 +31,7 @@ CODE PATTERNS:  Section 9 (conventions and patterns to follow)
 ARIA (Autonomous Reasoning & Intelligence Architecture) is a self-hosted AI agent platform that:
 
 - **Separates agent identity from LLM** - Memories, tools, and policies persist; LLMs are swappable
-- **Runs locally first** - Ollama for inference, MongoDB for storage, all on user's hardware
+- **Runs locally first** - llama.cpp (ROCm) for inference, MongoDB for storage, all on user's hardware
 - **Supports cloud fallback** - Anthropic/OpenAI/OpenRouter APIs when local models can't handle it
 - **Provides computer use** - Both CLI (shell, files) and GUI (screen control) capabilities
 - **Remembers everything** - Short-term context + long-term semantic memory
@@ -51,7 +51,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
 │ │  • aria-ui (Next.js)                        │                  │ │
 │ │  • mongodb (Atlas Local + Vector Search)    │                  │ │
 │ │  • aria-mcp-manager                         │                  │ │
-│ │  • aria-embeddings (qwen3-embedding)         │ LAN              │ │
+│ │  • aria-embeddings (voyage-4-nano)            │ LAN              │ │
 │ │  • tailscale                                │                  │ │
 │ └─────────────────────────────────────────────│──────────────────┘ │
 └───────────────────────────────────────────────│─────────────────────┘
@@ -60,7 +60,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
 ┌─────────────────────────────────────────────────────────────────────┐
 │ GPU Machine (On-Demand or Always On)                                │
 │ ┌─────────────────────────────────────────────────────────────────┐ │
-│ │  • Ollama (LLM inference)                                       │ │
+│ │  • llama.cpp (LLM inference, ROCm)                              │ │
 │ │  • Whisper (STT) - future                                       │ │
 │ │  • Piper (TTS) - future                                         │ │
 │ └─────────────────────────────────────────────────────────────────┘ │
@@ -103,7 +103,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
 ┌─────────────────────────────────▼───────────────────────────────────┐
 │                       LLM ADAPTER LAYER                              │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
-│  │   Ollama    │  │  Anthropic  │  │   OpenAI    │                  │
+│  │  llama.cpp  │  │  Anthropic  │  │   OpenAI    │                  │
 │  │   Adapter   │  │   Adapter   │  │   Adapter   │                  │
 │  └─────────────┘  └─────────────┘  └─────────────┘                  │
 └─────────────────────────────────┬───────────────────────────────────┘
@@ -135,7 +135,7 @@ User Message
      ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 2. LLM CALL (streaming)                                              │
-│    ├─ Select backend (local Ollama vs cloud API)                    │
+│    ├─ Select backend (local llama.cpp vs cloud API)                 │
 │    ├─ Stream response chunks                                        │
 │    └─ Handle tool calls if any                                      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -385,27 +385,27 @@ class LongTermMemory:
         return [r["memory"] for r in sorted_results]
 ```
 
-### 3.4 Embedding Service (qwen3-embedding)
+### 3.4 Embedding Service (voyage-4-nano)
 
 ```python
 class EmbeddingService:
     """
-    Local embedding generation using qwen3-embedding via Ollama.
-    Can fall back to Voyage AI for quality-critical embeddings.
+    Local embedding generation using voyageai/voyage-4-nano via sentence-transformers microservice.
+    Can fall back to Voyage AI cloud API for availability.
     """
 
     def __init__(self, config: EmbeddingConfig):
-        self.primary = OllamaEmbeddings(
-            base_url=config.ollama_url,
-            model="qwen3-embedding:0.6b"
+        self.primary = LocalEmbeddings(
+            base_url=config.embedding_url,
+            model=config.embedding_model
         )
         self.fallback = VoyageEmbeddings(
             api_key=config.voyage_api_key,
             model="voyage-3-large"
         ) if config.voyage_api_key else None
 
-        self.dimension = 1024  # qwen3-embedding dimension
-    
+        self.dimension = 1024  # MRL-truncated dimension
+
     async def embed(
         self,
         text: str,
@@ -416,7 +416,7 @@ class EmbeddingService:
         """
         if use_fallback and self.fallback:
             return await self.fallback.embed(text)
-        
+
         try:
             return await self.primary.embed(text)
         except Exception as e:
@@ -424,7 +424,7 @@ class EmbeddingService:
                 logger.warning(f"Local embedding failed, using fallback: {e}")
                 return await self.fallback.embed(text)
             raise
-    
+
     async def embed_batch(
         self,
         texts: list[str],
@@ -443,26 +443,26 @@ class EmbeddingService:
         return results
 
 
-class OllamaEmbeddings:
+class LocalEmbeddings:
     """
-    Embedding generation via Ollama API.
+    Embedding generation via local sentence-transformers microservice (OpenAI-compatible API).
     """
-    
+
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.client = httpx.AsyncClient(timeout=60.0)
-    
+
     async def embed(self, text: str) -> list[float]:
         response = await self.client.post(
-            f"{self.base_url}/api/embeddings",
+            f"{self.base_url}/v1/embeddings",
             json={
                 "model": self.model,
-                "prompt": text
+                "input": text
             }
         )
         response.raise_for_status()
-        return response.json()["embedding"]
+        return response.json()["data"][0]["embedding"]
 ```
 
 ### 3.5 MongoDB Indexes for Memory
@@ -477,7 +477,7 @@ class OllamaEmbeddings:
       {
         "type": "vector",
         "path": "embedding",
-        "numDimensions": 1024,  // qwen3-embedding dimension
+        "numDimensions": 1024,  // voyage-4-nano MRL-truncated dimension
         "similarity": "cosine"
       },
       {
@@ -550,7 +550,7 @@ Collections:
   
   // LLM config at creation (for reproducibility)
   llm_config: {
-    backend: String,               // "ollama" | "anthropic" | "openai"
+    backend: String,               // "llamacpp" | "anthropic" | "openai" | "openrouter"
     model: String,
     temperature: Number
   },
@@ -614,8 +614,8 @@ db.conversations.createIndex({ "messages.created_at": 1 })
   content_type: String,            // "fact" | "preference" | "event" | "skill" | "document"
   
   // Embeddings
-  embedding: [Number],             // Dense vector (1024 dims for qwen3-embedding)
-  embedding_model: String,         // "qwen3-embedding:0.6b" | "voyage-3-large"
+  embedding: [Number],             // Dense vector (1024 dims via MRL truncation)
+  embedding_model: String,         // "voyageai/voyage-4-nano" | "voyage-3-large"
   
   // Source tracking
   source: {
@@ -669,7 +669,7 @@ db.memories.createIndex({ content_type: 1 })
   
   // LLM Configuration
   llm: {
-    backend: String,               // "ollama" | "anthropic" | "openai"
+    backend: String,               // "llamacpp" | "anthropic" | "openai" | "openrouter"
     model: String,
     temperature: Number,
     max_tokens: Number
@@ -774,16 +774,16 @@ db.tools.createIndex({ type: 1, status: 1 })
   
   // LLM backends
   llm: {
-    ollama_url: String,            // "http://192.168.1.100:11434"
+    llamacpp_url: String,          // "http://192.168.1.100:8080"
     anthropic_api_key: String,     // Encrypted
     openai_api_key: String,        // Encrypted
     default_backend: String
   },
-  
+
   // Embedding
   embedding: {
-    provider: String,              // "ollama" | "voyage"
-    ollama_model: String,          // "qwen3-embedding:0.6b"
+    url: String,                   // "http://embeddings:8001"
+    model: String,                 // "voyageai/voyage-4-nano"
     voyage_api_key: String         // Encrypted
   },
   
@@ -946,7 +946,7 @@ class LLMAdapter(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Backend name, e.g., 'ollama', 'anthropic'."""
+        """Backend name, e.g., 'llamacpp', 'anthropic'."""
         pass
     
     @abstractmethod
@@ -988,23 +988,24 @@ class LLMAdapter(ABC):
         return False
 ```
 
-### 6.2 Ollama Implementation
+### 6.2 llama.cpp Implementation
 
 ```python
-class OllamaAdapter(LLMAdapter):
+class LlamaCppAdapter(LLMAdapter):
     """
-    Adapter for Ollama local models.
+    Adapter for llama.cpp local models (ROCm backend).
+    Uses the OpenAI-compatible API exposed by llama.cpp server.
     """
-    
+
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.client = httpx.AsyncClient(timeout=120.0)
-    
+
     @property
     def name(self) -> str:
-        return "ollama"
-    
+        return "llamacpp"
+
     async def stream(
         self,
         messages: list[Message],
@@ -1012,21 +1013,20 @@ class OllamaAdapter(LLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 4096
     ) -> AsyncIterator[StreamChunk]:
-        
-        # Convert messages to Ollama format
-        ollama_messages = []
+
+        # Convert messages to OpenAI-compatible format
+        oai_messages = []
         for msg in messages:
-            ollama_msg = {"role": msg.role, "content": msg.content}
+            oai_msg = {"role": msg.role, "content": msg.content}
             if msg.tool_call_id:
-                # Tool result
-                ollama_msg["role"] = "tool"
-                ollama_msg["tool_call_id"] = msg.tool_call_id
-            ollama_messages.append(ollama_msg)
-        
-        # Convert tools to Ollama format
-        ollama_tools = None
+                oai_msg["role"] = "tool"
+                oai_msg["tool_call_id"] = msg.tool_call_id
+            oai_messages.append(oai_msg)
+
+        # Convert tools to OpenAI-compatible format
+        oai_tools = None
         if tools:
-            ollama_tools = [
+            oai_tools = [
                 {
                     "type": "function",
                     "function": {
@@ -1037,64 +1037,57 @@ class OllamaAdapter(LLMAdapter):
                 }
                 for t in tools
             ]
-        
+
         request_body = {
             "model": self.model,
-            "messages": ollama_messages,
+            "messages": oai_messages,
             "stream": True,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens
-            }
+            "temperature": temperature,
+            "max_tokens": max_tokens
         }
-        
-        if ollama_tools:
-            request_body["tools"] = ollama_tools
-        
+
+        if oai_tools:
+            request_body["tools"] = oai_tools
+
         async with self.client.stream(
             "POST",
-            f"{self.base_url}/api/chat",
+            f"{self.base_url}/v1/chat/completions",
             json=request_body
         ) as response:
             response.raise_for_status()
-            
+
             async for line in response.aiter_lines():
-                if not line:
+                if not line or not line.startswith("data: "):
                     continue
-                
-                data = json.loads(line)
-                
-                if data.get("done"):
-                    yield StreamChunk(
-                        type="done",
-                        usage={
-                            "input_tokens": data.get("prompt_eval_count", 0),
-                            "output_tokens": data.get("eval_count", 0)
-                        }
-                    )
+
+                data_str = line[6:]  # Strip "data: " prefix
+                if data_str == "[DONE]":
+                    yield StreamChunk(type="done", usage={})
                     return
-                
-                message = data.get("message", {})
-                
+
+                data = json.loads(data_str)
+                delta = data["choices"][0].get("delta", {})
+
                 # Text content
-                if message.get("content"):
+                if delta.get("content"):
                     yield StreamChunk(
                         type="text",
-                        content=message["content"]
+                        content=delta["content"]
                     )
-                
+
                 # Tool calls
-                if message.get("tool_calls"):
-                    for tc in message["tool_calls"]:
-                        yield StreamChunk(
-                            type="tool_call",
-                            tool_call=ToolCall(
-                                id=tc.get("id", str(uuid.uuid4())),
-                                name=tc["function"]["name"],
-                                arguments=json.loads(tc["function"]["arguments"])
+                if delta.get("tool_calls"):
+                    for tc in delta["tool_calls"]:
+                        if tc.get("function", {}).get("name"):
+                            yield StreamChunk(
+                                type="tool_call",
+                                tool_call=ToolCall(
+                                    id=tc.get("id", str(uuid.uuid4())),
+                                    name=tc["function"]["name"],
+                                    arguments=json.loads(tc["function"]["arguments"])
+                                )
                             )
-                        )
-    
+
     async def complete(
         self,
         messages: list[Message],
@@ -1102,11 +1095,11 @@ class OllamaAdapter(LLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 4096
     ) -> tuple[str, list[ToolCall], dict]:
-        
+
         content_parts = []
         tool_calls = []
         usage = {}
-        
+
         async for chunk in self.stream(messages, tools, temperature, max_tokens):
             if chunk.type == "text":
                 content_parts.append(chunk.content)
@@ -1114,7 +1107,7 @@ class OllamaAdapter(LLMAdapter):
                 tool_calls.append(chunk.tool_call)
             elif chunk.type == "done":
                 usage = chunk.usage
-        
+
         return "".join(content_parts), tool_calls, usage
 ```
 
@@ -1279,7 +1272,7 @@ aria/
 │       ├── llm/                   # LLM adapters
 │       │   ├── __init__.py
 │       │   ├── base.py            # LLMAdapter ABC
-│       │   ├── ollama.py
+│       │   ├── llamacpp.py
 │       │   ├── anthropic.py
 │       │   ├── openai.py
 │       │   └── manager.py         # Backend selection
@@ -1325,10 +1318,9 @@ aria/
 │       ├── __init__.py
 │       └── main.py
 │
-├── mcp-servers/                   # Custom MCP servers (Phase 3+)
-│   └── embeddings/                # qwen3-embedding server
-│       ├── Dockerfile
-│       └── server.py
+├── embeddings/                    # Embedding microservice (sentence-transformers)
+│   ├── Dockerfile
+│   └── server.py
 │
 └── scripts/
     ├── setup.sh
@@ -1344,12 +1336,12 @@ Each phase produces a **deployable, usable** version of ARIA.
 
 ### Phase 1: Foundation (Weeks 1-4)
 
-**Goal:** Working chat with Ollama, persistent conversations, CLI client.
+**Goal:** Working chat with llama.cpp, persistent conversations, CLI client.
 
 **Deliverables:**
 - [ ] Docker Compose with MongoDB + API service
 - [ ] FastAPI with health, conversations, agents endpoints
-- [ ] Ollama adapter (streaming)
+- [ ] llama.cpp adapter (streaming)
 - [ ] Basic conversation CRUD
 - [ ] CLI client for chatting
 - [ ] Default agent configuration
@@ -1366,7 +1358,7 @@ docker compose up -d
 
 # Chat via CLI
 aria chat "Hello, ARIA!"
-# Response streams from Ollama
+# Response streams from llama.cpp
 
 # List conversations
 aria conversations list
@@ -1384,7 +1376,7 @@ api/aria/api/routes/conversations.py
 api/aria/api/routes/agents.py
 api/aria/core/orchestrator.py
 api/aria/llm/base.py
-api/aria/llm/ollama.py
+api/aria/llm/llamacpp.py
 api/aria/llm/manager.py
 api/aria/db/mongodb.py
 api/aria/db/models.py
@@ -1402,7 +1394,7 @@ PROJECT_STATUS.md
 **Deliverables:**
 - [ ] Short-term memory (recent conversation context)
 - [ ] Long-term memory with hybrid search (BM25 + Vector)
-- [ ] qwen3-embedding service (1024-dim)
+- [ ] Embedding microservice with voyageai/voyage-4-nano (1024-dim via MRL)
 - [ ] Memory extraction pipeline (async background)
 - [ ] Context builder with memory injection
 - [ ] Memory CRUD endpoints
@@ -1433,7 +1425,7 @@ api/aria/memory/extraction.py
 api/aria/memory/embeddings.py
 api/aria/core/context.py
 api/aria/api/routes/memories.py
-mcp-servers/embeddings/server.py
+embeddings/server.py
 scripts/init-mongo.js  # Add vector/text indexes
 ```
 
@@ -1496,7 +1488,7 @@ api/aria/api/routes/tools.py
 
 **What you can do after Phase 4:**
 - Use Claude for complex reasoning
-- Automatic fallback when local model can't handle it
+- Automatic fallback when local llama.cpp model can't handle it
 - Cost tracking for API usage
 
 **Definition of Done:**
@@ -1797,8 +1789,8 @@ async def test_create_conversation(client: AsyncClient, db):
 MONGODB_URI=mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Ollama (local LLM inference)
-OLLAMA_URL=http://localhost:11434
+# llama.cpp (local LLM inference, ROCm)
+LLAMACPP_URL=http://localhost:8080
 
 # Cloud LLMs (optional - for fallback)
 ANTHROPIC_API_KEY=
@@ -1806,10 +1798,10 @@ OPENAI_API_KEY=
 OPENROUTER_API_KEY=
 
 # Embeddings
-# Primary: qwen3-embedding via Ollama (1024 dimensions)
-# Fallback: Voyage AI (if configured)
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+# Primary: voyageai/voyage-4-nano via local sentence-transformers microservice (1024 dimensions via MRL)
+# Fallback: Voyage AI cloud API (if configured)
+EMBEDDING_URL=http://embeddings:8001
+EMBEDDING_MODEL=voyageai/voyage-4-nano
 EMBEDDING_DIMENSION=1024
 VOYAGE_API_KEY=
 
@@ -1833,16 +1825,16 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0"
     mongodb_database: str = "aria"
     
-    # Ollama
-    ollama_url: str = "http://localhost:11434"
-    
+    # llama.cpp (ROCm)
+    llamacpp_url: str = "http://localhost:8080"
+
     # Cloud LLMs
     anthropic_api_key: str = ""
     openai_api_key: str = ""
-    
+
     # Embeddings
-    embedding_provider: str = "ollama"
-    embedding_ollama_model: str = "qwen3-embedding:0.6b"
+    embedding_url: str = "http://embeddings:8001"
+    embedding_model: str = "voyageai/voyage-4-nano"
     embedding_dimension: int = 1024
     voyage_api_key: str = ""
     
@@ -1884,7 +1876,9 @@ services:
     environment:
       - MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
       - MONGODB_DATABASE=aria
-      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - LLAMACPP_URL=${LLAMACPP_URL:-http://host.docker.internal:8080}
+      - EMBEDDING_URL=${EMBEDDING_URL:-http://embeddings:8001}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-voyageai/voyage-4-nano}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - VOYAGE_API_KEY=${VOYAGE_API_KEY:-}
@@ -2087,7 +2081,7 @@ print("Created tool indexes");
 
 try {
   // Vector Search Index for memories
-  // qwen3-embedding produces 1024-dimensional embeddings
+  // voyageai/voyage-4-nano produces 1024-dimensional embeddings via MRL truncation
   db.memories.createSearchIndex({
     name: "memory_vector_index",
     type: "vectorSearch",
@@ -2171,8 +2165,8 @@ When you learn something new about the user (preferences, facts, context), it wi
 
 Be helpful, accurate, and personable. Use your memory to provide continuity across conversations.`,
     llm: {
-      backend: "ollama",
-      model: "llama3.2:latest",
+      backend: "llamacpp",
+      model: "llama3.2",
       temperature: 0.7,
       max_tokens: 4096
     },
@@ -2215,19 +2209,19 @@ if (!settings) {
   db.settings.insertOne({
     _id: "global",
     llm: {
-      ollama_url: "http://host.docker.internal:11434",
+      llamacpp_url: "http://host.docker.internal:8080",
       anthropic_api_key: "",
       openai_api_key: "",
-      default_backend: "ollama"
+      default_backend: "llamacpp"
     },
     embedding: {
-      provider: "ollama",
-      ollama_model: "qwen3:8b",
+      url: "http://embeddings:8001",
+      model: "voyageai/voyage-4-nano",
       voyage_api_key: ""
     },
     memory: {
       auto_extract: true,
-      extraction_model: "ollama/llama3.2:latest",
+      extraction_model: "llamacpp/llama3.2",
       importance_threshold: 0.5
     },
     ui: {
@@ -2364,7 +2358,7 @@ db.memories.createSearchIndex({
       {
         type: "vector",
         path: "embedding",
-        numDimensions: 1024,  // qwen3-embedding dimension
+        numDimensions: 1024,  // voyage-4-nano MRL-truncated dimension
         similarity: "cosine"
       },
       { type: "filter", path: "status" },

@@ -72,8 +72,8 @@ class MemoryExtractor:
         self,
         conversation_id: str,
         batch_size: int = 10,
-        llm_backend: str = "ollama",
-        llm_model: str = "llama3.2:latest",
+        llm_backend: str = "llamacpp",
+        llm_model: str = "default",
     ) -> int:
         """
         Extract memories from unprocessed messages in a conversation.
@@ -209,8 +209,8 @@ class MemoryExtractor:
     async def extract_from_text(
         self,
         text: str,
-        llm_backend: str = "ollama",
-        llm_model: str = "llama3.2:latest",
+        llm_backend: str = "llamacpp",
+        llm_model: str = "default",
     ) -> list[dict]:
         """
         Extract memories from arbitrary text.

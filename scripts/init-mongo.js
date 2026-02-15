@@ -73,7 +73,7 @@ print("Created tool indexes");
 
 try {
   // Vector Search Index for memories
-  // qwen3-embedding:0.6b produces 1024-dimensional embeddings
+  // voyageai/voyage-4-nano produces 1024-dimensional embeddings (MRL truncation)
   db.memories.createSearchIndex({
     name: "memory_vector_index",
     type: "vectorSearch",
@@ -157,15 +157,15 @@ When you learn something new about the user (preferences, facts, context), it wi
 
 Be helpful, accurate, and personable. Use your memory to provide continuity across conversations.`,
     llm: {
-      backend: "ollama",
-      model: "qwen3:8b",
+      backend: "llamacpp",
+      model: "default",
       temperature: 0.7,
       max_tokens: 4096
     },
     fallback_chain: [
       {
-        backend: "anthropic",
-        model: "claude-sonnet-4-5-20250929",
+        backend: "openrouter",
+        model: "anthropic/claude-3.5-sonnet",
         conditions: {
           on_error: true,
           on_context_overflow: true,
@@ -201,19 +201,20 @@ if (!settings) {
   db.settings.insertOne({
     _id: "global",
     llm: {
-      ollama_url: "http://host.docker.internal:11434",
+      llamacpp_url: "http://llamacpp:8080/v1",
       anthropic_api_key: "",
       openai_api_key: "",
-      default_backend: "ollama"
+      openrouter_api_key: "",
+      default_backend: "llamacpp"
     },
     embedding: {
-      provider: "ollama",
-      ollama_model: "qwen3:8b",
+      url: "http://embeddings:8001/v1",
+      model: "voyageai/voyage-4-nano",
       voyage_api_key: ""
     },
     memory: {
       auto_extract: true,
-      extraction_model: "ollama/llama3.2:latest",
+      extraction_model: "llamacpp/default",
       importance_threshold: 0.5
     },
     ui: {

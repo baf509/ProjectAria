@@ -9,7 +9,6 @@ Related Spec Sections:
 """
 
 from aria.llm.base import LLMAdapter
-from aria.llm.ollama import OllamaAdapter
 from aria.config import settings
 import logging
 
@@ -27,7 +26,7 @@ class LLMManager:
         Get or create an LLM adapter.
 
         Args:
-            backend: Backend name ("ollama", "anthropic", "openai", "openrouter")
+            backend: Backend name ("llamacpp", "anthropic", "openai", "openrouter")
             model: Model name
 
         Returns:
@@ -39,13 +38,7 @@ class LLMManager:
         key = f"{backend}:{model}"
 
         if key not in self.adapters:
-            if backend == "ollama":
-                self.adapters[key] = OllamaAdapter(
-                    base_url=settings.ollama_url, model=model
-                )
-                logger.info(f"Created Ollama adapter for model: {model}")
-
-            elif backend == "llamacpp":
+            if backend == "llamacpp":
                 try:
                     from aria.llm.llamacpp import LlamaCppAdapter
                     self.adapters[key] = LlamaCppAdapter(
@@ -117,7 +110,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: ollama, llamacpp, anthropic, openai, openrouter"
+                    f"Supported: llamacpp, anthropic, openai, openrouter"
                 )
 
         return self.adapters[key]
@@ -129,10 +122,7 @@ class LLMManager:
         Returns:
             (is_available, reason)
         """
-        if backend == "ollama":
-            return True, "Ollama is always available (local)"
-
-        elif backend == "llamacpp":
+        if backend == "llamacpp":
             try:
                 import openai
                 return True, "llama.cpp is available (local)"

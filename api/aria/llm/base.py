@@ -74,7 +74,7 @@ class LLMAdapter(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Backend name, e.g., 'ollama', 'anthropic'."""
+        """Backend name, e.g., 'llamacpp', 'anthropic'."""
         pass
 
     @abstractmethod

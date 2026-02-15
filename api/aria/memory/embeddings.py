@@ -2,10 +2,10 @@
 ARIA - Embedding Service
 
 Phase: 2
-Purpose: Generate embeddings using Qwen3-8b via Ollama (with Voyage AI fallback)
+Purpose: Generate embeddings via local sentence-transformers service (with Voyage AI cloud fallback)
 
 Related Spec Sections:
-- Section 3.4: Embedding Service (Qwen3-8b)
+- Section 3.4: Embedding Service
 """
 
 import asyncio
@@ -16,9 +16,9 @@ import httpx
 from aria.config import settings
 
 
-class OllamaEmbeddings:
+class HttpEmbeddings:
     """
-    Embedding generation via Ollama API.
+    Embedding generation via an OpenAI-compatible /v1/embeddings endpoint.
     """
 
     def __init__(self, base_url: str, model: str):
@@ -29,16 +29,18 @@ class OllamaEmbeddings:
     async def embed(self, text: str) -> list[float]:
         """Generate embedding for text."""
         import sys
-        url = f"{self.base_url}/api/embeddings"
+        url = f"{self.base_url}/embeddings"
         print(f"[EMBEDDING] Requesting embedding from {url} with model {self.model}", file=sys.stderr)
         try:
             response = await self.client.post(
                 url,
-                json={"model": self.model, "prompt": text},
+                json={"input": text, "model": self.model},
             )
             response.raise_for_status()
-            print(f"[EMBEDDING] Success! Got embedding with {len(response.json()['embedding'])} dimensions", file=sys.stderr)
-            return response.json()["embedding"]
+            data = response.json()
+            embedding = data["data"][0]["embedding"]
+            print(f"[EMBEDDING] Success! Got embedding with {len(embedding)} dimensions", file=sys.stderr)
+            return embedding
         except Exception as e:
             print(f"[EMBEDDING] ERROR: {type(e).__name__}: {e}", file=sys.stderr)
             raise
@@ -50,7 +52,7 @@ class OllamaEmbeddings:
 
 class VoyageEmbeddings:
     """
-    Embedding generation via Voyage AI API.
+    Embedding generation via Voyage AI cloud API.
     """
 
     def __init__(self, api_key: str, model: str = "voyage-3-large"):
@@ -78,14 +80,14 @@ class VoyageEmbeddings:
 
 class EmbeddingService:
     """
-    Local embedding generation using Qwen3-8b via Ollama.
-    Can fall back to Voyage AI for quality-critical embeddings.
+    Embedding generation using a local sentence-transformers service.
+    Can fall back to Voyage AI cloud API.
     """
 
     def __init__(self):
-        self.primary = OllamaEmbeddings(
-            base_url=settings.ollama_url,
-            model=settings.embedding_ollama_model,
+        self.primary = HttpEmbeddings(
+            base_url=settings.embedding_url,
+            model=settings.embedding_model,
         )
         self.fallback = (
             VoyageEmbeddings(

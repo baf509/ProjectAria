@@ -11,7 +11,7 @@ Complete guide to setting up and running ARIA on your machine.
 | **ARIA API** | FastAPI backend — chat, memory, tools | 8000 |
 | **MongoDB** (mongod) | Data storage — conversations, memories, agents | 27017 |
 | **MongoDB Search** (mongot) | Vector + text search engine | 27028 |
-| **Ollama** | Local LLM inference + embeddings | 11434 |
+| **Embeddings** | voyage-4-nano embeddings (CPU, sentence-transformers) | 8001 |
 | **llama.cpp** (optional) | Local LLM with ROCm GPU acceleration | 8080 |
 | **Web UI** | Next.js chat interface | 3000 |
 
@@ -51,12 +51,9 @@ Edit `.env` with your settings:
 MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Ollama (defaults work if using the bundled container)
-OLLAMA_URL=http://ollama:11434
-
-# Embeddings (defaults work)
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+# Embeddings (defaults work — local sentence-transformers service)
+EMBEDDING_URL=http://embeddings:8001/v1
+EMBEDDING_MODEL=voyageai/voyage-4-nano
 EMBEDDING_DIMENSION=1024
 
 # === Optional: llama.cpp with ROCm ===
@@ -109,7 +106,7 @@ Then update `.env`:
 LLAMACPP_MODEL=/models/llama-2-7b-chat.Q4_K_M.gguf
 ```
 
-If you're only using Ollama or cloud LLMs, skip this step.
+If you're only using cloud LLMs, skip this step.
 
 ---
 
@@ -126,8 +123,9 @@ docker compose logs -f
 
 **First run will take a few minutes** — Docker needs to:
 - Build the API image
+- Build the embedding service image (downloads the voyage-4-nano model)
 - Build the llama.cpp ROCm image (downloads ~450MB of pre-built binaries)
-- Pull MongoDB and Ollama images
+- Pull MongoDB images
 - Initialize the replica set and search indexes
 
 Check that services are healthy:
@@ -142,7 +140,7 @@ NAME              STATUS
 aria-api          running
 aria-mongod       running (healthy)
 aria-mongot       running
-aria-ollama       running
+aria-embeddings   running
 aria-llamacpp     running        # only if using llama.cpp
 aria-ui           running
 aria-mongo-init   exited (0)     # one-time setup, expected to exit
@@ -150,24 +148,7 @@ aria-mongo-init   exited (0)     # one-time setup, expected to exit
 
 ---
 
-## Step 4: Pull Ollama Models
-
-The Ollama container needs models for chat and embeddings:
-
-```bash
-# Pull the embedding model (required for memory system)
-docker exec aria-ollama ollama pull qwen3-embedding:0.6b
-
-# Pull a chat model (needed if using Ollama as your LLM backend)
-docker exec aria-ollama ollama pull llama3.2:latest
-
-# Verify models are available
-docker exec aria-ollama ollama list
-```
-
----
-
-## Step 5: Verify the Installation
+## Step 4: Verify the Installation
 
 ```bash
 # Check API health
@@ -179,6 +160,9 @@ curl http://localhost:8000/api/v1/health
 # Check LLM backends
 curl http://localhost:8000/api/v1/health/llm
 
+# Check embedding service
+curl http://localhost:8001/health
+
 # Check llama.cpp is serving (if using)
 curl http://localhost:8080/health
 ```
@@ -189,7 +173,7 @@ Open the API docs: **http://localhost:8000/docs**
 
 ---
 
-## Step 6: Configure Your Agent
+## Step 5: Configure Your Agent
 
 ARIA creates a default agent on first run. To switch it to use llama.cpp:
 
@@ -208,30 +192,16 @@ curl -X PUT http://localhost:8000/api/v1/agents/YOUR_AGENT_ID \
       "max_tokens": 4096
     },
     "fallback_chain": [{
-      "backend": "ollama",
-      "model": "llama3.2:latest",
+      "backend": "openrouter",
+      "model": "anthropic/claude-3.5-sonnet",
       "conditions": {"on_error": true}
     }]
   }'
 ```
 
-Or to use Ollama:
-```bash
-curl -X PUT http://localhost:8000/api/v1/agents/YOUR_AGENT_ID \
-  -H "Content-Type: application/json" \
-  -d '{
-    "llm": {
-      "backend": "ollama",
-      "model": "llama3.2:latest",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    }
-  }'
-```
-
 ---
 
-## Step 7: Start Chatting
+## Step 6: Start Chatting
 
 ### Web UI
 
@@ -273,7 +243,7 @@ curl -N -X POST "http://localhost:8000/api/v1/conversations/$CONV_ID/messages" \
 
 ---
 
-## Step 8: Desktop Widget (Optional)
+## Step 7: Desktop Widget (Optional)
 
 The desktop widget is a Tauri app that lives in your system tray and opens with `Ctrl+Space`.
 
@@ -321,6 +291,7 @@ docker compose restart api
 # View logs
 docker compose logs -f api          # API logs
 docker compose logs -f llamacpp     # llama.cpp logs
+docker compose logs -f embeddings   # Embedding service logs
 docker compose logs -f mongod       # MongoDB logs
 ```
 
@@ -331,6 +302,7 @@ docker compose logs -f mongod       # MongoDB logs
 | Web UI | http://localhost:3000 | Chat interface |
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Swagger/OpenAPI |
+| Embeddings | http://localhost:8001 | OpenAI-compatible embedding API |
 | llama.cpp | http://localhost:8080 | OpenAI-compatible API |
 
 ### Useful API Endpoints
@@ -436,15 +408,19 @@ groups
 # Should include: video render
 ```
 
-### Ollama model not found
+### Embedding service issues
 
 ```bash
-# List available models
-docker exec aria-ollama ollama list
+# Check embedding service health
+curl http://localhost:8001/health
 
-# Pull missing models
-docker exec aria-ollama ollama pull qwen3-embedding:0.6b
-docker exec aria-ollama ollama pull llama3.2:latest
+# Check logs
+docker compose logs embeddings
+
+# Test embedding generation
+curl http://localhost:8001/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input":"test","model":"voyageai/voyage-4-nano"}'
 ```
 
 ### Memory search returns nothing

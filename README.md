@@ -7,10 +7,11 @@ ARIA is a self-hosted AI assistant that remembers your conversations, uses tools
 ## Features
 
 - **Long-term memory** — Hybrid search (vector + BM25) remembers facts and preferences across conversations
-- **Any LLM backend** — Ollama, llama.cpp (ROCm), Anthropic, OpenAI, OpenRouter — with automatic fallback
+- **Any LLM backend** — llama.cpp (ROCm), Anthropic, OpenAI, OpenRouter — with automatic fallback
 - **Multiple interfaces** — Web UI, desktop widget (Tauri), CLI, and REST API
 - **Tool use & MCP** — Built-in filesystem/shell/web tools plus MCP server integration
 - **Local-first** — MongoDB 8.2 + mongot for vector search, no Atlas subscription needed
+- **Local embeddings** — voyage-4-nano via sentence-transformers, runs on CPU
 - **Single-user** — Personal agent, no auth complexity
 
 ## Architecture
@@ -27,7 +28,7 @@ ARIA is a self-hosted AI assistant that remembers your conversations, uses tools
 │  ARIA API (FastAPI)                           │
 │  ┌─────────────┐  ┌──────────────────────┐   │
 │  │ Orchestrator │→ │ LLM Manager          │   │
-│  │              │  │  Ollama / llama.cpp  │   │
+│  │              │  │  llama.cpp (ROCm)   │   │
 │  │  Context     │  │  Claude / GPT        │   │
 │  │  Builder     │  │  OpenRouter          │   │
 │  └──────┬───────┘  └──────────────────────┘   │
@@ -40,11 +41,11 @@ ARIA is a self-hosted AI assistant that remembers your conversations, uses tools
 └─────────┼─────────────────────────────────────┘
           │
           ▼
-┌───────────────────────┐
-│ MongoDB 8.2 + mongot  │
-│  mongod (data)        │
-│  mongot (search)      │
-└───────────────────────┘
+┌──────────────────────────────────────┐
+│ MongoDB 8.2 + mongot  │  Embeddings │
+│  mongod (data)        │  voyage-4-  │
+│  mongot (search)      │  nano (CPU) │
+└──────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -78,13 +79,20 @@ aria chat "Hello, ARIA!"     # CLI (optional)
 
 | Backend | Type | Config |
 |---------|------|--------|
-| **Ollama** | Local | Bundled in Docker Compose |
 | **llama.cpp** | Local (ROCm) | Bundled — AMD APU/GPU acceleration |
 | **Anthropic** | Cloud | `ANTHROPIC_API_KEY` in `.env` |
 | **OpenAI** | Cloud | `OPENAI_API_KEY` in `.env` |
 | **OpenRouter** | Cloud (multi) | `OPENROUTER_API_KEY` in `.env` |
 
 The llama.cpp service uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm) and supports AMD APUs (gfx1151/gfx1150) and RDNA3/4 GPUs.
+
+## Embedding Service
+
+Embeddings are generated locally by a lightweight sentence-transformers service running `voyageai/voyage-4-nano` on CPU. It exposes an OpenAI-compatible `/v1/embeddings` endpoint on port 8001. The model is downloaded at Docker build time so startup is instant.
+
+- **Model**: `voyageai/voyage-4-nano` (MRL truncated to 1024 dims)
+- **Service**: `http://localhost:8001`
+- **Fallback**: Voyage AI cloud API (if `VOYAGE_API_KEY` is set)
 
 ## Directory Structure
 
@@ -93,10 +101,11 @@ ProjectAria/
 ├── api/                    # FastAPI backend
 │   └── aria/
 │       ├── core/           # Orchestrator, context builder
-│       ├── llm/            # LLM adapters (ollama, llamacpp, anthropic, openai, openrouter)
+│       ├── llm/            # LLM adapters (llamacpp, anthropic, openai, openrouter)
 │       ├── memory/         # Short-term + long-term memory, embeddings
 │       ├── tools/          # Built-in tools + MCP integration
 │       └── db/             # MongoDB models and connection
+├── embeddings/             # Embedding microservice (sentence-transformers)
 ├── ui/                     # Next.js web UI
 ├── widget/                 # Tauri desktop widget
 ├── cli/                    # Python CLI client

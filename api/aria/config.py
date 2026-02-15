@@ -18,9 +18,6 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0"
     mongodb_database: str = "aria"
 
-    # Ollama
-    ollama_url: str = "http://localhost:11434"
-
     # llama.cpp (local, OpenAI-compatible)
     llamacpp_url: str = "http://llamacpp:8080/v1"
     llamacpp_api_key: str = ""
@@ -31,8 +28,8 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
 
     # Embeddings
-    embedding_provider: str = "ollama"
-    embedding_ollama_model: str = "qwen3-embedding:0.6b"
+    embedding_url: str = "http://embeddings:8001/v1"
+    embedding_model: str = "voyageai/voyage-4-nano"
     embedding_dimension: int = 1024
     voyage_api_key: str = ""
 

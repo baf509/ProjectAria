@@ -327,7 +327,7 @@ class LongTermMemory:
             "content": content,
             "content_type": content_type,
             "embedding": embedding_binary,
-            "embedding_model": settings.embedding_ollama_model,
+            "embedding_model": settings.embedding_model,
             "source": source or {"type": "manual"},
             "status": "active",
             "importance": importance,
@@ -363,7 +363,7 @@ class LongTermMemory:
         if "content" in updates:
             embedding = await embedding_service.embed(updates["content"])
             updates["embedding"] = embedding_to_binary(embedding)
-            updates["embedding_model"] = settings.embedding_ollama_model
+            updates["embedding_model"] = settings.embedding_model
 
         result = await self.db.memories.update_one(
             {"_id": ObjectId(memory_id)}, {"$set": updates}

@@ -19,8 +19,8 @@ grep -A5 "Current Phase" PROJECT_STATUS.md
 ARIA is a local-first AI agent platform with the following key principles:
 - **No framework dependencies** - No LangChain, LlamaIndex, etc. Direct API integration only.
 - **Single-user design** - Personal AI agent, no multi-tenancy or complex auth.
-- **LLM agnostic** - Adapter pattern for Ollama (local), Anthropic, OpenAI, and OpenRouter.
-- **Local-first** - Ollama primary, cloud APIs as fallback.
+- **LLM agnostic** - Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.
+- **Local-first** - llama.cpp primary, cloud APIs as fallback.
 - **MongoDB 8.2 + mongot** - Self-hosted vector search without Atlas subscription.
 
 ### Core Flow
@@ -43,10 +43,18 @@ User Message
    - Current conversation + last 24h context
 
 2. **Long-term**: Semantic memory with hybrid search (`memories` collection)
-   - **Vector search** (`$vectorSearch`) - 1024-dim qwen3-embedding embeddings
+   - **Vector search** (`$vectorSearch`) - 1024-dim voyage-4-nano embeddings
    - **Lexical search** (`$search`) - BM25 full-text search
    - **RRF fusion** - Reciprocal Rank Fusion combines both
    - Background extraction from conversations via LLM
+
+### Embedding Service
+
+A lightweight microservice (`embeddings/`) running `voyageai/voyage-4-nano` via sentence-transformers on CPU:
+- Exposes OpenAI-compatible `POST /v1/embeddings` endpoint on port 8001
+- Model downloaded at Docker build time for fast startup
+- 1024-dim output via MRL truncation (matches existing MongoDB vector index)
+- Voyage AI cloud API available as fallback if `VOYAGE_API_KEY` is set
 
 ### Tool System
 
@@ -63,7 +71,7 @@ All LLM backends implement `LLMAdapter` base class:
 - Message format conversion per provider
 - Tool call support (function calling)
 
-Adapters: `ollama.py`, `anthropic.py`, `openai.py`, `openrouter.py`
+Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`
 
 Manager handles selection and fallback chain logic.
 
@@ -106,7 +114,7 @@ Verify with: `db.memories.getSearchIndexes()`
 ### Docker Compose Stack
 
 ```bash
-# Start all services (mongod, mongot, api, ui)
+# Start all services (mongod, mongot, api, embeddings, ui)
 docker compose up -d
 
 # Check service health
@@ -116,6 +124,7 @@ docker compose ps
 docker compose logs -f api
 docker compose logs -f mongod
 docker compose logs -f mongot
+docker compose logs -f embeddings
 
 # Stop all services
 docker compose down
@@ -303,7 +312,7 @@ async def stream_response(generator):
 
 - `api/aria/llm/base.py` - `LLMAdapter` abstract base class
 - `api/aria/llm/manager.py` - Backend selection, fallback chain
-- `api/aria/llm/ollama.py` - Ollama adapter
+- `api/aria/llm/llamacpp.py` - llama.cpp adapter (OpenAI-compatible)
 - `api/aria/llm/anthropic.py` - Anthropic/Claude adapter
 - `api/aria/llm/openai.py` - OpenAI/GPT adapter
 - `api/aria/llm/openrouter.py` - OpenRouter unified API adapter
@@ -312,8 +321,14 @@ async def stream_response(generator):
 
 - `api/aria/memory/short_term.py` - Recent conversation context
 - `api/aria/memory/long_term.py` - Hybrid search (BM25 + Vector)
-- `api/aria/memory/embeddings.py` - qwen3-embedding via Ollama
+- `api/aria/memory/embeddings.py` - Embedding client (calls embedding service)
 - `api/aria/memory/extraction.py` - LLM-based memory extraction
+
+### Embedding Service
+
+- `embeddings/server.py` - FastAPI app serving voyage-4-nano embeddings
+- `embeddings/Dockerfile` - Container build (downloads model at build time)
+- `embeddings/requirements.txt` - sentence-transformers, fastapi, uvicorn
 
 ### Tool System
 
@@ -346,8 +361,9 @@ async def stream_response(generator):
 MONGODB_URI=mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Ollama (local LLM)
-OLLAMA_URL=http://localhost:11434
+# llama.cpp (local LLM)
+LLAMACPP_URL=http://llamacpp:8080/v1
+LLAMACPP_API_KEY=
 
 # Cloud LLMs (optional)
 ANTHROPIC_API_KEY=sk-ant-...
@@ -355,8 +371,8 @@ OPENAI_API_KEY=sk-...
 OPENROUTER_API_KEY=sk-or-...
 
 # Embeddings
-EMBEDDING_PROVIDER=ollama
-EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+EMBEDDING_URL=http://embeddings:8001/v1
+EMBEDDING_MODEL=voyageai/voyage-4-nano
 EMBEDDING_DIMENSION=1024
 VOYAGE_API_KEY=  # Optional fallback
 
@@ -366,7 +382,7 @@ API_PORT=8000
 DEBUG=false
 ```
 
-**Note**: Using `qwen3-embedding:0.6b` model with 1024-dimensional embeddings for optimal balance of quality and performance.
+**Note**: Using `voyageai/voyage-4-nano` model with 1024-dimensional embeddings (MRL truncation) for optimal balance of quality and performance.
 
 ## Important Notes
 
@@ -382,8 +398,9 @@ DEBUG=false
 - ✅ `pydantic` - Data validation
 - ✅ `fastapi` - API framework
 - ✅ `anthropic` - Official SDK
-- ✅ `openai` - Official SDK (also used for OpenRouter)
+- ✅ `openai` - Official SDK (also used for OpenRouter and llama.cpp)
 - ✅ `sse-starlette` - Server-sent events
+- ✅ `sentence-transformers` - Embedding service
 
 ### API Key Security
 
@@ -398,7 +415,7 @@ Supported API keys:
 - `ANTHROPIC_API_KEY` - For Claude models
 - `OPENAI_API_KEY` - For GPT models
 - `OPENROUTER_API_KEY` - For unified access to multiple providers
-- `VOYAGE_API_KEY` - For Voyage AI embeddings (fallback)
+- `VOYAGE_API_KEY` - For Voyage AI embeddings (cloud fallback)
 
 ### When Making Changes
 
@@ -418,7 +435,7 @@ Supported API keys:
 
 ### Memory System Gotchas
 
-- **Embedding dimensions**: Using 1024-dim qwen3-embedding:0.6b model
+- **Embedding dimensions**: Using 1024-dim voyageai/voyage-4-nano model (MRL truncation)
 - **Vector search**: Requires mongot to be running and healthy
 - **RRF fusion**: Combines vector + lexical results with k=60
 - **Background extraction**: Memory extraction is async, doesn't block responses
@@ -427,11 +444,11 @@ Supported API keys:
 
 **IMPORTANT**: The embedding model and dimensions are standardized and must not be changed after initial setup:
 
-- **Model**: `qwen3-embedding:0.6b` (NOT `qwen3:8b` or other models)
-- **Dimensions**: 1024 (standardized across all deployments)
+- **Model**: `voyageai/voyage-4-nano` (via local sentence-transformers service)
+- **Dimensions**: 1024 (MRL truncation, standardized across all deployments)
 - **Index configuration**: MongoDB vector index must match exactly 1024 dimensions
 - **DO NOT change** embedding model or dimensions after creating memories - requires full database re-embedding
-- **Verify configuration**: Check `EMBEDDING_OLLAMA_MODEL` and `EMBEDDING_DIMENSION` in `.env`
+- **Verify configuration**: Check `EMBEDDING_URL` and `EMBEDDING_MODEL` in `.env`
 
 If you need to change embedding models:
 1. Export all existing memories
@@ -466,164 +483,6 @@ Future phases will add proper test infrastructure.
 
 ---
 
-## Current Debugging Status
-
-### Active Issue: Memory Extraction Not Working (2025-12-28)
-
-**Problem**: Memories are not being automatically extracted from conversations. User mentioned "My favorite color is forest green" in conversation `69506f0a52f86511fc969847` but no memory was created.
-
-**What We've Fixed So Far:**
-
-1. ✅ **Updated orchestrator to use BackgroundTasks** (instead of asyncio.create_task)
-   - File: `api/aria/core/orchestrator.py:280-309`
-   - Now properly schedules memory extraction as FastAPI background task
-   - Falls back to asyncio for non-HTTP contexts
-
-2. ✅ **Fixed manual extraction API to use agent's LLM config**
-   - File: `api/aria/api/routes/memories.py:232-251`
-   - Previously used hardcoded `ollama/llama3.2:latest`
-   - Now looks up agent's LLM backend and model
-
-3. ✅ **Updated conversations route to pass BackgroundTasks**
-   - File: `api/aria/api/routes/conversations.py:154-196`
-   - Passes background_tasks to orchestrator in both streaming/non-streaming
-
-**Current Issues Found (from logs):**
-
-```bash
-# Check logs with:
-sudo docker compose logs api --tail=50 | grep -i "memory\|extract\|error"
-```
-
-1. **PRIMARY: OpenRouter out of credits** ⚠️
-   ```
-   Error code: 402 - 'This request requires more credits... can only afford 1658 tokens'
-   ```
-   - Agent uses OpenRouter GLM-4.7 for extraction
-   - Account needs credits: https://openrouter.ai/settings/credits
-
-2. **SECONDARY: Ollama fallback fails**
-   ```
-   Memory extraction error: Ollama HTTP error: 404
-   ```
-   - When OpenRouter fails, tries to fall back to Ollama
-   - Model not found in Ollama container
-   - Container has: `qwen3-embedding:0.6b` (for embeddings)
-   - Missing: `llama3.2:latest` or similar chat model for extraction
-
-3. **TERTIARY: mongot connectivity issues** (intermittent)
-   ```
-   Error connecting to mongot:27028 :: Host not found
-   ```
-   - mongot container IS running: `sudo docker compose ps mongot` shows UP
-   - Network issue between containers (all on `aria-network`)
-   - May be DNS resolution delay
-
-**Environment Status:**
-
-- ✅ API container: Running and restarted with fixes
-- ✅ Ollama container: Running (`aria-ollama`)
-- ✅ mongot container: Running (`aria-mongot`)
-- ✅ Embedding model: `qwen3-embedding:0.6b` available in Ollama
-- ❌ Chat model for extraction: Missing in Ollama
-- ❌ OpenRouter credits: Insufficient
-
-**Agent Configuration:**
-
-```json
-{
-  "name": "ARIA",
-  "is_default": true,
-  "llm": {
-    "backend": "openrouter",
-    "model": "z-ai/glm-4.7"
-  },
-  "capabilities": {
-    "memory_enabled": true,
-    "tools_enabled": false
-  },
-  "memory_config": {
-    "auto_extract": true
-  }
-}
-```
-
-**Next Steps to Resolve:**
-
-Choose ONE of these options:
-
-**Option A: Add OpenRouter Credits** (Quickest)
-- Visit https://openrouter.ai/settings/credits
-- Add credits to account
-- Memory extraction will work immediately
-
-**Option B: Use Local Ollama for Extraction** (Free, recommended)
-```bash
-# Pull a chat model for extraction
-sudo docker exec aria-ollama ollama pull llama3.2:latest
-
-# Update ARIA agent to use Ollama as primary
-curl -X PUT http://localhost:8000/api/v1/agents/694fe8fcdfe230a293ce5f47 \
-  -H "Content-Type: application/json" \
-  -d '{
-    "llm": {
-      "backend": "ollama",
-      "model": "llama3.2:latest",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    "fallback_chain": [{
-      "backend": "openrouter",
-      "model": "z-ai/glm-4.7",
-      "conditions": {"on_error": true, "max_input_tokens": 100000}
-    }]
-  }'
-```
-
-**Option C: Fix mongot connectivity** (For search, separate issue)
-```bash
-# Restart containers to fix DNS
-sudo docker compose restart api mongot
-
-# Or recreate network
-sudo docker compose down
-sudo docker compose up -d
-```
-
-**Test After Fix:**
-
-```bash
-# Create test conversation
-CONV_ID=$(curl -s -X POST http://localhost:8000/api/v1/conversations \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Memory Test"}' | jq -r '.id')
-
-# Send message with memorable fact
-curl -X POST http://localhost:8000/api/v1/conversations/$CONV_ID/messages \
-  -H "Content-Type: application/json" \
-  -d '{"content":"My favorite color is purple","stream":false}'
-
-# Wait for background extraction
-sleep 10
-
-# Check if memory was created
-curl -s http://localhost:8000/api/v1/memories | jq '.[] | select(.content | contains("purple"))'
-
-# Check logs for success
-sudo docker compose logs api --tail=20 | grep "MEMORY EXTRACTION"
-# Should see: "Extracted N memories from conversation..."
-```
-
-**Files Modified During Debug Session:**
-
-- `api/aria/core/orchestrator.py` - Added BackgroundTasks support
-- `api/aria/api/routes/conversations.py` - Pass BackgroundTasks to orchestrator
-- `api/aria/api/routes/memories.py` - Use agent's LLM config for extraction
-- `CHANGELOG.md` - Documented fixes
-- `CLAUDE.md` - This debugging section
-
----
-
 ## Common Issues & Solutions
 
 ### Embedding Dimension Mismatch
@@ -637,8 +496,8 @@ sudo docker compose logs api --tail=20 | grep "MEMORY EXTRACTION"
 grep EMBEDDING .env
 
 # Expected output:
-# EMBEDDING_PROVIDER=ollama
-# EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+# EMBEDDING_URL=http://embeddings:8001/v1
+# EMBEDDING_MODEL=voyageai/voyage-4-nano
 # EMBEDDING_DIMENSION=1024
 
 # Verify MongoDB index
@@ -670,25 +529,27 @@ curl http://localhost:9946/metrics
 docker compose restart mongod mongot
 ```
 
-### Ollama Model Not Found
+### Embedding Service Not Responding
 
-**Error**: "Model qwen3-embedding:0.6b not found" or "Model not available"
+**Error**: "Embedding service unavailable" or connection refused on port 8001
 
-**Solution**: Pull the required models via Ollama
+**Solution**: Check the embedding service container
 
 ```bash
-# Pull embedding model (required for memory system)
-ollama pull qwen3-embedding:0.6b
+# Check service health
+curl http://localhost:8001/health
 
-# Pull LLM model (required for chat)
-ollama pull llama3.2:latest
+# Check logs
+docker compose logs embeddings
 
-# Verify models are available
-ollama list | grep -E "qwen3-embedding|llama"
+# Restart if needed
+docker compose restart embeddings
 
-# Expected output:
-# qwen3-embedding:0.6b    ...
-# llama3.2:latest         ...
+# Test embedding generation
+curl http://localhost:8001/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input":"test","model":"voyageai/voyage-4-nano"}'
+# Should return 1024-dim vector
 ```
 
 ### Web UI Not Loading

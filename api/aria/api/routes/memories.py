@@ -237,8 +237,8 @@ async def extract_memories(
         raise HTTPException(status_code=404, detail="Agent not found")
 
     llm_config = agent.get("llm", {})
-    llm_backend = llm_config.get("backend", "ollama")
-    llm_model = llm_config.get("model", "llama3.2:latest")
+    llm_backend = llm_config.get("backend", "llamacpp")
+    llm_model = llm_config.get("model", "default")
 
     # Schedule extraction as background task
     async def run_extraction():

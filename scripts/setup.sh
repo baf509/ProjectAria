@@ -84,55 +84,6 @@ install_docker() {
     log_warning "You need to log out and back in for group changes to take effect"
 }
 
-# Install Ollama
-install_ollama() {
-    log_info "Installing Ollama..."
-
-    if check_command ollama; then
-        return 0
-    fi
-
-    curl -fsSL https://ollama.com/install.sh | sh
-
-    # Enable and start Ollama service
-    sudo systemctl enable ollama
-    sudo systemctl start ollama
-
-    log_success "Ollama installed successfully"
-}
-
-# Pull embedding model
-pull_embedding_model() {
-    log_info "Pulling qwen3-embedding:0.6b model..."
-
-    # Wait for Ollama to be ready
-    local max_attempts=30
-    local attempt=0
-
-    while [ $attempt -lt $max_attempts ]; do
-        if curl -s http://localhost:11434/api/tags &> /dev/null; then
-            break
-        fi
-        log_info "Waiting for Ollama to start... ($((attempt + 1))/$max_attempts)"
-        sleep 2
-        attempt=$((attempt + 1))
-    done
-
-    if [ $attempt -eq $max_attempts ]; then
-        log_error "Ollama failed to start"
-        return 1
-    fi
-
-    # Check if model is already pulled
-    if ollama list | grep -q "qwen3-embedding:0.6b"; then
-        log_success "qwen3-embedding:0.6b is already pulled"
-        return 0
-    fi
-
-    ollama pull qwen3-embedding:0.6b
-    log_success "Embedding model pulled successfully"
-}
-
 # Setup .env file
 setup_env_file() {
     log_info "Checking .env file..."
@@ -208,14 +159,9 @@ main() {
     echo ""
 
     DOCKER_INSTALLED=false
-    OLLAMA_INSTALLED=false
 
     if check_command docker; then
         DOCKER_INSTALLED=true
-    fi
-
-    if check_command ollama; then
-        OLLAMA_INSTALLED=true
     fi
 
     echo ""
@@ -227,26 +173,6 @@ main() {
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             install_docker
             NEEDS_RELOGIN=true
-        fi
-    fi
-    echo ""
-
-    # Install Ollama if needed
-    if [ "$OLLAMA_INSTALLED" = false ]; then
-        read -p "Install Ollama? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            install_ollama
-        fi
-    fi
-    echo ""
-
-    # Pull embedding model
-    if check_command ollama; then
-        read -p "Pull qwen3-embedding:0.6b model? (y/n) " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            pull_embedding_model
         fi
     fi
     echo ""
