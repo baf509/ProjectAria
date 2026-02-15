@@ -45,6 +45,21 @@ class LLMManager:
                 )
                 logger.info(f"Created Ollama adapter for model: {model}")
 
+            elif backend == "llamacpp":
+                try:
+                    from aria.llm.llamacpp import LlamaCppAdapter
+                    self.adapters[key] = LlamaCppAdapter(
+                        base_url=settings.llamacpp_url,
+                        model=model,
+                        api_key=settings.llamacpp_api_key,
+                    )
+                    logger.info(f"Created llama.cpp adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. "
+                        "Install with: pip install openai"
+                    )
+
             elif backend == "anthropic":
                 if not settings.anthropic_api_key:
                     raise ValueError(
@@ -102,7 +117,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: ollama, anthropic, openai, openrouter"
+                    f"Supported: ollama, llamacpp, anthropic, openai, openrouter"
                 )
 
         return self.adapters[key]
@@ -116,6 +131,13 @@ class LLMManager:
         """
         if backend == "ollama":
             return True, "Ollama is always available (local)"
+
+        elif backend == "llamacpp":
+            try:
+                import openai
+                return True, "llama.cpp is available (local)"
+            except ImportError:
+                return False, "openai package not installed (required for llama.cpp)"
 
         elif backend == "anthropic":
             if not settings.anthropic_api_key:

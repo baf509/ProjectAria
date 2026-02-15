@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ARIA</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="titlebar">
+      <span class="title">ARIA</span>
+      <div class="titlebar-actions">
+        <button id="btn-new-chat" title="New Chat">+</button>
+        <button id="btn-settings" title="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <div id="messages"></div>
+
+    <div id="settings-panel" class="hidden">
+      <label>
+        API URL
+        <input type="text" id="setting-api-url" placeholder="http://localhost:8000" />
+      </label>
+      <label>
+        Hotkey
+        <input type="text" id="setting-hotkey" placeholder="ctrl+space" readonly />
+      </label>
+      <button id="btn-save-settings">Save</button>
+    </div>
+
+    <form id="input-form">
+      <div class="input-row">
+        <button type="button" id="btn-mic" title="Voice (coming soon)" disabled>&#127908;</button>
+        <textarea id="input" rows="1" placeholder="Ask ARIA anything..." autofocus></textarea>
+        <button type="submit" id="btn-send" title="Send">&#9654;</button>
+      </div>
+    </form>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

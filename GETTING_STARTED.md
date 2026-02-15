@@ -1,530 +1,494 @@
 # Getting Started with ARIA
 
-**Complete guide to understanding, installing, and using ARIA**
+Complete guide to setting up and running ARIA on your machine.
 
 ---
 
-## What is ARIA?
+## What You'll Set Up
 
-ARIA is a **self-hosted AI agent platform** with:
-- 🧠 **Long-term memory** - Remembers facts and preferences across conversations
-- 🔧 **Local-first** - Runs on your hardware (Ollama + MongoDB)
-- 💬 **CLI interface** - Chat via terminal (Web UI coming in Phase 5)
-- 🔌 **Extensible** - Add tools and MCP servers (Phase 3+)
-
-Think of it as your personal AI assistant that runs entirely on your infrastructure and remembers everything you tell it.
-
----
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ You interact with:                                          │
-│                                                             │
-│  • CLI (aria chat)                                         │
-│  • API (http://localhost:8000)                             │
-│  • Swagger Docs (http://localhost:8000/docs)              │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Docker Compose Stack (runs on your machine):               │
-│                                                             │
-│  [1] ARIA API (FastAPI)                                    │
-│      - Port 8000                                           │
-│      - Handles chat, memory, agents                        │
-│      - Orchestrates LLM calls                              │
-│                                                             │
-│  [2] MongoDB (mongod)                                      │
-│      - Port 27017                                          │
-│      - Stores conversations, memories, agents              │
-│      - Replica set for search features                     │
-│                                                             │
-│  [3] MongoDB Search (mongot)                               │
-│      - Port 27028                                          │
-│      - Vector search (embeddings)                          │
-│      - Text search (BM25)                                  │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────┐
-│ External (must be running separately):                     │
-│                                                             │
-│  [4] Ollama                                                │
-│      - Port 11434                                          │
-│      - LLM inference (e.g., Llama 3.2)                    │
-│      - Embedding generation (e.g., Qwen3)                 │
-│      - Install: https://ollama.ai                          │
-└─────────────────────────────────────────────────────────────┘
-```
+| Service | Purpose | Port |
+|---------|---------|------|
+| **ARIA API** | FastAPI backend — chat, memory, tools | 8000 |
+| **MongoDB** (mongod) | Data storage — conversations, memories, agents | 27017 |
+| **MongoDB Search** (mongot) | Vector + text search engine | 27028 |
+| **Ollama** | Local LLM inference + embeddings | 11434 |
+| **llama.cpp** (optional) | Local LLM with ROCm GPU acceleration | 8080 |
+| **Web UI** | Next.js chat interface | 3000 |
 
 ---
 
 ## Prerequisites
 
-### Required
+- **Docker** and **Docker Compose** — [Install Docker](https://docs.docker.com/get-docker/)
+- **Git** — [Install Git](https://git-scm.com/downloads)
+- **Node.js 18+** — For the desktop widget (optional)
+- **Rust** — For building the desktop widget (optional)
+- **Python 3.12+** — For the CLI client (optional)
 
-1. **Docker Desktop** (or Docker + Docker Compose)
-   - [Install Docker](https://docs.docker.com/get-docker/)
-   - Verify: `docker --version` and `docker compose version`
-
-2. **Ollama** (for local LLM inference)
-   - [Install Ollama](https://ollama.ai/download)
-   - Verify: `ollama --version`
-
-3. **Git** (to clone the repository)
-   - [Install Git](https://git-scm.com/downloads)
-
-### Optional
-
-4. **Python 3.12+** (for CLI client)
-   - Only needed if you want the `aria` CLI command
-   - Can use API directly without Python
+**For llama.cpp with ROCm (AMD GPU/APU users):**
+- AMD GPU or APU with ROCm support (gfx1151, gfx1150, gfx120X, gfx110X)
+- `/dev/kfd` and `/dev/dri` device access
+- User in `video` and `render` groups
 
 ---
 
-## Installation Steps
-
-### Step 1: Install Ollama and Pull Models
-
-```bash
-# Install Ollama from https://ollama.ai/download
-
-# Pull an LLM model (for chat)
-ollama pull llama3.2
-
-# Pull an embedding model (for memory)
-ollama pull qwen3:8b
-
-# Verify Ollama is running
-curl http://localhost:11434/api/version
-```
-
-**Why these models?**
-- `llama3.2` - Fast, capable chat model
-- `qwen3:8b` - Generates embeddings for memory search
-
-### Step 2: Clone ARIA Repository
+## Step 1: Clone and Configure
 
 ```bash
 git clone https://github.com/baf509/ProjectAria.git
 cd ProjectAria
-```
 
-### Step 3: Configure Environment
-
-```bash
-# Copy environment template
+# Create your environment file
 cp .env.example .env
-
-# Edit if needed (defaults work for local setup)
-nano .env  # or use your favorite editor
 ```
 
-**Default configuration** (in `.env`):
+Edit `.env` with your settings:
+
 ```bash
-# MongoDB (managed by Docker)
+# === Required ===
+
+# MongoDB (defaults work — no changes needed)
 MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Ollama (running on your host machine)
-OLLAMA_URL=http://host.docker.internal:11434
+# Ollama (defaults work if using the bundled container)
+OLLAMA_URL=http://ollama:11434
 
-# Embeddings
+# Embeddings (defaults work)
 EMBEDDING_PROVIDER=ollama
-EMBEDDING_OLLAMA_MODEL=qwen3:8b
-EMBEDDING_DIMENSION=4096
+EMBEDDING_OLLAMA_MODEL=qwen3-embedding:0.6b
+EMBEDDING_DIMENSION=1024
 
-# Optional: Cloud LLM fallback
+# === Optional: llama.cpp with ROCm ===
+
+# Set your GPU target (gfx1151 for Ryzen AI MAX+ Pro 395)
+LLAMACPP_GPU_TARGET=gfx1151
+
+# Path to your GGUF model file
+LLAMACPP_MODEL=/models/model.gguf
+
+# Directory containing your GGUF files (mounted into the container)
+LLAMACPP_MODELS_DIR=./models
+
+# GPU layers to offload (99 = all layers)
+LLAMACPP_GPU_LAYERS=99
+
+# Context window size
+LLAMACPP_CTX_SIZE=8192
+
+# === Optional: Cloud LLM API Keys ===
+
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
+OPENROUTER_API_KEY=
 ```
 
-### Step 4: Start Docker Services
+---
+
+## Step 2: Download a Model (for llama.cpp users)
+
+If you plan to use llama.cpp with ROCm, place a GGUF model in the `models/` directory:
 
 ```bash
-# Start all services in background
+# Example: download a model (replace with your preferred model)
+mkdir -p models
+cd models
+
+# Option A: Use huggingface-cli
+pip install huggingface-hub
+huggingface-cli download TheBloke/Llama-2-7B-Chat-GGUF llama-2-7b-chat.Q4_K_M.gguf --local-dir .
+
+# Option B: Download directly with curl/wget
+# (find GGUF files on https://huggingface.co)
+
+cd ..
+```
+
+Then update `.env`:
+```bash
+LLAMACPP_MODEL=/models/llama-2-7b-chat.Q4_K_M.gguf
+```
+
+If you're only using Ollama or cloud LLMs, skip this step.
+
+---
+
+## Step 3: Start the Stack
+
+```bash
+# Start all services
 docker compose up -d
 
-# Check status (all should be "running" or "exited" for mongo-init)
-docker compose ps
-
-# View logs (Ctrl+C to exit)
+# Watch the logs to confirm everything starts
 docker compose logs -f
-
-# View specific service logs
-docker compose logs api
-docker compose logs mongod
+# (Ctrl+C to stop following logs)
 ```
 
-**Expected services:**
-- `aria-api` - Running (port 8000)
-- `aria-mongod` - Running (port 27017)
-- `aria-mongot` - Running (port 27028)
-- `aria-mongo-init` - Exited (0) - one-time setup
+**First run will take a few minutes** — Docker needs to:
+- Build the API image
+- Build the llama.cpp ROCm image (downloads ~450MB of pre-built binaries)
+- Pull MongoDB and Ollama images
+- Initialize the replica set and search indexes
 
-### Step 5: Verify Installation
+Check that services are healthy:
 
 ```bash
-# Test API health
-curl http://localhost:8000/api/v1/health
-
-# Expected response:
-# {
-#   "status": "healthy",
-#   "version": "0.2.0",
-#   "database": "connected",
-#   "timestamp": "2025-11-29T..."
-# }
-
-# Open API documentation in browser
-open http://localhost:8000/docs  # Mac
-# or visit: http://localhost:8000/docs
+docker compose ps
 ```
 
-### Step 6: Install CLI (Optional but Recommended)
+Expected output:
+```
+NAME              STATUS
+aria-api          running
+aria-mongod       running (healthy)
+aria-mongot       running
+aria-ollama       running
+aria-llamacpp     running        # only if using llama.cpp
+aria-ui           running
+aria-mongo-init   exited (0)     # one-time setup, expected to exit
+```
+
+---
+
+## Step 4: Pull Ollama Models
+
+The Ollama container needs models for chat and embeddings:
+
+```bash
+# Pull the embedding model (required for memory system)
+docker exec aria-ollama ollama pull qwen3-embedding:0.6b
+
+# Pull a chat model (needed if using Ollama as your LLM backend)
+docker exec aria-ollama ollama pull llama3.2:latest
+
+# Verify models are available
+docker exec aria-ollama ollama list
+```
+
+---
+
+## Step 5: Verify the Installation
+
+```bash
+# Check API health
+curl http://localhost:8000/api/v1/health
+
+# Expected:
+# {"status":"healthy","version":"0.2.0","database":"connected",...}
+
+# Check LLM backends
+curl http://localhost:8000/api/v1/health/llm
+
+# Check llama.cpp is serving (if using)
+curl http://localhost:8080/health
+```
+
+Open the Web UI: **http://localhost:3000**
+
+Open the API docs: **http://localhost:8000/docs**
+
+---
+
+## Step 6: Configure Your Agent
+
+ARIA creates a default agent on first run. To switch it to use llama.cpp:
+
+```bash
+# List agents to get the agent ID
+curl -s http://localhost:8000/api/v1/agents | python3 -m json.tool
+
+# Update agent to use llama.cpp
+curl -X PUT http://localhost:8000/api/v1/agents/YOUR_AGENT_ID \
+  -H "Content-Type: application/json" \
+  -d '{
+    "llm": {
+      "backend": "llamacpp",
+      "model": "default",
+      "temperature": 0.7,
+      "max_tokens": 4096
+    },
+    "fallback_chain": [{
+      "backend": "ollama",
+      "model": "llama3.2:latest",
+      "conditions": {"on_error": true}
+    }]
+  }'
+```
+
+Or to use Ollama:
+```bash
+curl -X PUT http://localhost:8000/api/v1/agents/YOUR_AGENT_ID \
+  -H "Content-Type: application/json" \
+  -d '{
+    "llm": {
+      "backend": "ollama",
+      "model": "llama3.2:latest",
+      "temperature": 0.7,
+      "max_tokens": 4096
+    }
+  }'
+```
+
+---
+
+## Step 7: Start Chatting
+
+### Web UI
+
+Open **http://localhost:3000** — create a conversation and start chatting.
+
+### CLI (optional)
 
 ```bash
 cd cli
 pip install -r requirements.txt
 pip install -e .
 
-# Test CLI
-aria health
+# Chat
+aria chat "Hello, ARIA!"
 
-# Should show:
-# ✓ Status: healthy
-# ✓ Version: 0.2.0
-# ✓ Database: connected
-```
-
----
-
-## How to Use ARIA
-
-### Option 1: CLI (Recommended)
-
-```bash
-# Interactive chat mode
-aria chat
-# You: Hello!
-# ARIA: Hi! How can I help you today?
-
-# One-shot message
-aria chat "What's the weather like?"
-
-# Start new conversation
-aria chat --new "Let's discuss Python"
-
-# Continue specific conversation
+# Continue a conversation
 aria conversations list
-aria chat -c <conversation-id> "Continue from before"
-
-# List all conversations
-aria conversations list
-
-# List agents
-aria agents list
+aria chat -c CONVERSATION_ID "Tell me more"
 
 # Memory commands
 aria memories list
-aria memories search "Python preferences"
-aria memories add "User prefers tabs over spaces" --type preference
+aria memories search "query"
+aria memories add "Important fact to remember"
 ```
 
-### Option 2: Direct API Calls
+### API directly
 
 ```bash
-# Create conversation
-curl -X POST http://localhost:8000/api/v1/conversations \
+# Create a conversation
+CONV_ID=$(curl -s -X POST http://localhost:8000/api/v1/conversations \
   -H "Content-Type: application/json" \
-  -d '{"title":"My Chat"}'
+  -d '{"title":"My Chat"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-# Send message (streaming response)
-curl -X POST http://localhost:8000/api/v1/conversations/{id}/messages \
+# Send a message (streaming)
+curl -N -X POST "http://localhost:8000/api/v1/conversations/$CONV_ID/messages" \
   -H "Content-Type: application/json" \
-  -d '{"content":"Hello!","stream":true}'
+  -d '{"content":"Hello ARIA!","stream":true}'
+```
 
-# Search memories
+---
+
+## Step 8: Desktop Widget (Optional)
+
+The desktop widget is a Tauri app that lives in your system tray and opens with `Ctrl+Space`.
+
+```bash
+# Install dependencies
+cd widget
+npm install
+
+# Install Tauri system dependencies (Linux)
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+# Run in development mode
+npm run tauri:dev
+
+# Build for production
+npm run tauri:build
+```
+
+**Widget features:**
+- `Ctrl+Space` — Toggle the chat window
+- `Escape` — Hide the window
+- System tray icon with menu (Show, New Chat, Quit)
+- Streaming responses from the ARIA API
+- Settings panel for API URL configuration
+
+---
+
+## Services Reference
+
+### Starting and Stopping
+
+```bash
+# Start everything
+docker compose up -d
+
+# Stop everything (data is preserved in volumes)
+docker compose down
+
+# Stop and delete all data (fresh start)
+docker compose down -v
+
+# Restart a single service
+docker compose restart api
+
+# View logs
+docker compose logs -f api          # API logs
+docker compose logs -f llamacpp     # llama.cpp logs
+docker compose logs -f mongod       # MongoDB logs
+```
+
+### Service URLs
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| Web UI | http://localhost:3000 | Chat interface |
+| API | http://localhost:8000 | REST API |
+| API Docs | http://localhost:8000/docs | Swagger/OpenAPI |
+| llama.cpp | http://localhost:8080 | OpenAI-compatible API |
+
+### Useful API Endpoints
+
+```bash
+# Health
+curl http://localhost:8000/api/v1/health
+curl http://localhost:8000/api/v1/health/llm
+
+# Conversations
+curl http://localhost:8000/api/v1/conversations
+curl http://localhost:8000/api/v1/conversations/ID
+
+# Memories
+curl http://localhost:8000/api/v1/memories
 curl -X POST http://localhost:8000/api/v1/memories/search \
   -H "Content-Type: application/json" \
-  -d '{"query":"Python","limit":10}'
+  -d '{"query":"search term","limit":10}'
+
+# Agents
+curl http://localhost:8000/api/v1/agents
+
+# Tools
+curl http://localhost:8000/api/v1/tools
 ```
-
-### Option 3: Swagger UI (Interactive)
-
-Visit **http://localhost:8000/docs** in your browser for interactive API documentation.
 
 ---
 
-## Key Concepts
+## llama.cpp ROCm Configuration
 
-### 1. Conversations
-- A conversation is a chat session with ARIA
-- Messages are stored with full history
-- Conversations persist across restarts
-- Each conversation uses an agent configuration
+The llama.cpp service uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm).
 
-### 2. Agents
-- Define the AI's personality and capabilities
-- Default agent "ARIA" is created automatically
-- Configure LLM backend, temperature, tools, memory settings
-- You can create multiple agents with different roles
+### Supported GPU Targets
 
-### 3. Memory System (Phase 2)
+| Target | Hardware |
+|--------|----------|
+| `gfx1151` | Ryzen AI MAX+ Pro 395 (STX Halo APU) |
+| `gfx1150` | Ryzen AI 300 (STX Point APU) |
+| `gfx120X` | Radeon RX 9070/9060 (RDNA4) |
+| `gfx110X` | Radeon RX 7900/7800/7700/7600 (RDNA3) |
 
-**Short-term Memory:**
-- Last 20 messages from current conversation
-- Recent conversations (last 24 hours)
-- Fast retrieval, no embeddings needed
-
-**Long-term Memory:**
-- Facts, preferences, events stored permanently
-- Hybrid search (Vector + BM25)
-- Automatically extracted from conversations
-- Manually add important facts
-
-**How it works:**
-1. You chat: "I prefer Python for backend work"
-2. ARIA responds normally
-3. Background task extracts memory: "User prefers Python for backend"
-4. Memory stored with embedding vector
-5. Future chats: ARIA searches memories and finds relevant context
-6. Response uses your preferences!
-
-### 4. Memory Commands
-
+Change the target in `.env`:
 ```bash
-# Add memory manually
-aria memories add "User is building an AI platform called ARIA" \
-  --type fact \
-  --importance 0.9 \
-  --categories "projects,work"
-
-# Search memories
-aria memories search "what am I working on"
-# Returns: User is building an AI platform called ARIA
-
-# List all memories
-aria memories list --type preference
-
-# Extract from conversation
-aria memories extract <conversation-id>
+LLAMACPP_GPU_TARGET=gfx1151   # Change to match your hardware
 ```
 
----
+### Environment Variables
 
-## What Works Now (Phase 1 & 2)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLAMACPP_GPU_TARGET` | `gfx1151` | ROCm GPU architecture target |
+| `LLAMACPP_MODEL` | `/models/model.gguf` | Path to GGUF model inside container |
+| `LLAMACPP_MODELS_DIR` | `./models` | Host directory mounted to `/models` |
+| `LLAMACPP_GPU_LAYERS` | `99` | Number of layers to offload to GPU |
+| `LLAMACPP_CTX_SIZE` | `8192` | Context window size |
 
-✅ **Chat with local LLM** via Ollama
-✅ **Streaming responses** in real-time
-✅ **Conversation management** (create, list, continue)
-✅ **Short-term memory** (recent context)
-✅ **Long-term memory** (facts/preferences with hybrid search)
-✅ **Automatic memory extraction** from conversations
-✅ **Memory search** (semantic + keyword)
-✅ **Agent management** (configure LLM settings)
-✅ **CLI client** for easy interaction
-✅ **REST API** with full OpenAPI docs
+### Linux APU Note
 
----
-
-## What's Coming Next
-
-### Phase 3: Tools & MCP (In Progress)
-- Execute shell commands
-- Read/write files
-- Web searches
-- MCP server integration
-
-### Phase 4: Cloud LLMs
-- Anthropic Claude fallback
-- OpenAI integration
-- Automatic model selection
-
-### Phase 5: Web UI
-- Browser-based chat interface
-- Visual memory browser
-- Agent configuration UI
+For gfx1150/gfx1151 APUs, if you see out-of-memory errors despite available VRAM, add this to your kernel command line parameters and reboot:
+```
+ttm.pages_limit=12582912
+```
 
 ---
 
 ## Troubleshooting
 
-### MongoDB won't start
+### API won't start
+
 ```bash
-# Check logs
+docker compose logs api
+# Check for Python import errors or missing dependencies
+docker compose restart api
+```
+
+### MongoDB replica set issues
+
+```bash
+# Check mongod health
 docker compose logs mongod
 
-# Clean restart
-docker compose down -v
-docker compose up -d
-```
+# Manually initialize replica set
+docker exec -it aria-mongod mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongod:27017'}]})"
 
-### Ollama connection error
-```bash
-# Verify Ollama is running
-curl http://localhost:11434/api/version
-
-# Check models
-ollama list
-
-# Pull missing models
-ollama pull llama3.2
-ollama pull qwen3:8b
-```
-
-### CLI not working
-```bash
-# Reinstall
-cd cli
-pip uninstall aria-cli
-pip install -e .
-
-# Check Python version (need 3.12+)
-python --version
-```
-
-### API errors
-```bash
-# Check API logs
-docker compose logs api
-
-# Restart API
-docker compose restart api
-
-# Check health
-curl http://localhost:8000/api/v1/health
-```
-
-### Memory search not working
-```bash
-# Connect to MongoDB
-docker exec -it aria-mongod mongosh
-
-# Check indexes
-use aria
-db.memories.getIndexes()
-db.memories.getSearchIndexes()
-
-# If missing, restart mongo-init
+# Re-run index creation
 docker compose up mongo-init
 ```
 
----
+### llama.cpp won't start
 
-## Daily Usage
-
-### Starting ARIA
 ```bash
-# Start Docker services (if not running)
-docker compose up -d
+# Check logs
+docker compose logs llamacpp
 
-# Start Ollama (if not running)
-# It usually starts automatically, but check:
-ollama serve  # Run in separate terminal if needed
+# Verify model file exists
+ls -la models/*.gguf
 
-# Start chatting
-aria chat
+# Check GPU access
+ls -la /dev/kfd /dev/dri
+
+# Verify user is in video/render groups
+groups
+# Should include: video render
 ```
 
-### Stopping ARIA
-```bash
-# Stop Docker services
-docker compose down
+### Ollama model not found
 
-# Ollama can stay running (lightweight)
+```bash
+# List available models
+docker exec aria-ollama ollama list
+
+# Pull missing models
+docker exec aria-ollama ollama pull qwen3-embedding:0.6b
+docker exec aria-ollama ollama pull llama3.2:latest
 ```
 
-### Checking Status
+### Memory search returns nothing
+
 ```bash
-# Check all services
-docker compose ps
+# Check search indexes exist
+docker exec -it aria-mongod mongosh --eval "
+  use aria;
+  db.memories.getSearchIndexes();
+"
 
-# Check API health
-aria health
-
-# View recent conversations
-aria conversations list
-
-# View memories
-aria memories list --limit 10
+# If empty, re-run initialization
+docker compose up mongo-init
+# Wait 30 seconds for indexes to activate
 ```
 
----
+### Widget build fails
 
-## File Locations
-
-**Configuration:**
-- `.env` - Your environment settings
-- `docker-compose.yml` - Docker services
-
-**Data (persists across restarts):**
-- Docker volumes: `mongod-data`, `mongot-data`, `aria-data`
-
-**Code:**
-- `api/aria/` - FastAPI application
-- `cli/aria_cli/` - CLI client
-- `scripts/` - MongoDB initialization
-
-**Logs:**
 ```bash
-docker compose logs api     # API logs
-docker compose logs mongod  # Database logs
+# Install system dependencies (Ubuntu/Debian)
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+# Verify Rust is installed
+rustc --version  # Need 1.70+
+
+# Clean and rebuild
+cd widget
+rm -rf node_modules src-tauri/target
+npm install
+npm run tauri:dev
 ```
 
 ---
 
-## Next Steps
+## What's Next
 
-1. **Try the basics:**
-   - Chat with ARIA
-   - Create a few conversations
-   - Add some manual memories
+After setup, try:
 
-2. **Test memory:**
-   - Tell ARIA something about yourself
-   - In a new conversation, ask about it
-   - Watch it remember!
+1. **Chat** — Send messages via Web UI or CLI
+2. **Test memory** — Tell ARIA a fact ("My favorite language is Rust"), then ask about it in a new conversation
+3. **Add tools** — Enable tools in agent config for filesystem/shell access
+4. **Add MCP servers** — Connect external tool servers
 
-3. **Explore API:**
-   - Visit http://localhost:8000/docs
-   - Try different endpoints
-   - Understand the data models
-
-4. **Read the spec:**
-   - `SPECIFICATION.md` - Full technical details
-   - `PROJECT_STATUS.md` - Current progress
-   - `CHANGELOG.md` - Recent changes
-
----
-
-## Getting Help
-
-- **Documentation:** See `SPECIFICATION.md` for technical details
-- **Issues:** https://github.com/baf509/ProjectAria/issues
-- **Status:** Check `PROJECT_STATUS.md` for current phase
-
----
-
-## Summary
-
-**What you installed:**
-1. Ollama (local LLM server)
-2. Docker containers (API + MongoDB)
-3. CLI client (optional)
-
-**What you can do:**
-1. Chat via `aria chat` or API
-2. ARIA remembers conversations
-3. Add/search long-term memories
-4. Configure different agents
-
-**What to remember:**
-- Ollama must be running for chat to work
-- Docker services handle the rest automatically
-- Data persists in Docker volumes
-- CLI is easiest for daily use
-
-Enjoy your personal AI agent! 🤖
+Future plans:
+- Voice input/output (STT/TTS)
+- React Native mobile app
+- Computer use (screen control)

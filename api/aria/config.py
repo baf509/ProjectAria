@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Ollama
     ollama_url: str = "http://localhost:11434"
 
+    # llama.cpp (local, OpenAI-compatible)
+    llamacpp_url: str = "http://llamacpp:8080/v1"
+    llamacpp_api_key: str = ""
+
     # Cloud LLMs
     anthropic_api_key: str = ""
     openai_api_key: str = ""

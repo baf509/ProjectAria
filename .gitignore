@@ -10,7 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python build artifacts (not src/lib directories)
+/lib/
 lib64/
 parts/
 sdist/
@@ -63,3 +64,15 @@ mongot-data/
 
 # Application data
 aria-data/
+
+# LLM models (large binary files)
+models/*.gguf
+models/*.bin
+
+# Tauri build artifacts
+widget/src-tauri/target/
+widget/node_modules/
+widget/dist/
+
+# Node modules (general)
+node_modules/

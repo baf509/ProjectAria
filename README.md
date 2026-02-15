@@ -1,119 +1,145 @@
 # ARIA - Local AI Agent Platform
 
-> Personal AI agent with long-term memory, tool use, and computer control.
+> Personal AI agent with long-term memory, tool use, and multiple interfaces — runs on your hardware.
 
-## For Claude Code
+ARIA is a self-hosted AI assistant that remembers your conversations, uses tools, and works with any LLM backend. It runs entirely on your infrastructure with no cloud dependency required.
 
-**Start every session by reading:**
-1. `PROJECT_STATUS.md` - Current phase and what's done
-2. `CHANGELOG.md` - Recent changes (last 50 lines)
-3. `SPECIFICATION.md` - Detailed requirements
+## Features
 
-**Quick phase check:**
-```bash
-grep -A5 "Current Phase" PROJECT_STATUS.md
+- **Long-term memory** — Hybrid search (vector + BM25) remembers facts and preferences across conversations
+- **Any LLM backend** — Ollama, llama.cpp (ROCm), Anthropic, OpenAI, OpenRouter — with automatic fallback
+- **Multiple interfaces** — Web UI, desktop widget (Tauri), CLI, and REST API
+- **Tool use & MCP** — Built-in filesystem/shell/web tools plus MCP server integration
+- **Local-first** — MongoDB 8.2 + mongot for vector search, no Atlas subscription needed
+- **Single-user** — Personal agent, no auth complexity
+
+## Architecture
+
 ```
-
-## Architecture Summary
-
+                     ┌──────────────┐
+                     │   Clients    │
+                     │  Widget/UI/  │
+                     │   CLI/API    │
+                     └──────┬───────┘
+                            │
+                            ▼
+┌───────────────────────────────────────────────┐
+│  ARIA API (FastAPI)                           │
+│  ┌─────────────┐  ┌──────────────────────┐   │
+│  │ Orchestrator │→ │ LLM Manager          │   │
+│  │              │  │  Ollama / llama.cpp  │   │
+│  │  Context     │  │  Claude / GPT        │   │
+│  │  Builder     │  │  OpenRouter          │   │
+│  └──────┬───────┘  └──────────────────────┘   │
+│         │                                      │
+│  ┌──────┴───────┐  ┌──────────────────────┐   │
+│  │ Memory       │  │ Tool Router          │   │
+│  │  Short-term  │  │  Built-in tools      │   │
+│  │  Long-term   │  │  MCP servers         │   │
+│  └──────┬───────┘  └──────────────────────┘   │
+└─────────┼─────────────────────────────────────┘
+          │
+          ▼
+┌───────────────────────┐
+│ MongoDB 8.2 + mongot  │
+│  mongod (data)        │
+│  mongot (search)      │
+└───────────────────────┘
 ```
-User → FastAPI → Orchestrator → LLM (Ollama/Claude/OpenAI)
-                     ↓
-              Memory Manager
-              (Short-term: recent messages via MongoDB query)
-              (Long-term: BM25 + Vector search via mongot)
-                     ↓
-               Tool Router → MCP Servers / Built-in Tools
-                     ↓
-              MongoDB 8.2 + mongot
-              (mongod: data storage)
-              (mongot: search indexes)
-```
-
-## Key Design Decisions
-
-1. **No framework dependencies** - No LangChain, LlamaIndex, etc.
-2. **Single-user** - No auth complexity, personal use only
-3. **LLM agnostic** - Adapter pattern for Ollama, Anthropic, OpenAI, and OpenRouter
-4. **MongoDB 8.2 + mongot** - Community Server with Vector Search (no Atlas needed)
-5. **Local-first** - Ollama primary, cloud APIs as fallback
-6. **qwen3-embedding for embeddings** - 1024-dimensional, local via Ollama
-7. **Hybrid search** - BM25 + Vector with RRF fusion
 
 ## Quick Start
 
-### Automated Setup (Recommended)
+See **[GETTING_STARTED.md](GETTING_STARTED.md)** for the full setup guide.
 
 ```bash
-# Run the setup script
-./scripts/setup.sh
-```
+# 1. Clone and configure
+git clone https://github.com/baf509/ProjectAria.git
+cd ProjectAria
+cp .env.example .env        # Edit with your API keys and model paths
 
-This installs Docker, Ollama, pulls models, and configures everything.
-
-### Manual Start
-
-```bash
-# Configure
-cp .env.example .env
-# Edit .env with your API keys
-
-# Start all services
+# 2. Start the stack
 docker compose up -d
 
-# Access the UI
-open http://localhost:3000
-
-# Or use the CLI
-aria chat "Hello, ARIA!"
+# 3. Access ARIA
+open http://localhost:3000   # Web UI
+aria chat "Hello, ARIA!"     # CLI (optional)
 ```
 
-📖 **For detailed instructions, see [GETTING_STARTED.md](GETTING_STARTED.md)**
+## Interfaces
+
+| Interface | Description | Access |
+|-----------|-------------|--------|
+| **Web UI** | Next.js chat interface | http://localhost:3000 |
+| **Desktop Widget** | Tauri app, system tray, `Ctrl+Space` hotkey | `cd widget && npm run tauri:dev` |
+| **CLI** | Terminal chat client | `aria chat "message"` |
+| **REST API** | Full API with streaming | http://localhost:8000/docs |
+
+## LLM Backends
+
+| Backend | Type | Config |
+|---------|------|--------|
+| **Ollama** | Local | Bundled in Docker Compose |
+| **llama.cpp** | Local (ROCm) | Bundled — AMD APU/GPU acceleration |
+| **Anthropic** | Cloud | `ANTHROPIC_API_KEY` in `.env` |
+| **OpenAI** | Cloud | `OPENAI_API_KEY` in `.env` |
+| **OpenRouter** | Cloud (multi) | `OPENROUTER_API_KEY` in `.env` |
+
+The llama.cpp service uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm) and supports AMD APUs (gfx1151/gfx1150) and RDNA3/4 GPUs.
 
 ## Directory Structure
 
 ```
-aria/
-├── SPECIFICATION.md      # Full spec (read this!)
-├── PROJECT_STATUS.md     # Current progress
-├── CHANGELOG.md          # Change history
-├── docker-compose.yml    # Container setup (mongod + mongot + api)
-├── scripts/
-│   └── init-mongo.js     # MongoDB initialization
-├── api/                  # FastAPI backend
+ProjectAria/
+├── api/                    # FastAPI backend
 │   └── aria/
-│       ├── main.py       # Entry point
-│       ├── core/         # Agent logic
-│       ├── llm/          # LLM adapters
-│       ├── memory/       # Memory system (short-term + long-term)
-│       ├── tools/        # Tool system
-│       └── db/           # Database
-├── cli/                  # CLI client
-├── ui/                   # Web UI (Phase 5+)
-└── mcp-servers/          # Custom MCP servers
+│       ├── core/           # Orchestrator, context builder
+│       ├── llm/            # LLM adapters (ollama, llamacpp, anthropic, openai, openrouter)
+│       ├── memory/         # Short-term + long-term memory, embeddings
+│       ├── tools/          # Built-in tools + MCP integration
+│       └── db/             # MongoDB models and connection
+├── ui/                     # Next.js web UI
+├── widget/                 # Tauri desktop widget
+├── cli/                    # Python CLI client
+├── llamacpp/               # llama.cpp ROCm Dockerfile
+├── models/                 # GGUF model files (gitignored)
+├── scripts/                # MongoDB init, setup scripts
+├── docker-compose.yml      # Full service stack
+├── GETTING_STARTED.md      # Setup guide
+├── SPECIFICATION.md        # Detailed architecture
+└── PROJECT_STATUS.md       # Current progress
 ```
 
-## Current Phase
+## Development
 
-See `PROJECT_STATUS.md` for current phase and checklist.
+```bash
+# API (with hot-reload)
+cd api && uvicorn aria.main:app --reload --host 0.0.0.0 --port 8000
 
-## MongoDB 8.2 + mongot
+# Web UI (with hot-reload)
+cd ui && npm run dev
 
-This project uses MongoDB Community Server 8.2 with the separate `mongot` service:
+# Desktop Widget
+cd widget && npm install && npm run tauri:dev
 
-- **mongod** - Main database server (port 27017)
-- **mongot** - Search server with Atlas Search/Vector Search (port 27028)
+# CLI
+cd cli && pip install -e .
+```
 
-This setup provides:
-- `$vectorSearch` - Semantic similarity search
-- `$search` - Full-text BM25 search
-- Hybrid search with RRF fusion
+## Documentation
 
-No MongoDB Atlas subscription required - runs entirely locally.
+- **[GETTING_STARTED.md](GETTING_STARTED.md)** — Full setup and usage guide
+- **[SPECIFICATION.md](SPECIFICATION.md)** — Detailed architecture and requirements
+- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** — Current phase and progress
+- **[CHANGELOG.md](CHANGELOG.md)** — Change history
 
-## References
+## Key Design Decisions
 
-- [MongoDB 8.2 Vector Search](https://www.mongodb.com/docs/manual/core/indexes/index-types/index-vector/)
-- [MCP Protocol](https://modelcontextprotocol.io/)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [Ollama API](https://github.com/ollama/ollama/blob/main/docs/api.md)
+1. **No framework dependencies** — No LangChain, LlamaIndex, etc. Direct API integration only.
+2. **LLM agnostic** — Adapter pattern makes backends swappable with automatic fallback.
+3. **MongoDB 8.2 + mongot** — Community Server with vector search, no Atlas needed.
+4. **Local-first** — Local LLMs primary, cloud APIs as fallback.
+5. **Hybrid search** — BM25 + vector with RRF fusion for memory retrieval.
+
+## Current Status
+
+See `PROJECT_STATUS.md` for detailed progress. Phases 1-5 are complete (Foundation, Memory, Tools, Cloud LLMs, Web UI). The desktop widget and llama.cpp ROCm support are the latest additions.

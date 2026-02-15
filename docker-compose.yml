@@ -16,6 +16,8 @@ services:
       - MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
       - MONGODB_DATABASE=aria
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - LLAMACPP_URL=${LLAMACPP_URL:-http://llamacpp:8080/v1}
+      - LLAMACPP_API_KEY=${LLAMACPP_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
@@ -50,6 +52,39 @@ services:
     #   - "11434:11434"
     volumes:
       - ollama-data:/root/.ollama
+    networks:
+      - aria-network
+
+  # =============================================================================
+  # llama.cpp with ROCm (Local LLM Inference - AMD GPU/APU)
+  # =============================================================================
+  # Pre-built binaries from https://github.com/lemonade-sdk/llamacpp-rocm
+  # Default target: gfx1151 (Ryzen AI MAX+ Pro 395 / STX Halo)
+  # Place your GGUF model files in ./models/ directory
+  llamacpp:
+    build:
+      context: ./llamacpp
+      dockerfile: Dockerfile
+      args:
+        GPU_TARGET: ${LLAMACPP_GPU_TARGET:-gfx1151}
+    container_name: aria-llamacpp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - LLAMACPP_MODEL=${LLAMACPP_MODEL:-/models/model.gguf}
+      - LLAMACPP_GPU_LAYERS=${LLAMACPP_GPU_LAYERS:-99}
+      - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-8192}
+    volumes:
+      - ${LLAMACPP_MODELS_DIR:-./models}:/models:ro
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp:unconfined
     networks:
       - aria-network
 

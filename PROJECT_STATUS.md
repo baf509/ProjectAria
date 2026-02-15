@@ -1,6 +1,6 @@
 # ARIA Project Status
 
-**Last Updated:** 2025-12-07
+**Last Updated:** 2026-02-15
 **Updated By:** Claude Code
 
 ---
@@ -9,11 +9,76 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║  PHASE 5: Web UI                                                 ║
-║  Status: IMPLEMENTATION COMPLETE (Core Features)                 ║
-║  Target: Weeks 15-18                                             ║
+║  PHASE 6: Desktop Widget + llama.cpp ROCm                        ║
+║  Status: IMPLEMENTATION COMPLETE                                 ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
+
+---
+
+## Phase 6 Checklist
+
+### llama.cpp ROCm Backend
+- [x] llama.cpp adapter (`api/aria/llm/llamacpp.py`)
+  - [x] Subclasses OpenAI adapter (OpenAI-compatible API)
+  - [x] Configurable base URL and API key
+- [x] LLM manager registration (`api/aria/llm/manager.py`)
+  - [x] `llamacpp` backend in `get_adapter()`
+  - [x] `llamacpp` backend in `is_backend_available()`
+- [x] Configuration (`api/aria/config.py`)
+  - [x] `LLAMACPP_URL` setting
+  - [x] `LLAMACPP_API_KEY` setting
+- [x] Docker service (`llamacpp/Dockerfile`)
+  - [x] Pre-built ROCm binaries from lemonade-sdk/llamacpp-rocm
+  - [x] gfx1151 default target (Ryzen AI MAX+ Pro 395)
+  - [x] Configurable GPU target (gfx1150, gfx120X, gfx110X)
+  - [x] GPU device passthrough (/dev/kfd, /dev/dri)
+  - [x] Model volume mount
+- [x] docker-compose.yml integration
+  - [x] `llamacpp` service with ROCm device access
+  - [x] Environment variable configuration
+  - [x] Network connectivity to API service
+
+### Desktop Widget (Tauri v2)
+- [x] Project scaffold (`widget/`)
+  - [x] Tauri v2 with Vite + TypeScript
+  - [x] System tray icon with menu
+  - [x] Global hotkey (Ctrl+Space) to toggle window
+  - [x] Floating window (400x500, always on top, no decorations)
+- [x] Chat UI
+  - [x] Message list with streaming updates
+  - [x] Text input with Enter to send
+  - [x] Auto-resize textarea
+  - [x] Escape to hide window
+  - [x] New Chat button
+- [x] API integration
+  - [x] ARIA API client with SSE streaming
+  - [x] Conversation auto-creation and resume
+  - [x] Settings panel (API URL)
+- [x] UI/UX
+  - [x] Dark theme (Tokyo Night-inspired)
+  - [x] Mic button placeholder (for future voice)
+  - [x] Draggable titlebar
+
+### Web UI Fix
+- [x] Created missing `ui/src/lib/api-client.ts`
+  - [x] `checkHealth()`, `listConversations()`, `getConversation()`
+  - [x] `createConversation()`, `streamMessage()` (async generator)
+  - [x] SSE streaming support
+
+### Documentation
+- [x] Updated README.md
+- [x] Updated GETTING_STARTED.md with full setup steps
+- [x] Updated PROJECT_STATUS.md
+- [x] Updated .env.example with llama.cpp variables
+
+### Future Enhancements
+- [ ] Voice input/output (STT/TTS) in widget
+- [ ] React Native mobile app
+- [ ] Widget settings persistence via Tauri store
+- [ ] Configurable hotkey
+- [ ] Agent management UI
+- [ ] Memory browser/viewer
 
 ---
 
@@ -50,17 +115,6 @@
 - [x] Dockerfile for production build
 - [x] Updated docker-compose.yml with UI service
 - [x] Environment variable configuration
-
-### Documentation
-- [x] UI README with setup instructions
-
-### Future Enhancements
-- [ ] Agent management UI
-- [ ] Memory browser/viewer
-- [ ] Tool execution visualization
-- [ ] Settings/configuration page
-- [ ] File upload support
-- [ ] Voice input/output
 
 ---
 
@@ -496,12 +550,12 @@ To start Phase 5 (Web UI):
 | 1 | Foundation (API, Ollama, Conversations) | COMPLETE |
 | 2 | Memory System (Short-term, Long-term, Embeddings) | COMPLETE |
 | 3 | Tools & MCP (Built-in tools, MCP client) | COMPLETE |
-| 4 | Cloud LLM Adapters (Anthropic, OpenAI, Fallback) | COMPLETE (Implementation) |
-| 5 | Web UI | - |
-| 6 | Computer Use - CLI | - |
-| 7 | Computer Use - GUI | - |
-| 8 | Voice Mode | - |
-| 9 | Remote Access & Security | - |
-| 10 | Knowledge Base & RAG | - |
-| 11 | Automation | - |
-| 12+ | Advanced Features | - |
+| 4 | Cloud LLM Adapters (Anthropic, OpenAI, OpenRouter, Fallback) | COMPLETE |
+| 5 | Web UI (Next.js) | COMPLETE |
+| 6 | Desktop Widget + llama.cpp ROCm | COMPLETE |
+| 7 | Voice Mode (STT/TTS) | - |
+| 8 | React Native Mobile App | - |
+| 9 | Computer Use - CLI/GUI | - |
+| 10 | Remote Access & Security | - |
+| 11 | Knowledge Base & RAG | - |
+| 12 | Automation | - |
