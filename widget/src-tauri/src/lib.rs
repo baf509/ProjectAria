@@ -1,4 +1,5 @@
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager,
@@ -18,7 +19,10 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show_i, &new_i, &quit_i])?;
 
             // Build tray icon
+            let icon = Image::from_path(app.path().resource_dir()?.join("icons/icon.png"))
+                .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to load embedded icon"));
             let _tray = TrayIconBuilder::new()
+                .icon(icon)
                 .menu(&menu)
                 .tooltip("ARIA - AI Assistant")
                 .on_menu_event(|app, event| match event.id.as_ref() {
