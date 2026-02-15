@@ -79,8 +79,8 @@ services:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     group_add:
-      - video
-      - render
+      - "44"   # video
+      - "992"  # render
     security_opt:
       - seccomp:unconfined
     networks:
@@ -121,7 +121,7 @@ services:
       --port 27017
       --setParameter mongotHost=mongot:27028
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
       - mongod-data:/data/db
       - mongod-config:/data/configdb

@@ -17,7 +17,7 @@ ARG LLAMACPP_RELEASE=latest
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl unzip ca-certificates jq \
     # ROCm runtime dependencies
-    libdrm2 libdrm-amdgpu1 libnuma1 libelf1 \
+    libdrm2 libdrm-amdgpu1 libnuma1 libelf1 libatomic1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Download pre-built llamacpp-rocm release
