@@ -1,8 +1,9 @@
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager,
+    AppHandle, Manager,
 };
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -56,7 +57,7 @@ pub fn run() {
 
             // Register global shortcut (Ctrl+Space)
             use tauri_plugin_global_shortcut::ShortcutState;
-            app.global_shortcut().on_shortcut("ctrl+space", move |app, _shortcut, event| {
+            app.global_shortcut().on_shortcut("ctrl+space", move |app: &AppHandle, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
                     if let Some(window) = app.get_webview_window("main") {
                         if window.is_visible().unwrap_or(false) {
