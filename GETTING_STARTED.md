@@ -247,20 +247,49 @@ curl -N -X POST "http://localhost:8000/api/v1/conversations/$CONV_ID/messages" \
 
 The desktop widget is a Tauri app that lives in your system tray and opens with `Ctrl+Space`.
 
+### Linux
+
 ```bash
-# Install dependencies
+# Install Tauri system dependencies
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+# Install dependencies and run
 cd widget
 npm install
-
-# Install Tauri system dependencies (Linux)
-sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
 # Run in development mode
 npm run tauri:dev
 
 # Build for production
 npm run tauri:build
+# Output: widget/src-tauri/target/release/bundle/
 ```
+
+### Windows
+
+**Prerequisites:**
+1. **Node.js 18+** — [nodejs.org](https://nodejs.org)
+2. **Rust toolchain** — Install via [rustup.rs](https://rustup.rs)
+3. **Visual Studio C++ Build Tools** — Install from [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-studio-build-tools/), select **"Desktop development with C++"** workload
+
+```powershell
+cd widget
+
+# Install dependencies
+npm install
+
+# Run in development mode (with hot-reload)
+npm run tauri:dev
+
+# Build for production (.exe / .msi installer)
+npm run tauri:build
+# Output: widget\src-tauri\target\release\bundle\msi\  (MSI installer)
+# Output: widget\src-tauri\target\release\bundle\nsis\ (NSIS installer)
+```
+
+### Configuration
+
+Once running, open the settings panel in the widget and set the API URL to your ARIA server (e.g., `http://your-server:8000`). The default is `http://localhost:8000`.
 
 **Widget features:**
 - `Ctrl+Space` — Toggle the chat window
@@ -437,7 +466,7 @@ docker compose up mongo-init
 # Wait 30 seconds for indexes to activate
 ```
 
-### Widget build fails
+### Widget build fails (Linux)
 
 ```bash
 # Install system dependencies (Ubuntu/Debian)
@@ -449,6 +478,22 @@ rustc --version  # Need 1.70+
 # Clean and rebuild
 cd widget
 rm -rf node_modules src-tauri/target
+npm install
+npm run tauri:dev
+```
+
+### Widget build fails (Windows)
+
+```powershell
+# Verify Rust is installed
+rustc --version  # Need 1.70+
+
+# Verify Visual Studio Build Tools are installed
+# Open "Visual Studio Installer" and ensure "Desktop development with C++" is checked
+
+# Clean and rebuild
+cd widget
+Remove-Item -Recurse -Force node_modules, src-tauri\target
 npm install
 npm run tauri:dev
 ```
