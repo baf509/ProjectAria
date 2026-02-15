@@ -18,9 +18,8 @@ pub fn run() {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &new_i, &quit_i])?;
 
-            // Build tray icon
-            let icon = Image::from_path(app.path().resource_dir()?.join("icons/icon.png"))
-                .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/icon.png")).expect("failed to load embedded icon"));
+            // Build tray icon (embedded at compile time for reliability across platforms)
+            let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))?;
             let _tray = TrayIconBuilder::new()
                 .icon(icon)
                 .menu(&menu)

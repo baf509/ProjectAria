@@ -40,6 +40,9 @@ RUN set -ex && \
 ENV LD_LIBRARY_PATH=/opt/llamacpp:/opt/llamacpp/lib:${LD_LIBRARY_PATH}
 ENV PATH=/opt/llamacpp:${PATH}
 
+# ROCm GFX version override (required for gfx1151 and similar targets)
+ENV HSA_OVERRIDE_GFX_VERSION=11.5.1
+
 # Model storage
 VOLUME /models
 
@@ -49,14 +52,9 @@ EXPOSE 8080
 # Override LLAMACPP_MODEL to point to your GGUF file
 ENV LLAMACPP_MODEL=/models/model.gguf
 ENV LLAMACPP_GPU_LAYERS=99
-ENV LLAMACPP_CTX_SIZE=8192
+ENV LLAMACPP_CTX_SIZE=16384
 ENV LLAMACPP_HOST=0.0.0.0
 ENV LLAMACPP_PORT=8080
 
 ENTRYPOINT ["/bin/sh", "-c"]
-CMD ["exec llama-server \
-    --model \"$LLAMACPP_MODEL\" \
-    --n-gpu-layers $LLAMACPP_GPU_LAYERS \
-    --ctx-size $LLAMACPP_CTX_SIZE \
-    --host $LLAMACPP_HOST \
-    --port $LLAMACPP_PORT"]
+CMD ["exec llama-server --model \"$LLAMACPP_MODEL\" --n-gpu-layers $LLAMACPP_GPU_LAYERS --ctx-size $LLAMACPP_CTX_SIZE --host $LLAMACPP_HOST --port $LLAMACPP_PORT --no-mmap --flash-attn on --chat-template chatml --jinja"]

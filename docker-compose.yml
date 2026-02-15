@@ -70,9 +70,10 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - LLAMACPP_MODEL=${LLAMACPP_MODEL:-/models/model.gguf}
+      - LLAMACPP_MODEL=${LLAMACPP_MODEL:-/models/step-3.5-flash-new/step3p5_flash_Q4_K_S-00001-of-00012.gguf}
       - LLAMACPP_GPU_LAYERS=${LLAMACPP_GPU_LAYERS:-99}
-      - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-8192}
+      - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-16384}
+      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.5.1}
     volumes:
       - ${LLAMACPP_MODELS_DIR:-./models}:/models:ro
     devices:
