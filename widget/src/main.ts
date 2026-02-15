@@ -38,7 +38,7 @@ function loadSettings(): Settings {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch {}
-  return { apiUrl: "http://localhost:8000" };
+  return { apiUrl: "http://corsair-ai.tailb286a5.ts.net:8000" };
 }
 
 function saveSettings(s: Settings) {

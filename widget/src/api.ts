@@ -4,7 +4,7 @@
  * Connects to the ProjectAria backend API for conversations and streaming.
  */
 
-const DEFAULT_API_URL = "http://localhost:8000";
+const DEFAULT_API_URL = "http://corsair-ai.tailb286a5.ts.net:8000";
 
 export interface Conversation {
   id: string;
