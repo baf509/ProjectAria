@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 
-MODEL_NAME = "openai/whisper-large-v3-turbo"
+MODEL_NAME = "large-v3-turbo"
 
 whisper_model: WhisperModel | None = None
 

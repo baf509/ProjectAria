@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download model at build time so startup is fast
-RUN python -c "from faster_whisper import WhisperModel; WhisperModel('openai/whisper-large-v3-turbo', device='cpu', compute_type='int8')"
+RUN python -c "from faster_whisper import WhisperModel; WhisperModel('large-v3-turbo', device='cpu', compute_type='int8')"
 
 COPY server.py .
 
