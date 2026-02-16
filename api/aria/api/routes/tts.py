@@ -22,7 +22,7 @@ TTS_TIMEOUT = 120.0  # CPU inference can be slow
 
 class SynthesizeRequest(BaseModel):
     text: str
-    speaker: str = "Chelsie"
+    speaker: str = "Ryan"
     language: str = "English"
     instruct: str | None = None
 

@@ -103,7 +103,7 @@ Speech synthesis powered by Qwen3-TTS 0.6B CustomVoice running on CPU. The widge
 
 - **Model**: `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`
 - **Service**: `http://localhost:8002`
-- **9 speakers**: Chelsie, Ethan, Ryan, Layla, Luke, Natasha, Oliver, Sophia, Tyler
+- **9 speakers**: Vivian, Serena, Uncle_Fu, Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee
 
 ### Speech-to-Text (STT)
 

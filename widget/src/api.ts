@@ -133,7 +133,7 @@ export async function checkHealth(): Promise<{ status: string }> {
 
 export async function synthesizeSpeech(
   text: string,
-  speaker = "Chelsie",
+  speaker = "Ryan",
   language = "English",
   instruct?: string
 ): Promise<ArrayBuffer> {

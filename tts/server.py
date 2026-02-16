@@ -9,31 +9,32 @@ import asyncio
 import io
 from contextlib import asynccontextmanager
 
+import numpy as np
 import soundfile as sf
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
-from qwen_tts import QwenTTS
+from qwen_tts import Qwen3TTSModel
 
 MODEL_NAME = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
-SAMPLE_RATE = 24000
 
 SPEAKERS = [
-    "Chelsie", "Ethan", "Ryan", "Layla", "Luke",
-    "Natasha", "Oliver", "Sophia", "Tyler",
+    "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric",
+    "Ryan", "Aiden", "Ono_Anna", "Sohee",
 ]
 
-tts_model: QwenTTS | None = None
+tts_model: Qwen3TTSModel | None = None
+sample_rate: int = 24000
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global tts_model
-    tts_model = QwenTTS.from_pretrained(
+    tts_model = Qwen3TTSModel.from_pretrained(
         MODEL_NAME,
         device_map="cpu",
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
     )
     yield
     tts_model = None
@@ -44,12 +45,12 @@ app = FastAPI(title="ARIA TTS", lifespan=lifespan)
 
 class SynthesizeRequest(BaseModel):
     text: str
-    speaker: str = "Chelsie"
+    speaker: str = "Ryan"
     language: str = "English"
     instruct: str | None = None
 
 
-def _synthesize(request: SynthesizeRequest) -> bytes:
+def _synthesize(request: SynthesizeRequest) -> tuple[bytes, int]:
     """Run TTS inference (blocking, meant to be called via to_thread)."""
     if tts_model is None:
         raise RuntimeError("Model not loaded")
@@ -57,19 +58,32 @@ def _synthesize(request: SynthesizeRequest) -> bytes:
     if request.speaker not in SPEAKERS:
         raise ValueError(f"Unknown speaker: {request.speaker}. Available: {SPEAKERS}")
 
-    spk_text = f"[{request.speaker}]: "
-    instruct_text = request.instruct or f"Speak naturally in {request.language}."
+    kwargs = {
+        "text": request.text,
+        "speaker": request.speaker,
+        "language": request.language,
+    }
+    if request.instruct:
+        kwargs["instruct"] = request.instruct
 
-    audio = tts_model.synthesize(
-        text=request.text,
-        speaker=spk_text,
-        instruct=instruct_text,
-    )
+    wavs, sr = tts_model.generate_custom_voice(**kwargs)
+
+    # wavs may be a list of tensors or a single tensor
+    if isinstance(wavs, list):
+        audio = wavs[0]
+    else:
+        audio = wavs
+
+    if isinstance(audio, torch.Tensor):
+        audio = audio.cpu().numpy()
+
+    # Ensure 1D
+    audio = np.squeeze(audio)
 
     # Encode as WAV
     buf = io.BytesIO()
-    sf.write(buf, audio.cpu().numpy(), SAMPLE_RATE, format="WAV", subtype="PCM_16")
-    return buf.getvalue()
+    sf.write(buf, audio, sr, format="WAV", subtype="PCM_16")
+    return buf.getvalue(), sr
 
 
 @app.post("/v1/tts/synthesize")
@@ -81,7 +95,7 @@ async def synthesize(request: SynthesizeRequest) -> Response:
         raise HTTPException(status_code=400, detail="Text cannot be empty")
 
     try:
-        wav_bytes = await asyncio.to_thread(_synthesize, request)
+        wav_bytes, _ = await asyncio.to_thread(_synthesize, request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -100,7 +114,6 @@ async def health():
     return {
         "status": "healthy" if tts_model is not None else "loading",
         "model": MODEL_NAME,
-        "sample_rate": SAMPLE_RATE,
         "speakers": len(SPEAKERS),
     }
 

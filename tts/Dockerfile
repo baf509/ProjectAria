@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Download model at build time so startup is fast
-RUN python -c "from qwen_tts import QwenTTS; QwenTTS.from_pretrained('Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice')"
+RUN python -c "from qwen_tts import Qwen3TTSModel; Qwen3TTSModel.from_pretrained('Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice', device_map='cpu')"
 
 COPY server.py .
 
