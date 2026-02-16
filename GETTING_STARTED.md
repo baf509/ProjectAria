@@ -12,6 +12,8 @@ Complete guide to setting up and running ARIA on your machine.
 | **MongoDB** (mongod) | Data storage — conversations, memories, agents | 27017 |
 | **MongoDB Search** (mongot) | Vector + text search engine | 27028 |
 | **Embeddings** | voyage-4-nano embeddings (CPU, sentence-transformers) | 8001 |
+| **TTS** (optional) | Qwen3-TTS text-to-speech (CPU) | 8002 |
+| **STT** (optional) | Whisper speech-to-text (CPU) | 8003 |
 | **llama.cpp** (optional) | Local LLM with ROCm GPU acceleration | 8080 |
 | **Web UI** | Next.js chat interface | 3000 |
 
@@ -124,6 +126,8 @@ docker compose logs -f
 **First run will take a few minutes** — Docker needs to:
 - Build the API image
 - Build the embedding service image (downloads the voyage-4-nano model)
+- Build the TTS service image (downloads Qwen3-TTS 0.6B model, if enabled)
+- Build the STT service image (downloads whisper-large-v3-turbo, if enabled)
 - Build the llama.cpp ROCm image (downloads ~450MB of pre-built binaries)
 - Pull MongoDB images
 - Initialize the replica set and search indexes
@@ -141,6 +145,8 @@ aria-api          running
 aria-mongod       running (healthy)
 aria-mongot       running
 aria-embeddings   running
+aria-tts          running        # only if using TTS
+aria-stt          running        # only if using STT
 aria-llamacpp     running        # only if using llama.cpp
 aria-ui           running
 aria-mongo-init   exited (0)     # one-time setup, expected to exit
@@ -162,6 +168,12 @@ curl http://localhost:8000/api/v1/health/llm
 
 # Check embedding service
 curl http://localhost:8001/health
+
+# Check TTS service (if using)
+curl http://localhost:8002/health
+
+# Check STT service (if using)
+curl http://localhost:8003/health
 
 # Check llama.cpp is serving (if using)
 curl http://localhost:8080/health
@@ -321,6 +333,8 @@ docker compose restart api
 docker compose logs -f api          # API logs
 docker compose logs -f llamacpp     # llama.cpp logs
 docker compose logs -f embeddings   # Embedding service logs
+docker compose logs -f tts          # TTS service logs
+docker compose logs -f stt          # STT service logs
 docker compose logs -f mongod       # MongoDB logs
 ```
 
@@ -332,6 +346,8 @@ docker compose logs -f mongod       # MongoDB logs
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Swagger/OpenAPI |
 | Embeddings | http://localhost:8001 | OpenAI-compatible embedding API |
+| TTS | http://localhost:8002 | Qwen3-TTS speech synthesis |
+| STT | http://localhost:8003 | Whisper transcription |
 | llama.cpp | http://localhost:8080 | OpenAI-compatible API |
 
 ### Useful API Endpoints
@@ -356,6 +372,19 @@ curl http://localhost:8000/api/v1/agents
 
 # Tools
 curl http://localhost:8000/api/v1/tools
+
+# TTS - synthesize speech
+curl -X POST http://localhost:8000/api/v1/tts/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello from ARIA","speaker":"Chelsie"}' \
+  --output hello.wav
+
+# TTS - list speakers
+curl http://localhost:8000/api/v1/tts/speakers
+
+# STT - transcribe audio
+curl -X POST http://localhost:8000/api/v1/stt/transcribe \
+  -F "file=@recording.wav"
 ```
 
 ---
@@ -510,6 +539,5 @@ After setup, try:
 4. **Add MCP servers** — Connect external tool servers
 
 Future plans:
-- Voice input/output (STT/TTS)
 - React Native mobile app
 - Computer use (screen control)

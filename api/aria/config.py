@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openrouter_api_key: str = ""
 
+    # TTS
+    tts_url: str = "http://tts:8002/v1"
+
+    # STT
+    stt_url: str = "http://stt:8003/v1"
+
     # Embeddings
     embedding_url: str = "http://embeddings:8001/v1"
     embedding_model: str = "voyageai/voyage-4-nano"

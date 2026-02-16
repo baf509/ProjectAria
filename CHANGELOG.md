@@ -22,6 +22,26 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-02-16] - Phase 6 - Voice I/O (TTS + STT)
+
+### Added
+- TTS microservice (`tts/`) running Qwen3-TTS 0.6B CustomVoice model on CPU
+- `POST /v1/tts/synthesize` endpoint for speech synthesis (returns WAV audio)
+- `GET /v1/tts/speakers` endpoint listing 9 available voice speakers
+- `GET /v1/tts/health` endpoint for TTS service health checks
+- API proxy routes forwarding TTS requests to the microservice
+- Widget play button on assistant messages for reading responses aloud
+- Docker Compose `tts` service on port 8002
+- `TTS_URL` configuration in `.env.example` and API settings
+- STT microservice (`stt/`) running whisper-large-v3-turbo via faster-whisper on CPU (int8)
+- `POST /v1/stt/transcribe` endpoint accepting audio file upload, returns transcribed text
+- `GET /v1/stt/health` endpoint for STT service health checks
+- API proxy routes forwarding STT requests to the microservice
+- Widget mic button now functional: click to record, click again to stop and transcribe
+- Recording indicator (pulsing red) and transcribing state on mic button
+- Docker Compose `stt` service on port 8003
+- `STT_URL` configuration in `.env.example` and API settings
+
 ---
 
 ## [2025-12-28] - Phase 2 - Fix Memory Extraction Background Tasks

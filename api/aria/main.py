@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aria.config import settings
 from aria.db.mongodb import connect_db, close_db
-from aria.api.routes import health, conversations, agents, memories, tools
+from aria.api.routes import health, conversations, agents, memories, tools, tts, stt
 from aria.api.deps import get_tool_router, get_mcp_manager
 from aria.tools.builtin import FilesystemTool, ShellTool, WebTool
 
@@ -72,6 +72,8 @@ app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"
 app.include_router(agents.router, prefix="/api/v1", tags=["agents"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 app.include_router(tools.router, prefix="/api/v1", tags=["tools"])
+app.include_router(tts.router, prefix="/api/v1", tags=["tts"])
+app.include_router(stt.router, prefix="/api/v1", tags=["stt"])
 
 
 @app.get("/")

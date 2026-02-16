@@ -12,6 +12,7 @@ ARIA is a self-hosted AI assistant that remembers your conversations, uses tools
 - **Tool use & MCP** — Built-in filesystem/shell/web tools plus MCP server integration
 - **Local-first** — MongoDB 8.2 + mongot for vector search, no Atlas subscription needed
 - **Local embeddings** — voyage-4-nano via sentence-transformers, runs on CPU
+- **Voice I/O** — Text-to-speech (Qwen3-TTS) and speech-to-text (Whisper) microservices, both on CPU
 - **Single-user** — Personal agent, no auth complexity
 
 ## Architecture
@@ -42,10 +43,10 @@ ARIA is a self-hosted AI assistant that remembers your conversations, uses tools
           │
           ▼
 ┌──────────────────────────────────────┐
-│ MongoDB 8.2 + mongot  │  Embeddings │
-│  mongod (data)        │  voyage-4-  │
-│  mongot (search)      │  nano (CPU) │
-└──────────────────────────────────────┘
+│ MongoDB 8.2 + mongot  │  Embeddings │  Voice     │
+│  mongod (data)        │  voyage-4-  │  TTS (CPU) │
+│  mongot (search)      │  nano (CPU) │  STT (CPU) │
+└────────────────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -94,6 +95,24 @@ Embeddings are generated locally by a lightweight sentence-transformers service 
 - **Service**: `http://localhost:8001`
 - **Fallback**: Voyage AI cloud API (if `VOYAGE_API_KEY` is set)
 
+## Voice Services
+
+### Text-to-Speech (TTS)
+
+Speech synthesis powered by Qwen3-TTS 0.6B CustomVoice running on CPU. The widget and web UI show a play button on assistant messages to read responses aloud.
+
+- **Model**: `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice`
+- **Service**: `http://localhost:8002`
+- **9 speakers**: Chelsie, Ethan, Ryan, Layla, Luke, Natasha, Oliver, Sophia, Tyler
+
+### Speech-to-Text (STT)
+
+Transcription powered by `openai/whisper-large-v3-turbo` via faster-whisper, running on CPU with int8 quantization. The widget mic button records audio and inserts the transcribed text into the input field.
+
+- **Model**: `openai/whisper-large-v3-turbo` (int8)
+- **Service**: `http://localhost:8003`
+- **Auto language detection** with optional language hint
+
 ## Directory Structure
 
 ```
@@ -106,6 +125,8 @@ ProjectAria/
 │       ├── tools/          # Built-in tools + MCP integration
 │       └── db/             # MongoDB models and connection
 ├── embeddings/             # Embedding microservice (sentence-transformers)
+├── tts/                    # TTS microservice (Qwen3-TTS)
+├── stt/                    # STT microservice (whisper-large-v3-turbo)
 ├── ui/                     # Next.js web UI
 ├── widget/                 # Tauri desktop widget
 ├── cli/                    # Python CLI client

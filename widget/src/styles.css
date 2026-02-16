@@ -206,9 +206,30 @@ html, body {
   border-color: var(--accent);
 }
 
-#btn-mic {
+#btn-mic:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+#btn-mic.recording {
+  color: var(--error);
+  border-color: var(--error);
+  animation: pulse 1s infinite;
+}
+
+#btn-mic.transcribing {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+#btn-mic:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* Settings panel */
@@ -261,6 +282,35 @@ html, body {
 
 #btn-save-settings:hover {
   background: var(--accent-hover);
+}
+
+/* TTS play button */
+.tts-play-btn {
+  display: inline-block;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  margin-left: 6px;
+  border-radius: 4px;
+  transition: all 0.15s;
+  vertical-align: middle;
+}
+
+.tts-play-btn:hover {
+  color: var(--accent);
+  background: var(--border);
+}
+
+.tts-play-btn.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.tts-play-btn.playing {
+  color: var(--accent);
 }
 
 /* Empty state */

@@ -130,3 +130,40 @@ export async function checkHealth(): Promise<{ status: string }> {
   const res = await apiFetch("/health");
   return res.json();
 }
+
+export async function synthesizeSpeech(
+  text: string,
+  speaker = "Chelsie",
+  language = "English",
+  instruct?: string
+): Promise<ArrayBuffer> {
+  const res = await fetch(`${apiUrl}/api/v1/tts/synthesize`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, speaker, language, instruct }),
+  });
+  if (!res.ok) {
+    throw new Error(`TTS error ${res.status}: ${res.statusText}`);
+  }
+  return res.arrayBuffer();
+}
+
+export async function transcribeSpeech(
+  audioBlob: Blob,
+  language?: string
+): Promise<{ text: string; language: string; duration: number }> {
+  const formData = new FormData();
+  formData.append("file", audioBlob, "recording.wav");
+  if (language) {
+    formData.append("language", language);
+  }
+
+  const res = await fetch(`${apiUrl}/api/v1/stt/transcribe`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    throw new Error(`STT error ${res.status}: ${res.statusText}`);
+  }
+  return res.json();
+}
