@@ -75,12 +75,12 @@ pub fn run() {
                     if let tauri::tray::TrayIconEvent::Click { .. } = event {
                         let app = tray.app_handle();
                         if let Some(window) = app.get_webview_window("main") {
-                            if window.is_visible().unwrap_or(false) {
-                                let _ = window.hide();
-                            } else {
-                                let _ = window.show();
-                                let _ = window.set_focus();
-                            }
+                            // Always show on tray click — don't toggle, because on
+                            // Windows the focus race between tray and window causes
+                            // the window to immediately disappear after showing.
+                            // Use Ctrl+Space or tray menu to hide.
+                            let _ = window.show();
+                            let _ = window.set_focus();
                         }
                     }
                 })
