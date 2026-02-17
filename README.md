@@ -57,12 +57,15 @@ See **[GETTING_STARTED.md](GETTING_STARTED.md)** for the full setup guide.
 # 1. Clone and configure
 git clone https://github.com/baf509/ProjectAria.git
 cd ProjectAria
-cp .env.example .env        # Edit with your API keys and model paths
+cp .env.example .env        # Edit with your API keys
 
-# 2. Start the stack
-docker compose up -d
+# 2. Start shared infrastructure (MongoDB, llama.cpp, embeddings)
+cd /home/ben/Dev/infrastructure && docker compose up -d
 
-# 3. Access ARIA
+# 3. Start ARIA services (API, TTS, STT, Web UI)
+cd /home/ben/Dev/ProjectAria && docker compose up -d
+
+# 4. Access ARIA
 open http://localhost:3000   # Web UI
 aria chat "Hello, ARIA!"     # CLI (optional)
 ```
@@ -124,19 +127,18 @@ ProjectAria/
 │       ├── memory/         # Short-term + long-term memory, embeddings
 │       ├── tools/          # Built-in tools + MCP integration
 │       └── db/             # MongoDB models and connection
-├── embeddings/             # Embedding microservice (sentence-transformers)
 ├── tts/                    # TTS microservice (Qwen3-TTS)
 ├── stt/                    # STT microservice (whisper-large-v3-turbo)
 ├── ui/                     # Next.js web UI
 ├── widget/                 # Tauri desktop widget
 ├── cli/                    # Python CLI client
-├── llamacpp/               # llama.cpp ROCm Dockerfile
-├── models/                 # GGUF model files (gitignored)
-├── scripts/                # MongoDB init, setup scripts
-├── docker-compose.yml      # Full service stack
+├── docker-compose.yml      # ARIA services (api, tts, stt, ui)
 ├── GETTING_STARTED.md      # Setup guide
 ├── SPECIFICATION.md        # Detailed architecture
 └── PROJECT_STATUS.md       # Current progress
+
+# Shared infrastructure (separate project):
+# /home/ben/Dev/infrastructure/  — mongod, mongot, llamacpp, embeddings
 ```
 
 ## Development

@@ -1,7 +1,7 @@
 """
 ARIA - Speech-to-Text Microservice
 
-Serves transcription via faster-whisper with openai/whisper-large-v3-turbo.
+Serves transcription via faster-whisper with large-v3-turbo (CTranslate2).
 Runs on CPU with int8 quantization for reasonable performance.
 """
 
@@ -14,6 +14,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from faster_whisper import WhisperModel
 
 MODEL_NAME = "large-v3-turbo"
+MAX_AUDIO_SIZE = 25 * 1024 * 1024  # 25 MB
 
 whisper_model: WhisperModel | None = None
 
@@ -38,8 +39,9 @@ def _transcribe(audio_bytes: bytes, language: str | None) -> dict:
     if whisper_model is None:
         raise RuntimeError("Model not loaded")
 
-    # Write to temp file — faster-whisper needs a file path or file-like object
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+    # Write to temp file — faster-whisper needs a file path
+    # No suffix: audio may be webm, ogg, etc. — ffmpeg handles format detection
+    with tempfile.NamedTemporaryFile(delete=True) as tmp:
         tmp.write(audio_bytes)
         tmp.flush()
 
@@ -70,6 +72,12 @@ async def transcribe(
     audio_bytes = await file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty audio file")
+
+    if len(audio_bytes) > MAX_AUDIO_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio file too large ({len(audio_bytes)} bytes). Maximum is {MAX_AUDIO_SIZE}.",
+        )
 
     try:
         result = await asyncio.to_thread(_transcribe, audio_bytes, language)

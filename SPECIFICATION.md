@@ -49,7 +49,7 @@ This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for on
 │ │ Docker Compose Stack:                                           │ │
 │ │  • aria-api (FastAPI) ──────────────────────┐                  │ │
 │ │  • aria-ui (Next.js)                        │                  │ │
-│ │  • mongodb (Atlas Local + Vector Search)    │                  │ │
+│ │  • mongodb (Community 8.2 + mongot search)  │                  │ │
 │ │  • aria-mcp-manager                         │                  │ │
 │ │  • aria-embeddings (voyage-4-nano)            │ LAN              │ │
 │ │  • tailscale                                │                  │ │

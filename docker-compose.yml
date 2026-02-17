@@ -31,29 +31,8 @@ services:
       - DEBUG=${DEBUG:-false}
     volumes:
       - aria-data:/app/data
-    depends_on:
-      mongod:
-        condition: service_healthy
-      mongot:
-        condition: service_started
-      embeddings:
-        condition: service_started
     networks:
-      - aria-network
-
-  # =============================================================================
-  # Embedding Service (voyage-4-nano via sentence-transformers, CPU)
-  # =============================================================================
-  embeddings:
-    build:
-      context: ./embeddings
-      dockerfile: Dockerfile
-    container_name: aria-embeddings
-    restart: unless-stopped
-    ports:
-      - "8001:8001"
-    networks:
-      - aria-network
+      - shared-infra
 
   # =============================================================================
   # Text-to-Speech Service (Qwen3-TTS, CPU)
@@ -67,7 +46,7 @@ services:
     ports:
       - "8002:8002"
     networks:
-      - aria-network
+      - shared-infra
 
   # =============================================================================
   # Speech-to-Text Service (whisper-large-v3-turbo via faster-whisper, CPU)
@@ -81,41 +60,7 @@ services:
     ports:
       - "8003:8003"
     networks:
-      - aria-network
-
-  # =============================================================================
-  # llama.cpp with ROCm (Local LLM Inference - AMD GPU/APU)
-  # =============================================================================
-  # Pre-built binaries from https://github.com/lemonade-sdk/llamacpp-rocm
-  # Default target: gfx1151 (Ryzen AI MAX+ Pro 395 / STX Halo)
-  # Place your GGUF model files in ./models/ directory
-  llamacpp:
-    build:
-      context: ./llamacpp
-      dockerfile: Dockerfile
-      args:
-        GPU_TARGET: ${LLAMACPP_GPU_TARGET:-gfx1151}
-    container_name: aria-llamacpp
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      - LLAMACPP_MODEL=${LLAMACPP_MODEL:-/models/step-3.5-flash-new/step3p5_flash_Q4_K_S-00001-of-00012.gguf}
-      - LLAMACPP_GPU_LAYERS=${LLAMACPP_GPU_LAYERS:-99}
-      - LLAMACPP_CTX_SIZE=${LLAMACPP_CTX_SIZE:-16384}
-      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-11.5.1}
-    volumes:
-      - ${LLAMACPP_MODELS_DIR:-./models}:/models:ro
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    group_add:
-      - "44"   # video
-      - "992"  # render
-    security_opt:
-      - seccomp:unconfined
-    networks:
-      - aria-network
+      - shared-infra
 
   # =============================================================================
   # ARIA Web UI
@@ -135,91 +80,11 @@ services:
     depends_on:
       - api
     networks:
-      - aria-network
-
-  # =============================================================================
-  # MongoDB Community Server 8.2 (mongod)
-  # =============================================================================
-  # The main database server. Requires replica set for search features.
-  # https://www.mongodb.com/docs/manual/
-  mongod:
-    image: mongodb/mongodb-community-server:8.2.0-ubi9
-    container_name: aria-mongod
-    hostname: mongod
-    restart: unless-stopped
-    command: >
-      mongod
-      --replSet rs0
-      --bind_ip_all
-      --port 27017
-      --setParameter mongotHost=mongot:27028
-    ports:
-      - "27018:27017"
-    volumes:
-      - mongod-data:/data/db
-      - mongod-config:/data/configdb
-    networks:
-      - aria-network
-    healthcheck:
-      # Initialize replica set on first run, then just check status
-      test: >
-        mongosh --port 27017 --quiet --eval "
-          try {
-            rs.status();
-          } catch (err) {
-            rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongod:27017'}]});
-          }
-        "
-      interval: 10s
-      timeout: 30s
-      start_period: 30s
-      retries: 5
-
-  # =============================================================================
-  # MongoDB Search Server (mongot)
-  # =============================================================================
-  # Handles Atlas Search and Vector Search capabilities.
-  # Runs alongside mongod and syncs data via change streams.
-  # https://www.mongodb.com/docs/atlas/atlas-search/
-  mongot:
-    image: mongodb/mongodb-community-search:0.55.0
-    container_name: aria-mongot
-    restart: unless-stopped
-    environment:
-      # mongot connects to mongod to sync data and receive queries
-      - MONGOT_DATA_DIR=/data/mongot
-    volumes:
-      - mongot-data:/data/mongot
-      - ./scripts/mongot-password:/etc/mongot/secrets/passwordFile:ro
-    depends_on:
-      - mongod
-    network_mode: "service:mongod"
-
-  # =============================================================================
-  # Replica Set Initializer (one-shot)
-  # =============================================================================
-  # Ensures replica set is initialized and creates search indexes.
-  # Runs once and exits.
-  mongo-init:
-    image: mongodb/mongodb-community-server:8.2.0-ubi9
-    container_name: aria-mongo-init
-    depends_on:
-      mongod:
-        condition: service_healthy
-    volumes:
-      - ./scripts/init-mongo.js:/scripts/init-mongo.js:ro
-    networks:
-      - aria-network
-    entrypoint: >
-      mongosh --host mongod:27017 --quiet /scripts/init-mongo.js
-    restart: "no"
+      - shared-infra
 
 volumes:
   aria-data:
-  mongod-data:
-  mongod-config:
-  mongot-data:
 
 networks:
-  aria-network:
-    driver: bridge
+  shared-infra:
+    external: true

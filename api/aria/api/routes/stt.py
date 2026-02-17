@@ -54,7 +54,8 @@ async def stt_health():
     """Check STT service health."""
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
-            resp = await client.get(f"{settings.stt_url.replace('/v1', '')}/health")
+            base_url = settings.stt_url.rsplit("/v1", 1)[0]
+            resp = await client.get(f"{base_url}/health")
         except (httpx.ConnectError, httpx.TimeoutException):
             return {"status": "unavailable"}
 

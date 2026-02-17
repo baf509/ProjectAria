@@ -66,8 +66,7 @@ mongot-data/
 aria-data/
 
 # LLM models (large binary files)
-models/*.gguf
-models/*.bin
+models/
 
 # Tauri build artifacts
 widget/src-tauri/target/

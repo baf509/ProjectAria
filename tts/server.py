@@ -25,7 +25,8 @@ SPEAKERS = [
 ]
 
 tts_model: Qwen3TTSModel | None = None
-sample_rate: int = 24000
+
+MAX_TEXT_LENGTH = 5000  # Characters — limit to avoid extremely long synthesis times
 
 
 @asynccontextmanager
@@ -93,6 +94,12 @@ async def synthesize(request: SynthesizeRequest) -> Response:
 
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    if len(request.text) > MAX_TEXT_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Text too long ({len(request.text)} chars). Maximum is {MAX_TEXT_LENGTH}.",
+        )
 
     try:
         wav_bytes, _ = await asyncio.to_thread(_synthesize, request)

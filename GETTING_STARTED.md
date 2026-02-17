@@ -8,14 +8,13 @@ Complete guide to setting up and running ARIA on your machine.
 
 | Service | Purpose | Port |
 |---------|---------|------|
+| **Shared Infrastructure** | MongoDB, llama.cpp, embeddings (shared with ABP) | 27017, 8080, 8001 |
 | **ARIA API** | FastAPI backend — chat, memory, tools | 8000 |
-| **MongoDB** (mongod) | Data storage — conversations, memories, agents | 27017 |
-| **MongoDB Search** (mongot) | Vector + text search engine | 27028 |
-| **Embeddings** | voyage-4-nano embeddings (CPU, sentence-transformers) | 8001 |
 | **TTS** (optional) | Qwen3-TTS text-to-speech (CPU) | 8002 |
 | **STT** (optional) | Whisper speech-to-text (CPU) | 8003 |
-| **llama.cpp** (optional) | Local LLM with ROCm GPU acceleration | 8080 |
 | **Web UI** | Next.js chat interface | 3000 |
+
+ARIA depends on shared infrastructure services (MongoDB, llama.cpp, embeddings) that live in a separate project at `../infrastructure/`. These are shared with AgentBenchPlatform.
 
 ---
 
@@ -34,7 +33,52 @@ Complete guide to setting up and running ARIA on your machine.
 
 ---
 
-## Step 1: Clone and Configure
+## Step 1: Start Shared Infrastructure
+
+The shared infrastructure project provides MongoDB, llama.cpp, and the embedding service. Set it up first.
+
+```bash
+cd ../infrastructure
+
+# Create the Docker network (one-time)
+docker network create shared-infra
+
+# Configure environment
+cp .env.example .env
+# Edit .env — set LLAMACPP_MODELS_DIR to the directory containing your GGUF model
+
+# Start shared services
+docker compose up -d
+```
+
+Wait for services to be healthy:
+
+```bash
+docker compose ps
+```
+
+Expected output:
+```
+NAME                STATUS
+shared-mongod       running (healthy)
+shared-mongot       running
+shared-llamacpp     running
+shared-embeddings   running
+shared-mongo-init   exited (0)     # one-time setup, expected to exit
+```
+
+Verify services are responding:
+
+```bash
+curl http://localhost:8080/health   # llama.cpp
+curl http://localhost:8001/health   # embeddings
+```
+
+See `../infrastructure/README.md` for full configuration details.
+
+---
+
+## Step 2: Clone and Configure ARIA
 
 ```bash
 git clone https://github.com/baf509/ProjectAria.git
@@ -49,31 +93,17 @@ Edit `.env` with your settings:
 ```bash
 # === Required ===
 
-# MongoDB (defaults work — no changes needed)
+# MongoDB (via shared infrastructure — defaults work, no changes needed)
 MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Embeddings (defaults work — local sentence-transformers service)
+# Embeddings (via shared infrastructure — defaults work)
 EMBEDDING_URL=http://embeddings:8001/v1
 EMBEDDING_MODEL=voyageai/voyage-4-nano
 EMBEDDING_DIMENSION=1024
 
-# === Optional: llama.cpp with ROCm ===
-
-# Set your GPU target (gfx1151 for Ryzen AI MAX+ Pro 395)
-LLAMACPP_GPU_TARGET=gfx1151
-
-# Path to your GGUF model file
-LLAMACPP_MODEL=/models/model.gguf
-
-# Directory containing your GGUF files (mounted into the container)
-LLAMACPP_MODELS_DIR=./models
-
-# GPU layers to offload (99 = all layers)
-LLAMACPP_GPU_LAYERS=99
-
-# Context window size
-LLAMACPP_CTX_SIZE=8192
+# llama.cpp (via shared infrastructure — defaults work)
+LLAMACPP_URL=http://llamacpp:8080/v1
 
 # === Optional: Cloud LLM API Keys ===
 
@@ -84,38 +114,10 @@ OPENROUTER_API_KEY=
 
 ---
 
-## Step 2: Download a Model (for llama.cpp users)
-
-If you plan to use llama.cpp with ROCm, place a GGUF model in the `models/` directory:
+## Step 3: Start ARIA Services
 
 ```bash
-# Example: download a model (replace with your preferred model)
-mkdir -p models
-cd models
-
-# Option A: Use huggingface-cli
-pip install huggingface-hub
-huggingface-cli download TheBloke/Llama-2-7B-Chat-GGUF llama-2-7b-chat.Q4_K_M.gguf --local-dir .
-
-# Option B: Download directly with curl/wget
-# (find GGUF files on https://huggingface.co)
-
-cd ..
-```
-
-Then update `.env`:
-```bash
-LLAMACPP_MODEL=/models/llama-2-7b-chat.Q4_K_M.gguf
-```
-
-If you're only using cloud LLMs, skip this step.
-
----
-
-## Step 3: Start the Stack
-
-```bash
-# Start all services
+# Start ARIA services (api, tts, stt, ui)
 docker compose up -d
 
 # Watch the logs to confirm everything starts
@@ -125,12 +127,8 @@ docker compose logs -f
 
 **First run will take a few minutes** — Docker needs to:
 - Build the API image
-- Build the embedding service image (downloads the voyage-4-nano model)
 - Build the TTS service image (downloads Qwen3-TTS 0.6B model, if enabled)
 - Build the STT service image (downloads whisper-large-v3-turbo, if enabled)
-- Build the llama.cpp ROCm image (downloads ~450MB of pre-built binaries)
-- Pull MongoDB images
-- Initialize the replica set and search indexes
 
 Check that services are healthy:
 
@@ -142,14 +140,9 @@ Expected output:
 ```
 NAME              STATUS
 aria-api          running
-aria-mongod       running (healthy)
-aria-mongot       running
-aria-embeddings   running
 aria-tts          running        # only if using TTS
 aria-stt          running        # only if using STT
-aria-llamacpp     running        # only if using llama.cpp
 aria-ui           running
-aria-mongo-init   exited (0)     # one-time setup, expected to exit
 ```
 
 ---
@@ -166,7 +159,7 @@ curl http://localhost:8000/api/v1/health
 # Check LLM backends
 curl http://localhost:8000/api/v1/health/llm
 
-# Check embedding service
+# Check embedding service (via shared infra)
 curl http://localhost:8001/health
 
 # Check TTS service (if using)
@@ -175,7 +168,7 @@ curl http://localhost:8002/health
 # Check STT service (if using)
 curl http://localhost:8003/health
 
-# Check llama.cpp is serving (if using)
+# Check llama.cpp is serving (via shared infra)
 curl http://localhost:8080/health
 ```
 
@@ -317,24 +310,33 @@ Once running, open the settings panel in the widget and set the API URL to your 
 ### Starting and Stopping
 
 ```bash
-# Start everything
-docker compose up -d
+# Start shared infrastructure (must be running first)
+cd ../infrastructure && docker compose up -d
 
-# Stop everything (data is preserved in volumes)
+# Start ARIA services
+cd ../ProjectAria && docker compose up -d
+
+# Stop ARIA services (data preserved — lives in shared infra volumes)
 docker compose down
 
-# Stop and delete all data (fresh start)
-docker compose down -v
+# Stop shared infrastructure (also affects AgentBenchPlatform!)
+cd ../infrastructure && docker compose down
 
-# Restart a single service
+# Stop shared infrastructure AND delete all data
+cd ../infrastructure && docker compose down -v
+
+# Restart an ARIA service
 docker compose restart api
 
 # View logs
 docker compose logs -f api          # API logs
-docker compose logs -f llamacpp     # llama.cpp logs
-docker compose logs -f embeddings   # Embedding service logs
 docker compose logs -f tts          # TTS service logs
 docker compose logs -f stt          # STT service logs
+
+# View shared infra logs
+cd ../infrastructure
+docker compose logs -f llamacpp     # llama.cpp logs
+docker compose logs -f embeddings   # Embedding service logs
 docker compose logs -f mongod       # MongoDB logs
 ```
 
@@ -345,10 +347,10 @@ docker compose logs -f mongod       # MongoDB logs
 | Web UI | http://localhost:3000 | Chat interface |
 | API | http://localhost:8000 | REST API |
 | API Docs | http://localhost:8000/docs | Swagger/OpenAPI |
-| Embeddings | http://localhost:8001 | OpenAI-compatible embedding API |
+| Embeddings | http://localhost:8001 | OpenAI-compatible embedding API (shared infra) |
 | TTS | http://localhost:8002 | Qwen3-TTS speech synthesis |
 | STT | http://localhost:8003 | Whisper transcription |
-| llama.cpp | http://localhost:8080 | OpenAI-compatible API |
+| llama.cpp | http://localhost:8080 | OpenAI-compatible API (shared infra) |
 
 ### Useful API Endpoints
 
@@ -391,7 +393,7 @@ curl -X POST http://localhost:8000/api/v1/stt/transcribe \
 
 ## llama.cpp ROCm Configuration
 
-The llama.cpp service uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm).
+The llama.cpp service is part of the shared infrastructure (`../infrastructure/`). It uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm).
 
 ### Supported GPU Targets
 
@@ -402,20 +404,20 @@ The llama.cpp service uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-r
 | `gfx120X` | Radeon RX 9070/9060 (RDNA4) |
 | `gfx110X` | Radeon RX 7900/7800/7700/7600 (RDNA3) |
 
-Change the target in `.env`:
+Change the target in `../infrastructure/.env`:
 ```bash
 LLAMACPP_GPU_TARGET=gfx1151   # Change to match your hardware
 ```
 
-### Environment Variables
+### Environment Variables (in infrastructure/.env)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMACPP_GPU_TARGET` | `gfx1151` | ROCm GPU architecture target |
-| `LLAMACPP_MODEL` | `/models/model.gguf` | Path to GGUF model inside container |
+| `LLAMACPP_MODEL` | `/models/step3p5_flash_Q4_K_S-00001-of-00012.gguf` | Path to GGUF model inside container |
 | `LLAMACPP_MODELS_DIR` | `./models` | Host directory mounted to `/models` |
 | `LLAMACPP_GPU_LAYERS` | `99` | Number of layers to offload to GPU |
-| `LLAMACPP_CTX_SIZE` | `8192` | Context window size |
+| `LLAMACPP_CTX_SIZE` | `16384` | Context window size |
 
 ### Linux APU Note
 
@@ -428,6 +430,21 @@ ttm.pages_limit=12582912
 
 ## Troubleshooting
 
+### Shared infrastructure not running
+
+ARIA requires the shared infrastructure to be running first. If API health checks fail with connection errors:
+
+```bash
+# Check shared infra status
+cd ../infrastructure && docker compose ps
+
+# Start if not running
+docker compose up -d
+
+# Wait for MongoDB to be healthy, then start ARIA
+cd ../ProjectAria && docker compose up -d
+```
+
 ### API won't start
 
 ```bash
@@ -439,24 +456,26 @@ docker compose restart api
 ### MongoDB replica set issues
 
 ```bash
-# Check mongod health
+# Check mongod health (in infrastructure directory)
+cd ../infrastructure
 docker compose logs mongod
 
 # Manually initialize replica set
-docker exec -it aria-mongod mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongod:27017'}]})"
+docker exec -it shared-mongod mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongod:27017'}]})"
 
 # Re-run index creation
-docker compose up mongo-init
+docker compose run --rm mongo-init
 ```
 
 ### llama.cpp won't start
 
 ```bash
-# Check logs
+# Check logs (in infrastructure directory)
+cd ../infrastructure
 docker compose logs llamacpp
 
 # Verify model file exists
-ls -la models/*.gguf
+ls -la $LLAMACPP_MODELS_DIR/*.gguf
 
 # Check GPU access
 ls -la /dev/kfd /dev/dri
@@ -472,7 +491,8 @@ groups
 # Check embedding service health
 curl http://localhost:8001/health
 
-# Check logs
+# Check logs (in infrastructure directory)
+cd ../infrastructure
 docker compose logs embeddings
 
 # Test embedding generation
@@ -485,13 +505,14 @@ curl http://localhost:8001/v1/embeddings \
 
 ```bash
 # Check search indexes exist
-docker exec -it aria-mongod mongosh --eval "
+docker exec -it shared-mongod mongosh --eval "
   use aria;
   db.memories.getSearchIndexes();
 "
 
-# If empty, re-run initialization
-docker compose up mongo-init
+# If empty, re-run initialization (from infrastructure directory)
+cd ../infrastructure
+docker compose run --rm mongo-init
 # Wait 30 seconds for indexes to activate
 ```
 

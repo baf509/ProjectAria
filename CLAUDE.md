@@ -92,18 +92,23 @@ OpenRouter provides unified access to multiple LLM providers through a single AP
 
 The OpenRouter adapter uses the OpenAI SDK internally (OpenRouter is OpenAI-compatible).
 
-## MongoDB 8.2 + mongot Setup
+## Shared Infrastructure
 
-**Critical**: Uses MongoDB Community Server 8.2 with separate `mongot` service for search.
+ARIA uses shared infrastructure from `/home/ben/Dev/infrastructure/` (also used by AgentBenchPlatform):
+- **MongoDB 8.2 + mongot**: `mongod` (port 27017) + `mongot` (port 27028) with replica set `rs0`
+- **llama.cpp**: ROCm-accelerated LLM inference on port 8080
+- **Embeddings**: voyage-4-nano via sentence-transformers on port 8001
 
-- **mongod** (port 27017): Main database, CRUD operations
-- **mongot** (port 27028): Search engine (Apache Lucene-based)
-- **Replica set required**: Even single-node must run as `rs0`
-- **Connection string**: `mongodb://localhost:27017/?directConnection=true&replicaSet=rs0`
+**Start shared infra before ARIA:**
+```bash
+cd /home/ben/Dev/infrastructure && docker compose up -d
+```
+
+**Connection string**: `mongodb://mongod:27017/?directConnection=true&replicaSet=rs0`
 
 ### Search Indexes
 
-Vector and text search indexes created via `scripts/init-mongo.js`:
+Vector and text search indexes created via shared `infrastructure/scripts/init-mongo.js`:
 - `memory_vector_index` - Vector search (1024 dims, cosine similarity)
 - `memory_text_index` - BM25 lexical search
 
@@ -114,23 +119,23 @@ Verify with: `db.memories.getSearchIndexes()`
 ### Docker Compose Stack
 
 ```bash
-# Start all services (mongod, mongot, api, embeddings, ui)
-docker compose up -d
+# Start shared infrastructure first (mongod, mongot, llamacpp, embeddings)
+cd /home/ben/Dev/infrastructure && docker compose up -d
+
+# Start ARIA services (api, tts, stt, ui)
+cd /home/ben/Dev/ProjectAria && docker compose up -d
 
 # Check service health
 docker compose ps
 
 # View logs
 docker compose logs -f api
-docker compose logs -f mongod
-docker compose logs -f mongot
-docker compose logs -f embeddings
 
-# Stop all services
+# Stop ARIA services
 docker compose down
 
-# Reset (delete volumes)
-docker compose down -v
+# Stop shared infrastructure (affects ABP too!)
+cd /home/ben/Dev/infrastructure && docker compose down
 ```
 
 ### API Development
@@ -324,11 +329,11 @@ async def stream_response(generator):
 - `api/aria/memory/embeddings.py` - Embedding client (calls embedding service)
 - `api/aria/memory/extraction.py` - LLM-based memory extraction
 
-### Embedding Service
+### Embedding Service (shared infrastructure)
 
-- `embeddings/server.py` - FastAPI app serving voyage-4-nano embeddings
-- `embeddings/Dockerfile` - Container build (downloads model at build time)
-- `embeddings/requirements.txt` - sentence-transformers, fastapi, uvicorn
+- Lives in `/home/ben/Dev/infrastructure/embeddings/`
+- FastAPI app serving voyage-4-nano embeddings on port 8001
+- Started via shared infrastructure `docker compose up -d`
 
 ### Tool System
 
@@ -342,7 +347,7 @@ async def stream_response(generator):
 
 - `api/aria/db/mongodb.py` - Connection management
 - `api/aria/db/models.py` - Pydantic models for API
-- `scripts/init-mongo.js` - Database initialization, indexes
+- Database initialization is handled by shared infrastructure (`infrastructure/scripts/init-mongo.js`)
 
 ### API Routes
 
@@ -426,12 +431,13 @@ Supported API keys:
 5. Update `PROJECT_STATUS.md` if completing checklist items
 6. Test locally before committing
 
-### MongoDB 8.2 Gotchas
+### Shared Infrastructure Gotchas
 
+- **Start infra first**: `cd /home/ben/Dev/infrastructure && docker compose up -d` before starting ARIA
 - **Replica set required**: Search features only work with replica set
-- **mongot connectivity**: mongod must connect to mongot via `--setParameter mongotHost=mongot:27028`
-- **Index creation**: Search indexes may take a few seconds to become active
 - **Connection string**: Must include `directConnection=true&replicaSet=rs0`
+- **Shared services**: mongod, mongot, llamacpp, embeddings are in the `shared-infra` Docker network
+- **Port 27017**: MongoDB is now on standard port (was 27018 when ARIA had its own)
 
 ### Memory System Gotchas
 
