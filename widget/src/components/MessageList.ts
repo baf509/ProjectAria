@@ -72,7 +72,12 @@ function addTtsButton(messageEl: HTMLElement, text: string) {
     btn.classList.add("loading");
 
     try {
-      const wavBuffer = await synthesizeSpeech(text);
+      // Truncate long text to avoid TTS timeouts on CPU inference
+      const MAX_TTS_CHARS = 1000;
+      const ttsText = text.length > MAX_TTS_CHARS
+        ? text.slice(0, MAX_TTS_CHARS) + "..."
+        : text;
+      const wavBuffer = await synthesizeSpeech(ttsText);
       const blob = new Blob([wavBuffer], { type: "audio/wav" });
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
