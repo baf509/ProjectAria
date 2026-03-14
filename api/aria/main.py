@@ -57,13 +57,16 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",  # Next.js dev server
         "http://localhost:8000",  # API docs
+        "http://localhost:1420",  # Widget Vite dev server
         "http://127.0.0.1:3000",
         "http://aria-ui:3000",  # Docker service name
+        "tauri://localhost",  # Tauri widget (production)
+        "https://tauri.localhost",  # Tauri widget (Tauri v2)
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_origin_regex=r"http://.*:3000",  # Allow any host on port 3000
+    allow_origin_regex=r"http://.*:(3000|1420)",  # Allow any host on port 3000 or 1420
 )
 
 # Include routers

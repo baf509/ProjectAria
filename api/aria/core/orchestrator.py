@@ -174,6 +174,9 @@ class Orchestrator:
         assistant_content_parts = []
         tool_calls = []
         usage = {}
+        # Track <think>...</think> blocks so we can strip them from output
+        in_think_block = False
+        think_buffer = ""
 
         try:
             # Determine streaming mode: agent config can force non-streaming, otherwise use request parameter
@@ -187,8 +190,43 @@ class Orchestrator:
                 stream=use_streaming,
             ):
                 if chunk.type == "text":
-                    assistant_content_parts.append(chunk.content)
-                    yield chunk
+                    # Filter out <think>...</think> blocks from reasoning models
+                    text = chunk.content
+                    filtered = ""
+
+                    while text:
+                        if in_think_block:
+                            end_idx = text.find("</think>")
+                            if end_idx != -1:
+                                in_think_block = False
+                                text = text[end_idx + 8:]
+                            else:
+                                break  # Still in think block, consume all
+                        else:
+                            start_idx = text.find("<think>")
+                            if start_idx != -1:
+                                filtered += text[:start_idx]
+                                in_think_block = True
+                                text = text[start_idx + 7:]
+                            else:
+                                # Check for partial "<think" at end of chunk
+                                partial_match = ""
+                                for i in range(1, min(7, len(text) + 1)):
+                                    if "<think>"[:i] == text[-i:]:
+                                        partial_match = text[-i:]
+                                if partial_match:
+                                    filtered += text[:-len(partial_match)]
+                                    think_buffer = partial_match
+                                else:
+                                    if think_buffer:
+                                        filtered = think_buffer + filtered
+                                        think_buffer = ""
+                                    filtered += text
+                                break
+
+                    if filtered:
+                        assistant_content_parts.append(filtered)
+                        yield StreamChunk(type="text", content=filtered)
                 elif chunk.type == "tool_call":
                     # Collect tool calls
                     tool_calls.append(chunk.tool_call)
