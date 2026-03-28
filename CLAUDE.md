@@ -9,229 +9,158 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. `CHANGELOG.md` (last 50 lines) - Recent changes
 3. `SPECIFICATION.md` - Detailed architecture and requirements
 
-**Quick phase check:**
-```bash
-grep -A5 "Current Phase" PROJECT_STATUS.md
-```
-
 ## Architecture Overview
 
-ARIA is a local-first AI agent platform with the following key principles:
-- **No framework dependencies** - No LangChain, LlamaIndex, etc. Direct API integration only.
-- **Single-user design** - Personal AI agent, no multi-tenancy or complex auth.
-- **LLM agnostic** - Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.
-- **Local-first** - llama.cpp primary, cloud APIs as fallback.
-- **MongoDB 8.2 + mongot** - Self-hosted vector search without Atlas subscription.
+ARIA is a local-first AI agent platform — a personal AI assistant with long-term memory, tool use, and multiple interfaces.
+
+**Key principles:**
+- **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
+- **Single-user design** — Personal agent, no multi-tenancy or auth.
+- **LLM agnostic** — Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.
+- **Local-first** — llama.cpp primary, cloud APIs as fallback.
+- **MongoDB 8.2 + mongot** — Self-hosted vector search without Atlas subscription.
 
 ### Core Flow
 
 ```
-User Message
-    → API (FastAPI)
-    → Orchestrator
-        ├─ Context Builder (assembles short-term + long-term memory)
-        ├─ LLM Manager (selects backend with fallback chain)
-        ├─ Tool Router (MCP + built-in tools)
-        └─ Memory Extractor (background async)
-    → Streaming Response
+User Message → API (FastAPI) → Orchestrator
+    ├─ Context Builder (short-term + long-term memory)
+    ├─ LLM Manager (selects backend, fallback chain)
+    ├─ Tool Router (MCP + built-in tools)
+    └─ Memory Extractor (background async)
+→ Streaming Response (SSE)
 ```
 
 ### Memory System (Two-Tier)
 
-1. **Short-term**: Recent conversation context (embedded in `conversations` collection)
-   - Fast MongoDB queries, no vector search
-   - Current conversation + last 24h context
-
-2. **Long-term**: Semantic memory with hybrid search (`memories` collection)
-   - **Vector search** (`$vectorSearch`) - 1024-dim voyage-4-nano embeddings
-   - **Lexical search** (`$search`) - BM25 full-text search
-   - **RRF fusion** - Reciprocal Rank Fusion combines both
-   - Background extraction from conversations via LLM
-
-### Embedding Service
-
-A lightweight microservice (`embeddings/`) running `voyageai/voyage-4-nano` via sentence-transformers on CPU:
-- Exposes OpenAI-compatible `POST /v1/embeddings` endpoint on port 8001
-- Model downloaded at Docker build time for fast startup
-- 1024-dim output via MRL truncation (matches existing MongoDB vector index)
-- Voyage AI cloud API available as fallback if `VOYAGE_API_KEY` is set
-
-### Tool System
-
-- **Built-in tools**: filesystem, shell, web (in `api/aria/tools/builtin/`)
-- **MCP integration**: stdio transport, JSON-RPC 2.0 (in `api/aria/tools/mcp/`)
-- **Tool router**: Central registration, execution with timeout
-- Orchestrator handles tool calls during LLM streaming
+1. **Short-term** (`conversations` collection): Recent conversation context via fast MongoDB queries. Current conversation + last 24h.
+2. **Long-term** (`memories` collection): Hybrid search combining `$vectorSearch` (1024-dim voyage-4-nano) + `$search` (BM25) via RRF fusion (k=60). Background extraction from conversations via LLM.
 
 ### LLM Adapter Pattern
 
-All LLM backends implement `LLMAdapter` base class:
-- `stream()` - Async iterator yielding `StreamChunk` objects
-- `complete()` - Non-streaming completion
-- Message format conversion per provider
-- Tool call support (function calling)
+All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
+- `stream()` → async iterator of `StreamChunk` objects
+- `complete()` → non-streaming completion
+- Per-provider message format conversion and tool call support
 
-Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`
+Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`. The OpenRouter adapter uses the OpenAI SDK internally (OpenAI-compatible API). Manager (`manager.py`) handles backend selection and fallback chain.
 
-Manager handles selection and fallback chain logic.
+### Tool System
 
-#### OpenRouter Support
-
-OpenRouter provides unified access to multiple LLM providers through a single API:
-- Access Claude, GPT-4, Llama, and many others through one endpoint
-- Single API key for all providers (no need for separate Anthropic/OpenAI keys)
-- Cost-effective routing and automatic model selection
-- Useful when you want access to multiple models without managing separate API keys
-- Configure with `OPENROUTER_API_KEY` in `.env`
-
-**Example models available via OpenRouter:**
-- `anthropic/claude-3.5-sonnet`
-- `openai/gpt-4-turbo`
-- `meta-llama/llama-3.1-70b-instruct`
-- `google/gemini-pro`
-
-The OpenRouter adapter uses the OpenAI SDK internally (OpenRouter is OpenAI-compatible).
+- **Built-in tools**: filesystem, shell, web (`api/aria/tools/builtin/`)
+- **MCP integration**: stdio transport only, JSON-RPC 2.0 (`api/aria/tools/mcp/`)
+- **Tool router**: Central registration, execution with 30s default timeout
+- Orchestrator handles tool calls during LLM streaming, may trigger multiple rounds
 
 ## Shared Infrastructure
 
-ARIA uses shared infrastructure from `/home/ben/Dev/infrastructure/` (also used by AgentBenchPlatform):
-- **MongoDB 8.2 + mongot**: `mongod` (port 27017) + `mongot` (port 27028) with replica set `rs0`
-- **llama.cpp**: ROCm-accelerated LLM inference on port 8080
-- **Embeddings**: voyage-4-nano via sentence-transformers on port 8001
+ARIA depends on shared infrastructure at `/home/ben/Dev/infrastructure/` (also used by AgentBenchPlatform). **Must be started first.**
 
-**Start shared infra before ARIA:**
+| Service | Port | Purpose |
+|---------|------|---------|
+| mongod | 27017 | MongoDB 8.2 data (replica set `rs0`) |
+| mongot | 27028 | MongoDB search (vector + text) |
+| llamacpp | 8080 | ROCm-accelerated local LLM |
+| embeddings | 8001 | voyage-4-nano via sentence-transformers (CPU) |
+
 ```bash
+# Start shared infra first
 cd /home/ben/Dev/infrastructure && docker compose up -d
+
+# Start ARIA API (native systemd service)
+systemctl --user start aria-api
+
+# Start ARIA Docker services (tts, stt, ui)
+cd /home/ben/Dev/ProjectAria && docker compose up -d
 ```
 
 **Connection string**: `mongodb://mongod:27017/?directConnection=true&replicaSet=rs0`
 
-### Search Indexes
-
-Vector and text search indexes created via shared `infrastructure/scripts/init-mongo.js`:
-- `memory_vector_index` - Vector search (1024 dims, cosine similarity)
-- `memory_text_index` - BM25 lexical search
-
-Verify with: `db.memories.getSearchIndexes()`
+Search indexes are created via `infrastructure/scripts/init-mongo.js`:
+- `memory_vector_index` — vector search (1024 dims, cosine)
+- `memory_text_index` — BM25 lexical search
 
 ## Development Commands
 
-### Docker Compose Stack
+### API (FastAPI backend — native systemd service)
 
 ```bash
-# Start shared infrastructure first (mongod, mongot, llamacpp, embeddings)
-cd /home/ben/Dev/infrastructure && docker compose up -d
+# The API runs natively (not in Docker) for filesystem/process access.
+# Managed via systemd user service:
+systemctl --user start aria-api     # Start
+systemctl --user stop aria-api      # Stop
+systemctl --user restart aria-api   # Restart
+systemctl --user status aria-api    # Check status
+journalctl --user -u aria-api -f   # View logs
 
-# Start ARIA services (api, tts, stt, ui)
-cd /home/ben/Dev/ProjectAria && docker compose up -d
-
-# Check service health
-docker compose ps
-
-# View logs
-docker compose logs -f api
-
-# Stop ARIA services
-docker compose down
-
-# Stop shared infrastructure (affects ABP too!)
-cd /home/ben/Dev/infrastructure && docker compose down
-```
-
-### API Development
-
-```bash
+# For development with auto-reload:
 cd api
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run locally (requires MongoDB running)
 uvicorn aria.main:app --reload --host 0.0.0.0 --port 8000
-
-# API available at http://localhost:8000
 # Docs at http://localhost:8000/docs
 ```
 
-### UI Development
+### UI (Next.js)
 
 ```bash
 cd ui
-
-# Install dependencies
 npm install
-
-# Run dev server
-npm run dev
-
-# UI available at http://localhost:3000
-
-# Build for production
-npm run build
-npm run start
+npm run dev          # Dev server at http://localhost:3000
+npm run build        # Production build
 ```
 
-### CLI Client
+### Desktop Widget (Tauri v2)
+
+```bash
+cd widget
+npm install
+npm run tauri:dev    # Dev mode with hot-reload
+```
+
+### CLI
 
 ```bash
 cd cli
-
-# Install in development mode
 pip install -e .
-
-# Chat commands
 aria chat "Hello ARIA!"
-aria chat --conversation <id> "Continue the conversation"
+aria chat --conversation <id> "Continue"
 aria conversations list
-
-# Memory commands
-aria memories list
-aria memories search "query text"
-aria memories add "My favorite color is blue"
-
-# Tool commands
+aria memories search "query"
 aria tools list
-aria tools info <tool_name>
-aria tools execute <tool_name> <args_json>
-
-# MCP commands
 aria mcp list
-aria mcp add <id> <command>
-aria mcp remove <id>
 ```
 
-### Database Access
+### Docker Compose
 
 ```bash
-# Connect to MongoDB
-mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
+docker compose up -d           # Start ARIA Docker services (tts, stt, ui)
+docker compose ps              # Check health
+docker compose logs -f tts     # View logs
+docker compose down            # Stop
 
-# Use ARIA database
-use aria
-
-# Check collections
-show collections
-
-# Check search indexes
-db.memories.getSearchIndexes()
-
-# Test vector search
-db.memories.aggregate([{
-  $vectorSearch: {
-    index: "memory_vector_index",
-    path: "embedding",
-    queryVector: [...],  // 1024-dim array
-    numCandidates: 100,
-    limit: 10
-  }
-}])
+# API is managed separately via systemd:
+systemctl --user start aria-api
 ```
+
+### Database
+
+```bash
+mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
+# use aria → show collections → db.memories.getSearchIndexes()
+```
+
+## ARIA Services
+
+| Service | Port | How it runs | Description |
+|---------|------|-------------|-------------|
+| api | 8000 | systemd user service (`aria-api`) | FastAPI backend (native, not Docker) |
+| ui | 3000 | Docker (docker-compose.yml) | Next.js web UI |
+| tts | 8002 | Docker (docker-compose.yml) | Qwen3-TTS 0.6B speech synthesis (CPU) |
+| stt | 8003 | Docker (docker-compose.yml) | whisper-large-v3-turbo transcription (CPU, int8) |
 
 ## Code Patterns
 
-### File Headers
+### Python File Headers
 
-Every Python file starts with:
 ```python
 """
 ARIA - [Module Name]
@@ -246,404 +175,50 @@ Related Spec Sections:
 
 ### Async Everywhere
 
-All database and network operations are async:
-```python
-# Good
-async def get_conversation(id: str) -> Conversation:
-    doc = await db.conversations.find_one({"_id": ObjectId(id)})
-    return Conversation.from_doc(doc)
+All database and network operations must be async (motor for MongoDB, httpx for HTTP).
 
-# Bad - blocks event loop
-def get_conversation(id: str) -> Conversation:
-    doc = db.conversations.find_one({"_id": ObjectId(id)})
-```
+### FastAPI Dependency Injection
 
-### Error Handling
-
-Use specific exception classes (not implemented yet, use generic for now):
-```python
-async def get_conversation(id: str) -> Conversation:
-    doc = await db.conversations.find_one({"_id": ObjectId(id)})
-    if not doc:
-        raise ValueError(f"Conversation {id} not found")
-    return Conversation.from_doc(doc)
-```
-
-### Dependency Injection (FastAPI)
-
-```python
-# api/deps.py
-async def get_db() -> Database:
-    return await get_database()
-
-async def get_orchestrator(db: Database = Depends(get_db)) -> Orchestrator:
-    return Orchestrator(db)
-
-# Routes
-@router.post("/{id}/messages")
-async def send_message(
-    id: str,
-    body: MessageRequest,
-    orchestrator: Orchestrator = Depends(get_orchestrator)
-):
-    return await orchestrator.process_message(id, body.content)
-```
+Dependencies are wired through `api/aria/api/deps.py`. The orchestrator, tool router, and MCP manager are injected into route handlers via `Depends()`.
 
 ### Streaming Responses
 
-```python
-from sse_starlette.sse import EventSourceResponse
+SSE via `sse-starlette`. The orchestrator yields `StreamChunk` objects that are serialized to SSE events.
 
-async def stream_response(generator):
-    async def event_generator():
-        async for chunk in generator:
-            yield {
-                "event": chunk.type,
-                "data": json.dumps(chunk.to_dict())
-            }
-    return EventSourceResponse(event_generator())
-```
+## Approved Libraries
 
-## Key Files
+`httpx`, `motor`, `pydantic`, `fastapi`, `anthropic`, `openai`, `sse-starlette`, `sentence-transformers`
 
-### Core Application
+## Critical Gotchas
 
-- `api/aria/main.py` - FastAPI app entry point, route registration
-- `api/aria/config.py` - Pydantic settings from environment
-- `api/aria/core/orchestrator.py` - Main agent loop, message processing
-- `api/aria/core/context.py` - Context assembly (memory + system prompt)
+### Embedding Dimensions (DO NOT CHANGE)
 
-### LLM Layer
+Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB vector index, embedding service, and all stored memories must use exactly 1024 dimensions. Changing requires full re-embedding of all memories.
 
-- `api/aria/llm/base.py` - `LLMAdapter` abstract base class
-- `api/aria/llm/manager.py` - Backend selection, fallback chain
-- `api/aria/llm/llamacpp.py` - llama.cpp adapter (OpenAI-compatible)
-- `api/aria/llm/anthropic.py` - Anthropic/Claude adapter
-- `api/aria/llm/openai.py` - OpenAI/GPT adapter
-- `api/aria/llm/openrouter.py` - OpenRouter unified API adapter
+### Shared Infrastructure
 
-### Memory System
-
-- `api/aria/memory/short_term.py` - Recent conversation context
-- `api/aria/memory/long_term.py` - Hybrid search (BM25 + Vector)
-- `api/aria/memory/embeddings.py` - Embedding client (calls embedding service)
-- `api/aria/memory/extraction.py` - LLM-based memory extraction
-
-### Embedding Service (shared infrastructure)
-
-- Lives in `/home/ben/Dev/infrastructure/embeddings/`
-- FastAPI app serving voyage-4-nano embeddings on port 8001
-- Started via shared infrastructure `docker compose up -d`
-
-### Tool System
-
-- `api/aria/tools/base.py` - `BaseTool` abstract class
-- `api/aria/tools/router.py` - Tool registration and execution
-- `api/aria/tools/builtin/` - Filesystem, shell, web tools
-- `api/aria/tools/mcp/client.py` - MCP JSON-RPC client
-- `api/aria/tools/mcp/manager.py` - Multi-server management
-
-### Database
-
-- `api/aria/db/mongodb.py` - Connection management
-- `api/aria/db/models.py` - Pydantic models for API
-- Database initialization is handled by shared infrastructure (`infrastructure/scripts/init-mongo.js`)
-
-### API Routes
-
-- `api/aria/api/routes/health.py` - Health checks, LLM status
-- `api/aria/api/routes/conversations.py` - Conversation CRUD, messaging
-- `api/aria/api/routes/agents.py` - Agent configuration
-- `api/aria/api/routes/memories.py` - Memory CRUD, search
-- `api/aria/api/routes/tools.py` - Tool listing, execution
-
-## Configuration
-
-### Environment Variables (.env)
-
-```bash
-# MongoDB
-MONGODB_URI=mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
-MONGODB_DATABASE=aria
-
-# llama.cpp (local LLM)
-LLAMACPP_URL=http://llamacpp:8080/v1
-LLAMACPP_API_KEY=
-
-# Cloud LLMs (optional)
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-OPENROUTER_API_KEY=sk-or-...
-
-# Embeddings
-EMBEDDING_URL=http://embeddings:8001/v1
-EMBEDDING_MODEL=voyageai/voyage-4-nano
-EMBEDDING_DIMENSION=1024
-VOYAGE_API_KEY=  # Optional fallback
-
-# API
-API_HOST=0.0.0.0
-API_PORT=8000
-DEBUG=false
-```
-
-**Note**: Using `voyageai/voyage-4-nano` model with 1024-dimensional embeddings (MRL truncation) for optimal balance of quality and performance.
-
-## Important Notes
-
-### DO NOT Use These Frameworks
-- ❌ LangChain - Over-abstracted, breaking changes
-- ❌ LlamaIndex - Too heavy
-- ❌ LangGraph - Unnecessary complexity
-- ❌ AutoGen - Multi-agent overkill
-
-### DO Use These Libraries
-- ✅ `httpx` - Async HTTP
-- ✅ `motor` - Async MongoDB
-- ✅ `pydantic` - Data validation
-- ✅ `fastapi` - API framework
-- ✅ `anthropic` - Official SDK
-- ✅ `openai` - Official SDK (also used for OpenRouter and llama.cpp)
-- ✅ `sse-starlette` - Server-sent events
-- ✅ `sentence-transformers` - Embedding service
-
-### API Key Security
-
-**IMPORTANT**: API keys are stored in `.env` file which is git-ignored.
-
-1. Copy `.env.example` to `.env`: `cp .env.example .env`
-2. Add your API keys to `.env`
-3. Never commit `.env` to git (already in `.gitignore`)
-4. The `.env` file is loaded by docker-compose and pydantic-settings
-
-Supported API keys:
-- `ANTHROPIC_API_KEY` - For Claude models
-- `OPENAI_API_KEY` - For GPT models
-- `OPENROUTER_API_KEY` - For unified access to multiple providers
-- `VOYAGE_API_KEY` - For Voyage AI embeddings (cloud fallback)
+- **Start infra first** — ARIA services depend on it
+- **Replica set required** — Search features only work with `replicaSet=rs0`
+- **Connection string** — Must include `directConnection=true&replicaSet=rs0`
+- **Shared Docker network** — Services use `shared-infra` network; use container names (e.g., `mongod`, `embeddings`) not `localhost` in Docker contexts
+- **Stopping infra affects AgentBenchPlatform** — both projects share these services
 
 ### When Making Changes
 
 1. Check current phase in `PROJECT_STATUS.md`
 2. Read relevant section in `SPECIFICATION.md`
-3. Make changes following established patterns
+3. Follow established code patterns
 4. Update `CHANGELOG.md` with changes
 5. Update `PROJECT_STATUS.md` if completing checklist items
-6. Test locally before committing
-
-### Shared Infrastructure Gotchas
-
-- **Start infra first**: `cd /home/ben/Dev/infrastructure && docker compose up -d` before starting ARIA
-- **Replica set required**: Search features only work with replica set
-- **Connection string**: Must include `directConnection=true&replicaSet=rs0`
-- **Shared services**: mongod, mongot, llamacpp, embeddings are in the `shared-infra` Docker network
-- **Port 27017**: MongoDB is now on standard port (was 27018 when ARIA had its own)
-
-### Memory System Gotchas
-
-- **Embedding dimensions**: Using 1024-dim voyageai/voyage-4-nano model (MRL truncation)
-- **Vector search**: Requires mongot to be running and healthy
-- **RRF fusion**: Combines vector + lexical results with k=60
-- **Background extraction**: Memory extraction is async, doesn't block responses
-
-### Embedding Configuration (CRITICAL)
-
-**IMPORTANT**: The embedding model and dimensions are standardized and must not be changed after initial setup:
-
-- **Model**: `voyageai/voyage-4-nano` (via local sentence-transformers service)
-- **Dimensions**: 1024 (MRL truncation, standardized across all deployments)
-- **Index configuration**: MongoDB vector index must match exactly 1024 dimensions
-- **DO NOT change** embedding model or dimensions after creating memories - requires full database re-embedding
-- **Verify configuration**: Check `EMBEDDING_URL` and `EMBEDDING_MODEL` in `.env`
-
-If you need to change embedding models:
-1. Export all existing memories
-2. Drop the `memories` collection
-3. Recreate vector search index with new dimensions
-4. Re-embed and re-import all memories
-
-### Tool System Gotchas
-
-- **Tool execution timeout**: Default 30 seconds, configurable per tool
-- **MCP transport**: Only stdio transport implemented (not HTTP)
-- **Sandboxing**: Filesystem tool has path restrictions
-- **Tool calls**: Handled during LLM streaming, may trigger multiple rounds
-
-## Current Phase
-
-See `PROJECT_STATUS.md` for current phase progress. As of last update:
-- **Phase 1-5**: Complete (Foundation, Memory, Tools, Cloud LLMs, Web UI)
-  - Web UI available at http://localhost:3000 (Next.js 14 application)
-  - Docker service: `ui` with hot-reload in development mode
-  - Features: Real-time chat, conversation management, streaming responses
-- **Phase 6+**: Not started (Computer Use CLI/GUI, Voice, Security, RAG, Automation)
 
 ## Testing
 
-No formal test suite yet. Manual testing via:
-- CLI commands
-- API endpoints via curl or `/docs`
-- Docker Compose integration testing
-
-Future phases will add proper test infrastructure.
-
----
-
-## Common Issues & Solutions
-
-### Embedding Dimension Mismatch
-
-**Error**: "Vector search failed" or "Index dimension mismatch"
-
-**Solution**: Ensure `EMBEDDING_DIMENSION=1024` in `.env` and MongoDB vector index uses 1024 dimensions
-
 ```bash
-# Check your .env file
-grep EMBEDDING .env
-
-# Expected output:
-# EMBEDDING_URL=http://embeddings:8001/v1
-# EMBEDDING_MODEL=voyageai/voyage-4-nano
-# EMBEDDING_DIMENSION=1024
-
-# Verify MongoDB index
-docker exec -it aria-mongod mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
-use aria
-db.memories.getSearchIndexes()
-# Check that numDimensions is 1024
+cd api
+python3 -m pytest tests/ -v        # Run all tests
+python3 -m pytest tests/ -k "tool"  # Run tests matching keyword
 ```
 
-### mongot Not Connected
+Test suite covers: tokenizer, resilience (retry/circuit breaker), tool router (registration, policy, execution, audit), LLM base classes, memory RRF fusion, orchestrator command parsing (mode/research/memory/coding), research service (JSON parsing, deduplication, HTML stripping), and workflow engine (conditions, dependencies, parameter interpolation).
 
-**Error**: "Search indexes unavailable" or "$vectorSearch not supported"
-
-**Solution**: Verify mongot is running and connected to mongod
-
-```bash
-# Check mongot logs
-docker compose logs mongot
-
-# Verify mongod connection parameter
-docker compose exec mongod mongosh --eval "db.adminCommand({getParameter: 1, mongotHost: 1})"
-# Should show: { mongotHost: "mongot:27028", ok: 1 }
-
-# Check mongot health
-curl http://localhost:9946/metrics
-# Should return Prometheus metrics
-
-# If mongot is not connected, restart services
-docker compose restart mongod mongot
-```
-
-### Embedding Service Not Responding
-
-**Error**: "Embedding service unavailable" or connection refused on port 8001
-
-**Solution**: Check the embedding service container
-
-```bash
-# Check service health
-curl http://localhost:8001/health
-
-# Check logs
-docker compose logs embeddings
-
-# Restart if needed
-docker compose restart embeddings
-
-# Test embedding generation
-curl http://localhost:8001/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"input":"test","model":"voyageai/voyage-4-nano"}'
-# Should return 1024-dim vector
-```
-
-### Web UI Not Loading
-
-**Error**: "Connection refused" or UI not accessible at localhost:3000
-
-**Solution**: Check if UI service is running
-
-```bash
-# Check UI container status
-docker compose ps ui
-
-# View UI logs
-docker compose logs ui
-
-# If not running, start it
-docker compose up -d ui
-
-# For development with hot-reload
-cd ui
-npm install
-npm run dev
-```
-
-### Memory Search Returns No Results
-
-**Error**: Search works but returns no results despite having memories
-
-**Solution**: Verify search indexes are created and active
-
-```bash
-# Connect to MongoDB
-docker exec -it aria-mongod mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
-
-# Switch to aria database
-use aria
-
-# Check if search indexes exist
-db.memories.getSearchIndexes()
-
-# If empty or missing, indexes weren't created
-# Re-run initialization
-docker compose up mongo-init
-
-# Wait 30 seconds for indexes to become active
-# Check status again
-db.memories.getSearchIndexes()
-```
-
-### API Connection Errors from CLI
-
-**Error**: "Connection refused" or "API not reachable"
-
-**Solution**: Verify API is running and accessible
-
-```bash
-# Check API health
-curl http://localhost:8000/api/v1/health
-
-# If connection refused, check API container
-docker compose ps api
-docker compose logs api
-
-# Restart API if needed
-docker compose restart api
-
-# For CLI, verify API URL configuration
-# Default is http://localhost:8000
-aria health
-```
-
-### Replica Set Not Initialized
-
-**Error**: "not master and slaveOk=false" or "no replset config has been received"
-
-**Solution**: Initialize MongoDB replica set
-
-```bash
-# Connect to MongoDB
-docker exec -it aria-mongod mongosh
-
-# Initialize replica set
-rs.initiate({
-  _id: "rs0",
-  members: [{ _id: 0, host: "mongod:27017" }]
-})
-
-# Verify status
-rs.status()
-# Should show: { ok: 1 }
-```
+Additional manual testing via CLI, API docs (`/docs`), and Docker Compose integration.

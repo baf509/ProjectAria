@@ -14,12 +14,9 @@ export default function Home() {
     const checkAPI = async () => {
       try {
         const health = await apiClient.checkHealth()
-        if (health.status === 'healthy') {
+        if (health.status === 'healthy' || health.status === 'degraded') {
           setApiStatus('healthy')
-          // Redirect to chat after brief delay
-          setTimeout(() => {
-            router.push('/chat')
-          }, 1000)
+          setIsLoading(false)
         } else {
           setApiStatus('error')
           setIsLoading(false)
@@ -34,39 +31,60 @@ export default function Home() {
   }, [router])
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center p-24">
-      <div className="text-center">
-        <h1 className="text-6xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">
+    <main className="relative flex min-h-screen flex-col justify-center overflow-hidden bg-stone-950 px-6 py-20 text-stone-100">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,_rgba(245,158,11,0.18),_transparent_35%),radial-gradient(circle_at_bottom_right,_rgba(14,165,233,0.16),_transparent_30%)]" />
+      <div className="relative mx-auto max-w-5xl">
+        <div className="mb-12 max-w-3xl">
+          <p className="mb-4 text-xs uppercase tracking-[0.35em] text-amber-400">Local Agent Platform</p>
+          <h1 className="mb-4 font-serif text-6xl tracking-tight text-stone-50">
           ARIA
-        </h1>
-        <p className="text-xl text-gray-600 dark:text-gray-400 mb-8">
-          Local AI Agent Platform
-        </p>
+          </h1>
+          <p className="text-lg text-stone-400">
+            Chat, memory, research, coding sessions, and infrastructure controls in one local-first surface.
+          </p>
+        </div>
 
         {apiStatus === 'checking' && (
-          <div className="flex flex-col items-center gap-4">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-            <p className="text-sm text-gray-500">Connecting to API...</p>
+          <div className="flex flex-col items-start gap-4">
+            <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-amber-400"></div>
+            <p className="text-sm text-stone-400">Connecting to API...</p>
           </div>
         )}
 
         {apiStatus === 'healthy' && (
-          <div className="flex flex-col items-center gap-4">
-            <div className="text-green-500 text-5xl">✓</div>
-            <p className="text-sm text-gray-500">Connected! Redirecting...</p>
+          <div className="grid gap-4 md:grid-cols-3">
+            <button
+              onClick={() => router.push('/chat')}
+              className="rounded-3xl border border-stone-800 bg-stone-900 p-6 text-left transition hover:border-amber-400"
+            >
+              <div className="mb-3 text-sm uppercase tracking-wide text-amber-400">Chat</div>
+              <div className="text-2xl font-semibold text-stone-50">Open Conversation UI</div>
+            </button>
+            <button
+              onClick={() => router.push('/dashboard')}
+              className="rounded-3xl border border-stone-800 bg-stone-900 p-6 text-left transition hover:border-sky-400"
+            >
+              <div className="mb-3 text-sm uppercase tracking-wide text-sky-400">Dashboard</div>
+              <div className="text-2xl font-semibold text-stone-50">Manage Memory, Research, Usage</div>
+            </button>
+            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+              <div className="mb-3 text-sm uppercase tracking-wide text-emerald-400">Status</div>
+              <div className="text-2xl font-semibold text-stone-50">API Connected</div>
+              <p className="mt-2 text-sm text-stone-400">The backend is healthy and ready.</p>
+            </div>
           </div>
         )}
 
         {apiStatus === 'error' && (
-          <div className="flex flex-col items-center gap-4">
-            <div className="text-red-500 text-5xl">✗</div>
-            <p className="text-sm text-red-500">Cannot connect to ARIA API</p>
-            <p className="text-xs text-gray-500">
+          <div className="flex flex-col items-start gap-4">
+            <div className="text-5xl text-red-500">✗</div>
+            <p className="text-sm text-red-400">Cannot connect to ARIA API</p>
+            <p className="text-xs text-stone-500">
               Make sure the API is running at {process.env.NEXT_PUBLIC_API_URL}
             </p>
             <button
               onClick={() => window.location.reload()}
-              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="mt-4 rounded-full bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950 hover:bg-amber-300"
             >
               Retry
             </button>

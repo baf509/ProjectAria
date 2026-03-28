@@ -22,7 +22,7 @@
         "alwaysOnTop": true,
         "visible": false,
         "center": true,
-        "transparent": false
+        "transparent": true
       }
     ]
   },

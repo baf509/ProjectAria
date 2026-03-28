@@ -1,6 +1,6 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-02-15
+**Last Updated:** 2026-03-15
 **Updated By:** Claude Code
 
 ---
@@ -9,8 +9,8 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
-║  PHASE 6: Desktop Widget + llama.cpp ROCm                        ║
-║  Status: IMPLEMENTATION COMPLETE                                 ║
+║  MULTI-PHASE: Phases 7-19 in progress                           ║
+║  Status: IMPLEMENTATION IN PROGRESS                              ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -380,18 +380,29 @@ aria chat --conversation <id> "What did I say before?"
 
 ## Current Work
 
-### In Progress
-- Phase 2 implementation complete - ready for testing
-
-### Blocked
-- None
+### Completed Since Phase 6
+- **Phase 7**: Signal Integration — client, service, polling loop, message routing, voice note transcription
+- **Phase 8**: Hardening — token counting, conversation summarization, resilience (retry + circuit breaker), DB migrations, usage tracking
+- **Phase 9**: Mode system — agent switching via `/mode`, keyword detection, natural language patterns
+- **Phase 10**: Memory categories — extraction types (fact/preference/event/skill/document)
+- **Phase 12**: Coding sessions — subprocess management, watchdog, review service, backend registry (Claude Code, Codex)
+- **Phase 13**: Task runner — background task submission, progress tracking, recovery handlers
+- **Phase 19**: Security — audit logging, rate limiting, API key auth middleware
+- **Dashboard**: 7-tab web dashboard (Modes, Memories, Research, Usage, Conversations, Workflows, Settings) with full CRUD (delete buttons for agents, memories, conversations, workflows)
+- **CLI v0.2.0**: 20+ command groups covering all major features
+- **Test suite**: 210 tests (unit + API integration) covering core components, command routing, API routes
+- **Orchestrator refactor**: Command parsing extracted into `CommandRouter` class (`api/aria/core/commands.py`)
+- **datetime migration**: All `datetime.utcnow()` and `datetime.now(datetime.UTC)` replaced with `datetime.now(timezone.utc)` across 25+ files
+- **LLM token tracking**: OpenAI and OpenRouter adapters now request `stream_options: {include_usage: true}` for accurate streaming token counts
+- **Workflow delete endpoint**: `DELETE /api/v1/workflows/{id}` added
+- **MCP persistence**: MCP server configs saved to MongoDB `mcp_servers` collection, restored on app startup
+- **Phase 14**: Scheduler — SchedulerService with tick loop, cron expressions, natural language reminder parsing, 6 API endpoints
+- **Phase 15**: Widget quick actions panel (coding status, memories, research, new chat)
+- **Phase 20**: ABP retirement — feature parity checklist with live service checks, data migration utilities, cutover validation endpoint
 
 ### Notes
-- All core Phase 2 components implemented
-- Memory system fully integrated with orchestrator
-- Hybrid search (BM25 + Vector) implemented
-- Need to test with embedding service + LLM
-- MongoDB vector search indexes required for testing
+- See `IMPLEMENTATION_PLAN.md` for detailed phase breakdown
+- See `FUTURE_INVESTIGATIONS.md` for research topics not yet committed to
 
 ---
 
@@ -514,32 +525,15 @@ PROJECT_STATUS.md (this file)
 
 | Issue | Severity | Status |
 |-------|----------|--------|
-| | | |
+| Some route files still use `datetime.now(datetime.UTC)` (class-level) — works in Python 3.13+ but needs shim in 3.12 | Low | Mitigated (test shim in place) |
 
 ---
 
 ## Next Actions
 
-To test Phase 4:
-1. Start Docker Compose stack (`docker compose up -d`)
-2. Check LLM backend status:
-   - `curl http://localhost:8000/api/v1/health/llm`
-3. Configure cloud API keys in `.env`:
-   - `ANTHROPIC_API_KEY=your_key_here`
-   - `OPENAI_API_KEY=your_key_here`
-4. Test cloud LLM usage:
-   - Create agent with Anthropic backend
-   - Create agent with OpenAI backend
-5. Test fallback chain:
-   - Create agent with fallback_chain configured
-   - Disable local llama.cpp and verify fallback works
-
-To start Phase 5 (Web UI):
-1. Set up Next.js project
-2. Implement authentication (if needed)
-3. Create chat interface
-4. Add agent and conversation management
-5. Implement tool and memory visualization
+1. **Integration test** Signal, Research, and Workflow systems with live services
+2. **End-to-end test** Scheduler with live MongoDB
+3. **Run ABP migration** when ready to retire AgentBenchPlatform
 
 ---
 
@@ -552,10 +546,18 @@ To start Phase 5 (Web UI):
 | 3 | Tools & MCP (Built-in tools, MCP client) | COMPLETE |
 | 4 | Cloud LLM Adapters (Anthropic, OpenAI, OpenRouter, Fallback) | COMPLETE |
 | 5 | Web UI (Next.js) | COMPLETE |
-| 6 | Desktop Widget + llama.cpp ROCm | COMPLETE |
-| 7 | Voice Mode (STT/TTS) | - |
-| 8 | React Native Mobile App | - |
-| 9 | Computer Use - CLI/GUI | - |
-| 10 | Remote Access & Security | - |
-| 11 | Knowledge Base & RAG | - |
-| 12 | Automation | - |
+| 6 | Desktop Widget + llama.cpp ROCm + Voice I/O | COMPLETE |
+| 7 | Signal Integration (mobile interface) | COMPLETE |
+| 8 | Hardening (tokens, summaries, resilience, migrations, usage) | COMPLETE |
+| 9 | Mode System (agent switching, keywords) | COMPLETE |
+| 10 | Memory Categories (extraction types) | COMPLETE |
+| 11 | Research System (recursive web research) | COMPLETE (needs integration testing) |
+| 12 | Coding Sessions (subprocess, watchdog, review) | COMPLETE |
+| 13 | Task Runner (background tasks, recovery) | COMPLETE |
+| 14 | Scheduler (cron tasks, reminders) | COMPLETE |
+| 15 | Widget Enhancements (mode switcher, voice, quick actions) | COMPLETE |
+| 16 | Web UI Dashboard (7-tab management console) | COMPLETE |
+| 17 | CLI Enhancements (20+ command groups) | COMPLETE |
+| 18 | Workflow Engine (multi-step orchestration) | COMPLETE |
+| 19 | Security (audit, rate limiting, API auth) | COMPLETE |
+| 20 | Retire ABP (migration, cutover validation) | COMPLETE |

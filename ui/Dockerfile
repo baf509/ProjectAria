@@ -14,7 +14,9 @@ COPY . .
 
 # Accept API URL at build time (Next.js bakes NEXT_PUBLIC_* into the bundle)
 ARG NEXT_PUBLIC_API_URL=http://localhost:8000
+ARG NEXT_PUBLIC_API_KEY=
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY
 
 # Build the application
 RUN npm run build

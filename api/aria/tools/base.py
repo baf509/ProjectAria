@@ -144,6 +144,15 @@ class BaseTool(ABC):
         pass
 
     @property
+    def dependencies(self) -> list[str]:
+        """
+        External dependencies required by this tool.
+        Override in subclasses to declare requirements.
+        E.g., ["http_client", "filesystem", "shell"]
+        """
+        return []
+
+    @property
     def definition(self) -> ToolDefinition:
         """Get the complete tool definition."""
         if self._definition is None:
@@ -167,9 +176,21 @@ class BaseTool(ABC):
         """
         pass
 
+    # Maps JSON schema types to Python types for validation
+    _TYPE_MAP: dict[str, tuple[type, ...]] = {
+        "string": (str,),
+        "number": (int, float),
+        "integer": (int,),
+        "boolean": (bool,),
+        "object": (dict,),
+        "array": (list,),
+    }
+
     async def validate_arguments(self, arguments: dict) -> tuple[bool, Optional[str]]:
         """
         Validate arguments against parameter definitions.
+
+        Checks required parameters, unknown parameters, and type correctness.
 
         Returns:
             (is_valid, error_message)
@@ -180,12 +201,28 @@ class BaseTool(ABC):
                 return False, f"Missing required parameter: {param.name}"
 
         # Check for unknown parameters
-        valid_param_names = {p.name for p in self.parameters}
+        param_lookup = {p.name: p for p in self.parameters}
         for arg_name in arguments.keys():
-            if arg_name not in valid_param_names:
+            if arg_name not in param_lookup:
                 return False, f"Unknown parameter: {arg_name}"
 
-        # Type validation could be added here
+        # Type validation
+        for arg_name, arg_value in arguments.items():
+            param = param_lookup.get(arg_name)
+            if param is None:
+                continue
+            expected_types = self._TYPE_MAP.get(param.type)
+            if expected_types and not isinstance(arg_value, expected_types):
+                return False, (
+                    f"Parameter '{arg_name}' has wrong type: "
+                    f"expected {param.type}, got {type(arg_value).__name__}"
+                )
+            # Enum validation
+            if param.enum and arg_value not in param.enum:
+                return False, (
+                    f"Parameter '{arg_name}' value '{arg_value}' "
+                    f"not in allowed values: {param.enum}"
+                )
 
         return True, None
 

@@ -29,7 +29,10 @@ export function appendStreamingMessage(): HTMLElement {
 }
 
 export function updateStreamingMessage(el: HTMLElement, content: string) {
-  el.innerHTML = content + '<span class="cursor"></span>';
+  el.textContent = content;
+  const cursor = document.createElement('span');
+  cursor.className = 'cursor';
+  el.appendChild(cursor);
   scrollToBottom();
 }
 
@@ -75,7 +78,7 @@ function addTtsButton(messageEl: HTMLElement, text: string) {
       // Truncate long text to avoid TTS timeouts on CPU inference
       const MAX_TTS_CHARS = 1000;
       const ttsText = text.length > MAX_TTS_CHARS
-        ? text.slice(0, MAX_TTS_CHARS) + "..."
+        ? text.slice(0, MAX_TTS_CHARS) + "... Message truncated for audio."
         : text;
       const wavBuffer = await synthesizeSpeech(ttsText);
       const blob = new Blob([wavBuffer], { type: "audio/wav" });

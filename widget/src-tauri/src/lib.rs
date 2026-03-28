@@ -19,6 +19,42 @@ fn log_to_file(msg: &str) {
     }
 }
 
+/// Reposition the window to the bottom-right of the current monitor.
+/// The window "grows upward" — its bottom edge stays anchored.
+#[tauri::command]
+fn reposition_window(window: tauri::WebviewWindow, height: f64) {
+    let monitor = match window.current_monitor() {
+        Ok(Some(m)) => m,
+        _ => return,
+    };
+
+    let scale = monitor.scale_factor();
+    let monitor_size = monitor.size();
+    let monitor_pos = monitor.position();
+
+    // Work in logical pixels
+    let screen_w = monitor_size.width as f64 / scale;
+    let screen_h = monitor_size.height as f64 / scale;
+    let origin_x = monitor_pos.x as f64 / scale;
+    let origin_y = monitor_pos.y as f64 / scale;
+
+    let win_w: f64 = 400.0;
+    let margin: f64 = 20.0;
+    let taskbar_margin: f64 = 48.0;
+
+    // Clamp height
+    let max_h = screen_h * 0.85;
+    let min_h: f64 = 300.0;
+    let clamped_h = height.clamp(min_h, max_h);
+
+    // Bottom-right, above taskbar
+    let x = origin_x + screen_w - win_w - margin;
+    let y = origin_y + screen_h - clamped_h - taskbar_margin;
+
+    let _ = window.set_size(tauri::LogicalSize::new(win_w, clamped_h));
+    let _ = window.set_position(tauri::LogicalPosition::new(x, y));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     log_to_file("=== ARIA Widget starting ===");
@@ -26,6 +62,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .invoke_handler(tauri::generate_handler![reposition_window])
         .setup(|app| {
             log_to_file("setup: entered");
 
@@ -78,7 +115,6 @@ pub fn run() {
                             // Always show on tray click — don't toggle, because on
                             // Windows the focus race between tray and window causes
                             // the window to immediately disappear after showing.
-                            // Use Ctrl+Space or tray menu to hide.
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -96,16 +132,17 @@ pub fn run() {
                 }
             };
 
-            // Register global shortcut (Ctrl+Space)
+            // Register global shortcut (Ctrl+Shift+Space)
             use tauri_plugin_global_shortcut::ShortcutState;
-            match app.global_shortcut().on_shortcut("ctrl+space", move |app: &AppHandle, _shortcut, event| {
+            match app.global_shortcut().on_shortcut("ctrl+shift+space", move |app: &AppHandle, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
                     if let Some(window) = app.get_webview_window("main") {
                         if window.is_visible().unwrap_or(false) {
-                            let _ = window.hide();
+                            let _ = window.eval("window.__ariaAnimateHide?.()");
                         } else {
                             let _ = window.show();
                             let _ = window.set_focus();
+                            let _ = window.eval("window.__ariaAnimateShow?.()");
                         }
                     }
                 }

@@ -2,10 +2,11 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { apiClient } from '@/lib/api-client'
-import type { Conversation, Message as MessageType, StreamChunk } from '@/types'
+import type { Agent, Conversation, Message as MessageType } from '@/types'
 import { Send, Loader2 } from 'lucide-react'
 
 export default function ChatPage() {
+  const [agents, setAgents] = useState<Agent[]>([])
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
   const [messages, setMessages] = useState<MessageType[]>([])
@@ -16,6 +17,7 @@ export default function ChatPage() {
 
   // Load conversations on mount
   useEffect(() => {
+    loadAgents()
     loadConversations()
   }, [])
 
@@ -23,6 +25,15 @@ export default function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingContent])
+
+  const loadAgents = async () => {
+    try {
+      const availableAgents = await apiClient.listAgents()
+      setAgents(availableAgents)
+    } catch (error) {
+      console.error('Failed to load agents:', error)
+    }
+  }
 
   const loadConversations = async () => {
     try {
@@ -62,6 +73,25 @@ export default function ChatPage() {
     }
   }
 
+  const handleModeChange = async (agentSlug: string) => {
+    if (!currentConversation || isStreaming) return
+
+    try {
+      const updated = await apiClient.switchConversationMode(currentConversation.id, agentSlug)
+      setCurrentConversation(updated)
+      setMessages(updated.messages)
+      setConversations(prev =>
+        prev.map(convo => (convo.id === updated.id ? { ...convo, ...updated } : convo)),
+      )
+    } catch (error) {
+      console.error('Failed to switch mode:', error)
+    }
+  }
+
+  const selectedAgentId = currentConversation?.active_agent_id || currentConversation?.agent_id || ''
+
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+
   const handleSendMessage = async () => {
     if (!input.trim() || !currentConversation || isStreaming) return
 
@@ -69,29 +99,61 @@ export default function ChatPage() {
     setInput('')
     setIsStreaming(true)
     setStreamingContent('')
+    setConnectionError(null)
 
-    try {
-      // Stream the response
-      const chunks: string[] = []
+    const maxRetries = 3
+    let attempt = 0
+    let lastEventId: string | undefined
 
-      for await (const chunk of apiClient.streamMessage(currentConversation.id, userMessage)) {
-        if (chunk.type === 'text' && chunk.content) {
-          chunks.push(chunk.content)
-          setStreamingContent(chunks.join(''))
-        } else if (chunk.type === 'error') {
-          console.error('Stream error:', chunk.error)
-          break
+    while (attempt < maxRetries) {
+      try {
+        if (attempt > 0) {
+          setConnectionError(`Reconnecting... (attempt ${attempt + 1}/${maxRetries})`)
+          // Exponential backoff: 1s, 2s, 4s
+          await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, attempt - 1)))
+        }
+
+        const chunks: string[] = []
+        let streamError = false
+
+        for await (const chunk of apiClient.streamMessage(
+          currentConversation.id,
+          userMessage,
+          lastEventId,
+        )) {
+          setConnectionError(null)
+          if (chunk.type === 'text' && chunk.content) {
+            chunks.push(chunk.content)
+            setStreamingContent(chunks.join(''))
+          } else if (chunk.type === 'error') {
+            console.error('Stream error:', chunk.error)
+            streamError = true
+            break
+          }
+          if (chunk.event_id) {
+            lastEventId = chunk.event_id
+          }
+        }
+
+        if (streamError) {
+          throw new Error('Stream returned an error event')
+        }
+
+        // Reload conversation to get updated messages
+        await loadConversation(currentConversation.id)
+        setStreamingContent('')
+        setConnectionError(null)
+        break // Success — exit retry loop
+      } catch (error) {
+        attempt++
+        console.error(`Stream attempt ${attempt} failed:`, error)
+        if (attempt >= maxRetries) {
+          setConnectionError('Connection lost. Please try again.')
         }
       }
-
-      // Reload conversation to get updated messages
-      await loadConversation(currentConversation.id)
-      setStreamingContent('')
-    } catch (error) {
-      console.error('Failed to send message:', error)
-    } finally {
-      setIsStreaming(false)
     }
+
+    setIsStreaming(false)
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -137,6 +199,47 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
+        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-6 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {currentConversation?.title || 'Conversation'}
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Active mode: {agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon ? `${agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon} ` : ''}{agents.find(agent => agent.id === selectedAgentId)?.name || 'Default'}
+              </p>
+            </div>
+
+            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+              <span>Mode</span>
+              <select
+                value={selectedAgentId}
+                onChange={(e) => {
+                  const nextAgent = agents.find(agent => agent.id === e.target.value)
+                  if (nextAgent) {
+                    void handleModeChange(nextAgent.slug)
+                  }
+                }}
+                disabled={!currentConversation || isStreaming || agents.length === 0}
+                className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              >
+                {agents.map(agent => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.mode_metadata?.icon ? `${agent.mode_metadata.icon} ` : ''}{agent.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* Connection error banner */}
+        {connectionError && (
+          <div className="px-6 py-2 bg-yellow-900/50 border-b border-yellow-700 text-yellow-200 text-sm text-center">
+            {connectionError}
+          </div>
+        )}
+
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
           {messages.map((msg) => (

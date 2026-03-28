@@ -146,6 +146,7 @@ class OpenRouterAdapter(LLMAdapter):
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
         if tools:
@@ -186,7 +187,7 @@ class OpenRouterAdapter(LLMAdapter):
                         if tc_delta.function:
                             if tc_delta.function.name:
                                 tool_calls_accumulator[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
+                            if tc_delta.function.arguments is not None:
                                 tool_calls_accumulator[idx]["arguments"] += tc_delta.function.arguments
 
                 # Check if done
@@ -219,6 +220,7 @@ class OpenRouterAdapter(LLMAdapter):
                         type="done",
                         usage=usage,
                     )
+                    break
 
         except Exception as e:
             yield StreamChunk(
@@ -259,13 +261,6 @@ class OpenRouterAdapter(LLMAdapter):
             # Extract content and tool calls
             message = response.choices[0].message
 
-            # Debug: log the response structure
-            import sys
-            print(f"[DEBUG] Response type: {type(response)}", file=sys.stderr)
-            print(f"[DEBUG] Message type: {type(message)}", file=sys.stderr)
-            print(f"[DEBUG] Message content: {repr(message.content)}", file=sys.stderr)
-            print(f"[DEBUG] Has reasoning: {hasattr(message, 'reasoning')}", file=sys.stderr)
-
             # Get content - prefer actual content over reasoning
             content = message.content or ""
 
@@ -274,19 +269,13 @@ class OpenRouterAdapter(LLMAdapter):
                 # Try model_dump for Pydantic v2
                 if hasattr(message, 'model_dump'):
                     message_dict = message.model_dump()
-                    print(f"[DEBUG] model_dump keys: {list(message_dict.keys())}", file=sys.stderr)
-                    print(f"[DEBUG] reasoning from dump: {repr(message_dict.get('reasoning'))}", file=sys.stderr)
                     content = message_dict.get('reasoning', '')
                 # Try model_extra for extra fields
                 if not content and hasattr(message, 'model_extra'):
-                    print(f"[DEBUG] model_extra: {message.model_extra}", file=sys.stderr)
                     content = message.model_extra.get('reasoning', '')
                 # Try direct attribute access
                 if not content and hasattr(message, 'reasoning'):
-                    print(f"[DEBUG] direct reasoning: {repr(message.reasoning)}", file=sys.stderr)
                     content = message.reasoning or ""
-
-            print(f"[DEBUG] Final content: {repr(content)}", file=sys.stderr)
 
             # Extract tool calls if present
             tool_calls = []
@@ -319,7 +308,6 @@ class OpenRouterAdapter(LLMAdapter):
     async def health_check(self) -> bool:
         """Check if the OpenRouter API is accessible."""
         try:
-            # Try a minimal completion
             async for _ in self.stream(
                 [Message(role="user", content="hi")],
                 max_tokens=10,
@@ -327,7 +315,7 @@ class OpenRouterAdapter(LLMAdapter):
                 return True
         except Exception:
             return False
-        return False
+        return False  # empty stream
 
     async def __aenter__(self):
         return self

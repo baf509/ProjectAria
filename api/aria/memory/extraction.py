@@ -9,53 +9,22 @@ Related Spec Sections:
 """
 
 import json
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from typing import Optional
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+logger = logging.getLogger(__name__)
+
+from aria.config import settings
+from aria.core.claude_runner import ClaudeRunner
 from aria.llm.manager import llm_manager
 from aria.llm.base import Message
+from aria.core.prompts import load_prompt
+from aria.core.resilience import retry_async
+from aria.db.usage import UsageRepo
 from aria.memory.long_term import LongTermMemory
-
-
-EXTRACTION_PROMPT = """You are a memory extraction assistant. Your job is to analyze conversation messages and extract important facts, preferences, and information that should be remembered long-term.
-
-Review the following conversation messages and extract any memories worth saving. Focus on:
-- User preferences and likes/dislikes
-- Important facts about the user
-- Significant decisions or plans
-- Skills or expertise mentioned
-- Important context that would be useful in future conversations
-
-For each memory, provide:
-1. content: The memory text (concise but complete)
-2. content_type: One of: fact, preference, event, skill, document
-3. categories: List of relevant categories/tags
-4. importance: Score from 0.0 to 1.0
-
-Return your response as a JSON array of memory objects. If no significant memories are found, return an empty array.
-
-Example output:
-[
-  {{
-    "content": "User prefers Python over JavaScript for backend development",
-    "content_type": "preference",
-    "categories": ["coding", "preferences"],
-    "importance": 0.7
-  }},
-  {{
-    "content": "User is working on an AI agent platform called ARIA",
-    "content_type": "fact",
-    "categories": ["projects", "work"],
-    "importance": 0.9
-  }}
-]
-
-Conversation messages:
-{messages}
-
-Extract memories (return JSON array only):"""
 
 
 class MemoryExtractor:
@@ -67,6 +36,7 @@ class MemoryExtractor:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
         self.long_term_memory = LongTermMemory(db)
+        self.usage_repo = UsageRepo(db)
 
     async def extract_from_conversation(
         self,
@@ -141,27 +111,43 @@ class MemoryExtractor:
             [f"{msg['role'].upper()}: {msg['content']}" for msg in messages]
         )
 
-        prompt = EXTRACTION_PROMPT.format(messages=messages_text)
+        prompt = load_prompt("extraction", messages=messages_text)
 
-        # Get LLM adapter
-        adapter = llm_manager.get_adapter(llm_backend, llm_model)
-
-        # Extract memories
+        # Extract memories — use ClaudeRunner if available, else API tokens
+        response = None
         try:
-            response, _, _ = await adapter.complete(
-                messages=[Message(role="user", content=prompt)],
-                temperature=0.3,  # Lower temperature for more consistent extraction
-                max_tokens=2048,
-            )
+            if settings.use_claude_runner and ClaudeRunner.is_available():
+                runner = ClaudeRunner(timeout_seconds=settings.claude_runner_timeout_seconds)
+                response = await runner.run(prompt)
+                if not response:
+                    logger.warning("ClaudeRunner returned no output for extraction, falling back to API")
+                    response = await self._extract_via_api(prompt, llm_backend, llm_model, conversation_id)
+            else:
+                response = await self._extract_via_api(prompt, llm_backend, llm_model, conversation_id)
 
-            # Parse JSON response
-            memories = json.loads(response.strip())
-
-            if not isinstance(memories, list):
-                print(f"Unexpected extraction response format: {response}")
+            if not response:
                 return 0
 
-            # Create memories
+            # Parse JSON response — strip markdown fences if present
+            cleaned = response.strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.split("\n")
+                # Remove first line (```json or ```) and last line (```)
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                cleaned = "\n".join(lines).strip()
+            memories = json.loads(cleaned)
+
+            if not isinstance(memories, list):
+                logger.warning("Unexpected extraction response format: %s", response)
+                return 0
+
+            message_ids = [msg["id"] for msg in messages if "id" in msg]
+            if not message_ids:
+                logger.warning("No message IDs found in batch, skipping extraction")
+                return 0
+
+            # Create memories FIRST, then mark as processed.
+            # This ensures messages are retried if memory creation fails.
             extracted_count = 0
             for memory_data in memories:
                 try:
@@ -174,37 +160,66 @@ class MemoryExtractor:
                         source={
                             "type": "conversation",
                             "conversation_id": ObjectId(conversation_id),
-                            "message_ids": [msg["id"] for msg in messages],
-                            "extracted_at": datetime.utcnow(),
+                            "message_ids": message_ids,
+                            "extracted_at": datetime.now(timezone.utc),
                         },
                     )
                     extracted_count += 1
                 except Exception as e:
-                    print(f"Error creating memory: {e}")
+                    logger.error("Error creating memory: %s", e)
                     continue
 
-            # Mark messages as processed
-            message_ids = [msg["id"] for msg in messages]
-            await self.db.conversations.update_one(
-                {"_id": ObjectId(conversation_id)},
-                {
-                    "$set": {
-                        "messages.$[elem].memory_processed": True
-                        for elem in message_ids
-                    }
-                },
-                array_filters=[{"elem.id": {"$in": message_ids}}],
-            )
+            # Mark messages as processed AFTER memories are created
+            if extracted_count > 0:
+                try:
+                    await self.db.conversations.update_one(
+                        {"_id": ObjectId(conversation_id)},
+                        {"$set": {"messages.$[elem].memory_processed": True}},
+                        array_filters=[{"elem.id": {"$in": message_ids}}],
+                    )
+                except Exception as e:
+                    logger.error("Failed to mark messages as processed: %s", e)
+                    # Memories were created; duplicates on next run are preferable
+                    # to data loss from never retrying.
 
             return extracted_count
 
         except json.JSONDecodeError as e:
-            print(f"Failed to parse extraction response: {e}")
-            print(f"Response was: {response}")
+            logger.warning("Failed to parse extraction response: %s", e)
+            logger.warning("Response was: %s", response)
             return 0
         except Exception as e:
-            print(f"Memory extraction error: {e}")
+            logger.error("Memory extraction error: %s", e)
             return 0
+
+    async def _extract_via_api(
+        self,
+        prompt: str,
+        llm_backend: str,
+        llm_model: str,
+        conversation_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Run extraction via LLM API adapter (consumes API tokens)."""
+        adapter = llm_manager.get_adapter(llm_backend, llm_model)
+        response, _, usage = await retry_async(
+            lambda: adapter.complete(
+                messages=[Message(role="user", content=prompt)],
+                temperature=0.3,
+                max_tokens=2048,
+            ),
+            retries=3,
+            base_delay=1.0,
+        )
+        if usage and conversation_id:
+            await self.usage_repo.record(
+                model=llm_model,
+                source="memory_extraction",
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                conversation_id=conversation_id,
+                metadata={"backend": llm_backend},
+            )
+        return response
 
     async def extract_from_text(
         self,
@@ -223,16 +238,19 @@ class MemoryExtractor:
         Returns:
             List of extracted memory data
         """
-        prompt = EXTRACTION_PROMPT.format(messages=f"USER: {text}")
-
-        adapter = llm_manager.get_adapter(llm_backend, llm_model)
+        prompt = load_prompt("extraction", messages=f"USER: {text}")
 
         try:
-            response, _, _ = await adapter.complete(
-                messages=[Message(role="user", content=prompt)],
-                temperature=0.3,
-                max_tokens=2048,
-            )
+            if settings.use_claude_runner and ClaudeRunner.is_available():
+                runner = ClaudeRunner(timeout_seconds=settings.claude_runner_timeout_seconds)
+                response = await runner.run(prompt)
+                if not response:
+                    response = await self._extract_via_api(prompt, llm_backend, llm_model)
+            else:
+                response = await self._extract_via_api(prompt, llm_backend, llm_model)
+
+            if not response:
+                return []
 
             memories = json.loads(response.strip())
 
@@ -242,5 +260,5 @@ class MemoryExtractor:
             return memories
 
         except Exception as e:
-            print(f"Text extraction error: {e}")
+            logger.error("Text extraction error: %s", e)
             return []

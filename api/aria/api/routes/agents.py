@@ -8,8 +8,8 @@ Related Spec Sections:
 - Section 5.1: REST Endpoints
 """
 
-from datetime import datetime
-from bson import ObjectId
+from datetime import datetime, timezone
+from aria.api.deps import valid_object_id
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -46,11 +46,13 @@ async def create_agent(
         raise HTTPException(status_code=409, detail="Agent slug already exists")
 
     # Create agent document
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     agent = body.model_dump()
     agent.update(
         {
             "is_default": False,
+            "mode_category": agent.get("mode_category", "chat"),
+            "mode_metadata": agent.get("mode_metadata") or {},
             "created_at": now,
             "updated_at": now,
         }
@@ -65,7 +67,7 @@ async def create_agent(
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)):
     """Get an agent by ID."""
-    agent = await db.agents.find_one({"_id": ObjectId(agent_id)})
+    agent = await db.agents.find_one({"_id": valid_object_id(agent_id)})
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -81,16 +83,16 @@ async def update_agent(
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    update_data["updated_at"] = datetime.utcnow()
+    update_data["updated_at"] = datetime.now(timezone.utc)
 
     result = await db.agents.update_one(
-        {"_id": ObjectId(agent_id)}, {"$set": update_data}
+        {"_id": valid_object_id(agent_id)}, {"$set": update_data}
     )
 
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    agent = await db.agents.find_one({"_id": ObjectId(agent_id)})
+    agent = await db.agents.find_one({"_id": valid_object_id(agent_id)})
     return AgentResponse(**serialize_agent(agent))
 
 
@@ -98,10 +100,10 @@ async def update_agent(
 async def delete_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)):
     """Delete an agent."""
     # Cannot delete default agent
-    agent = await db.agents.find_one({"_id": ObjectId(agent_id)})
+    agent = await db.agents.find_one({"_id": valid_object_id(agent_id)})
     if agent and agent.get("is_default"):
         raise HTTPException(status_code=400, detail="Cannot delete default agent")
 
-    result = await db.agents.delete_one({"_id": ObjectId(agent_id)})
+    result = await db.agents.delete_one({"_id": valid_object_id(agent_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Agent not found")

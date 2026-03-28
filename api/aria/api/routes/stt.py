@@ -56,7 +56,10 @@ async def stt_health():
         try:
             base_url = settings.stt_url.rsplit("/v1", 1)[0]
             resp = await client.get(f"{base_url}/health")
+            if resp.status_code != 200:
+                return {"status": "unhealthy", "status_code": resp.status_code}
+            return resp.json()
         except (httpx.ConnectError, httpx.TimeoutException):
             return {"status": "unavailable"}
-
-    return resp.json()
+        except Exception:
+            return {"status": "error"}

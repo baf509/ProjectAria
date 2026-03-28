@@ -102,6 +102,22 @@ class AnthropicAdapter(LLMAdapter):
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from Claude."""
 
+        # If non-streaming requested, use complete() and simulate streaming
+        if not stream:
+            try:
+                content, tool_calls_list, usage = await self.complete(
+                    messages, tools, temperature, max_tokens
+                )
+                if content:
+                    yield StreamChunk(type="text", content=content)
+                for tc in tool_calls_list:
+                    yield StreamChunk(type="tool_call", tool_call=tc)
+                yield StreamChunk(type="done", usage=usage)
+                return
+            except Exception as e:
+                yield StreamChunk(type="error", error=f"Anthropic error: {str(e)}")
+                return
+
         # Convert messages
         system_prompt, anthropic_messages = self._convert_messages(messages)
 
@@ -121,19 +137,25 @@ class AnthropicAdapter(LLMAdapter):
 
         try:
             # Stream the response
-            async with self.client.messages.stream(**request_params) as stream:
+            async with self.client.messages.stream(**request_params) as stream_ctx:
                 tool_uses = []
+                tool_input_buffers = {}  # index -> accumulated JSON string
 
-                async for event in stream:
-                    # Text delta
+                async for event in stream_ctx:
+                    # Text or tool input delta
                     if event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
                             yield StreamChunk(
                                 type="text",
                                 content=event.delta.text,
                             )
+                        elif hasattr(event.delta, "partial_json"):
+                            # Accumulate tool input JSON fragments
+                            if tool_uses:
+                                idx = len(tool_uses) - 1
+                                tool_input_buffers[idx] = tool_input_buffers.get(idx, "") + event.delta.partial_json
 
-                    # Tool use block
+                    # Tool use block start
                     elif event.type == "content_block_start":
                         if hasattr(event.content_block, "type"):
                             if event.content_block.type == "tool_use":
@@ -143,21 +165,18 @@ class AnthropicAdapter(LLMAdapter):
                                     "input": {},
                                 })
 
-                    # Tool input delta
-                    elif event.type == "content_block_delta":
-                        if hasattr(event.delta, "partial_json"):
-                            # Accumulate tool input
-                            if tool_uses:
+                    # Tool use block end — parse accumulated JSON
+                    elif event.type == "content_block_stop":
+                        if tool_uses:
+                            idx = len(tool_uses) - 1
+                            if idx in tool_input_buffers:
                                 try:
-                                    tool_uses[-1]["input"] = json.loads(
-                                        event.delta.partial_json
-                                    )
+                                    tool_uses[idx]["input"] = json.loads(tool_input_buffers[idx])
                                 except json.JSONDecodeError:
-                                    # Partial JSON, will get more
-                                    pass
+                                    tool_uses[idx]["input"] = {}
 
                 # Get final message for usage stats
-                final_message = await stream.get_final_message()
+                final_message = await stream_ctx.get_final_message()
 
                 # Yield any tool calls
                 for tool_use in tool_uses:
@@ -196,7 +215,6 @@ class AnthropicAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        stream: bool = True,
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 
@@ -219,7 +237,6 @@ class AnthropicAdapter(LLMAdapter):
     async def health_check(self) -> bool:
         """Check if the Anthropic API is accessible."""
         try:
-            # Try a minimal completion
             async for _ in self.stream(
                 [Message(role="user", content="hi")],
                 max_tokens=10,
@@ -227,7 +244,7 @@ class AnthropicAdapter(LLMAdapter):
                 return True
         except Exception:
             return False
-        return False
+        return False  # empty stream
 
     async def __aenter__(self):
         return self

@@ -77,6 +77,10 @@ class ShellTool(BaseTool):
         return ToolType.BUILTIN
 
     @property
+    def dependencies(self) -> list[str]:
+        return ["shell"]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(
@@ -99,23 +103,53 @@ class ShellTool(BaseTool):
             ),
         ]
 
+    # Patterns that indicate command injection attempts
+    _INJECTION_PATTERNS = [
+        ";",       # command chaining
+        "&&",      # conditional chaining
+        "||",      # conditional chaining
+        "|",       # piping
+        "`",       # backtick substitution
+        "$(",      # subshell substitution
+        "$((",     # arithmetic substitution
+        "${",      # variable expansion
+        ">",       # output redirection
+        "<",       # input redirection
+        "\n",      # newline injection
+        "\\;",     # escaped semicolon
+    ]
+
     def _validate_command(self, command: str) -> tuple[bool, Optional[str]]:
         """
         Validate that a command is allowed.
 
+        Checks:
+        1. Command injection patterns (pipes, semicolons, backticks, $())
+        2. Denied command prefixes
+        3. Allowed command prefixes (if allowlist is set)
+
         Returns:
             (is_valid, error_message)
         """
+        # Block command injection patterns
+        for pattern in self._INJECTION_PATTERNS:
+            if pattern in command:
+                return False, (
+                    f"Command rejected: contains disallowed pattern '{pattern}'. "
+                    "Shell chaining, piping, and substitution are not permitted."
+                )
+
         # Check denied commands first
         for denied in self.denied_commands:
-            if command.startswith(denied):
+            if command.strip().startswith(denied):
                 return False, f"Command denied: starts with '{denied}'"
 
         # Check allowed commands if specified
         if self.allowed_commands is not None:
+            cmd_stripped = command.strip()
             allowed = False
             for allowed_prefix in self.allowed_commands:
-                if command.startswith(allowed_prefix):
+                if cmd_stripped.startswith(allowed_prefix):
                     allowed = True
                     break
 
@@ -142,9 +176,18 @@ class ShellTool(BaseTool):
         try:
             logger.info(f"Executing shell command: {command}")
 
-            # Execute the command
-            process = await asyncio.create_subprocess_shell(
-                command,
+            # Execute the command using exec (not shell) to avoid injection
+            try:
+                args = shlex.split(command)
+            except ValueError as e:
+                return ToolResult(
+                    tool_name=self.name,
+                    status=ToolStatus.ERROR,
+                    error=f"Invalid command syntax: {str(e)}",
+                )
+
+            process = await asyncio.create_subprocess_exec(
+                *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,

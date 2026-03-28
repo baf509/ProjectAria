@@ -12,8 +12,10 @@ Related Spec Sections:
 from typing import Optional, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from aria.api.deps import get_tool_router, get_mcp_manager
+from aria.api.deps import get_tool_router, get_mcp_manager, get_db
+from aria.config import settings
 from aria.tools.router import ToolRouter
 from aria.tools.mcp.manager import MCPManager
 from aria.tools.base import ToolType
@@ -116,6 +118,16 @@ async def list_tools(
     ]
 
 
+# Stats endpoint MUST be before the {tool_name} path parameter route
+# to avoid being shadowed by it.
+@router.get("/tools/stats")
+async def get_tool_stats(
+    router: ToolRouter = Depends(get_tool_router),
+):
+    """Get statistics about registered tools."""
+    return router.tool_count()
+
+
 @router.get("/tools/{tool_name}", response_model=ToolDefinitionResponse)
 async def get_tool(
     tool_name: str,
@@ -155,6 +167,8 @@ async def execute_tool(
         tool_name=request.tool_name,
         arguments=request.arguments,
         timeout_seconds=request.timeout or 300,
+        source="api",
+        allow_sensitive=settings.tool_api_sensitive_enabled,
     )
 
     return ToolExecuteResponse(
@@ -196,6 +210,7 @@ async def add_mcp_server(
     request: MCPServerAddRequest,
     router: ToolRouter = Depends(get_tool_router),
     mcp_manager: MCPManager = Depends(get_mcp_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Add and connect to an MCP server."""
     success, error = await mcp_manager.add_server(
@@ -206,6 +221,14 @@ async def add_mcp_server(
 
     if not success:
         raise HTTPException(status_code=400, detail=error)
+
+    # Persist config to MongoDB so it survives restarts
+    await mcp_manager.save_server_config(
+        db=db,
+        server_id=request.server_id,
+        command=request.command,
+        env=request.env,
+    )
 
     # Register all tools from the new server
     tools = mcp_manager.get_server_tools(request.server_id)
@@ -227,6 +250,7 @@ async def remove_mcp_server(
     server_id: str,
     router: ToolRouter = Depends(get_tool_router),
     mcp_manager: MCPManager = Depends(get_mcp_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Remove and disconnect from an MCP server."""
     # Get tools before removing to unregister them
@@ -239,6 +263,9 @@ async def remove_mcp_server(
             status_code=404,
             detail=f"MCP server '{server_id}' not found",
         )
+
+    # Remove persisted config from MongoDB
+    await mcp_manager.delete_server_config(db, server_id)
 
     # Unregister all tools from this server
     for tool in tools:
@@ -282,13 +309,3 @@ async def list_mcp_server_tools(
     ]
 
 
-# =============================================================================
-# Stats Endpoint
-# =============================================================================
-
-@router.get("/tools/stats")
-async def get_tool_stats(
-    router: ToolRouter = Depends(get_tool_router),
-):
-    """Get statistics about registered tools."""
-    return router.tool_count()

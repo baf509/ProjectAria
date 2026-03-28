@@ -8,10 +8,12 @@ Related Spec Sections:
 - Section 3.2: Short-Term Memory Implementation
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from aria.core.tokenizer import count_tokens
 
 
 class ConversationSummary:
@@ -47,6 +49,7 @@ class ShortTermMemory:
         conversation_id: str,
         max_messages: int = 20,
         max_tokens: int = 8000,
+        model: str = "default",
     ) -> list[dict]:
         """
         Get recent messages from current conversation.
@@ -70,9 +73,7 @@ class ShortTermMemory:
 
         messages = conversation.get("messages", [])
 
-        # TODO: Trim to fit token budget if needed
-        # For Phase 2, we'll just use max_messages
-        return messages
+        return self._trim_to_tokens(messages, max_tokens, model)
 
     async def get_recent_conversations_context(
         self, hours: int = 24, limit: int = 5
@@ -88,7 +89,7 @@ class ShortTermMemory:
         Returns:
             List of conversation summaries
         """
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
 
         conversations = (
             await self.db.conversations.find(
@@ -102,34 +103,75 @@ class ShortTermMemory:
 
         return [ConversationSummary.from_doc(c) for c in conversations]
 
-    def _trim_to_tokens(self, messages: list[dict], max_tokens: int) -> list[dict]:
+    async def archive_old_conversations(
+        self, days: int = 90, batch_size: int = 100
+    ) -> int:
+        """
+        Archive conversations older than `days` by setting status to 'archived'.
+        Keeps the database performant by reducing active conversation count.
+
+        Args:
+            days: Archive conversations not updated in this many days
+            batch_size: Maximum conversations to archive per call
+
+        Returns:
+            Number of conversations archived
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        result = await self.db.conversations.update_many(
+            {
+                "status": "active",
+                "updated_at": {"$lt": cutoff},
+            },
+            {
+                "$set": {
+                    "status": "archived",
+                    "archived_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+        if result.modified_count > 0:
+            import logging
+            logging.getLogger(__name__).info(
+                "Archived %d conversations older than %d days",
+                result.modified_count, days,
+            )
+
+        return result.modified_count
+
+    def _trim_to_tokens(
+        self,
+        messages: list[dict],
+        max_tokens: int,
+        model: str,
+    ) -> list[dict]:
         """
         Trim messages to fit token budget.
-        Simple approximation: 1 token ≈ 4 characters.
 
         Args:
             messages: List of messages
             max_tokens: Maximum tokens allowed
+            model: Model name used for token counting
 
         Returns:
             Trimmed list of messages
         """
-        # Simple heuristic: 1 token ≈ 4 chars
-        chars_per_token = 4
-        max_chars = max_tokens * chars_per_token
-
-        total_chars = 0
+        total_tokens = 0
         trimmed = []
 
         # Keep messages from most recent backwards
         for msg in reversed(messages):
             content = msg.get("content", "")
-            msg_chars = len(content)
+            msg_tokens = count_tokens(content, model) + 4
 
-            if total_chars + msg_chars > max_chars:
+            if trimmed and total_tokens + msg_tokens > max_tokens:
                 break
+            if not trimmed and msg_tokens > max_tokens:
+                return [msg]
 
             trimmed.insert(0, msg)
-            total_chars += msg_chars
+            total_tokens += msg_tokens
 
         return trimmed

@@ -9,7 +9,8 @@ Related Spec Sections:
 """
 
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from .client import MCPClient, MCPTool as MCPToolDef
 from ..base import BaseTool, ToolParameter, ToolResult, ToolStatus, ToolType
 import logging
@@ -79,14 +80,24 @@ class MCPToolWrapper(BaseTool):
 
     async def execute(self, arguments: dict) -> ToolResult:
         """Execute the MCP tool."""
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
 
         try:
             # Call the tool via MCP client
             result = await self.mcp_client.call_tool(self.mcp_tool.name, arguments)
 
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
+
+            if result is None:
+                return ToolResult(
+                    tool_name=self.name,
+                    status=ToolStatus.ERROR,
+                    error="MCP tool returned no result",
+                    duration_ms=duration_ms,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                )
 
             # MCP tools return content array
             content = result.get("content", [])
@@ -115,7 +126,7 @@ class MCPToolWrapper(BaseTool):
             )
 
         except Exception as e:
-            completed_at = datetime.utcnow()
+            completed_at = datetime.now(timezone.utc)
             duration_ms = int((completed_at - started_at).total_seconds() * 1000)
 
             logger.error(f"MCP tool {self.name} failed: {str(e)}", exc_info=True)
@@ -262,6 +273,90 @@ class MCPManager:
             tools.append(wrapper)
 
         return tools
+
+    async def save_server_config(
+        self,
+        db: AsyncIOMotorDatabase,
+        server_id: str,
+        command: list[str],
+        env: Optional[dict] = None,
+    ) -> None:
+        """
+        Persist an MCP server config to MongoDB.
+
+        Uses upsert so re-adding a server updates the existing record.
+        """
+        now = datetime.now(timezone.utc)
+        await db.mcp_servers.update_one(
+            {"server_id": server_id},
+            {
+                "$set": {
+                    "server_id": server_id,
+                    "command": command,
+                    "args": [],
+                    "env": env or {},
+                    "enabled": True,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
+        logger.info(f"Saved MCP server config: {server_id}")
+
+    async def load_saved_servers(self, db: AsyncIOMotorDatabase) -> int:
+        """
+        Load all enabled MCP server configs from MongoDB and start them.
+
+        Returns:
+            Number of servers successfully started.
+        """
+        started = 0
+        cursor = db.mcp_servers.find({"enabled": True})
+
+        async for doc in cursor:
+            server_id = doc["server_id"]
+            command = doc["command"]
+            env = doc.get("env") or None
+
+            if server_id in self.servers:
+                logger.debug(f"MCP server already loaded: {server_id}")
+                started += 1
+                continue
+
+            success, error = await self.add_server(
+                server_id=server_id,
+                command=command,
+                env=env,
+            )
+
+            if success:
+                started += 1
+                logger.info(f"Restored MCP server from DB: {server_id}")
+            else:
+                logger.warning(
+                    f"Failed to restore MCP server {server_id}: {error}"
+                )
+
+        logger.info(f"Loaded {started} saved MCP server(s) from database")
+        return started
+
+    async def delete_server_config(
+        self, db: AsyncIOMotorDatabase, server_id: str
+    ) -> bool:
+        """
+        Remove an MCP server config from MongoDB.
+
+        Returns:
+            True if a document was deleted.
+        """
+        result = await db.mcp_servers.delete_one({"server_id": server_id})
+        deleted = result.deleted_count > 0
+        if deleted:
+            logger.info(f"Deleted MCP server config: {server_id}")
+        return deleted
 
     async def shutdown_all(self) -> None:
         """Disconnect from all MCP servers."""

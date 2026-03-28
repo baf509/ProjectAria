@@ -10,7 +10,9 @@ Related Spec Sections:
 
 from aria.llm.base import LLMAdapter
 from aria.config import settings
+from aria.core.resilience import CircuitBreaker
 import logging
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,54 @@ class LLMManager:
 
     def __init__(self):
         self.adapters = {}
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        # Fallback telemetry counters
+        self._fallback_counts: dict[str, int] = defaultdict(int)
+        self._success_counts: dict[str, int] = defaultdict(int)
+        self._failure_counts: dict[str, int] = defaultdict(int)
+
+    def get_circuit_breaker(self, backend: str) -> CircuitBreaker:
+        """Get or create a circuit breaker for a backend."""
+        if backend not in self._circuit_breakers:
+            self._circuit_breakers[backend] = CircuitBreaker(
+                failure_threshold=5,
+                recovery_timeout_seconds=60,
+            )
+        return self._circuit_breakers[backend]
+
+    async def is_backend_healthy(self, backend: str) -> bool:
+        """Check if a backend's circuit breaker allows requests."""
+        cb = self.get_circuit_breaker(backend)
+        return await cb.allow_request()
+
+    async def record_backend_success(self, backend: str) -> None:
+        """Record a successful call to a backend."""
+        cb = self.get_circuit_breaker(backend)
+        await cb.record_success()
+        self._success_counts[backend] += 1
+
+    async def record_backend_failure(self, backend: str) -> None:
+        """Record a failed call to a backend."""
+        cb = self.get_circuit_breaker(backend)
+        await cb.record_failure()
+        self._failure_counts[backend] += 1
+
+    def record_fallback(self, from_backend: str, to_backend: str) -> None:
+        """Record a fallback activation between backends."""
+        key = f"{from_backend}->{to_backend}"
+        self._fallback_counts[key] += 1
+        logger.warning(
+            "LLM fallback activated: %s -> %s (total: %d)",
+            from_backend, to_backend, self._fallback_counts[key],
+        )
+
+    def get_telemetry(self) -> dict:
+        """Get telemetry data for all backends."""
+        return {
+            "fallbacks": dict(self._fallback_counts),
+            "successes": dict(self._success_counts),
+            "failures": dict(self._failure_counts),
+        }
 
     def get_adapter(self, backend: str, model: str) -> LLMAdapter:
         """
@@ -114,6 +164,18 @@ class LLMManager:
                 )
 
         return self.adapters[key]
+
+    async def close_all(self):
+        """Close all adapter HTTP clients for clean shutdown."""
+        for key, adapter in list(self.adapters.items()):
+            try:
+                if hasattr(adapter, '__aexit__'):
+                    await adapter.__aexit__(None, None, None)
+                elif hasattr(adapter, 'client') and hasattr(adapter.client, 'close'):
+                    await adapter.client.close()
+            except Exception as e:
+                logger.warning("Error closing adapter %s: %s", key, e)
+        self.adapters.clear()
 
     def is_backend_available(self, backend: str) -> tuple[bool, str]:
         """

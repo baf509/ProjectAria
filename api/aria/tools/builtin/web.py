@@ -14,6 +14,8 @@ Features:
 - Response metadata (status, headers, etc.)
 """
 
+import asyncio
+
 import aiohttp
 from typing import Optional
 from ..base import BaseTool, ToolParameter, ToolResult, ToolStatus, ToolType
@@ -73,6 +75,10 @@ class WebTool(BaseTool):
         return ToolType.BUILTIN
 
     @property
+    def dependencies(self) -> list[str]:
+        return ["http_client"]
+
+    @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(
@@ -124,15 +130,19 @@ class WebTool(BaseTool):
                 async with session.get(url, headers=headers) as response:
                     # Check response size
                     content_length = response.headers.get("Content-Length")
-                    if content_length and int(content_length) > self.max_response_size:
+                    try:
+                        content_length_int = int(content_length) if content_length else 0
+                    except (ValueError, TypeError):
+                        content_length_int = 0
+                    if content_length_int > self.max_response_size:
                         return ToolResult(
                             tool_name=self.name,
                             status=ToolStatus.ERROR,
-                            error=f"Response too large: {content_length} bytes (max: {self.max_response_size})",
+                            error=f"Response too large: {content_length_int} bytes (max: {self.max_response_size})",
                             metadata={
                                 "url": url,
                                 "status_code": response.status,
-                                "content_length": int(content_length),
+                                "content_length": content_length_int,
                             },
                         )
 
@@ -158,7 +168,7 @@ class WebTool(BaseTool):
                         # Try other common encodings
                         try:
                             content = content_bytes.decode("latin-1")
-                        except:
+                        except Exception:
                             content = f"<binary content, {len(content_bytes)} bytes>"
 
                     # Prepare response headers

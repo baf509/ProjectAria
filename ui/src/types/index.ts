@@ -51,6 +51,7 @@ export interface ConversationStats {
 export interface Conversation {
   id: string
   agent_id: string
+  active_agent_id?: string | null
   title: string
   summary?: string
   status: string
@@ -63,9 +64,24 @@ export interface Conversation {
   stats: ConversationStats
 }
 
+export interface Workflow {
+  _id: string
+  name: string
+  description: string
+  tags: string[]
+  steps: Array<{
+    action: string
+    params: Record<string, any>
+    depends_on: number[]
+  }>
+  created_at: string
+  updated_at: string
+}
+
 export interface ConversationListItem {
   id: string
   agent_id: string
+  active_agent_id?: string | null
   title: string
   status: string
   created_at: string
@@ -79,6 +95,13 @@ export interface AgentCapabilities {
   memory_enabled: boolean
   tools_enabled: boolean
   computer_use_enabled: boolean
+}
+
+export interface ModeMetadata {
+  icon?: string | null
+  color?: string | null
+  keywords?: string[]
+  keyboard_shortcut?: string | null
 }
 
 export interface MemoryConfig {
@@ -105,10 +128,14 @@ export interface Agent {
   name: string
   slug: string
   description: string
+  mode_category?: string
+  greeting?: string | null
+  context_instructions?: string | null
   system_prompt: string
   llm: LLMConfig
   fallback_chain: FallbackLLM[]
   capabilities: AgentCapabilities
+  mode_metadata?: ModeMetadata | null
   memory_config: MemoryConfig
   enabled_tools: string[]
   is_default: boolean
@@ -122,14 +149,40 @@ export interface Memory {
   content_type: string
   importance: number
   categories: string[]
-  source_type: string
-  source_id?: string
-  embedding?: number[]
-  metadata: Record<string, any>
+  confidence?: number
+  verified?: boolean
+  source: Record<string, any>
   access_count: number
-  last_accessed?: string
+  created_at: string
+}
+
+export interface ResearchRun {
+  id: string
+  query: string
+  status: string
+  task_id?: string | null
+  backend: string
+  model: string
+  depth: number
+  breadth: number
+  progress: {
+    current_depth: number
+    max_depth: number
+    queries_completed: number
+    queries_total: number
+    learnings_count: number
+  }
+  report_text?: string | null
   created_at: string
   updated_at: string
+  completed_at?: string | null
+}
+
+export interface UsageSummary {
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
 }
 
 export interface ToolDefinition {
@@ -160,6 +213,7 @@ export interface MCPServer {
 // Streaming response types
 export interface StreamChunk {
   type: 'text' | 'tool_call' | 'done' | 'error'
+  event_id?: string
   content?: string
   tool_call?: ToolCall
   usage?: {

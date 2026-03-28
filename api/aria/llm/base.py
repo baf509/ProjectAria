@@ -112,9 +112,8 @@ class LLMAdapter(ABC):
     async def health_check(self) -> bool:
         """Check if the backend is available."""
         try:
-            # Try a minimal completion
             async for _ in self.stream([Message(role="user", content="hi")]):
                 return True
         except Exception:
             return False
-        return False
+        return False  # empty stream

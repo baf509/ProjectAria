@@ -10,10 +10,14 @@ Related Spec Sections:
 
 import asyncio
 from typing import Optional
+import logging
 
 import httpx
 
 from aria.config import settings
+from aria.core.resilience import CircuitBreaker, retry_async
+
+logger = logging.getLogger(__name__)
 
 
 class HttpEmbeddings:
@@ -24,13 +28,12 @@ class HttpEmbeddings:
     def __init__(self, base_url: str, model: str):
         self.base_url = base_url.rstrip("/")
         self.model = model
-        self.client = httpx.AsyncClient(timeout=120.0)
+        self.client = httpx.AsyncClient(timeout=10.0)
 
     async def embed(self, text: str) -> list[float]:
         """Generate embedding for text."""
-        import sys
         url = f"{self.base_url}/embeddings"
-        print(f"[EMBEDDING] Requesting embedding from {url} with model {self.model}", file=sys.stderr)
+        logger.debug("Requesting embedding from %s with model %s", url, self.model)
         try:
             response = await self.client.post(
                 url,
@@ -39,10 +42,10 @@ class HttpEmbeddings:
             response.raise_for_status()
             data = response.json()
             embedding = data["data"][0]["embedding"]
-            print(f"[EMBEDDING] Success! Got embedding with {len(embedding)} dimensions", file=sys.stderr)
+            logger.debug("Success! Got embedding with %d dimensions", len(embedding))
             return embedding
         except Exception as e:
-            print(f"[EMBEDDING] ERROR: {type(e).__name__}: {e}", file=sys.stderr)
+            logger.error("Embedding error: %s: %s", type(e).__name__, e)
             raise
 
     async def close(self):
@@ -55,7 +58,7 @@ class VoyageEmbeddings:
     Embedding generation via Voyage AI cloud API.
     """
 
-    def __init__(self, api_key: str, model: str = "voyage-3-large"):
+    def __init__(self, api_key: str, model: str = "voyageai/voyage-4-nano"):
         self.api_key = api_key
         self.model = model
         self.client = httpx.AsyncClient(
@@ -92,12 +95,13 @@ class EmbeddingService:
         self.fallback = (
             VoyageEmbeddings(
                 api_key=settings.voyage_api_key,
-                model="voyage-3-large",
+                model=settings.embedding_model,
             )
             if settings.voyage_api_key
             else None
         )
         self.dimension = settings.embedding_dimension
+        self.circuit_breaker = CircuitBreaker()
 
     async def embed(
         self, text: str, use_fallback: bool = False
@@ -113,15 +117,41 @@ class EmbeddingService:
             Embedding vector
         """
         if use_fallback and self.fallback:
-            return await self.fallback.embed(text)
+            embedding = await self.fallback.embed(text)
+            return self._validate_dimension(embedding)
+
+        async def primary_request():
+            return await retry_async(lambda: self.primary.embed(text), retries=3, base_delay=1.0)
 
         try:
-            return await self.primary.embed(text)
+            embedding = await self.circuit_breaker.call(primary_request)
+            return self._validate_dimension(embedding)
         except Exception as e:
             if self.fallback:
-                print(f"Local embedding failed, using fallback: {e}")
-                return await self.fallback.embed(text)
+                logger.warning("Local embedding failed, using fallback: %s", e)
+                embedding = await retry_async(lambda: self.fallback.embed(text), retries=2, base_delay=1.0)
+                return self._validate_dimension(embedding)
             raise
+
+    def _validate_dimension(self, embedding: list[float]) -> list[float]:
+        """Validate embedding has the expected dimension."""
+        if len(embedding) != self.dimension:
+            raise ValueError(
+                f"Embedding dimension mismatch: expected {self.dimension}, got {len(embedding)}"
+            )
+        return embedding
+
+    async def embed_or_none(self, text: str) -> Optional[list[float]]:
+        """
+        Generate embedding, returning None instead of raising on failure.
+        Useful for graceful degradation — callers can store content
+        without an embedding and backfill later.
+        """
+        try:
+            return await self.embed(text)
+        except Exception as e:
+            logger.warning("Embedding failed (graceful degradation): %s", e)
+            return None
 
     async def embed_batch(
         self, texts: list[str], batch_size: int = 32

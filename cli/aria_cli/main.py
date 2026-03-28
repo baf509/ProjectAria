@@ -10,6 +10,7 @@ Related Spec Sections:
 """
 
 import json
+import os
 import sys
 from datetime import datetime
 
@@ -28,7 +29,11 @@ class AriaClient:
 
     def __init__(self, base_url: str = "http://localhost:8000"):
         self.base_url = base_url.rstrip("/")
-        self.client = httpx.Client(timeout=120.0)
+        headers = {}
+        api_key = os.getenv("ARIA_API_KEY")
+        if api_key:
+            headers["X-API-Key"] = api_key
+        self.client = httpx.Client(timeout=120.0, headers=headers)
 
     def health_check(self):
         """Check API health."""
@@ -64,6 +69,24 @@ class AriaClient:
         response.raise_for_status()
         return response.json()
 
+    def search_conversations(self, query: str, limit: int = 50):
+        """Search conversations."""
+        response = self.client.get(
+            f"{self.base_url}/api/v1/conversations",
+            params={"q": query, "limit": limit},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def export_conversation(self, conversation_id: str, format: str = "markdown"):
+        """Export a conversation."""
+        response = self.client.get(
+            f"{self.base_url}/api/v1/conversations/{conversation_id}/export",
+            params={"format": format},
+        )
+        response.raise_for_status()
+        return response.json()
+
     def send_message(self, conversation_id: str, message: str):
         """Send a message and stream the response."""
         response = self.client.post(
@@ -79,6 +102,11 @@ class AriaClient:
         response = self.client.get(f"{self.base_url}/api/v1/agents")
         response.raise_for_status()
         return response.json()
+
+    def request(self, method: str, path: str, **kwargs):
+        response = self.client.request(method, f"{self.base_url}/api/v1{path}", **kwargs)
+        response.raise_for_status()
+        return response
 
 
 @click.group()
@@ -110,11 +138,12 @@ def conversations():
 
 @conversations.command("list")
 @click.option("--limit", default=50, help="Number of conversations to show")
-def list_conversations_cmd(limit):
+@click.option("--query", help="Search query")
+def list_conversations_cmd(limit, query):
     """List conversations."""
     try:
         client = AriaClient()
-        convos = client.list_conversations(limit=limit)
+        convos = client.search_conversations(query, limit=limit) if query else client.list_conversations(limit=limit)
 
         if not convos:
             console.print("No conversations found.")
@@ -131,10 +160,27 @@ def list_conversations_cmd(limit):
                 convo["id"][:8] + "...",
                 convo["title"],
                 str(convo["stats"]["message_count"]),
-                convo["updated_at"][:10],
+                str(convo.get("updated_at", ""))[:10],
             )
 
         console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@conversations.command("export")
+@click.argument("conversation_id")
+@click.option("--format", "export_format", default="markdown", type=click.Choice(["markdown", "json"]))
+def export_conversation_cmd(conversation_id, export_format):
+    """Export a conversation."""
+    try:
+        client = AriaClient()
+        exported = client.export_conversation(conversation_id, export_format)
+        if export_format == "markdown":
+            console.print(Markdown(exported["content"]))
+        else:
+            console.print_json(data=exported)
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)
@@ -171,7 +217,7 @@ def chat(message, conversation, new):
                 convo = client.create_conversation()
                 conversation = convo["id"]
                 console.print(
-                    f"[dim]Started new conversation: {conversation}[/dim]\\n"
+                    f"[dim]Started new conversation: {conversation}[/dim]\n"
                 )
             else:
                 # Use most recent conversation or create new one
@@ -179,18 +225,18 @@ def chat(message, conversation, new):
                 if convos:
                     conversation = convos[0]["id"]
                     console.print(
-                        f"[dim]Continuing conversation: {convos[0]['title']}[/dim]\\n"
+                        f"[dim]Continuing conversation: {convos[0]['title']}[/dim]\n"
                     )
                 else:
                     convo = client.create_conversation()
                     conversation = convo["id"]
                     console.print(
-                        f"[dim]Started new conversation: {conversation}[/dim]\\n"
+                        f"[dim]Started new conversation: {conversation}[/dim]\n"
                     )
 
         # Interactive mode if no message provided
         if not message:
-            console.print("[bold]ARIA Chat[/bold] (Ctrl+C to exit)\\n")
+            console.print("[bold]ARIA Chat[/bold] (Ctrl+C to exit)\n")
             while True:
                 try:
                     message = console.input("[cyan]You:[/cyan] ")
@@ -204,7 +250,10 @@ def chat(message, conversation, new):
                     response_text = []
                     for line in response.iter_lines():
                         if line.startswith("data: "):
-                            data = json.loads(line[6:])
+                            try:
+                                data = json.loads(line[6:])
+                            except json.JSONDecodeError:
+                                continue
                             if data["type"] == "text":
                                 console.print(data["content"], end="")
                                 response_text.append(data["content"])
@@ -214,13 +263,13 @@ def chat(message, conversation, new):
                                 )
                                 break
 
-                    console.print("\\n")
+                    console.print("\n")
                 except KeyboardInterrupt:
                     console.print("\\n[dim]Goodbye![/dim]")
                     break
         else:
             # One-shot mode
-            console.print(f"[cyan]You:[/cyan] {message}\\n")
+            console.print(f"[cyan]You:[/cyan] {message}\n")
             console.print("[green]ARIA:[/green] ", end="")
 
             response = client.send_message(conversation, message)
@@ -228,14 +277,17 @@ def chat(message, conversation, new):
             # Stream response
             for line in response.iter_lines():
                 if line.startswith("data: "):
-                    data = json.loads(line[6:])
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
                     if data["type"] == "text":
                         console.print(data["content"], end="")
                     elif data["type"] == "error":
                         console.print(f"\\n[red]Error:[/red] {data['error']}")
                         sys.exit(1)
 
-            console.print("\\n")
+            console.print("\n")
 
     except Exception as e:
         console.print(f"\\n[red]Error:[/red] {str(e)}")
@@ -278,6 +330,108 @@ def list_agents_cmd():
             )
 
         console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@agents.command("switch")
+@click.argument("conversation_id")
+@click.argument("agent_slug")
+def switch_agent_mode_cmd(conversation_id, agent_slug):
+    """Switch a conversation to a different mode."""
+    try:
+        client = AriaClient()
+        result = client.request(
+            "POST",
+            f"/conversations/{conversation_id}/switch-mode",
+            json={"agent_slug": agent_slug},
+        ).json()
+        console.print(f"[green]✓[/green] Switched to {agent_slug}")
+        console.print(f"Conversation: {result['title']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@agents.command("create")
+@click.argument("name")
+@click.argument("slug")
+@click.option("--description", default="", help="Short description")
+@click.option("--system-prompt", required=True, help="System prompt")
+@click.option("--backend", default="llamacpp", help="LLM backend")
+@click.option("--model", default="default", help="Model name")
+@click.option("--category", default="chat", help="Mode category")
+@click.option("--temperature", default=0.7, type=float, help="Sampling temperature")
+def create_agent_cmd(name, slug, description, system_prompt, backend, model, category, temperature):
+    """Create an agent/mode."""
+    try:
+        client = AriaClient()
+        agent = client.request(
+            "POST",
+            "/agents",
+            json={
+                "name": name,
+                "slug": slug,
+                "description": description,
+                "system_prompt": system_prompt,
+                "mode_category": category,
+                "llm": {
+                    "backend": backend,
+                    "model": model,
+                    "temperature": temperature,
+                    "max_tokens": 4096,
+                },
+            },
+        ).json()
+        console.print(f"[green]✓[/green] Created mode {agent['name']} ({agent['slug']})")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@agents.command("update")
+@click.argument("agent_id")
+@click.option("--name", help="New agent name")
+@click.option("--system-prompt", help="New system prompt")
+@click.option("--backend", help="LLM backend")
+@click.option("--model", help="Model name")
+@click.option("--temperature", type=float, help="Sampling temperature")
+def update_agent_cmd(agent_id, name, system_prompt, backend, model, temperature):
+    """Update an agent/mode."""
+    try:
+        client = AriaClient()
+        data = {}
+        if name is not None:
+            data["name"] = name
+        if system_prompt is not None:
+            data["system_prompt"] = system_prompt
+        if backend is not None:
+            data["backend"] = backend
+        if model is not None:
+            data["model"] = model
+        if temperature is not None:
+            data["temperature"] = temperature
+
+        if not data:
+            console.print("[red]Error:[/red] No fields provided to update")
+            sys.exit(1)
+
+        result = client.request("PATCH", f"/agents/{agent_id}", json=data).json()
+        console.print(f"[green]✓[/green] Updated agent: {result['name']} ({result['id'][:8]}...)")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@agents.command("delete")
+@click.argument("agent_id")
+def delete_agent_cmd(agent_id):
+    """Delete an agent/mode."""
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/agents/{agent_id}")
+        console.print(f"[green]✓[/green] Deleted agent: {agent_id}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)
@@ -396,6 +550,19 @@ def add_memory_cmd(content, type, importance, categories):
         console.print(f"   Type: {memory['content_type']}")
         console.print(f"   Content: {memory['content']}")
 
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@memories.command("delete")
+@click.argument("memory_id")
+def delete_memory_cmd(memory_id):
+    """Delete a memory."""
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/memories/{memory_id}")
+        console.print(f"[green]✓[/green] Deleted memory: {memory_id}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)
@@ -586,6 +753,296 @@ def list_mcp_servers_cmd():
         sys.exit(1)
 
 
+@cli.group()
+def research():
+    """Manage research runs."""
+    pass
+
+
+@research.command("start")
+@click.argument("query")
+@click.option("--depth", default=2, help="Research depth")
+@click.option("--breadth", default=3, help="Research breadth")
+def start_research_cmd(query, depth, breadth):
+    try:
+        client = AriaClient()
+        result = client.request("POST", "/research", json={"query": query, "depth": depth, "breadth": breadth}).json()
+        console.print(f"[green]✓[/green] Started research {result['research_id']}")
+        console.print(f"Task: {result['task_id']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@research.command("list")
+def list_research_cmd():
+    try:
+        client = AriaClient()
+        runs = client.request("GET", "/research").json()
+        table = Table(title="Research Runs")
+        table.add_column("ID", style="cyan")
+        table.add_column("Query", style="green")
+        table.add_column("Status")
+        table.add_column("Progress")
+        for run in runs:
+            progress = run["progress"]
+            table.add_row(
+                run["id"][:8] + "...",
+                run["query"][:48],
+                run["status"],
+                f"{progress['queries_completed']}/{progress['queries_total']}",
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@research.command("report")
+@click.argument("research_id")
+def research_report_cmd(research_id):
+    try:
+        client = AriaClient()
+        report = client.request("GET", f"/research/{research_id}/report").json()
+        console.print(Markdown(report.get("report_text") or "_No report available yet._"))
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@cli.group()
+def usage():
+    """Inspect usage and token totals."""
+    pass
+
+
+@usage.command("summary")
+@click.option("--days", default=7, help="Trailing day window")
+def usage_summary_cmd(days):
+    try:
+        client = AriaClient()
+        summary = client.request("GET", "/usage/summary", params={"days": days}).json()
+        console.print(summary)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@usage.command("by-model")
+@click.option("--days", default=7, help="Trailing day window")
+def usage_by_model_cmd(days):
+    try:
+        client = AriaClient()
+        rows = client.request("GET", "/usage/by-model", params={"days": days}).json()
+        table = Table(title="Usage By Model")
+        table.add_column("Model", style="cyan")
+        table.add_column("Requests", justify="right")
+        table.add_column("Tokens", justify="right")
+        for row in rows:
+            table.add_row(str(row["_id"]), str(row["requests"]), str(row["total_tokens"]))
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@cli.group()
+def code():
+    """Manage coding sessions."""
+    pass
+
+
+@code.command("start")
+@click.argument("workspace")
+@click.argument("prompt")
+@click.option("--backend", help="Backend name")
+@click.option("--model", help="Model override")
+def code_start_cmd(workspace, prompt, backend, model):
+    try:
+        client = AriaClient()
+        session = client.request(
+            "POST",
+            "/coding/sessions",
+            json={"workspace": workspace, "prompt": prompt, "backend": backend, "model": model},
+        ).json()
+        console.print(f"[green]✓[/green] Started session {session['id']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@cli.group()
+def workflows():
+    """Manage workflows."""
+    pass
+
+
+@cli.group()
+def admin():
+    """Inspect security and cutover status."""
+    pass
+
+
+@workflows.command("list")
+def list_workflows_cmd():
+    try:
+        client = AriaClient()
+        rows = client.request("GET", "/workflows").json()
+        table = Table(title="Workflows")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name", style="green")
+        table.add_column("Steps", justify="right")
+        for row in rows:
+            table.add_row(row["_id"][:8] + "...", row["name"], str(len(row.get("steps", []))))
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@workflows.command("create")
+@click.argument("name")
+@click.argument("steps_json")
+@click.option("--description", default="", help="Workflow description")
+def create_workflow_cmd(name, steps_json, description):
+    try:
+        client = AriaClient()
+        steps = json.loads(steps_json)
+        workflow = client.request(
+            "POST",
+            "/workflows",
+            json={"name": name, "description": description, "steps": steps},
+        ).json()
+        console.print(f"[green]✓[/green] Created workflow {workflow['_id']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@workflows.command("update")
+@click.argument("workflow_id")
+@click.option("--name", help="New workflow name")
+@click.option("--description", help="Workflow description")
+@click.option("--steps", "steps_json", help="Steps as JSON array")
+def update_workflow_cmd(workflow_id, name, description, steps_json):
+    """Update a workflow."""
+    try:
+        client = AriaClient()
+        data = {}
+        if name is not None:
+            data["name"] = name
+        if description is not None:
+            data["description"] = description
+        if steps_json is not None:
+            data["steps"] = json.loads(steps_json)
+
+        if not data:
+            console.print("[red]Error:[/red] No fields provided to update")
+            sys.exit(1)
+
+        result = client.request("PATCH", f"/workflows/{workflow_id}", json=data).json()
+        console.print(f"[green]✓[/green] Updated workflow: {result.get('name', workflow_id)}")
+    except json.JSONDecodeError:
+        console.print("[red]Error:[/red] Invalid JSON for steps")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@workflows.command("delete")
+@click.argument("workflow_id")
+def delete_workflow_cmd(workflow_id):
+    """Delete a workflow."""
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/workflows/{workflow_id}")
+        console.print(f"[green]✓[/green] Deleted workflow: {workflow_id}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@workflows.command("run")
+@click.argument("workflow_id")
+@click.option("--dry-run", is_flag=True, help="Do not execute, only simulate")
+def run_workflow_cmd(workflow_id, dry_run):
+    try:
+        client = AriaClient()
+        result = client.request("POST", f"/workflows/{workflow_id}/run", json={"dry_run": dry_run}).json()
+        console.print(f"[green]✓[/green] Started workflow run {result['run_id']}")
+        console.print(f"Task: {result['task_id']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@workflows.command("status")
+@click.argument("workflow_id")
+def workflow_status_cmd(workflow_id):
+    try:
+        client = AriaClient()
+        status = client.request("GET", f"/workflows/{workflow_id}/status").json()
+        console.print_json(data=status)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@admin.command("audit")
+@click.option("--hours", default=24, help="Lookback window in hours")
+@click.option("--limit", default=20, help="Number of recent events")
+def admin_audit_cmd(hours, limit):
+    try:
+        client = AriaClient()
+        payload = client.request("GET", "/admin/audit", params={"hours": hours, "limit": limit}).json()
+        console.print_json(data=payload)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@admin.command("cutover")
+def admin_cutover_cmd():
+    try:
+        client = AriaClient()
+        payload = client.request("GET", "/admin/cutover").json()
+        console.print_json(data=payload)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@code.command("status")
+def code_status_cmd():
+    try:
+        client = AriaClient()
+        sessions = client.request("GET", "/coding/sessions").json()
+        table = Table(title="Coding Sessions")
+        table.add_column("ID", style="cyan")
+        table.add_column("Backend")
+        table.add_column("Status")
+        table.add_column("Workspace")
+        for session in sessions:
+            table.add_row(session["id"][:8] + "...", session["backend"], session["status"], session["workspace"])
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@code.command("stop")
+@click.argument("session_id")
+def code_stop_cmd(session_id):
+    try:
+        client = AriaClient()
+        client.request("POST", f"/coding/sessions/{session_id}/stop")
+        console.print(f"[green]✓[/green] Stopped {session_id}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
 @mcp.command("add")
 @click.argument("server_id")
 @click.argument("command", nargs=-1, required=True)
@@ -652,6 +1109,140 @@ def list_mcp_server_tools_cmd(server_id):
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)
+
+
+@cli.group("killswitch")
+def killswitch_group():
+    """Emergency killswitch controls."""
+    pass
+
+
+@killswitch_group.command("activate")
+@click.option("--reason", default="Manual CLI activation", help="Reason for activation")
+def killswitch_activate_cmd(reason):
+    """Activate the emergency killswitch."""
+    try:
+        client = AriaClient()
+        result = client.request("POST", "/killswitch/activate", json={"reason": reason}).json()
+        console.print(f"[red]⚠ Killswitch ACTIVATED[/red]")
+        console.print(f"Reason: {result.get('reason')}")
+        console.print(f"Cancelled tasks: {result.get('cancelled_tasks', 0)}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@killswitch_group.command("deactivate")
+def killswitch_deactivate_cmd():
+    """Deactivate the killswitch."""
+    try:
+        client = AriaClient()
+        client.request("POST", "/killswitch/deactivate")
+        console.print(f"[green]✓[/green] Killswitch deactivated")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@killswitch_group.command("status")
+def killswitch_status_cmd():
+    """Check killswitch status."""
+    try:
+        client = AriaClient()
+        status = client.request("GET", "/killswitch/status").json()
+        if status["active"]:
+            console.print(f"[red]⚠ ACTIVE[/red] — {status.get('reason')}")
+            console.print(f"Since: {status.get('activated_at')}")
+        else:
+            console.print(f"[green]✓[/green] Killswitch is inactive")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@cli.group("autopilot")
+def autopilot_group():
+    """Autopilot mode controls."""
+    pass
+
+
+@autopilot_group.command("start")
+@click.argument("goal")
+@click.option("--mode", default="safe", type=click.Choice(["safe", "unrestricted"]))
+@click.option("--backend", default="llamacpp", help="LLM backend")
+@click.option("--model", default="default", help="Model name")
+def autopilot_start_cmd(goal, mode, backend, model):
+    """Start an autopilot session."""
+    try:
+        client = AriaClient()
+        result = client.request(
+            "POST",
+            "/autopilot/start",
+            json={"goal": goal, "mode": mode, "backend": backend, "model": model},
+        ).json()
+        console.print(f"[green]✓[/green] Autopilot started: {result['session_id']}")
+        console.print(f"Task: {result['task_id']}")
+        console.print(f"Steps: {result['step_count']}")
+        for step in result.get("steps", []):
+            console.print(f"  {step['index']+1}. [{step['action']}] {step['name']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@autopilot_group.command("status")
+@click.argument("session_id")
+def autopilot_status_cmd(session_id):
+    """Check autopilot session status."""
+    try:
+        client = AriaClient()
+        session = client.request("GET", f"/autopilot/sessions/{session_id}").json()
+        console.print(f"Goal: {session['goal']}")
+        console.print(f"Mode: {session['mode']} | Status: {session['status']}")
+        for step in session.get("steps", []):
+            status_icon = {"completed": "✓", "failed": "✗", "running": "►", "awaiting_approval": "⏸", "pending": "○"}.get(step["status"], "?")
+            console.print(f"  {status_icon} {step['index']+1}. {step['name']} [{step['status']}]")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@autopilot_group.command("approve")
+@click.argument("session_id")
+@click.argument("step_index", type=int)
+def autopilot_approve_cmd(session_id, step_index):
+    """Approve a pending step in safe mode."""
+    try:
+        client = AriaClient()
+        client.request(
+            "POST",
+            f"/autopilot/sessions/{session_id}/approve",
+            json={"step_index": step_index},
+        )
+        console.print(f"[green]✓[/green] Approved step {step_index}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@autopilot_group.command("stop")
+@click.argument("session_id")
+def autopilot_stop_cmd(session_id):
+    """Stop an autopilot session."""
+    try:
+        client = AriaClient()
+        client.request("POST", f"/autopilot/sessions/{session_id}/stop")
+        console.print(f"[green]✓[/green] Autopilot stopped")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+from aria_cli.setup_wizard import setup
+from aria_cli.service import service
+
+cli.add_command(setup)
+cli.add_command(service)
 
 
 if __name__ == "__main__":

@@ -91,6 +91,22 @@ class OpenAIAdapter(LLMAdapter):
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from OpenAI."""
 
+        # If non-streaming requested, use complete() and simulate streaming
+        if not stream:
+            try:
+                content, tool_calls_list, usage = await self.complete(
+                    messages, tools, temperature, max_tokens
+                )
+                if content:
+                    yield StreamChunk(type="text", content=content)
+                for tc in tool_calls_list:
+                    yield StreamChunk(type="tool_call", tool_call=tc)
+                yield StreamChunk(type="done", usage=usage)
+                return
+            except Exception as e:
+                yield StreamChunk(type="error", error=f"OpenAI error: {str(e)}")
+                return
+
         # Convert messages and tools
         openai_messages = self._convert_messages(messages)
 
@@ -101,6 +117,7 @@ class OpenAIAdapter(LLMAdapter):
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
 
         if tools:
@@ -108,15 +125,36 @@ class OpenAIAdapter(LLMAdapter):
 
         try:
             # Stream the response
-            stream = await self.client.chat.completions.create(**request_params)
+            stream_resp = await self.client.chat.completions.create(**request_params)
 
             tool_calls_accumulator = {}
 
-            async for chunk in stream:
+            in_reasoning = False
+            has_content = False
+            reasoning_parts = []
+
+            async for chunk in stream_resp:
                 delta = chunk.choices[0].delta
+
+                # Reasoning content (e.g. Qwen3 thinking mode)
+                # Buffer it — only wrap in <think> tags if real content follows
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    in_reasoning = True
+                    reasoning_parts.append(reasoning)
 
                 # Text content
                 if delta.content:
+                    if in_reasoning and not has_content:
+                        # Real content arrived after reasoning — emit reasoning
+                        # wrapped in <think> so orchestrator strips it
+                        yield StreamChunk(type="text", content="<think>")
+                        for part in reasoning_parts:
+                            yield StreamChunk(type="text", content=part)
+                        yield StreamChunk(type="text", content="</think>")
+                        reasoning_parts.clear()
+                        in_reasoning = False
+                    has_content = True
                     yield StreamChunk(
                         type="text",
                         content=delta.content,
@@ -141,11 +179,18 @@ class OpenAIAdapter(LLMAdapter):
                         if tc_delta.function:
                             if tc_delta.function.name:
                                 tool_calls_accumulator[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
+                            if tc_delta.function.arguments is not None:
                                 tool_calls_accumulator[idx]["arguments"] += tc_delta.function.arguments
 
                 # Check if done
                 if chunk.choices[0].finish_reason:
+                    # If model produced ONLY reasoning and no content,
+                    # emit the reasoning as the actual response
+                    if reasoning_parts and not has_content:
+                        for part in reasoning_parts:
+                            yield StreamChunk(type="text", content=part)
+                        reasoning_parts.clear()
+
                     # Yield completed tool calls
                     for tool_call_data in tool_calls_accumulator.values():
                         try:
@@ -174,6 +219,7 @@ class OpenAIAdapter(LLMAdapter):
                         type="done",
                         usage=usage,
                     )
+                    break
 
         except Exception as e:
             yield StreamChunk(
@@ -187,7 +233,6 @@ class OpenAIAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
-        stream: bool = True,
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 
@@ -210,7 +255,6 @@ class OpenAIAdapter(LLMAdapter):
     async def health_check(self) -> bool:
         """Check if the OpenAI API is accessible."""
         try:
-            # Try a minimal completion
             async for _ in self.stream(
                 [Message(role="user", content="hi")],
                 max_tokens=10,
@@ -218,7 +262,7 @@ class OpenAIAdapter(LLMAdapter):
                 return True
         except Exception:
             return False
-        return False
+        return False  # empty stream
 
     async def __aenter__(self):
         return self

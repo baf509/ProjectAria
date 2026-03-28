@@ -18,7 +18,7 @@ Reference: https://modelcontextprotocol.io/
 import asyncio
 import json
 from typing import Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ class MCPServerInfo:
     name: str
     version: str
     protocol_version: str = "2024-11-05"
-    capabilities: dict = None
+    capabilities: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -63,6 +63,7 @@ class MCPClient:
         self.tools: dict[str, MCPTool] = {}
         self._request_id = 0
         self._connected = False
+        self._io_lock = asyncio.Lock()
 
         logger.info(f"Initialized MCP client for command: {' '.join(command)}")
 
@@ -146,8 +147,12 @@ class MCPClient:
 
     @property
     def is_connected(self) -> bool:
-        """Check if connected to the server."""
-        return self._connected and self.process is not None
+        """Check if connected to the server and process is still running."""
+        return (
+            self._connected
+            and self.process is not None
+            and self.process.returncode is None  # None means still running
+        )
 
     async def _refresh_tools(self) -> None:
         """Refresh the list of available tools from the server."""
@@ -196,6 +201,10 @@ class MCPClient:
         """
         Send a JSON-RPC request and wait for response.
 
+        Uses a lock to ensure request ID assignment, stdin write, and stdout
+        read are atomic — preventing interleaved requests from corrupting
+        the JSON-RPC stream.
+
         Args:
             method: RPC method name
             params: Method parameters
@@ -206,44 +215,45 @@ class MCPClient:
         if not self.process or not self.process.stdin:
             raise RuntimeError("Process not started")
 
-        self._request_id += 1
-        request = {
-            "jsonrpc": "2.0",
-            "id": self._request_id,
-            "method": method,
-            "params": params,
-        }
+        async with self._io_lock:
+            self._request_id += 1
+            request = {
+                "jsonrpc": "2.0",
+                "id": self._request_id,
+                "method": method,
+                "params": params,
+            }
 
-        # Send request
-        request_json = json.dumps(request) + "\n"
-        self.process.stdin.write(request_json.encode("utf-8"))
-        await self.process.stdin.drain()
+            # Send request
+            request_json = json.dumps(request) + "\n"
+            self.process.stdin.write(request_json.encode("utf-8"))
+            await self.process.stdin.drain()
 
-        # Read response
-        try:
-            response_line = await asyncio.wait_for(
-                self.process.stdout.readline(),
-                timeout=30,
-            )
+            # Read response
+            try:
+                response_line = await asyncio.wait_for(
+                    self.process.stdout.readline(),
+                    timeout=30,
+                )
 
-            if not response_line:
-                logger.error("MCP server closed connection")
+                if not response_line:
+                    logger.error("MCP server closed connection")
+                    return None
+
+                response = json.loads(response_line.decode("utf-8"))
+
+                if "error" in response:
+                    logger.error(f"MCP error: {response['error']}")
+                    return None
+
+                return response.get("result")
+
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout waiting for response to {method}")
                 return None
-
-            response = json.loads(response_line.decode("utf-8"))
-
-            if "error" in response:
-                logger.error(f"MCP error: {response['error']}")
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to decode MCP response: {str(e)}")
                 return None
-
-            return response.get("result")
-
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout waiting for response to {method}")
-            return None
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode MCP response: {str(e)}")
-            return None
 
     async def _send_notification(self, method: str, params: dict = None) -> None:
         """
@@ -256,17 +266,18 @@ class MCPClient:
         if not self.process or not self.process.stdin:
             raise RuntimeError("Process not started")
 
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-        }
+        async with self._io_lock:
+            notification = {
+                "jsonrpc": "2.0",
+                "method": method,
+            }
 
-        if params:
-            notification["params"] = params
+            if params:
+                notification["params"] = params
 
-        notification_json = json.dumps(notification) + "\n"
-        self.process.stdin.write(notification_json.encode("utf-8"))
-        await self.process.stdin.drain()
+            notification_json = json.dumps(notification) + "\n"
+            self.process.stdin.write(notification_json.encode("utf-8"))
+            await self.process.stdin.drain()
 
     async def __aenter__(self):
         """Async context manager entry."""
