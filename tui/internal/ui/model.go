@@ -24,6 +24,7 @@ const (
 	screenUsage
 	screenTools
 	screenObservations
+	screenDB
 )
 
 // Which quadrant has focus on the dashboard
@@ -66,6 +67,9 @@ type toolsLoaded struct {
 	servers []api.MCPServer
 }
 type observationsLoaded struct{ obs []api.Observation }
+type collectionsLoaded struct{ cols []api.CollectionInfo }
+type queryResultLoaded struct{ result *api.QueryResult }
+type documentLoaded struct{ doc map[string]interface{} }
 type errMsg struct{ err error }
 
 // ---- Main Model ----
@@ -83,6 +87,7 @@ type Model struct {
 	usageMonitor *components.UsageMonitor
 	toolsBrowser *components.ToolsBrowser
 	obsView      *components.ObservationsView
+	dbBrowser    *components.DBBrowser
 
 	// Navigation
 	screen     screen
@@ -121,6 +126,7 @@ func NewModel(client *api.Client) Model {
 		usageMonitor: components.NewUsageMonitor(),
 		toolsBrowser: components.NewToolsBrowser(),
 		obsView:      components.NewObservationsView(),
+		dbBrowser:    components.NewDBBrowser(),
 		screen:       screenDashboard,
 		quad:         quadTopLeft,
 		headerH:      1,
@@ -250,6 +256,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case observationsLoaded:
 		m.obsView.SetData(msg.obs)
 
+	case collectionsLoaded:
+		m.dbBrowser.SetCollections(msg.cols)
+
+	case queryResultLoaded:
+		m.dbBrowser.SetQueryResult(msg.result)
+
+	case documentLoaded:
+		m.dbBrowser.SetDocument(msg.doc)
+
 	case errMsg:
 		if m.screen == screenChat {
 			m.chat.AppendStreamChunk("\n[Error: " + msg.err.Error() + "]")
@@ -281,6 +296,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	} else if m.screen == screenObservations {
 		var cmd tea.Cmd
 		m.obsView, cmd = m.obsView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenDB {
+		var cmd tea.Cmd
+		m.dbBrowser, cmd = m.dbBrowser.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -348,6 +367,8 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 		return createConversation(m.client, slug, "")
 	case "n":
 		return createConversation(m.client, "", "")
+	case "p":
+		return createPrivateConversation(m.client)
 	case "m":
 		m.pushScreen(screenMemory)
 		return loadMemories(m.client, "", 50)
@@ -360,6 +381,9 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 	case "o":
 		m.pushScreen(screenObservations)
 		return loadObservations(m.client, 50)
+	case "b":
+		m.pushScreen(screenDB)
+		return loadCollections(m.client)
 	case "d":
 		node := m.sidebar.Selected()
 		if node != nil && node.Kind == components.NodeConversation {
@@ -431,6 +455,76 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) tea.Cmd {
 				return loadObservations(m.client, 50)
 			}
 		}
+	case screenDB:
+		if m.dbBrowser.IsEditing() {
+			switch key {
+			case "esc":
+				m.dbBrowser.ToggleEditing()
+			case "enter":
+				m.dbBrowser.ToggleEditing()
+				col := m.dbBrowser.CurrentCollection()
+				if col != "" {
+					m.dbBrowser.SetPage(0)
+					return queryCollection(m.client, col, 20, 0, m.dbBrowser.GetFilter())
+				}
+			default:
+				m.dbBrowser.HandleFilterKey(key)
+			}
+			return nil
+		}
+		switch key {
+		case "up", "k":
+			m.dbBrowser.Up()
+		case "down", "j":
+			m.dbBrowser.Down()
+		case "enter":
+			switch m.dbBrowser.Mode() {
+			case 0: // collections
+				col := m.dbBrowser.SelectedCollection()
+				if col != "" {
+					m.dbBrowser.SetCollection(col)
+					m.dbBrowser.SetPage(0)
+					m.dbBrowser.SetFilter("")
+					return queryCollection(m.client, col, 20, 0, "")
+				}
+			case 1: // documents
+				docID := m.dbBrowser.SelectedDocID()
+				col := m.dbBrowser.CurrentCollection()
+				if docID != "" && col != "" {
+					return loadDocument(m.client, col, docID)
+				}
+			}
+		case "backspace":
+			if !m.dbBrowser.GoBack() {
+				m.popScreen()
+			}
+		case "/":
+			if m.dbBrowser.Mode() == 1 { // documents mode
+				m.dbBrowser.ToggleEditing()
+			}
+		case "n":
+			if m.dbBrowser.Mode() == 1 { // next page
+				col := m.dbBrowser.CurrentCollection()
+				p := m.dbBrowser.Page() + 1
+				m.dbBrowser.SetPage(p)
+				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter())
+			}
+		case "p":
+			if m.dbBrowser.Mode() == 1 && m.dbBrowser.Page() > 0 { // prev page
+				col := m.dbBrowser.CurrentCollection()
+				p := m.dbBrowser.Page() - 1
+				m.dbBrowser.SetPage(p)
+				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter())
+			}
+		case "ctrl+u":
+			for i := 0; i < 10; i++ {
+				m.dbBrowser.ScrollUp()
+			}
+		case "ctrl+d":
+			for i := 0; i < 10; i++ {
+				m.dbBrowser.ScrollDown()
+			}
+		}
 	}
 	return nil
 }
@@ -446,6 +540,8 @@ func (m *Model) pushScreen(s screen) {
 		m.session.Focus()
 	} else if s == screenMemory {
 		m.memBrowser.Focus()
+	} else if s == screenDB {
+		m.dbBrowser.Focus()
 	}
 }
 
@@ -453,6 +549,7 @@ func (m *Model) popScreen() {
 	m.chat.Blur()
 	m.session.Blur()
 	m.memBrowser.Blur()
+	m.dbBrowser.Blur()
 	m.screen = m.prevScreen
 	m.prevScreen = screenDashboard
 }
@@ -546,6 +643,7 @@ func (m *Model) layout() {
 	m.usageMonitor.SetSize(m.width, bodyH)
 	m.toolsBrowser.SetSize(m.width, bodyH)
 	m.obsView.SetSize(m.width, bodyH)
+	m.dbBrowser.SetSize(m.width, bodyH)
 
 	m.sidebar.SetSize(m.leftW, m.topH)
 	m.vitals.SetSize(m.rightW, m.botH)
@@ -604,6 +702,7 @@ func (m Model) renderHeader() string {
 		labels := map[screen]string{
 			screenChat: "chat", screenSession: "session", screenMemory: "memory",
 			screenUsage: "usage", screenTools: "tools", screenObservations: "awareness",
+			screenDB: "database",
 		}
 		screenLabel = " › " + labels[m.screen]
 	}
@@ -623,7 +722,8 @@ func (m Model) renderFooter() string {
 		hints = hk("↑↓", "nav") + " " + hk("⏎", "open") + " " +
 			hk("c", "chat") + " " + hk("m", "mem") + " " +
 			hk("u", "usage") + " " + hk("t", "tools") + " " +
-			hk("o", "obs") + " " + hk("n", "new") + " " +
+			hk("o", "obs") + " " + hk("b", "db") + " " +
+			hk("n", "new") + " " + hk("p", "private") + " " +
 			hk("r", "refresh") + " " + hk("tab", "focus") + " " +
 			hk("q", "quit")
 	} else if m.screen == screenChat {
@@ -633,6 +733,10 @@ func (m Model) renderFooter() string {
 			hk("r", "refresh") + " " + hk("esc", "back")
 	} else if m.screen == screenMemory {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
+	} else if m.screen == screenDB {
+		hints = hk("↑↓", "nav") + " " + hk("⏎", "select") + " " +
+			hk("⌫", "back") + " " + hk("/", "filter") + " " +
+			hk("n/p", "page") + " " + hk("esc", "back")
 	} else {
 		hints = hk("r", "refresh") + " " + hk("esc", "back")
 	}
@@ -715,6 +819,9 @@ func (m Model) renderSubScreen() string {
 	case screenObservations:
 		m.obsView.SetSize(m.width, bodyH)
 		return m.obsView.View()
+	case screenDB:
+		m.dbBrowser.SetSize(m.width, bodyH)
+		return m.dbBrowser.View()
 	}
 	return ""
 }
@@ -744,8 +851,16 @@ func openConversation(client *api.Client, id string) tea.Cmd {
 }
 
 func createConversation(client *api.Client, agentSlug, title string) tea.Cmd {
+	return createConversationOpts(client, agentSlug, title, false)
+}
+
+func createPrivateConversation(client *api.Client) tea.Cmd {
+	return createConversationOpts(client, "", "Private Conversation", true)
+}
+
+func createConversationOpts(client *api.Client, agentSlug, title string, private bool) tea.Cmd {
 	return func() tea.Msg {
-		conv, err := client.CreateConversation(agentSlug, title)
+		conv, err := client.CreateConversation(agentSlug, title, private)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -851,5 +966,35 @@ func loadObservations(client *api.Client, limit int) tea.Cmd {
 			return errMsg{err}
 		}
 		return observationsLoaded{obs: obs}
+	}
+}
+
+func loadCollections(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		cols, err := client.ListCollections()
+		if err != nil {
+			return errMsg{err}
+		}
+		return collectionsLoaded{cols: cols}
+	}
+}
+
+func queryCollection(client *api.Client, collection string, limit, skip int, filter string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.QueryCollection(collection, limit, skip, filter)
+		if err != nil {
+			return errMsg{err}
+		}
+		return queryResultLoaded{result: result}
+	}
+}
+
+func loadDocument(client *api.Client, collection, docID string) tea.Cmd {
+	return func() tea.Msg {
+		doc, err := client.GetDocument(collection, docID)
+		if err != nil {
+			return errMsg{err}
+		}
+		return documentLoaded{doc: doc}
 	}
 }

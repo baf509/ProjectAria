@@ -432,6 +432,7 @@ class LongTermMemory:
         importance: float = 0.5,
         confidence: float = None,
         source: dict = None,
+        private: bool = False,
     ) -> str:
         """
         Create a new memory with embedding.
@@ -454,6 +455,11 @@ class LongTermMemory:
         if embedding is not None:
             # Deduplication: check for near-duplicates via vector search
             threshold = settings.memory_dedup_similarity_threshold
+            dedup_filter = {"status": "active"}
+            if private:
+                dedup_filter["private"] = True
+            else:
+                dedup_filter["private"] = {"$ne": True}
             try:
                 pipeline = [
                     {
@@ -463,7 +469,7 @@ class LongTermMemory:
                             "queryVector": embedding,
                             "numCandidates": 20,
                             "limit": 1,
-                            "filter": {"status": "active"},
+                            "filter": dedup_filter,
                         }
                     },
                     {
@@ -502,6 +508,7 @@ class LongTermMemory:
             "importance": importance,
             "confidence": confidence,
             "verified": False,
+            "private": private,
             "created_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
             "last_accessed_at": datetime.now(timezone.utc),

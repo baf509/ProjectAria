@@ -61,16 +61,41 @@ class AnthropicAdapter(LLMAdapter):
                 # Anthropic uses separate system parameter
                 system_prompt = msg.content
             elif msg.role == "tool":
-                # Tool result
+                # Tool result — merge consecutive tool results into one user message
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+                if (
+                    anthropic_messages
+                    and anthropic_messages[-1]["role"] == "user"
+                    and isinstance(anthropic_messages[-1]["content"], list)
+                    and anthropic_messages[-1]["content"]
+                    and anthropic_messages[-1]["content"][0].get("type") == "tool_result"
+                ):
+                    # Append to existing tool_result user message
+                    anthropic_messages[-1]["content"].append(tool_result_block)
+                else:
+                    anthropic_messages.append({
+                        "role": "user",
+                        "content": [tool_result_block],
+                    })
+            elif msg.role == "assistant" and msg.tool_calls:
+                # Assistant message with tool calls
+                content_blocks = []
+                if msg.content:
+                    content_blocks.append({"type": "text", "text": msg.content})
+                for tc in msg.tool_calls:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc["id"],
+                        "name": tc["name"],
+                        "input": tc["arguments"] if isinstance(tc["arguments"], dict) else json.loads(tc["arguments"]),
+                    })
                 anthropic_messages.append({
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": msg.tool_call_id,
-                            "content": msg.content,
-                        }
-                    ],
+                    "role": "assistant",
+                    "content": content_blocks,
                 })
             else:
                 # Regular message

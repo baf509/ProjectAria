@@ -70,6 +70,11 @@ class Orchestrator:
 
     def _get_llm_candidates(self, agent: dict, conversation: dict | None = None) -> list[tuple]:
         """Build LLM candidate list from conversation override, primary, plus fallbacks."""
+        # Private conversations are forced to llamacpp — no fallbacks
+        if (conversation or {}).get("private"):
+            local_config = {**agent["llm"], "backend": "llamacpp"}
+            return [(local_config, False)]
+
         # Conversation-level override takes priority (e.g. user said "use openrouter")
         override = (conversation or {}).get("llm_config_override")
         if override and override.get("backend"):
@@ -206,11 +211,13 @@ class Orchestrator:
                 return
 
         # 6. Build message list using context builder (includes memories)
+        is_private = conversation.get("private", False)
         messages = await self.context_builder.build_messages(
             conversation_id=conversation_id,
             user_message=user_message,
             agent_config=agent,
             include_memories=agent.get("capabilities", {}).get("memory_enabled", True),
+            private=is_private,
         )
 
         # 6. Prepare tools if enabled
@@ -237,229 +244,254 @@ class Orchestrator:
             "agent": agent,
         })
 
-        # 8. Stream response (with potential tool calling loop)
-        assistant_content_parts = []
-        tool_calls = []
-        usage = {}
-        # Track <think>...</think> blocks so we can strip them from output
-        # but capture content for cross-provider fallback context
-        in_think_block = False
-        think_buffer = ""
-        think_content_parts = []  # Captured thinking for fallback context
-
+        # 8. Stream response with tool-call loop
+        # The LLM may request tool calls; we execute them and feed results
+        # back to the LLM for a follow-up response, up to max_tool_rounds.
+        max_tool_rounds = 10
+        all_assistant_content_parts = []
+        total_usage = {}
         llm_config = None
         candidate_error = None
         candidate_used_fallback = False
         candidate_backend_name = None
 
-        for candidate_llm_config, is_fallback in self._get_llm_candidates(agent, conversation):
-            emitted_output = False
-            backend_name = candidate_llm_config["backend"]
+        for _tool_round in range(max_tool_rounds + 1):
+            assistant_content_parts = []
+            tool_calls = []
+            usage = {}
+            # Track <think>...</think> blocks so we can strip them from output
+            # but capture content for cross-provider fallback context
+            in_think_block = False
+            think_buffer = ""
+            think_content_parts = []  # Captured thinking for fallback context
 
-            # Check circuit breaker before attempting this backend
-            if not await llm_manager.is_backend_healthy(backend_name):
-                logger.warning("Skipping backend %s: circuit breaker open", backend_name)
-                continue
+            round_llm_config = None
 
-            try:
-                adapter = llm_manager.get_adapter(
-                    backend_name,
-                    candidate_llm_config["model"],
-                )
-                if is_fallback:
-                    primary_backend = self._get_llm_candidates(agent, conversation)[0][0]["backend"]
-                    llm_manager.record_fallback(primary_backend, backend_name)
-                    await hook_registry.fire("on_fallback", {
-                        "conversation_id": conversation_id,
-                        "primary_backend": primary_backend,
-                        "fallback_backend": backend_name,
-                        "model": candidate_llm_config["model"],
-                    })
-                    yield StreamChunk(
-                        type="text",
-                        content=f"\n[Using fallback LLM: {backend_name}/{candidate_llm_config['model']}]\n\n",
+            for candidate_llm_config, is_fallback in self._get_llm_candidates(agent, conversation):
+                emitted_output = False
+                backend_name = candidate_llm_config["backend"]
+
+                # Check circuit breaker before attempting this backend
+                if not await llm_manager.is_backend_healthy(backend_name):
+                    logger.warning("Skipping backend %s: circuit breaker open", backend_name)
+                    continue
+
+                try:
+                    adapter = llm_manager.get_adapter(
+                        backend_name,
+                        candidate_llm_config["model"],
                     )
-                    # Cross-provider thinking block conversion:
-                    # If the previous provider emitted thinking blocks before failing,
-                    # inject them as context for the fallback provider
-                    if think_content_parts:
-                        captured_thinking = "".join(think_content_parts)
-                        if captured_thinking.strip():
-                            thinking_context = Message(
-                                role="assistant",
-                                content=f"[Previous reasoning from {primary_backend} before fallback]\n{captured_thinking.strip()}",
-                            )
-                            messages.append(thinking_context)
-                            messages.append(Message(
-                                role="user",
-                                content=user_message + "\n\n[Note: The previous LLM provider failed mid-response. The reasoning above was captured. Please continue from where it left off.]",
-                            ))
-                        think_content_parts.clear()
+                    if is_fallback:
+                        primary_backend = self._get_llm_candidates(agent, conversation)[0][0]["backend"]
+                        llm_manager.record_fallback(primary_backend, backend_name)
+                        await hook_registry.fire("on_fallback", {
+                            "conversation_id": conversation_id,
+                            "primary_backend": primary_backend,
+                            "fallback_backend": backend_name,
+                            "model": candidate_llm_config["model"],
+                        })
+                        yield StreamChunk(
+                            type="text",
+                            content=f"\n[Using fallback LLM: {backend_name}/{candidate_llm_config['model']}]\n\n",
+                        )
+                        # Cross-provider thinking block conversion:
+                        # If the previous provider emitted thinking blocks before failing,
+                        # inject them as context for the fallback provider
+                        if think_content_parts:
+                            captured_thinking = "".join(think_content_parts)
+                            if captured_thinking.strip():
+                                thinking_context = Message(
+                                    role="assistant",
+                                    content=f"[Previous reasoning from {primary_backend} before fallback]\n{captured_thinking.strip()}",
+                                )
+                                messages.append(thinking_context)
+                                messages.append(Message(
+                                    role="user",
+                                    content=user_message + "\n\n[Note: The previous LLM provider failed mid-response. The reasoning above was captured. Please continue from where it left off.]",
+                                ))
+                            think_content_parts.clear()
 
-                use_streaming = stream and not candidate_llm_config.get("force_non_streaming", False)
-                chunk_timeout = settings.stream_chunk_timeout_seconds
-                stream_iter = adapter.stream(
-                    messages,
-                    tools=tools if tools else None,
-                    temperature=candidate_llm_config.get("temperature", 0.7),
-                    max_tokens=candidate_llm_config.get("max_tokens", 4096),
-                    stream=use_streaming,
-                ).__aiter__()
-                while True:
-                    try:
-                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError:
-                        raise RuntimeError(f"LLM stream stalled: no chunk received in {chunk_timeout}s")
-                    if chunk.type == "text":
-                        emitted_output = True
-                        text = think_buffer + chunk.content
-                        think_buffer = ""
-                        filtered = ""
-
-                        while text:
-                            if in_think_block:
-                                end_idx = text.find("</think>")
-                                if end_idx != -1:
-                                    # Capture thinking content for cross-provider fallback
-                                    think_content_parts.append(text[:end_idx])
-                                    in_think_block = False
-                                    text = text[end_idx + 8:]
-                                else:
-                                    # Still inside think block — capture and consume
-                                    think_content_parts.append(text)
-                                    break
-                            else:
-                                start_idx = text.find("<think>")
-                                if start_idx != -1:
-                                    filtered += text[:start_idx]
-                                    in_think_block = True
-                                    text = text[start_idx + 7:]
-                                else:
-                                    # Check for partial <think> tag at end of text
-                                    partial_match = ""
-                                    for i in range(1, min(7, len(text) + 1)):
-                                        if "<think>"[:i] == text[-i:]:
-                                            partial_match = text[-i:]
-                                    if partial_match:
-                                        filtered += text[:-len(partial_match)]
-                                        think_buffer = partial_match
-                                    else:
-                                        filtered += text
-                                    break
-
-                        if filtered:
-                            assistant_content_parts.append(filtered)
-                            yield StreamChunk(type="text", content=filtered)
-                    elif chunk.type == "tool_call":
-                        emitted_output = True
-                        tool_calls.append(chunk.tool_call)
-                        yield chunk
-                    elif chunk.type == "done":
-                        # Flush any remaining think_buffer as normal text
-                        # (handles unclosed <think> tags at end of stream)
-                        if think_buffer:
-                            assistant_content_parts.append(think_buffer)
-                            yield StreamChunk(type="text", content=think_buffer)
+                    use_streaming = stream and not candidate_llm_config.get("force_non_streaming", False)
+                    chunk_timeout = settings.stream_chunk_timeout_seconds
+                    stream_iter = adapter.stream(
+                        messages,
+                        tools=tools if tools else None,
+                        temperature=candidate_llm_config.get("temperature", 0.7),
+                        max_tokens=candidate_llm_config.get("max_tokens", 4096),
+                        stream=use_streaming,
+                    ).__aiter__()
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            raise RuntimeError(f"LLM stream stalled: no chunk received in {chunk_timeout}s")
+                        if chunk.type == "text":
+                            emitted_output = True
+                            text = think_buffer + chunk.content
                             think_buffer = ""
-                        in_think_block = False
+                            filtered = ""
 
-                        usage = chunk.usage or {}
-                        llm_config = candidate_llm_config
-                        candidate_used_fallback = is_fallback
-                        candidate_backend_name = candidate_llm_config["backend"]
-                        emitted_output = True
-                        yield chunk
-                    elif chunk.type == "error":
-                        raise RuntimeError(chunk.error)
+                            while text:
+                                if in_think_block:
+                                    end_idx = text.find("</think>")
+                                    if end_idx != -1:
+                                        # Capture thinking content for cross-provider fallback
+                                        think_content_parts.append(text[:end_idx])
+                                        in_think_block = False
+                                        text = text[end_idx + 8:]
+                                    else:
+                                        # Still inside think block — capture and consume
+                                        think_content_parts.append(text)
+                                        break
+                                else:
+                                    start_idx = text.find("<think>")
+                                    if start_idx != -1:
+                                        filtered += text[:start_idx]
+                                        in_think_block = True
+                                        text = text[start_idx + 7:]
+                                    else:
+                                        # Check for partial <think> tag at end of text
+                                        partial_match = ""
+                                        for i in range(1, min(7, len(text) + 1)):
+                                            if "<think>"[:i] == text[-i:]:
+                                                partial_match = text[-i:]
+                                        if partial_match:
+                                            filtered += text[:-len(partial_match)]
+                                            think_buffer = partial_match
+                                        else:
+                                            filtered += text
+                                        break
 
-                if llm_config is not None:
-                    await llm_manager.record_backend_success(backend_name)
-                    break
-            except Exception as e:
-                await llm_manager.record_backend_failure(backend_name)
-                candidate_error = e
-                if emitted_output:
-                    yield StreamChunk(type="error", error=f"LLM error: {str(e)}")
-                    return
-                continue
+                            if filtered:
+                                assistant_content_parts.append(filtered)
+                                yield StreamChunk(type="text", content=filtered)
+                        elif chunk.type == "tool_call":
+                            emitted_output = True
+                            tool_calls.append(chunk.tool_call)
+                            yield chunk
+                        elif chunk.type == "done":
+                            # Flush any remaining think_buffer as normal text
+                            # (handles unclosed <think> tags at end of stream)
+                            if think_buffer:
+                                assistant_content_parts.append(think_buffer)
+                                yield StreamChunk(type="text", content=think_buffer)
+                                think_buffer = ""
+                            in_think_block = False
 
-        if llm_config is None:
-            await hook_registry.fire("on_error", {
+                            usage = chunk.usage or {}
+                            round_llm_config = candidate_llm_config
+                            candidate_used_fallback = is_fallback
+                            candidate_backend_name = candidate_llm_config["backend"]
+                            emitted_output = True
+                            # Don't yield "done" yet — we may loop for tool results
+                        elif chunk.type == "error":
+                            raise RuntimeError(chunk.error)
+
+                    if round_llm_config is not None:
+                        await llm_manager.record_backend_success(backend_name)
+                        break
+                except Exception as e:
+                    await llm_manager.record_backend_failure(backend_name)
+                    candidate_error = e
+                    if emitted_output:
+                        yield StreamChunk(type="error", error=f"LLM error: {str(e)}")
+                        return
+                    continue
+
+            if round_llm_config is None:
+                await hook_registry.fire("on_error", {
+                    "conversation_id": conversation_id,
+                    "error": str(candidate_error),
+                    "stage": "llm_call",
+                })
+                yield StreamChunk(type="error", error=f"No LLM available: {str(candidate_error)}")
+                return
+
+            # Update tracking state
+            llm_config = round_llm_config
+            all_assistant_content_parts.extend(assistant_content_parts)
+            for k, v in usage.items():
+                total_usage[k] = total_usage.get(k, 0) + v
+
+            await hook_registry.fire("post_llm_call", {
                 "conversation_id": conversation_id,
-                "error": str(candidate_error),
-                "stage": "llm_call",
+                "backend": candidate_backend_name,
+                "model": llm_config["model"],
+                "usage": usage,
+                "tool_calls_count": len(tool_calls),
             })
-            yield StreamChunk(type="error", error=f"No LLM available: {str(candidate_error)}")
-            return
 
-        await hook_registry.fire("post_llm_call", {
-            "conversation_id": conversation_id,
-            "backend": candidate_backend_name,
-            "model": llm_config["model"],
-            "usage": usage,
-            "tool_calls_count": len(tool_calls),
-        })
+            # Save assistant response
+            assistant_content = "".join(assistant_content_parts)
+            assistant_msg_doc = {
+                "id": str(uuid.uuid4()),
+                "role": "assistant",
+                "content": assistant_content,
+                "model": llm_config["model"],
+                "tokens": usage,
+                "created_at": datetime.now(timezone.utc),
+                "memory_processed": False,
+            }
 
-        # 8. Save assistant response
-        assistant_content = "".join(assistant_content_parts)
-        assistant_msg_doc = {
-            "id": str(uuid.uuid4()),
-            "role": "assistant",
-            "content": assistant_content,
-            "model": llm_config["model"],
-            "tokens": usage,
-            "created_at": datetime.now(timezone.utc),
-            "memory_processed": False,
-        }
+            # Add tool calls if any
+            if tool_calls:
+                assistant_msg_doc["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                    }
+                    for tc in tool_calls
+                ]
 
-        # Add tool calls if any
-        if tool_calls:
-            assistant_msg_doc["tool_calls"] = [
+            await self.db.conversations.update_one(
+                {"_id": ObjectId(conversation_id)},
                 {
-                    "id": tc.id,
-                    "name": tc.name,
-                    "arguments": tc.arguments,
-                }
-                for tc in tool_calls
-            ]
-
-        await self.db.conversations.update_one(
-            {"_id": ObjectId(conversation_id)},
-            {
-                "$push": {"messages": assistant_msg_doc},
-                "$set": {"updated_at": datetime.now(timezone.utc)},
-                "$inc": {
-                    "stats.message_count": 1,
-                    "stats.total_tokens": usage.get("input_tokens", 0)
-                    + usage.get("output_tokens", 0),
-                    "stats.tool_calls": len(tool_calls),
-                },
-            },
-        )
-
-        async def _record_usage():
-            try:
-                await self.usage_repo.record(
-                    model=llm_config["model"],
-                    source="conversation",
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    agent_slug=agent.get("slug"),
-                    conversation_id=conversation_id,
-                    metadata={
-                        "backend": candidate_backend_name,
-                        "fallback": candidate_used_fallback,
+                    "$push": {"messages": assistant_msg_doc},
+                    "$set": {"updated_at": datetime.now(timezone.utc)},
+                    "$inc": {
+                        "stats.message_count": 1,
+                        "stats.total_tokens": usage.get("input_tokens", 0)
+                        + usage.get("output_tokens", 0),
+                        "stats.tool_calls": len(tool_calls),
                     },
-                )
-            except Exception as e:
-                logger.error("Failed to record usage: %s", e)
+                },
+            )
 
-        asyncio.create_task(_record_usage())
+            # Capture loop variables by value for the background task
+            _cfg = llm_config
+            _usage = dict(usage)
+            _backend = candidate_backend_name
+            _fallback = candidate_used_fallback
 
-        # 9. Execute tool calls if any (with steering message checkpoints)
-        if tool_calls and self.tool_router:
+            async def _record_usage(cfg=_cfg, u=_usage, bk=_backend, fb=_fallback):
+                try:
+                    await self.usage_repo.record(
+                        model=cfg["model"],
+                        source="conversation",
+                        input_tokens=u.get("input_tokens", 0),
+                        output_tokens=u.get("output_tokens", 0),
+                        agent_slug=agent.get("slug"),
+                        conversation_id=conversation_id,
+                        metadata={
+                            "backend": bk,
+                            "fallback": fb,
+                        },
+                    )
+                except Exception as e:
+                    logger.error("Failed to record usage: %s", e)
+
+            asyncio.create_task(_record_usage())
+
+            # If no tool calls, we're done — break out of the tool-call loop
+            if not tool_calls or not self.tool_router:
+                break
+
+            # Execute tool calls (with steering message checkpoints)
+            tool_results_for_llm = []
+            interrupted = False
             for tool_call in tool_calls:
                 # Check for steering messages between tool calls
                 steering_messages = steering_queue.drain(conversation_id)
@@ -486,7 +518,7 @@ class Orchestrator:
                                 type="text",
                                 content=f"\n[Steering interrupt received: {sm.content}]\n",
                             )
-                            yield StreamChunk(type="done", usage=usage)
+                            yield StreamChunk(type="done", usage=total_usage)
                             return
                         else:
                             # Normal: append as context note, continue execution
@@ -514,11 +546,14 @@ class Orchestrator:
                     "duration_ms": result.duration_ms,
                 })
 
+                # Build tool result content
+                tool_content = str(result.output) if result.output else (result.error or "")
+
                 # Save tool result message
                 tool_result_msg = {
                     "id": str(uuid.uuid4()),
                     "role": "tool",
-                    "content": str(result.output) if result.output else (result.error or ""),
+                    "content": tool_content,
                     "tool_call_id": tool_call.id,
                     "tool_name": tool_call.name,
                     "status": result.status.value,
@@ -541,6 +576,35 @@ class Orchestrator:
                     content=f"\n[Tool {tool_call.name}: {result.status.value}]\n",
                 )
 
+                # Collect for LLM follow-up
+                tool_results_for_llm.append({
+                    "tool_call_id": tool_call.id,
+                    "tool_name": tool_call.name,
+                    "content": tool_content,
+                })
+
+            # Append tool call + result messages to the LLM message list
+            # so the next iteration has context
+            messages.append(Message(
+                role="assistant",
+                content=assistant_content,
+                tool_calls=[
+                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                    for tc in tool_calls
+                ],
+            ))
+            for tr in tool_results_for_llm:
+                messages.append(Message(
+                    role="tool",
+                    content=tr["content"],
+                    tool_call_id=tr["tool_call_id"],
+                ))
+            # Loop continues — LLM will be called again with tool results
+
+        # After the tool-call loop, emit the final "done" event
+        usage = total_usage
+        yield StreamChunk(type="done", usage=usage)
+
         # 10. Queue memory extraction if enabled
         if agent.get("memory_config", {}).get("auto_extract", False):
             if background_tasks:
@@ -554,6 +618,7 @@ class Orchestrator:
                             conversation_id,
                             llm_backend=llm_config["backend"],
                             llm_model=llm_config["model"],
+                            private=is_private,
                         )
                         await hook_registry.fire("post_memory_extract", {
                             "conversation_id": conversation_id,
@@ -573,6 +638,7 @@ class Orchestrator:
                             conversation_id,
                             llm_backend=llm_config["backend"],
                             llm_model=llm_config["model"],
+                            private=is_private,
                         )
                     )
                 except Exception as e:

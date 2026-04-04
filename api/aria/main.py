@@ -46,6 +46,7 @@ from aria.core.claude_runner import ClaudeRunner
 from aria.core.soul import soul_manager
 from aria.tools.builtin import (
     ClaudeAgentTool,
+    DeepThinkTool,
     DocumentGenerationTool,
     FilesystemTool,
     GetCodingDiffTool,
@@ -135,7 +136,8 @@ async def lifespan(app: FastAPI):
     tool_router.register_tool(SoulTool())
     if ClaudeRunner.is_available():
         tool_router.register_tool(ClaudeAgentTool())
-        startup_logger.info("Claude Agent tool registered (CLI available)")
+        tool_router.register_tool(DeepThinkTool())
+        startup_logger.info("Claude Agent + Deep Think tools registered (CLI available)")
 
     # Register Pi Coding Agent tool (uses local LLM via orchestrator)
     tool_router.register_tool(PiCodingAgentTool(db))

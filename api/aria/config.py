@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     codex_binary: str = "codex"
     claude_code_binary: str = "claude"
     coding_default_backend: str = "codex"
-    coding_default_workspace: str = "/home/ben/Dev/ProjectAria"
+    coding_default_workspace: str = "/home/ben/Dev/aria-projects"
     coding_output_lines: int = 500
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
@@ -101,6 +101,7 @@ class Settings(BaseSettings):
         "update_soul",
         "claude_agent",
         "pi_coding_agent",
+        "deep_think",
     ]
     tool_denied_names: list[str] = []
     tool_sensitive_names: list[str] = ["shell", "filesystem", "switch_llamacpp_model"]
@@ -174,6 +175,12 @@ class Settings(BaseSettings):
     # Uses subscription tokens instead of API tokens for heavy lifting
     use_claude_runner: bool = True       # set False to use API tokens for all tasks
     claude_runner_timeout_seconds: int = 120  # default timeout for non-dream tasks
+
+    # Deep Think — delegate reasoning to Claude Opus via CLI
+    # The orchestrator model handles routing/memory, Claude does the thinking
+    deep_think_enabled: bool = True          # inject delegation instructions into system prompt
+    deep_think_model: str = ""               # optional model override (e.g. "claude-opus-4-20250514")
+    deep_think_timeout_seconds: int = 180    # max time for a deep_think call
 
     # Ambient Awareness
     awareness_enabled: bool = False

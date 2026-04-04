@@ -45,6 +45,7 @@ class ContextBuilder:
         user_message: str,
         agent_config: dict,
         include_memories: bool = True,
+        private: bool = False,
     ) -> list[Message]:
         """
         Build complete message list for LLM.
@@ -94,8 +95,11 @@ class ContextBuilder:
             "memory_enabled", True
         ):
             long_term_results = memory_config.get("long_term_results", 10)
+            # Regular conversations exclude private memories (they go to cloud LLMs).
+            # Private conversations can access all memories (everything stays local).
+            memory_filters = None if private else {"private": {"$ne": True}}
             memory_search_coro = self.long_term.search(
-                query=user_message, limit=long_term_results
+                query=user_message, limit=long_term_results, filters=memory_filters
             )
 
         short_term_coro = self.short_term.get_current_conversation_context(
@@ -179,8 +183,38 @@ Use these memories to provide personalized and contextual responses.
             except Exception as e:
                 logger.debug("Awareness context injection skipped: %s", e)
 
-        # Combine system prompt with memory context, skills, and awareness
-        full_system_prompt = system_prompt + memory_context + skill_context + awareness_context
+        # Inject deep_think delegation instructions if enabled
+        delegation_context = ""
+        if settings.deep_think_enabled:
+            delegation_context = """
+
+## Reasoning Delegation (IMPORTANT)
+
+You are an orchestrator. Your job is to manage conversation flow, retrieve memories, and call tools.
+For ALL substantive reasoning — answering questions, analysis, explanations, writing, planning,
+code review, creative tasks — you MUST delegate to the `deep_think` tool.
+
+How to use `deep_think`:
+1. Gather all relevant context (user's question, memories, conversation history)
+2. Call `deep_think` with a complete prompt that includes everything Claude needs to know
+3. Relay Claude's response back to the user, optionally with light formatting
+
+When NOT to use `deep_think`:
+- Simple acknowledgments ("ok", "got it", "done")
+- Tool routing (the user asks to run a shell command, fetch a URL, etc.)
+- Memory lookups and status checks
+- Following up on a previous deep_think response with minor clarification
+
+When to ALWAYS use `deep_think`:
+- The user asks a question that requires reasoning or knowledge
+- The user asks for analysis, explanation, or opinion
+- The user asks you to write something (text, code, plans)
+- The user asks for help debugging or understanding something
+- Any response where the quality of your thinking matters
+"""
+
+        # Combine system prompt with memory context, skills, awareness, and delegation
+        full_system_prompt = system_prompt + memory_context + skill_context + awareness_context + delegation_context
         messages.append(Message(role="system", content=full_system_prompt))
 
         for msg in conversation_messages:
@@ -188,6 +222,9 @@ Use these memories to provide personalized and contextual responses.
                 Message(
                     role=msg["role"],
                     content=msg["content"],
+                    tool_call_id=msg.get("tool_call_id"),
+                    name=msg.get("tool_name"),
+                    tool_calls=msg.get("tool_calls"),
                 )
             )
 

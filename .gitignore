@@ -75,3 +75,6 @@ widget/dist/
 
 # Node modules (general)
 node_modules/
+
+# Virtual environments
+.venv/

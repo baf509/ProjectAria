@@ -20,6 +20,7 @@ class Message:
     content: str
     tool_call_id: str = None  # For tool results
     name: str = None  # Tool name for tool results
+    tool_calls: list = None  # For assistant messages with tool calls
 
 
 @dataclass

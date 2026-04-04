@@ -77,11 +77,13 @@ class ClaudeRunner:
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
+                self.last_error = f"Timed out after {self.timeout}s"
                 logger.error("ClaudeRunner timed out after %ds", self.timeout)
                 return None
 
             if process.returncode != 0:
                 stderr_text = stderr.decode("utf-8", errors="replace")[:500]
+                self.last_error = f"Exit {process.returncode}: {stderr_text}"
                 logger.error(
                     "ClaudeRunner failed (exit %d): %s",
                     process.returncode, stderr_text,
@@ -93,6 +95,7 @@ class ClaudeRunner:
             return output
 
         except FileNotFoundError:
+            self.last_error = f"CLI not found at '{settings.claude_code_binary}'"
             logger.error(
                 "Claude Code CLI not found at '%s'. "
                 "Install Claude Code or set CLAUDE_CODE_BINARY in .env",
@@ -100,6 +103,7 @@ class ClaudeRunner:
             )
             return None
         except Exception as e:
+            self.last_error = str(e)
             logger.error("ClaudeRunner error: %s", e)
             return None
 

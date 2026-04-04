@@ -310,7 +310,7 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
             "long_term_results": 5,
             "categories_filter": None,
         },
-        "enabled_tools": ["filesystem", "shell", "web"],
+        "enabled_tools": ["filesystem", "shell", "web", "claude_agent", "pi_coding_agent", "deep_think"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,

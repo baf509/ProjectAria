@@ -71,6 +71,7 @@ class ConversationCreate(BaseModel):
     agent_id: Optional[str] = None
     agent_slug: Optional[str] = None  # Alternative to agent_id
     title: Optional[str] = None
+    private: bool = False  # Private conversations use local LLM and skip memory
 
 
 class ConversationUpdate(BaseModel):
@@ -80,6 +81,7 @@ class ConversationUpdate(BaseModel):
     tags: Optional[list[str]] = None
     pinned: Optional[bool] = None
     active_agent_id: Optional[str] = None
+    private: Optional[bool] = None
 
 
 class SteeringMessageRequest(BaseModel):
@@ -107,6 +109,7 @@ class ConversationResponse(BaseModel):
     messages: list[Message] = []
     tags: list[str] = []
     pinned: bool = False
+    private: bool = False
     stats: ConversationStats
 
     class Config:
@@ -124,6 +127,7 @@ class ConversationListItem(BaseModel):
     updated_at: datetime
     tags: list[str] = []
     pinned: bool = False
+    private: bool = False
     stats: ConversationStats
 
 

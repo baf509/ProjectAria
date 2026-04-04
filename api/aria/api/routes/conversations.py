@@ -114,8 +114,13 @@ async def create_conversation(
         "messages": [],
         "tags": [],
         "pinned": False,
+        "private": body.private,
         "stats": {"message_count": 0, "total_tokens": 0, "tool_calls": 0},
     }
+
+    # Private conversations force llamacpp backend
+    if body.private:
+        conversation["llm_config"]["backend"] = "llamacpp"
 
     result = await db.conversations.insert_one(conversation)
     conversation["_id"] = result.inserted_id

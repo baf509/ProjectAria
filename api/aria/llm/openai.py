@@ -56,6 +56,20 @@ class OpenAIAdapter(LLMAdapter):
                 "content": msg.content,
             }
 
+            # Assistant messages with tool calls
+            if msg.role == "assistant" and msg.tool_calls:
+                openai_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"] if isinstance(tc["arguments"], str) else json.dumps(tc["arguments"]),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+
             # Tool result needs special handling
             if msg.role == "tool":
                 openai_msg["role"] = "tool"

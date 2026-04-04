@@ -44,6 +44,7 @@ class MemoryExtractor:
         batch_size: int = 10,
         llm_backend: str = "llamacpp",
         llm_model: str = "default",
+        private: bool = False,
     ) -> int:
         """
         Extract memories from unprocessed messages in a conversation.
@@ -53,6 +54,7 @@ class MemoryExtractor:
             batch_size: Number of messages to process at once
             llm_backend: LLM backend to use for extraction
             llm_model: LLM model to use
+            private: Whether this is a private conversation (memories are isolated)
 
         Returns:
             Number of memories extracted
@@ -81,7 +83,7 @@ class MemoryExtractor:
         for i in range(0, len(unprocessed), batch_size):
             batch = unprocessed[i : i + batch_size]
             extracted = await self._extract_batch(
-                conversation_id, batch, llm_backend, llm_model
+                conversation_id, batch, llm_backend, llm_model, private=private
             )
             total_extracted += extracted
 
@@ -93,6 +95,7 @@ class MemoryExtractor:
         messages: list[dict],
         llm_backend: str,
         llm_model: str,
+        private: bool = False,
     ) -> int:
         """
         Extract memories from a batch of messages.
@@ -163,6 +166,7 @@ class MemoryExtractor:
                             "message_ids": message_ids,
                             "extracted_at": datetime.now(timezone.utc),
                         },
+                        private=private,
                     )
                     extracted_count += 1
                 except Exception as e:

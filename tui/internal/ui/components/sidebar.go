@@ -195,6 +195,9 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 			if title == "" {
 				title = c.ID[:min(8, len(c.ID))]
 			}
+			if c.Private {
+				title = "[private] " + title
+			}
 
 			s.Nodes = append(s.Nodes, TreeNode{
 				ID:           c.ID,

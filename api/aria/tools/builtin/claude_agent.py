@@ -41,11 +41,14 @@ class ClaudeAgentTool(BaseTool):
     def description(self) -> str:
         return (
             "Delegate a task to a Claude Code agent (subprocess). "
-            "Use this for complex analysis, investigating repos or codebases, "
-            "deep research, code review, or any task that benefits from "
-            "dedicated reasoning. The agent runs independently and returns "
-            "its findings. Does not consume API tokens — uses the user's "
-            "Claude Code subscription."
+            "This is ARIA's most capable tool — it can read/write files, "
+            "run shell commands, install packages, create projects, and "
+            "perform complex multi-step coding tasks autonomously. "
+            "Use this for: creating apps, writing code, modifying files, "
+            "running commands, investigating repos, deep research, code review, "
+            "or any task that requires real action on the filesystem. "
+            "The agent runs independently and returns its output. "
+            "Does not consume API tokens — uses the user's Claude Code subscription."
         )
 
     @property
@@ -109,7 +112,12 @@ class ClaudeAgentTool(BaseTool):
                 ),
             )
 
+        import os
         cwd = arguments.get("working_directory") or settings.coding_default_workspace
+        # Validate cwd is accessible; fall back to default if not
+        if not os.path.isdir(cwd) or not os.access(cwd, os.R_OK | os.X_OK):
+            logger.warning("Working directory '%s' not accessible, using default", cwd)
+            cwd = settings.coding_default_workspace
         timeout = int(arguments.get("timeout_seconds", 0)) or self.timeout
 
         runner = ClaudeRunner(timeout_seconds=timeout, cwd=cwd)
@@ -122,10 +130,11 @@ class ClaudeAgentTool(BaseTool):
         result = await runner.run(task)
 
         if result is None:
+            detail = getattr(runner, "last_error", None) or "unknown error"
             return ToolResult(
                 tool_name=self.name,
                 status=ToolStatus.ERROR,
-                error="Claude agent returned no output (may have timed out or failed)",
+                error=f"Claude agent failed: {detail}",
             )
 
         return ToolResult(

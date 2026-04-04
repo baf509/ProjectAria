@@ -7,10 +7,14 @@ Purpose: Security visibility, production-readiness status, and ABP retirement.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends
+from bson import ObjectId, json_util
+from fastapi import APIRouter, Depends, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel
 
 from aria.api.deps import (
     get_audit_service,
@@ -61,6 +65,77 @@ async def audit_overview(
         "summary": await audit.summary(hours=hours),
         "recent": await audit.recent_events(limit=limit),
     }
+
+
+@router.get("/db/collections")
+async def list_collections(db: AsyncIOMotorDatabase = Depends(get_db)):
+    """List all MongoDB collections with document counts."""
+    names = await db.list_collection_names()
+    result = []
+    for name in sorted(names):
+        count = await db[name].estimated_document_count()
+        result.append({"name": name, "count": count})
+    return result
+
+
+class DBQueryRequest(BaseModel):
+    filter: Optional[dict] = None
+
+
+@router.get("/db/{collection}")
+async def query_collection(
+    collection: str,
+    limit: int = Query(default=20, le=200),
+    skip: int = 0,
+    sort: str = Query(default="_id", description="Field to sort by"),
+    order: int = Query(default=-1, description="1=asc, -1=desc"),
+    q: Optional[str] = Query(default=None, description="JSON filter"),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Query a MongoDB collection. Returns documents as JSON."""
+    names = await db.list_collection_names()
+    if collection not in names:
+        raise HTTPException(status_code=404, detail=f"Collection '{collection}' not found")
+
+    query = {}
+    if q:
+        try:
+            query = json.loads(q)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON filter")
+
+    cursor = db[collection].find(query).sort(sort, order).skip(skip).limit(limit)
+    docs = []
+    async for doc in cursor:
+        docs.append(json.loads(json_util.dumps(doc)))
+
+    total = await db[collection].count_documents(query)
+    return {"collection": collection, "total": total, "skip": skip, "limit": limit, "documents": docs}
+
+
+@router.get("/db/{collection}/{document_id}")
+async def get_document(
+    collection: str,
+    document_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Get a single document by ID."""
+    names = await db.list_collection_names()
+    if collection not in names:
+        raise HTTPException(status_code=404, detail=f"Collection '{collection}' not found")
+
+    # Try as ObjectId first, then as string _id
+    doc = None
+    try:
+        doc = await db[collection].find_one({"_id": ObjectId(document_id)})
+    except Exception:
+        pass
+    if not doc:
+        doc = await db[collection].find_one({"_id": document_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return json.loads(json_util.dumps(doc))
 
 
 def _check_service_instantiated(service_obj, label: str) -> dict:

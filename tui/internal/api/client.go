@@ -70,6 +70,7 @@ type Conversation struct {
 	Status    string            `json:"status"`
 	Tags      []string          `json:"tags"`
 	Pinned    bool              `json:"pinned"`
+	Private   bool              `json:"private"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	Stats     ConversationStats `json:"stats"`
@@ -122,13 +123,16 @@ func (c *Client) GetConversation(id string, msgLimit int) (*ConversationDetail, 
 	return &conv, json.NewDecoder(resp.Body).Decode(&conv)
 }
 
-func (c *Client) CreateConversation(agentSlug, title string) (*ConversationDetail, error) {
-	body := map[string]string{}
+func (c *Client) CreateConversation(agentSlug, title string, private bool) (*ConversationDetail, error) {
+	body := map[string]interface{}{}
 	if agentSlug != "" {
 		body["agent_slug"] = agentSlug
 	}
 	if title != "" {
 		body["title"] = title
+	}
+	if private {
+		body["private"] = true
 	}
 	b, _ := json.Marshal(body)
 	resp, err := c.post(c.Base+"/api/v1/conversations", "application/json", bytes.NewReader(b))
@@ -515,6 +519,64 @@ func (c *Client) ListObservations(limit int) ([]Observation, error) {
 	defer resp.Body.Close()
 	var obs []Observation
 	return obs, json.NewDecoder(resp.Body).Decode(&obs)
+}
+
+// ---------- Database Browser ----------
+
+type CollectionInfo struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+func (c *Client) ListCollections() ([]CollectionInfo, error) {
+	resp, err := c.get(c.Base + "/api/v1/admin/db/collections")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var cols []CollectionInfo
+	return cols, json.NewDecoder(resp.Body).Decode(&cols)
+}
+
+type QueryResult struct {
+	Collection string                   `json:"collection"`
+	Total      int                      `json:"total"`
+	Skip       int                      `json:"skip"`
+	Limit      int                      `json:"limit"`
+	Documents  []map[string]interface{} `json:"documents"`
+}
+
+func (c *Client) QueryCollection(collection string, limit, skip int, filter string) (*QueryResult, error) {
+	url := fmt.Sprintf("%s/api/v1/admin/db/%s?limit=%d&skip=%d", c.Base, collection, limit, skip)
+	if filter != "" {
+		url += "&q=" + filter
+	}
+	resp, err := c.get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var result QueryResult
+	return &result, json.NewDecoder(resp.Body).Decode(&result)
+}
+
+func (c *Client) GetDocument(collection, docID string) (map[string]interface{}, error) {
+	url := fmt.Sprintf("%s/api/v1/admin/db/%s/%s", c.Base, collection, docID)
+	resp, err := c.get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var doc map[string]interface{}
+	return doc, json.NewDecoder(resp.Body).Decode(&doc)
 }
 
 // ---------- Dashboard Snapshot ----------
