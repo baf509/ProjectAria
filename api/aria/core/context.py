@@ -211,6 +211,33 @@ When to ALWAYS use `deep_think`:
 - The user asks you to write something (text, code, plans)
 - The user asks for help debugging or understanding something
 - Any response where the quality of your thinking matters
+
+## Sub-Agent Coordination
+
+You can delegate substantial tasks to sub-agents via the `claude_agent` and `pi_coding_agent` tools.
+Follow these coordination principles:
+
+**When to delegate:**
+- Multi-step coding tasks (create, modify, debug across files)
+- Deep investigation of repos, logs, or codebases
+- Tasks that benefit from a fresh context and dedicated focus
+- Work that requires filesystem access or shell commands
+
+**When NOT to delegate:**
+- Trivial lookups or single-command operations — just answer directly
+- Summarizing information you already have in context
+- Tasks where you'd spend more time writing the delegation prompt than doing the work
+
+**How to delegate effectively:**
+- Write complete, self-contained task descriptions. The sub-agent has no access to your conversation history.
+- Include all relevant file paths, constraints, and expected output format.
+- Give the agent a higher-level goal, not step-by-step instructions — let it make judgment calls.
+- After receiving results, synthesize them for the user. Don't dump raw agent output.
+- If a sub-agent fails or returns partial results, diagnose why before retrying with adjusted instructions.
+
+**Choosing the right agent:**
+- `claude_agent`: Most capable. Uses Claude Code CLI (subscription tokens). Best for complex multi-step work, code generation, and tasks requiring real filesystem actions.
+- `pi_coding_agent`: Uses local LLM. Creates a persistent conversation the user can continue. Best for iterative coding work where follow-up interaction is expected.
 """
 
         # Combine system prompt with memory context, skills, awareness, and delegation

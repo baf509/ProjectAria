@@ -279,15 +279,35 @@ class SignalService:
 
         interval = interval_seconds or settings.signal_poll_interval_seconds
 
+        _consecutive_errors = 0
+        _last_error_msg = ""
+
         async def poll_loop():
+            nonlocal _consecutive_errors, _last_error_msg
             while True:
                 try:
                     await self.poll_once(db=db, orchestrator=orchestrator)
+                    if _consecutive_errors > 0:
+                        logger.info(
+                            "Signal poll recovered after %d consecutive errors",
+                            _consecutive_errors,
+                        )
+                        _consecutive_errors = 0
+                        _last_error_msg = ""
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
                     self._last_error = str(exc)
-                    logger.warning("Signal poll loop error: %s", exc, exc_info=True)
+                    err_msg = str(exc).split("\n")[0]
+                    _consecutive_errors += 1
+                    if _consecutive_errors == 1:
+                        logger.warning("Signal poll error: %s", exc, exc_info=True)
+                    elif _consecutive_errors in (5, 25, 100) or _consecutive_errors % 100 == 0:
+                        logger.warning(
+                            "Signal poll error repeated %d times: %s",
+                            _consecutive_errors, err_msg,
+                        )
+                    _last_error_msg = err_msg
                 await asyncio.sleep(interval)
 
         self._poll_task = asyncio.create_task(poll_loop())

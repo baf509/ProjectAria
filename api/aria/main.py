@@ -21,8 +21,7 @@ from aria.core.logging import setup_logging
 # Initialize structured logging with secret scrubbing before anything else
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
-from aria.db.mongodb import connect_db, close_db, ensure_indexes
-from aria.db.mongodb import get_database
+from aria.db.mongodb import connect_db, close_db, get_database
 from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness
 from aria.api.deps import (
     get_audit_service,
@@ -75,7 +74,6 @@ async def lifespan(app: FastAPI):
     soul_manager.ensure_file()
     await connect_db()
     await run_migrations(await get_database())
-    await ensure_indexes()
 
     # Validate critical services at startup
     import httpx

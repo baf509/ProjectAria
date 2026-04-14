@@ -18,7 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -30,6 +31,18 @@ from aria.dreams.collector import DreamCollector
 from aria.memory.long_term import LongTermMemory
 
 logger = logging.getLogger(__name__)
+
+# Stale lock threshold — reclaim if holder PID is dead or lock is older than this
+_LOCK_STALE_SECONDS = 3600
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is still running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
 
 
 class DreamService:
@@ -44,6 +57,7 @@ class DreamService:
         self._task: Optional[asyncio.Task] = None
         self._last_run: Optional[datetime] = None
         self._last_status: Optional[str] = None
+        self._last_conversation_scan: float = -float("inf")  # monotonic timestamp of last scan
 
     async def start(self):
         """Start the dream cycle tick loop."""
@@ -72,6 +86,12 @@ class DreamService:
         """Sleep for the configured interval, then run a dream cycle."""
         interval = settings.dream_interval_hours * 3600
         while self._running:
+            logger.info(
+                "Dream tick: sleeping %dh (last_run=%s, last_status=%s)",
+                settings.dream_interval_hours,
+                self._last_run.isoformat() if self._last_run else "never",
+                self._last_status or "none",
+            )
             await asyncio.sleep(interval)
             if not self._running:
                 break
@@ -94,12 +114,141 @@ class DreamService:
         else:
             return hour >= start or hour < end
 
+    async def _acquire_lock(self) -> bool:
+        """Acquire a MongoDB-based dream lock. Returns True if acquired."""
+        now = datetime.now(timezone.utc)
+        pid = os.getpid()
+
+        # Try to reclaim stale locks (dead PID or too old)
+        stale_cutoff = now - timedelta(seconds=_LOCK_STALE_SECONDS)
+        existing = await self.db.dream_lock.find_one({"_id": "dream_cycle"})
+
+        if existing:
+            holder_pid = existing.get("holder_pid")
+            acquired_at = existing.get("acquired_at")
+
+            # Lock is live — another process is running a dream
+            if (
+                holder_pid
+                and _is_pid_alive(holder_pid)
+                and acquired_at
+                and acquired_at > stale_cutoff
+            ):
+                logger.info(
+                    "Dream lock held by PID %d (acquired %s), skipping",
+                    holder_pid,
+                    acquired_at.isoformat(),
+                )
+                return False
+
+            # Stale lock — reclaim via atomic update
+            result = await self.db.dream_lock.update_one(
+                {"_id": "dream_cycle", "holder_pid": holder_pid},
+                {"$set": {
+                    "holder_pid": pid,
+                    "acquired_at": now,
+                }},
+            )
+            return result.modified_count == 1
+
+        # No lock exists — create it atomically
+        try:
+            await self.db.dream_lock.insert_one({
+                "_id": "dream_cycle",
+                "holder_pid": pid,
+                "acquired_at": now,
+            })
+            return True
+        except Exception:
+            # Duplicate key — another process beat us
+            return False
+
+    async def _release_lock(self) -> None:
+        """Release the dream lock, but only if we still hold it."""
+        await self.db.dream_lock.delete_one({
+            "_id": "dream_cycle",
+            "holder_pid": os.getpid(),
+        })
+
+    async def _has_enough_activity(self) -> bool:
+        """Check if enough new activity has occurred since the last dream.
+
+        Counts both ARIA conversations and new memories (e.g. from awareness
+        digesting Claude Code sessions) so the gate opens regardless of which
+        interface the user is active on.
+
+        Throttles the DB scan to once every 10 minutes to avoid repeated
+        queries when the time gate passes but this gate doesn't.
+        """
+        import time
+
+        min_activity = settings.dream_min_conversations
+        if min_activity <= 0:
+            return True
+
+        # Scan throttle: avoid hitting the DB every tick when time-gate passes
+        # but activity-gate doesn't
+        now_mono = time.monotonic()
+        scan_interval = 600  # 10 minutes
+        if now_mono - self._last_conversation_scan < scan_interval:
+            return False
+        self._last_conversation_scan = now_mono
+
+        # Find last dream run time
+        last_dream = await self.db.dream_journal.find_one(
+            {}, sort=[("created_at", -1)], projection={"created_at": 1}
+        )
+        since = last_dream["created_at"] if last_dream else datetime.min.replace(tzinfo=timezone.utc)
+
+        conv_count = await self.db.conversations.count_documents({
+            "updated_at": {"$gt": since},
+            "status": "active",
+        })
+
+        memory_count = await self.db.memories.count_documents({
+            "created_at": {"$gt": since},
+        })
+
+        total = conv_count + memory_count
+
+        if total < min_activity:
+            logger.info(
+                "Dream waiting: %d activity since last dream "
+                "(%d conversations + %d memories, need %d)",
+                total, conv_count, memory_count, min_activity,
+            )
+            self._last_status = (
+                f"waiting: {total}/{min_activity} activity "
+                f"({conv_count} convos + {memory_count} memories)"
+            )
+            return False
+        return True
+
     async def _run_dream(self):
         """Execute a single dream cycle."""
         if not self._is_active_hours():
-            logger.debug("Dream skipped: outside active hours")
+            now_hour = datetime.now().hour
+            logger.info(
+                "Dream skipped: outside active hours (now=%d:00, window=%d:00-%d:00)",
+                now_hour, settings.dream_active_hours_start, settings.dream_active_hours_end,
+            )
+            self._last_status = f"skipped: outside active hours (hour={now_hour})"
             return
 
+        if not await self._has_enough_activity():
+            return
+
+        if not await self._acquire_lock():
+            self._last_status = "skipped: lock held by another process"
+            return
+
+        try:
+            await self._run_dream_locked()
+        finally:
+            await self._release_lock()
+
+    async def _run_dream_locked(self):
+        """Execute a dream cycle (caller must hold the lock)."""
         logger.info("Dream cycle beginning...")
 
         # 1. Collect context
@@ -127,7 +276,11 @@ class DreamService:
             return
 
         # 5. Persist results
-        await self._persist(dream_data)
+        try:
+            await self._persist(dream_data)
+        except Exception as e:
+            self._last_status = f"persist failed: {e}"
+            raise
 
         self._last_run = datetime.now(timezone.utc)
         self._last_status = "completed"
@@ -199,6 +352,9 @@ class DreamService:
             "memory_consolidations_proposed": len(
                 dream_data.get("memory_consolidations", [])
             ),
+            "stale_memories_flagged": len(
+                dream_data.get("stale_memory_ids", [])
+            ),
             "created_at": now,
         }
         await self.db.dream_journal.insert_one(journal_doc)
@@ -209,7 +365,12 @@ class DreamService:
         for consolidation in consolidations:
             await self._apply_consolidation(consolidation)
 
-        # 3. Store soul proposals (don't auto-apply — require user review)
+        # 3. Prune stale memories flagged by the dream
+        stale_ids = dream_data.get("stale_memory_ids", [])
+        if stale_ids:
+            await self._prune_stale_memories(stale_ids)
+
+        # 4. Store soul proposals (don't auto-apply — require user review)
         soul_proposals = dream_data.get("soul_proposals", [])
         if soul_proposals:
             await self.db.dream_soul_proposals.insert_one({
@@ -221,6 +382,30 @@ class DreamService:
                 "Saved %d soul evolution proposal(s) for review",
                 len(soul_proposals),
             )
+
+    async def _prune_stale_memories(self, memory_ids: list[str]):
+        """Soft-delete memories flagged as stale by the dream cycle."""
+        from bson import ObjectId
+
+        valid_ids = []
+        for mid in memory_ids:
+            try:
+                valid_ids.append(ObjectId(mid))
+            except Exception:
+                continue
+
+        if not valid_ids:
+            return
+
+        result = await self.db.memories.update_many(
+            {"_id": {"$in": valid_ids}, "status": "active"},
+            {"$set": {
+                "status": "pruned",
+                "pruned_by": "dream_cycle",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        logger.info("Pruned %d stale memories", result.modified_count)
 
     async def _apply_consolidation(self, consolidation: dict):
         """
@@ -273,15 +458,15 @@ class DreamService:
             logger.warning("Memory consolidation failed: %s", e)
 
     async def trigger(self) -> dict:
-        """Manually trigger a dream cycle (ignores active hours). Returns result."""
+        """Manually trigger a dream cycle (ignores active hours and conversation gate). Returns result."""
         try:
-            # Temporarily override active hours check
-            original = self._is_active_hours
-            self._is_active_hours = lambda: True
+            if not await self._acquire_lock():
+                return {"triggered": False, "error": "Dream lock held by another process"}
+
             try:
-                await self._run_dream()
+                await self._run_dream_locked()
             finally:
-                self._is_active_hours = original
+                await self._release_lock()
 
             # Return the latest journal entry
             latest = await self.db.dream_journal.find_one(

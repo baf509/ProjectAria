@@ -145,6 +145,20 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     await _safe_create_index(db.audit_logs, [("status", 1), ("timestamp", -1)], name="audit_status_timestamp")
 
     await _safe_create_index(db.agents, "slug", name="agent_slug", unique=True)
+
+    await _safe_create_index(db.dream_journal, "created_at", name="dream_journal_created")
+    await _safe_create_index(
+        db.dream_soul_proposals,
+        [("status", 1), ("created_at", -1)],
+        name="soul_proposals_status_created",
+    )
+
+    await _safe_create_index(db.tool_audit, "created_at", name="audit_created")
+    await _safe_create_index(
+        db.tool_audit,
+        [("tool_name", 1), ("created_at", -1)],
+        name="audit_tool_created",
+    )
     logger.info("Standard MongoDB indexes ensured")
 
 

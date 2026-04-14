@@ -73,30 +73,45 @@ class SchedulerService:
 
     async def _tick_loop(self):
         """Check for due schedules every 15 seconds."""
+        _ticks = 0
+        _executed = 0
         while self._running:
             try:
-                await self._check_due_schedules()
+                count = await self._check_due_schedules()
+                _executed += count
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 logger.error(f"Scheduler tick error: {e}")
+            _ticks += 1
+            # Log a summary every ~30 minutes (120 ticks * 15s)
+            if _ticks % 120 == 0:
+                total_enabled = await self.db.schedules.count_documents({"enabled": True})
+                logger.info(
+                    "Scheduler status: %d enabled schedule(s), %d executed in last 30m",
+                    total_enabled, _executed,
+                )
+                _executed = 0
             await asyncio.sleep(15)
 
-    async def _check_due_schedules(self):
-        """Find and execute schedules that are due."""
+    async def _check_due_schedules(self) -> int:
+        """Find and execute schedules that are due. Returns count executed."""
         now = datetime.now(timezone.utc)
         due = await self.db.schedules.find({
             "enabled": True,
             "next_run_at": {"$lte": now},
         }).to_list(length=50)
 
+        executed = 0
         for schedule in due:
             try:
                 await self._execute_schedule(schedule)
+                executed += 1
             except Exception as e:
                 logger.error(
                     f"Failed to execute schedule {schedule.get('name', schedule['_id'])}: {e}"
                 )
+        return executed
 
     async def _execute_schedule(self, schedule: dict):
         """Execute a single schedule and update next_run_at."""

@@ -509,7 +509,7 @@ class CommandRouter:
             if not sessions:
                 return CommandResult(assistant_content="There are no running coding sessions.")
             session = sessions[0]
-            output = self.coding_manager.get_output(session["_id"], lines=12)
+            output = await self.coding_manager.get_output(session["_id"], lines=12)
             return CommandResult(
                 assistant_content=(
                     f"Active coding session {session['_id']} ({session['backend']})\n"

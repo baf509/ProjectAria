@@ -22,7 +22,7 @@ class KillswitchActivateRequest(BaseModel):
 
 @router.post("/killswitch/activate")
 async def activate_killswitch(
-    body: KillswitchActivateRequest = KillswitchActivateRequest(),
+    body: KillswitchActivateRequest,
     killswitch: Killswitch = Depends(get_killswitch),
     task_runner: TaskRunner = Depends(get_task_runner),
     notification_service: NotificationService = Depends(get_notification_service),

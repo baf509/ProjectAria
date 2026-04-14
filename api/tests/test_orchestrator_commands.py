@@ -273,7 +273,7 @@ class TestCodingCommand:
         mock_manager.list_sessions = AsyncMock(return_value=[
             {"_id": "sess1", "backend": "codex"}
         ])
-        mock_manager.get_output = MagicMock(return_value="Running tests...")
+        mock_manager.get_output = AsyncMock(return_value="Running tests...")
         command_router.coding_manager = mock_manager
 
         result = await command_router._handle_coding_command(CONV_ID, "how's the coding going?")

@@ -50,12 +50,15 @@ class AutopilotExecutor:
     ) -> list[dict]:
         """Execute all steps in a plan."""
         results = []
+        logger.info("Executing autopilot plan %s (%d steps, mode=%s)", session_id, len(steps), mode)
 
         for step in steps:
             # Check killswitch before each step
             self.killswitch.check_or_raise("autopilot step execution")
 
             step_index = step["index"]
+            step_name = step.get("name", f"step-{step_index}")
+            logger.info("Autopilot %s: starting step %d/%d (%s)", session_id, step_index + 1, len(steps), step_name)
 
             # Update step status
             await self._update_step(session_id, step_index, status="running")
@@ -99,9 +102,11 @@ class AutopilotExecutor:
                 step["status"] = "completed"
                 step["result"] = result
                 results.append({"index": step_index, "status": "completed", "result": result})
+                logger.info("Autopilot %s: step %d completed", session_id, step_index)
 
             except Exception as exc:
                 error = str(exc)
+                logger.error("Autopilot %s: step %d failed: %s", session_id, step_index, error)
                 await self._update_step(
                     session_id, step_index,
                     status="failed",
@@ -112,6 +117,10 @@ class AutopilotExecutor:
                 results.append({"index": step_index, "status": "failed", "error": error})
                 break
 
+        logger.info(
+            "Autopilot %s: plan execution finished (%d/%d steps completed)",
+            session_id, sum(1 for r in results if r["status"] == "completed"), len(steps),
+        )
         return results
 
     async def _execute_step(self, step: dict, backend: str, model: str) -> str:

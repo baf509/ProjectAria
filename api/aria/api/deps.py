@@ -38,6 +38,9 @@ from aria.telegram.handler import TelegramHandler
 from aria.heartbeat.service import HeartbeatService
 from aria.awareness.service import AwarenessService
 from aria.dreams.service import DreamService
+from aria.agents.estop import EstopManager, RateLimitWatchdog
+from aria.agents.mail import AgentMailbox
+from aria.notifications.escalation import EscalationManager
 
 def valid_object_id(value: str) -> ObjectId:
     """Validate and convert a string to a BSON ObjectId, raising 400 on invalid input."""
@@ -71,6 +74,10 @@ _telegram_handler: TelegramHandler = None
 _heartbeat_service: HeartbeatService = None
 _dream_service: DreamService = None
 _awareness_service: AwarenessService = None
+_estop_manager: EstopManager = None
+_rate_limit_watchdog: RateLimitWatchdog = None
+_agent_mailbox: AgentMailbox = None
+_escalation_manager: EscalationManager = None
 
 
 def get_tool_router() -> ToolRouter:
@@ -417,3 +424,77 @@ async def resolve_awareness_service(
     else:
         _awareness_service.db = db
     return _awareness_service
+
+
+async def get_estop_manager(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> EstopManager:
+    """Get emergency stop manager instance."""
+    global _estop_manager
+    if _estop_manager is None:
+        _estop_manager = EstopManager(db)
+    else:
+        _estop_manager.db = db
+    return _estop_manager
+
+
+async def resolve_estop_manager(
+    db: AsyncIOMotorDatabase,
+) -> EstopManager:
+    """Resolve estop manager outside FastAPI dependency injection."""
+    global _estop_manager
+    if _estop_manager is None:
+        _estop_manager = EstopManager(db)
+    else:
+        _estop_manager.db = db
+    return _estop_manager
+
+
+async def resolve_rate_limit_watchdog(
+    db: AsyncIOMotorDatabase,
+) -> RateLimitWatchdog:
+    """Resolve rate limit watchdog outside FastAPI dependency injection."""
+    global _rate_limit_watchdog, _estop_manager
+    if _estop_manager is None:
+        _estop_manager = EstopManager(db)
+    if _rate_limit_watchdog is None:
+        _rate_limit_watchdog = RateLimitWatchdog(
+            db, _estop_manager, get_notification_service()
+        )
+    return _rate_limit_watchdog
+
+
+async def get_agent_mailbox(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> AgentMailbox:
+    """Get agent mailbox instance."""
+    global _agent_mailbox
+    if _agent_mailbox is None:
+        _agent_mailbox = AgentMailbox(db)
+    else:
+        _agent_mailbox.db = db
+    return _agent_mailbox
+
+
+async def get_escalation_manager(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> EscalationManager:
+    """Get escalation manager instance."""
+    global _escalation_manager
+    if _escalation_manager is None:
+        _escalation_manager = EscalationManager(db, get_notification_service())
+    else:
+        _escalation_manager.db = db
+    return _escalation_manager
+
+
+async def resolve_escalation_manager(
+    db: AsyncIOMotorDatabase,
+) -> EscalationManager:
+    """Resolve escalation manager outside FastAPI dependency injection."""
+    global _escalation_manager
+    if _escalation_manager is None:
+        _escalation_manager = EscalationManager(db, get_notification_service())
+    else:
+        _escalation_manager.db = db
+    return _escalation_manager

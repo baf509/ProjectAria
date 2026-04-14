@@ -50,69 +50,6 @@ async def connect_db():
     logger.info("Connected to database: %s", settings.mongodb_database)
 
 
-async def ensure_indexes():
-    """Create or verify required indexes for ARIA collections."""
-    database = db.db
-    if database is None:
-        logger.warning("Cannot ensure indexes: database not connected")
-        return
-
-    try:
-        # Conversations indexes
-        await database.conversations.create_index(
-            [("status", 1), ("updated_at", -1)],
-            name="status_updated",
-        )
-        await database.conversations.create_index(
-            [("agent_id", 1)],
-            name="agent_id",
-        )
-
-        # Memories indexes
-        await database.memories.create_index(
-            [("status", 1), ("created_at", -1)],
-            name="status_created",
-        )
-        await database.memories.create_index(
-            [("status", 1), ("categories", 1)],
-            name="status_categories",
-        )
-        await database.memories.create_index(
-            [("last_accessed_at", 1)],
-            name="last_accessed",
-        )
-
-        # Usage indexes
-        await database.usage.create_index(
-            [("created_at", -1)],
-            name="usage_created",
-        )
-
-        # Dream journal indexes
-        await database.dream_journal.create_index(
-            [("created_at", -1)],
-            name="dream_journal_created",
-        )
-        await database.dream_soul_proposals.create_index(
-            [("status", 1), ("created_at", -1)],
-            name="soul_proposals_status_created",
-        )
-
-        # Tool audit indexes
-        await database.tool_audit.create_index(
-            [("created_at", -1)],
-            name="audit_created",
-        )
-        await database.tool_audit.create_index(
-            [("tool_name", 1), ("created_at", -1)],
-            name="audit_tool_created",
-        )
-
-        logger.info("Database indexes verified")
-    except Exception as e:
-        logger.warning("Failed to ensure indexes (non-fatal): %s", e)
-
-
 async def close_db():
     """Close MongoDB connection."""
     if db.client:

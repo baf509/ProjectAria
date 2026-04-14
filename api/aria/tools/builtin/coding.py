@@ -79,7 +79,7 @@ class GetCodingOutputTool(_CodingBaseTool):
         ]
 
     async def execute(self, arguments: dict) -> ToolResult:
-        output = self.manager.get_output(arguments["session_id"], lines=int(arguments.get("lines", 50)))
+        output = await self.manager.get_output(arguments["session_id"], lines=int(arguments.get("lines", 50)))
         return ToolResult(tool_name=self.name, status=ToolStatus.SUCCESS, output={"output": output})
 
 

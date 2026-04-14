@@ -77,6 +77,10 @@ class AutopilotService:
             "updated_at": now,
         }
         await self.db.autopilot_sessions.insert_one(session)
+        logger.info(
+            "Autopilot session %s created: goal=%r, mode=%s, steps=%d",
+            session_id, goal[:80], mode, len(steps),
+        )
 
         # Submit execution as a background task
         task_id = await self.task_runner.submit_task(
@@ -119,6 +123,7 @@ class AutopilotService:
         if not session:
             raise ValueError("Session not found")
 
+        logger.info("Stopping autopilot session %s", session_id)
         self.executor.cancel_session(session_id)
 
         # Cancel the background task if running

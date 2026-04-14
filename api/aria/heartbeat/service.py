@@ -140,12 +140,16 @@ class HeartbeatService:
     async def _run_heartbeat(self):
         """Execute a single heartbeat check."""
         if not self._is_active_hours():
-            logger.debug("Heartbeat skipped: outside active hours")
+            now_hour = datetime.now().hour
+            logger.info(
+                "Heartbeat skipped: outside active hours (now=%d:00, window=%d:00-%d:00)",
+                now_hour, settings.heartbeat_active_hours_start, settings.heartbeat_active_hours_end,
+            )
             return
 
         checklist = self._read_heartbeat_file()
         if checklist is None:
-            logger.debug("Heartbeat skipped: HEARTBEAT.md empty or missing")
+            logger.info("Heartbeat skipped: HEARTBEAT.md empty or missing")
             return
 
         # Build lightweight context

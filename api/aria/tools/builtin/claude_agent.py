@@ -102,6 +102,21 @@ class ClaudeAgentTool(BaseTool):
                 error="Task description is required",
             )
 
+        # Check global emergency stop before spawning agents
+        try:
+            from aria.api.deps import get_estop_manager, get_db
+            db = await get_db()
+            estop = await get_estop_manager(db=db)
+            if await estop.is_active():
+                state = await estop.get_state()
+                return ToolResult(
+                    tool_name=self.name,
+                    status=ToolStatus.ERROR,
+                    error=f"Emergency stop active: {state.reason}. Agent spawning is paused.",
+                )
+        except Exception:
+            pass  # If estop check fails, allow the operation
+
         if not ClaudeRunner.is_available():
             return ToolResult(
                 tool_name=self.name,

@@ -354,7 +354,7 @@ class Orchestrator:
                                     else:
                                         # Check for partial <think> tag at end of text
                                         partial_match = ""
-                                        for i in range(1, min(7, len(text) + 1)):
+                                        for i in range(1, min(8, len(text) + 1)):
                                             if "<think>"[:i] == text[-i:]:
                                                 partial_match = text[-i:]
                                         if partial_match:

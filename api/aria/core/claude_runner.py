@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from aria.config import settings
 
@@ -39,10 +39,14 @@ class ClaudeRunner:
         model: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         cwd: Optional[str] = None,
+        allowed_tools: Optional[List[str]] = None,
+        skip_permissions: bool = False,
     ):
         self.model = model or settings.dream_claude_model or ""
         self.timeout = timeout_seconds or settings.dream_timeout_seconds
         self.cwd = cwd or settings.coding_default_workspace
+        self.allowed_tools = allowed_tools
+        self.skip_permissions = skip_permissions or settings.claude_runner_skip_permissions
 
     async def run(self, prompt: str) -> Optional[str]:
         """
@@ -57,6 +61,10 @@ class ClaudeRunner:
         argv = [settings.claude_code_binary]
         if self.model:
             argv.extend(["--model", self.model])
+        if self.skip_permissions:
+            argv.append("--dangerously-skip-permissions")
+        if self.allowed_tools:
+            argv.extend(["--allowedTools", ",".join(self.allowed_tools)])
         argv.extend(["-p", prompt])
 
         logger.debug("ClaudeRunner spawning: %s (timeout=%ds)", argv[0], self.timeout)

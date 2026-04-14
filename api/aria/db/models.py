@@ -312,6 +312,8 @@ class CodingSessionResponse(BaseModel):
     prompt: str
     branch: Optional[str] = None
     pid: Optional[int] = None
+    visible: bool = False
+    tmux_pane_id: Optional[str] = None
     status: str
     created_at: datetime
     updated_at: datetime

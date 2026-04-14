@@ -165,6 +165,7 @@ class Settings(BaseSettings):
     dream_interval_hours: int = 6
     dream_active_hours_start: int = 1   # run during quiet hours (1am-5am)
     dream_active_hours_end: int = 5
+    dream_min_conversations: int = 3  # skip dream if fewer conversations since last run
     dream_max_memories: int = 50
     dream_max_conversations: int = 5
     dream_max_journal_entries: int = 10
@@ -175,6 +176,7 @@ class Settings(BaseSettings):
     # Uses subscription tokens instead of API tokens for heavy lifting
     use_claude_runner: bool = True       # set False to use API tokens for all tasks
     claude_runner_timeout_seconds: int = 120  # default timeout for non-dream tasks
+    claude_runner_skip_permissions: bool = True  # allow background tasks full tool access
 
     # Deep Think — delegate reasoning to Claude Opus via CLI
     # The orchestrator model handles routing/memory, Claude does the thinking

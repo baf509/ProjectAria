@@ -160,8 +160,8 @@ class AwarenessService:
         if all_observations:
             docs = [o.to_doc() for o in all_observations]
             await self.db.observations.insert_many(docs)
-            logger.debug(
-                "Awareness: %d observations from %d sensors",
+            logger.info(
+                "Awareness poll: %d observations from %d sensors",
                 len(all_observations), len(self.sensors),
             )
 
@@ -204,7 +204,7 @@ class AwarenessService:
         ).sort("created_at", -1).to_list(length=100)
 
         if not observations:
-            logger.debug("Awareness analysis skipped: no recent observations")
+            logger.info("Awareness analysis skipped: no recent observations")
             return
 
         # Format observations for analysis
