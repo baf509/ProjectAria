@@ -164,6 +164,56 @@ Response to User
 
 ---
 
+### 2.X Agent Safety Subsystems
+
+Sub-agent coding sessions are supervised by a safety layer inspired by Gas
+Town's agent-ops patterns. Each subsystem is wired through `api/deps.py` and
+integrated with the watchdog/session manager.
+
+**Context Budget Guard** (`api/aria/agents/budget_guard.py`)
+Monitors coding sessions for context-window exhaustion. Since ARIA does not
+have direct access to agent token counts, the guard uses heuristic signals from
+agent output: explicit context-limit messages from the LLM provider, Claude
+Code conversation compaction/truncation notices, increasing response latency
+(context-processing overhead), and output that mentions running out of context.
+
+Thresholds:
+- `WARN` (75%) — log warning, no action
+- `SOFT` (85%) — write checkpoint, notify user
+- `HARD` (92%) — write checkpoint, stop session, suggest resume
+
+**Session Checkpoints** (`api/aria/agents/checkpoint.py`)
+Persists coding-session state to MongoDB so crashed agents can be resumed with
+full context. Captures current task, modified files, branch, last commit, and
+freeform notes. Stored alongside the session document.
+
+**Emergency Stop / Rate-Limit Watchdog** (`api/aria/agents/estop.py`)
+Global emergency stop that freezes all agent activity when API rate limits or
+critical errors are detected and auto-thaws when clear. State is stored in
+MongoDB so it is visible across all ARIA processes and persists across
+restarts.
+
+**Inter-Agent Mail Protocol** (`api/aria/agents/mail.py`)
+Structured agent-to-agent messaging for task completion, handoffs, and result
+passing. Message types: `TASK_DONE`, `HANDOFF`, `RESULT`, `ERROR`,
+`CHECKPOINT`. Messages are stored in MongoDB and queryable by recipient,
+conversation, or type. The orchestrator polls for messages addressed to it and
+processes them.
+
+**Tmux Agent Backend** (`api/aria/agents/backends/tmux.py`)
+Optional visible backend that spawns each coding agent in its own color-cycled
+pane inside a dedicated `aria-agents` tmux session, so the user can watch
+multiple agents working in parallel.
+
+**Escalation Protocol** (`api/aria/notifications/escalation.py`)
+Severity-routed notifications with tiered levels (CRITICAL/P0, HIGH/P1,
+MEDIUM/P2, LOW/P3). Escalation chain: (1) agent detects issue and creates an
+escalation, (2) system attempts auto-resolution (retry, fallback), (3) if
+unresolved after a threshold, escalates to user notification, (4) stale
+escalations are auto-re-escalated with increased severity.
+
+---
+
 ## 3. Memory Architecture
 
 ### 3.1 Two-Tier Memory System

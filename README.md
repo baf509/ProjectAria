@@ -84,6 +84,19 @@ These are autonomous tasks where ARIA delegates work to a Claude Code CLI instan
 | **Memory Extraction** | After conversations | Extracts facts, relationships, events, beliefs with categories and confidence scores |
 | **Session Digest** | After coding sessions | Analyzes completed sessions, extracts takeaways, decisions, open questions |
 
+## Safety & Reliability
+
+ARIA's long-running agents are supervised by a layer of safety subsystems inspired by Gas Town's agent-ops patterns:
+
+| Subsystem | Purpose |
+|-----------|---------|
+| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92%. |
+| **Session Checkpoints** | Persists task, modified files, branch, last commit, and notes to MongoDB so crashed agents can be resumed with full context. |
+| **Emergency Stop (Estop)** | MongoDB-backed global freeze that halts all agent activity on API rate limits or critical errors. Visible across processes, auto-thaws when clear. |
+| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` messages routed through MongoDB between the orchestrator and sub-agents. |
+| **Tmux Backend** | Optional visible backend that spawns each coding agent in its own color-coded tmux pane inside an `aria-agents` session. |
+| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items. |
+
 ## Interfaces
 
 | Interface | Technology | Description |
@@ -200,7 +213,7 @@ ProjectAria/
 │       ├── llm/                # LLM adapters (llamacpp, anthropic, openai, openrouter)
 │       ├── memory/             # Short-term + long-term memory, embeddings, extraction
 │       ├── tools/              # Built-in tools + MCP integration
-│       ├── agents/             # Coding session manager, subprocess manager, watchdog, backends
+│       ├── agents/             # Coding session manager, watchdog, tmux backend, budget guard, checkpoint, estop, mail
 │       ├── dreams/             # Dream cycle service
 │       ├── research/           # Recursive web research
 │       ├── heartbeat/          # Periodic check-in service

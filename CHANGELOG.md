@@ -22,6 +22,50 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-04-13] - Agent Safety Subsystems & Escalation
+
+### Added
+- **Context Budget Guard** (`api/aria/agents/budget_guard.py`) — monitors coding
+  sessions for context-window exhaustion via heuristic signals (provider limit
+  messages, Claude Code compaction notices, latency spikes, explicit mentions).
+  Thresholds: WARN 75%, SOFT 85% (checkpoint + notify), HARD 92% (checkpoint +
+  stop + suggest resume).
+- **Session Checkpointing** (`api/aria/agents/checkpoint.py`) — persists coding
+  session state (current task, modified files, branch, last commit, notes) to
+  MongoDB so crashed agents can be resumed with full context.
+- **Emergency Stop / Rate-Limit Watchdog** (`api/aria/agents/estop.py`) —
+  MongoDB-backed global estop that freezes all agent activity on API rate
+  limits or critical errors. Visible across processes, persists across restarts,
+  auto-thaws when clear.
+- **Inter-Agent Mail Protocol** (`api/aria/agents/mail.py`) — structured
+  agent-to-agent messages (`TASK_DONE`, `HANDOFF`, `RESULT`, `ERROR`,
+  `CHECKPOINT`) stored in MongoDB and polled by the orchestrator.
+- **Tmux Agent Backend** (`api/aria/agents/backends/tmux.py`) — spawns coding
+  agents in visible, color-coded tmux panes in a dedicated `aria-agents`
+  session so the user can watch multiple agents work in parallel.
+- **Escalation Protocol** (`api/aria/notifications/escalation.py`) — severity
+  routing (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts before user
+  notification and auto-re-escalation of stale items.
+- Broad test coverage across new and existing subsystems: agent mail, autopilot,
+  awareness, budget guard, builtin tools, checkpoint, coding session, context
+  builder, db models, dream service, embeddings, escalation, estop, killswitch,
+  llm manager, mcp, orchestrator, orchestrator tool loop, short-term memory,
+  steering, usage repo, watchdog.
+
+### Changed
+- Expanded `agents/watchdog.py` and `agents/session.py` to integrate budget
+  guard, checkpoint, estop, and mail signals.
+- Extended `dreams/service.py` and `prompts/dream_reflection.md` with deeper
+  reflection flow.
+- Wired new safety dependencies through `api/deps.py`, `main.py`, and DB
+  migrations (`db/migrations.py`).
+
+### Notes
+- Inspired by Gas Town's context-budget-guard, checkpoint, rate-limit-watchdog,
+  mail, and tiered escalation patterns.
+
+---
+
 ## [2026-02-16] - Phase 6 - Voice I/O (TTS + STT)
 
 ### Added

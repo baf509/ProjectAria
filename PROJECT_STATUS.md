@@ -1,7 +1,28 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-03-15
+**Last Updated:** 2026-04-13
 **Updated By:** Claude Code
+
+---
+
+## Latest Milestone: Agent Safety Subsystems (2026-04-13)
+
+Hardened the sub-agent runtime with Gas Town–inspired safety layers:
+
+- [x] **Context Budget Guard** (`api/aria/agents/budget_guard.py`) — heuristic
+      context-window monitor with WARN / SOFT-checkpoint / HARD-stop thresholds
+- [x] **Session Checkpoints** (`api/aria/agents/checkpoint.py`) — MongoDB-backed
+      crash recovery state for coding sessions
+- [x] **Emergency Stop** (`api/aria/agents/estop.py`) — global rate-limit
+      watchdog and freeze, persisted across processes
+- [x] **Inter-Agent Mail** (`api/aria/agents/mail.py`) — structured
+      TASK_DONE / HANDOFF / RESULT / ERROR / CHECKPOINT messaging
+- [x] **Tmux Backend** (`api/aria/agents/backends/tmux.py`) — visible
+      color-coded panes for parallel agents in an `aria-agents` session
+- [x] **Escalation Protocol** (`api/aria/notifications/escalation.py`) —
+      severity-routed notifications with auto-resolution and re-escalation
+- [x] Watchdog + session manager integration of the new signals
+- [x] Test coverage across new subsystems and prior gaps (21 new test files)
 
 ---
 
