@@ -117,6 +117,29 @@ def cli():
 
 
 @cli.command()
+@click.pass_context
+def help(ctx):
+    """Show all ARIA CLI commands with descriptions."""
+    console.print("[bold cyan]ARIA CLI[/bold cyan] — Local AI Agent Platform\n")
+    console.print("[dim]Usage: aria <command> [OPTIONS] [ARGS]...[/dim]")
+    console.print("[dim]For detailed help on any command: aria <command> --help[/dim]\n")
+
+    commands = sorted(cli.commands.items())
+    for name, cmd in commands:
+        short = (cmd.short_help or cmd.help or "").strip().split("\n")[0]
+        if isinstance(cmd, click.Group):
+            console.print(f"[bold green]{name}[/bold green] — {short}")
+            subs = sorted(cmd.commands.items())
+            for sub_name, sub_cmd in subs:
+                sub_short = (sub_cmd.short_help or sub_cmd.help or "").strip().split("\n")[0]
+                console.print(f"  [cyan]{name} {sub_name}[/cyan]  {sub_short}")
+            console.print()
+        else:
+            console.print(f"[bold green]{name}[/bold green] — {short}")
+    console.print()
+
+
+@cli.command()
 def health():
     """Check ARIA API health."""
     try:
