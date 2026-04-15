@@ -46,8 +46,11 @@ async def build_shell_context(
         logger.debug("shell context: list_shells failed: %s", exc)
         return ""
 
-    shells = [s for s in shells if s.last_activity_at >= cutoff]
-    shells.sort(key=lambda s: s.last_activity_at, reverse=True)
+    def _aware(dt):
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+    shells = [s for s in shells if _aware(s.last_activity_at) >= cutoff]
+    shells.sort(key=lambda s: _aware(s.last_activity_at), reverse=True)
     if not shells:
         return ""
 

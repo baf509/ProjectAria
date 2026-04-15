@@ -69,7 +69,10 @@ class IdleNotifier:
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=threshold)
         shells = await self.shell_service.list_shells(status=["active", "idle"])
         for shell in shells:
-            if shell.last_activity_at > cutoff:
+            last_activity = shell.last_activity_at
+            if last_activity.tzinfo is None:
+                last_activity = last_activity.replace(tzinfo=timezone.utc)
+            if last_activity > cutoff:
                 continue
             tail = await self.shell_service.tail(shell.name, lines=5)
             if not tail:

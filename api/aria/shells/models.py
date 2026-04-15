@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 ShellStatus = Literal["active", "idle", "stopped", "unknown"]
 ShellEventKind = Literal["output", "input", "system"]
-ShellEventSource = Literal["pipe-pane", "send-keys", "hook", "reconciler"]
+ShellEventSource = Literal["pipe-pane", "send-keys", "hook", "reconciler", "backfill"]
 
 
 class Shell(BaseModel):
