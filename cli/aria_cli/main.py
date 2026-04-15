@@ -1244,6 +1244,27 @@ def shells():
     pass
 
 
+@shells.command("new")
+@click.argument("name")
+@click.option("--dir", "workdir", help="Working directory for the session")
+@click.option("--no-claude", is_flag=True, help="Open a plain shell instead of launching Claude Code")
+def shells_new_cmd(name, workdir, no_claude):
+    """Create a watched tmux session and launch Claude Code inside it.
+
+    The session name is prefixed with 'claude-' if not already. Execs tmux
+    so you're attached directly. Detach with Ctrl-b d.
+    """
+    import os
+    session = name if name.startswith("claude-") else f"claude-{name}"
+    tmux_args = ["tmux", "new", "-s", session]
+    if workdir:
+        tmux_args += ["-c", workdir]
+    if not no_claude:
+        tmux_args.append("claude --dangerously-skip-permissions")
+    console.print(f"[cyan]starting tmux session:[/cyan] {session}")
+    os.execvp("tmux", tmux_args)
+
+
 @shells.command("list")
 @click.option("--status", help="Filter by status (active,idle,stopped)")
 def shells_list_cmd(status):
