@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# aria-shell-capture — tmux pipe-pane shim that execs into the Python
+# capture module. Keeps a pidfile so aria-shell-register --ensure-capture
+# can tell whether it is already running.
+set -euo pipefail
+
+name="${1:-}"
+if [[ -z "$name" ]]; then
+  echo "usage: $0 <shell_name>" >&2
+  exit 2
+fi
+
+pidfile="/tmp/aria-shell-capture-${name}.pid"
+echo "$$" > "$pidfile"
+
+# Load environment (MONGODB_URI etc) if present.
+if [[ -f /etc/aria/shells.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source /etc/aria/shells.env
+  set +a
+fi
+if [[ -f "$HOME/.aria-env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$HOME/.aria-env"
+  set +a
+fi
+
+cleanup() { rm -f "$pidfile" 2>/dev/null || true; }
+trap cleanup EXIT
+
+exec python3 -m aria.shells.capture "$name"

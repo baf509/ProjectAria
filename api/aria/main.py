@@ -22,12 +22,13 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness
+from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
     get_killswitch,
     get_mcp_manager,
+    get_notification_service,
     get_orchestrator,
     get_rate_limiter,
     get_signal_service,
@@ -40,6 +41,7 @@ from aria.api.deps import (
     resolve_dream_service,
     resolve_heartbeat_service,
     resolve_scheduler,
+    resolve_shell_service,
 )
 from aria.core.claude_runner import ClaudeRunner
 from aria.core.soul import soul_manager
@@ -189,6 +191,41 @@ async def lifespan(app: FastAPI):
         awareness_service = await resolve_awareness_service(db)
         await awareness_service.start()
 
+    # Watched Shells subsystem
+    shell_worker = None
+    shell_notifier = None
+    shell_extractor = None
+    if settings.shells_enabled:
+        shell_service = await resolve_shell_service(db)
+        try:
+            await shell_service.discover_existing()
+        except Exception as exc:  # pragma: no cover
+            startup_logger.debug("shells discover failed: %s", exc)
+        from aria.tools.builtin import SendShellInputTool
+        try:
+            tool_router.register_tool(SendShellInputTool(shell_service))
+        except ValueError:
+            pass
+        from aria.shells.snapshot import SnapshotWorker
+        shell_worker = SnapshotWorker(shell_service)
+        await shell_worker.start()
+        app.state.shell_worker = shell_worker
+
+        if settings.shells_idle_notifier_enabled:
+            from aria.shells.notifier import IdleNotifier
+            shell_notifier = IdleNotifier(shell_service, get_notification_service())
+            await shell_notifier.start()
+            app.state.shell_notifier = shell_notifier
+
+        if settings.shells_extraction_enabled:
+            from aria.shells.extraction import ShellExtractionWorker
+            from aria.memory.extraction import MemoryExtractor
+            shell_extractor = ShellExtractionWorker(
+                shell_service, MemoryExtractor(db)
+            )
+            await shell_extractor.start()
+            app.state.shell_extractor = shell_extractor
+
     yield
 
     # Shutdown — graceful drain of in-flight work
@@ -225,6 +262,15 @@ async def lifespan(app: FastAPI):
         await _dream_service.stop()
     if _awareness_service is not None:
         await _awareness_service.stop()
+
+    # 3a. Stop watched shells workers
+    for attr in ("shell_notifier", "shell_extractor", "shell_worker"):
+        worker = getattr(app.state, attr, None)
+        if worker is not None:
+            try:
+                await worker.stop()
+            except Exception as exc:  # pragma: no cover
+                shutdown_logger.debug("shells %s stop failed: %s", attr, exc)
 
     # 4. Stop heartbeat
     from aria.api.deps import _heartbeat_service
@@ -376,6 +422,7 @@ app.include_router(telegram.router, prefix="/api/v1", tags=["telegram"])
 app.include_router(heartbeat.router, prefix="/api/v1", tags=["heartbeat"])
 app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
+app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
 
 
 @app.get("/")

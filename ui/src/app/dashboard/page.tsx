@@ -170,6 +170,12 @@ export default function DashboardPage() {
               {item}
             </button>
           ))}
+          <a
+            href="/dashboard/shells"
+            className="rounded-full border border-stone-700 bg-stone-900 px-4 py-2 text-sm capitalize text-stone-300 transition hover:border-stone-500"
+          >
+            shells
+          </a>
         </div>
 
         {tab === 'modes' && (

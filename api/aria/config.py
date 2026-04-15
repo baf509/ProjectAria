@@ -212,6 +212,36 @@ class Settings(BaseSettings):
     telegram_dm_policy: str = "allowlist"
     telegram_poll_interval_seconds: int = 5
 
+    # Watched Shells
+    shells_enabled: bool = True
+    shells_tmux_session_prefix: str = "claude-"
+    shells_capture_batch_size: int = 50
+    shells_capture_flush_ms: int = 500
+    shells_capture_max_buffer: int = 10000
+    shells_snapshot_interval_seconds: int = 30
+    shells_snapshot_lines: int = 10000
+    shells_idle_threshold_seconds: int = 60
+    shells_reconcile_interval_seconds: int = 120
+    shells_idle_notifier_enabled: bool = True
+    shells_idle_notifier_interval_seconds: int = 30
+    shells_idle_prompt_patterns: list[str] = [
+        r"\?\s*$",
+        r">\s*$",
+        r"Human:\s*$",
+        r"\[y/n\]\s*$",
+        r"(?i)press.*to continue",
+    ]
+    shells_include_in_chat_context: bool = True
+    shells_context_max_tokens: int = 2000
+    shells_context_lookback_hours: int = 24
+    shells_context_lines_per_shell: int = 20
+    shells_extraction_enabled: bool = True
+    shells_extraction_interval_minutes: int = 10
+    shells_extraction_min_events: int = 20
+    shells_input_rate_limit_per_minute: int = 30
+    shells_retention_days: int = 0  # 0 = keep forever
+    shells_auto_archive_days: int = 7
+
     debug: bool = False
 
     class Config:

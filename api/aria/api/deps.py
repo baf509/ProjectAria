@@ -41,6 +41,7 @@ from aria.dreams.service import DreamService
 from aria.agents.estop import EstopManager, RateLimitWatchdog
 from aria.agents.mail import AgentMailbox
 from aria.notifications.escalation import EscalationManager
+from aria.shells.service import ShellService
 
 def valid_object_id(value: str) -> ObjectId:
     """Validate and convert a string to a BSON ObjectId, raising 400 on invalid input."""
@@ -78,6 +79,7 @@ _estop_manager: EstopManager = None
 _rate_limit_watchdog: RateLimitWatchdog = None
 _agent_mailbox: AgentMailbox = None
 _escalation_manager: EscalationManager = None
+_shell_service: ShellService = None
 
 
 def get_tool_router() -> ToolRouter:
@@ -486,6 +488,36 @@ async def get_escalation_manager(
     else:
         _escalation_manager.db = db
     return _escalation_manager
+
+
+async def get_shell_service(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> ShellService:
+    """Get the watched-shells service instance."""
+    global _shell_service
+    if _shell_service is None:
+        _shell_service = ShellService(db)
+    else:
+        _shell_service.db = db
+        _shell_service.shells = db.shells
+        _shell_service.events = db.shell_events
+        _shell_service.snapshots = db.shell_snapshots
+    return _shell_service
+
+
+async def resolve_shell_service(
+    db: AsyncIOMotorDatabase,
+) -> ShellService:
+    """Resolve shell service outside FastAPI dependency injection."""
+    global _shell_service
+    if _shell_service is None:
+        _shell_service = ShellService(db)
+    else:
+        _shell_service.db = db
+        _shell_service.shells = db.shells
+        _shell_service.events = db.shell_events
+        _shell_service.snapshots = db.shell_snapshots
+    return _shell_service
 
 
 async def resolve_escalation_manager(

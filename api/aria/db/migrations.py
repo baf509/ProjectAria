@@ -159,6 +159,50 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
         [("tool_name", 1), ("created_at", -1)],
         name="audit_tool_created",
     )
+
+    # Watched Shells subsystem
+    await _safe_create_index(db.shells, "name", name="shells_name", unique=True)
+    await _safe_create_index(db.shells, "last_activity_at", name="shells_last_activity")
+    await _safe_create_index(
+        db.shells,
+        [("status", 1), ("last_activity_at", -1)],
+        name="shells_status_activity",
+    )
+    await _safe_create_index(
+        db.shell_events,
+        [("shell_name", 1), ("line_number", 1)],
+        name="shell_events_name_line",
+    )
+    await _safe_create_index(
+        db.shell_events,
+        [("shell_name", 1), ("ts", 1)],
+        name="shell_events_name_ts",
+    )
+    await _safe_create_index(
+        db.shell_events,
+        [("shell_name", 1), ("kind", 1), ("ts", -1)],
+        name="shell_events_name_kind_ts",
+    )
+    try:
+        await db.shell_events.create_index([("text_clean", "text")], name="shell_events_text")
+    except OperationFailure as exc:
+        logger.info("shell_events text index skipped: %s", (exc.details or {}).get("errmsg", exc))
+    await _safe_create_index(
+        db.shell_snapshots,
+        [("shell_name", 1), ("ts", -1)],
+        name="shell_snapshots_name_ts",
+    )
+    await _safe_create_index(
+        db.shell_snapshots,
+        [("shell_name", 1), ("content_hash", 1)],
+        name="shell_snapshots_name_hash",
+    )
+    await _safe_create_index(
+        db.shell_extraction_state,
+        "shell_name",
+        name="shell_extraction_state_name",
+        unique=True,
+    )
     logger.info("Standard MongoDB indexes ensured")
 
 

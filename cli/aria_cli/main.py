@@ -1238,6 +1238,143 @@ def autopilot_stop_cmd(session_id):
         sys.exit(1)
 
 
+@cli.group()
+def shells():
+    """Interact with watched tmux shells."""
+    pass
+
+
+@shells.command("list")
+@click.option("--status", help="Filter by status (active,idle,stopped)")
+def shells_list_cmd(status):
+    """List watched shells."""
+    try:
+        client = AriaClient()
+        params = {"status": status} if status else {}
+        resp = client.request("GET", "/shells", params=params)
+        data = resp.json()
+        shells = data.get("shells", [])
+        if not shells:
+            console.print("[yellow]No watched shells[/yellow]")
+            return
+        table = Table(title="Watched Shells")
+        table.add_column("Name", style="cyan")
+        table.add_column("Status")
+        table.add_column("Project")
+        table.add_column("Lines", justify="right")
+        table.add_column("Last Activity")
+        for s in shells:
+            table.add_row(
+                s.get("short_name") or s.get("name", ""),
+                s.get("status", ""),
+                s.get("project_dir", "") or "-",
+                str(s.get("line_count", 0)),
+                s.get("last_activity_at", "")[:19],
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("info")
+@click.argument("name")
+def shells_info_cmd(name):
+    """Show details for a watched shell."""
+    try:
+        client = AriaClient()
+        resp = client.request("GET", f"/shells/{name}")
+        console.print_json(data=resp.json())
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("tail")
+@click.argument("name")
+@click.option("--lines", default=50, help="Number of events to show")
+@click.option("--since-line", type=int, help="Show events after this line number")
+def shells_tail_cmd(name, lines, since_line):
+    """Show recent events from a watched shell."""
+    try:
+        client = AriaClient()
+        params = {"limit": lines}
+        if since_line is not None:
+            params["since_line"] = since_line
+        resp = client.request("GET", f"/shells/{name}/events", params=params)
+        events = resp.json().get("events", [])
+        for ev in events:
+            kind = ev.get("kind", "output")
+            prefix = "> " if kind == "input" else ("! " if kind == "system" else "  ")
+            color = "green" if kind == "input" else ("yellow" if kind == "system" else "white")
+            console.print(f"[{color}]{prefix}{ev.get('text_clean', '')}[/{color}]")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("send")
+@click.argument("name")
+@click.argument("text")
+@click.option("--no-enter", is_flag=True, help="Do not append Enter")
+@click.option("--literal", is_flag=True, help="Send literal text (no key translation)")
+def shells_send_cmd(name, text, no_enter, literal):
+    """Send input to a watched shell."""
+    try:
+        client = AriaClient()
+        resp = client.request(
+            "POST",
+            f"/shells/{name}/input",
+            json={"text": text, "append_enter": not no_enter, "literal": literal},
+        )
+        data = resp.json()
+        console.print(f"[green]✓[/green] sent (line {data.get('line_number')})")
+    except httpx.HTTPStatusError as e:
+        console.print(f"[red]Error {e.response.status_code}:[/red] {e.response.text}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("search")
+@click.argument("query")
+@click.option("--limit", default=25, help="Max results")
+def shells_search_cmd(query, limit):
+    """Search across watched shell events."""
+    try:
+        client = AriaClient()
+        resp = client.request(
+            "GET", "/shells/search", params={"q": query, "limit": limit}
+        )
+        data = resp.json()
+        results = data.get("results", [])
+        if not results:
+            console.print("[yellow]No matches[/yellow]")
+            return
+        for r in results:
+            console.print(
+                f"[cyan]{r.get('shell_name')}[/cyan]:{r.get('line_number')} {r.get('text_clean', '')}"
+            )
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("tags")
+@click.argument("name")
+@click.argument("tags", nargs=-1)
+def shells_tags_cmd(name, tags):
+    """Set tags on a watched shell."""
+    try:
+        client = AriaClient()
+        client.request("POST", f"/shells/{name}/tags", json={"tags": list(tags)})
+        console.print(f"[green]✓[/green] tags updated")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
 from aria_cli.setup_wizard import setup
 from aria_cli.service import service
 

@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""
+aria-shell-register — invoked by tmux hooks to (un)register watched shells.
+
+Usage:
+    aria-shell-register <session_name> <session_path> [pane_id]
+    aria-shell-register --closed <session_name>
+    aria-shell-register --ensure-capture <session_name> <session_path> [pane_id]
+
+Reads MONGODB_URI/MONGODB_DATABASE from env (falls back to ARIA defaults).
+Also manages a pidfile in /tmp/aria-shell-capture-<name>.pid so that
+--ensure-capture is idempotent across tmux server restarts.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import socket
+import subprocess
+from datetime import datetime, timezone
+
+from pymongo import MongoClient
+
+
+PIDFILE_TEMPLATE = "/tmp/aria-shell-capture-{name}.pid"
+CAPTURE_SHIM = os.environ.get("ARIA_SHELL_CAPTURE_BIN", "/home/ben/.local/bin/aria-shell-capture")
+
+
+def _db():
+    uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0")
+    dbname = os.environ.get("MONGODB_DATABASE", "aria")
+    return MongoClient(uri)[dbname]
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+def register(name: str, project_dir: str, pane_id: str = "") -> None:
+    db = _db()
+    now = _utcnow()
+    prefix = os.environ.get("SHELLS_TMUX_SESSION_PREFIX", "claude-")
+    short = name[len(prefix):] if name.startswith(prefix) else name
+    db.shells.update_one(
+        {"name": name},
+        {
+            "$setOnInsert": {
+                "name": name,
+                "short_name": short,
+                "project_dir": project_dir,
+                "host": socket.gethostname(),
+                "created_at": now,
+                "line_count": 0,
+                "tags": [],
+            },
+            "$set": {
+                "status": "active",
+                "last_activity_at": now,
+                **({"metadata.pane_id": pane_id} if pane_id else {}),
+            },
+        },
+        upsert=True,
+    )
+
+
+def mark_closed(name: str) -> None:
+    db = _db()
+    db.shells.update_one(
+        {"name": name},
+        {"$set": {"status": "stopped", "last_activity_at": _utcnow()}},
+    )
+    # Kill capture process if running
+    pidfile = PIDFILE_TEMPLATE.format(name=name)
+    try:
+        with open(pidfile) as fp:
+            pid = int(fp.read().strip())
+        os.kill(pid, 15)
+    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.unlink(pidfile)
+    except FileNotFoundError:
+        pass
+
+
+def _capture_alive(name: str) -> bool:
+    pidfile = PIDFILE_TEMPLATE.format(name=name)
+    try:
+        with open(pidfile) as fp:
+            pid = int(fp.read().strip())
+    except (FileNotFoundError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def ensure_capture(name: str, project_dir: str, pane_id: str = "") -> None:
+    register(name, project_dir, pane_id)
+    if _capture_alive(name):
+        return
+    # Spawn pipe-pane via tmux. The capture shim inherits env from the tmux
+    # server process, so MONGODB_URI must be in the server env (or in a sourced
+    # shell file read by the shim).
+    subprocess.run(
+        ["tmux", "pipe-pane", "-o", "-t", name, f"{CAPTURE_SHIM} {name}"],
+        check=False,
+    )
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        print(__doc__, file=sys.stderr)
+        return 2
+    if argv[0] == "--closed":
+        if len(argv) < 2:
+            return 2
+        mark_closed(argv[1])
+        return 0
+    if argv[0] == "--ensure-capture":
+        if len(argv) < 3:
+            return 2
+        ensure_capture(argv[1], argv[2], argv[3] if len(argv) > 3 else "")
+        return 0
+    # Default: register
+    if len(argv) < 2:
+        return 2
+    register(argv[0], argv[1], argv[2] if len(argv) > 2 else "")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

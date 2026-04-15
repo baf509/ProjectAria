@@ -22,6 +22,7 @@ from .shell import ShellTool
 from .web import WebTool
 from .screenshot import ScreenshotTool
 from .docgen import DocumentGenerationTool
+from .shells import SendShellInputTool
 from .soul import SoulTool
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "ListLlamaCppModelsTool",
     "ListCodingSessionsTool",
     "ScreenshotTool",
+    "SendShellInputTool",
     "SendToCodingSessionTool",
     "ShellTool",
     "SoulTool",

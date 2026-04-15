@@ -183,6 +183,19 @@ Use these memories to provide personalized and contextual responses.
             except Exception as e:
                 logger.debug("Awareness context injection skipped: %s", e)
 
+        # Inject watched shells context if enabled
+        shells_context = ""
+        if settings.shells_enabled and settings.shells_include_in_chat_context:
+            try:
+                from aria.api.deps import _shell_service
+                if _shell_service is not None:
+                    from aria.shells.context import build_shell_context
+                    shells_context = await build_shell_context(
+                        _shell_service, model=model_name
+                    )
+            except Exception as e:
+                logger.debug("Shells context injection skipped: %s", e)
+
         # Inject deep_think delegation instructions if enabled
         delegation_context = ""
         if settings.deep_think_enabled:
@@ -241,7 +254,7 @@ Follow these coordination principles:
 """
 
         # Combine system prompt with memory context, skills, awareness, and delegation
-        full_system_prompt = system_prompt + memory_context + skill_context + awareness_context + delegation_context
+        full_system_prompt = system_prompt + memory_context + skill_context + awareness_context + shells_context + delegation_context
         messages.append(Message(role="system", content=full_system_prompt))
 
         for msg in conversation_messages:

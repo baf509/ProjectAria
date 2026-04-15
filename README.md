@@ -68,6 +68,43 @@ Same infrastructure as Claude Code but using OpenAI's Codex CLI with `--sandbox 
 
 A local LLM coding assistant running on llama.cpp. Free, private, always available. ARIA creates a persistent conversation and processes it through her own orchestrator using the local model.
 
+## Watched Shells
+
+ARIA can observe and interact with tmux sessions *you* own — separate from the coding sub-agents she spawns herself. Point her at your Claude Code or Codex sessions and she gains situational awareness of what you're working on, can answer prompts for you, and extracts memories from the conversations.
+
+**How it works:**
+- Any tmux session whose name starts with `claude-` is auto-registered via a tmux hook (`scripts/aria-tmux-hook.conf`).
+- A `pipe-pane` capture subprocess streams every line into the `shell_events` collection with ANSI stripping and server-assigned line numbers.
+- A snapshot worker periodically captures the full pane buffer for rehydration after restarts.
+- An idle notifier watches for shells stuck at an interactive prompt (`[y/n]`, `Human:`, etc.) and pings you via Signal/Telegram.
+- A memory extraction worker feeds accumulated events through the memory extractor so long-running coding sessions become searchable facts.
+- The orchestrator injects a recent-activity summary into every chat so ARIA can reference "your coding agent in proj" without asking.
+
+**Using it:**
+
+```bash
+# Enable the tmux hook once
+tmux source-file scripts/aria-tmux-hook.conf
+
+# Start a watched session — any name prefixed with claude-
+tmux new -s claude-myproject
+
+# Or via CLI
+aria shells list                    # list registered shells
+aria shells info claude-myproject
+aria shells tail claude-myproject --lines 50
+aria shells send claude-myproject "yes"
+aria shells send claude-myproject "C-c" --no-enter
+aria shells search "compilation error"
+aria shells tags claude-myproject primary urgent
+```
+
+**Dashboard tab:** `http://localhost:3000/dashboard/shells` — sidebar list, live scrollback via SSE, special-key palette (Enter/Esc/Ctrl-C/Ctrl-D/↑/↓/yes/no), and a send-input form.
+
+**From chat:** ARIA has a `send_shell_input` tool, so you can ask her to "tell my coding agent yes" or "send Ctrl-C to claude-myproject" in any conversation.
+
+All of this is gated by `SHELLS_ENABLED` in `.env` and disabled cleanly if tmux isn't available.
+
 ## Background Processes
 
 These are autonomous tasks where ARIA delegates work to a Claude Code CLI instance via the `ClaudeRunner`. They use your Claude subscription (not API tokens) and run without interactive permissions.
@@ -149,6 +186,7 @@ Built-in tools ARIA can call during conversations:
 | `stop_coding_session` | Stop a running session |
 | `get_coding_output` | Read session output |
 | `send_to_coding_session` | Send input to running session |
+| `send_shell_input` | Send keystrokes to a watched tmux shell |
 | `claude_agent` | Delegate a one-shot task to Claude Code |
 | `pi_coding_agent` | Delegate to Pi Coding Agent (local LLM) |
 | `update_soul` | Read or modify SOUL.md |
