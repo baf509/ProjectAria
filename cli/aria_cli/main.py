@@ -1265,6 +1265,19 @@ def shells_new_cmd(name, workdir, no_claude):
     os.execvp("tmux", tmux_args)
 
 
+@shells.command("attach")
+@click.argument("name")
+def shells_attach_cmd(name):
+    """Attach to a watched tmux session.
+
+    Prepends 'claude-' if missing. Detach with Ctrl-b d.
+    """
+    import os
+    session = name if name.startswith("claude-") else f"claude-{name}"
+    console.print(f"[cyan]attaching to:[/cyan] {session}")
+    os.execvp("tmux", ["tmux", "attach", "-t", session])
+
+
 @shells.command("list")
 @click.option("--status", help="Filter by status (active,idle,stopped)")
 def shells_list_cmd(status):
