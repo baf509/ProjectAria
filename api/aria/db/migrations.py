@@ -23,6 +23,7 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     await _ensure_standard_indexes(db)
     await _ensure_search_indexes(db)
     await _seed_pi_coding_agent(db)
+    await _seed_search_agent(db)
 
 
 async def _ensure_schema_validation(db: AsyncIOMotorDatabase) -> None:
@@ -376,3 +377,70 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
 
     await db.agents.insert_one(agent)
     logger.info("Seeded Pi Coding Agent (slug=pi-coding, backend=llamacpp)")
+
+
+_SEARCH_AGENT_SYSTEM_PROMPT = """You are ARIA's Search Agent.
+
+You drive the `search_agent` tool, powered by the local chromadb/context-1
+model. Your job is to find the documents most relevant to a user's
+information need — across ARIA's long-term memory, the web, and local
+files — and return a concise ranked summary with citations.
+
+Guidelines:
+- Always invoke `search_agent` first. Do not answer from prior knowledge alone.
+- Cite retrieved documents by id (mem:, web:, or file:) in your final summary.
+- If the user wants synthesis or a report, pass the ranked documents to
+  `deep_think` or the research flow rather than synthesizing yourself.
+- Prefer precision. Call out when retrieval returned nothing useful.
+"""
+
+
+async def _seed_search_agent(db: AsyncIOMotorDatabase) -> None:
+    """Ensure the Search Agent profile exists (idempotent)."""
+    existing = await db.agents.find_one({"slug": "search-agent"})
+    if existing:
+        return
+
+    now = datetime.now(timezone.utc)
+    agent = {
+        "name": "Search Agent",
+        "slug": "search-agent",
+        "description": "Agentic retrieval over ARIA memory, the web, and local files, driven by the local chromadb/context-1 model.",
+        "system_prompt": _SEARCH_AGENT_SYSTEM_PROMPT,
+        "mode_category": "research",
+        "greeting": "Search Agent ready. What are you looking for?",
+        "context_instructions": None,
+        "llm": {
+            "backend": "context1",
+            "model": "default",
+            "temperature": 0.3,
+            "max_tokens": 2048,
+            "max_context_tokens": None,
+            "force_non_streaming": False,
+        },
+        "fallback_chain": [],
+        "capabilities": {
+            "memory_enabled": True,
+            "tools_enabled": True,
+            "computer_use_enabled": False,
+        },
+        "mode_metadata": {
+            "icon": "search",
+            "color": "#38bdf8",
+            "keywords": ["search", "find", "lookup", "retrieve", "research"],
+            "keyboard_shortcut": None,
+        },
+        "memory_config": {
+            "auto_extract": False,
+            "short_term_messages": 10,
+            "long_term_results": 0,  # the tool handles retrieval itself
+            "categories_filter": None,
+        },
+        "enabled_tools": ["search_agent", "web", "filesystem", "deep_think"],
+        "is_default": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await db.agents.insert_one(agent)
+    logger.info("Seeded Search Agent (slug=search-agent, backend=context1)")

@@ -52,7 +52,7 @@ export default function Home() {
         )}
 
         {apiStatus === 'healthy' && (
-          <div className="grid gap-4 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <button
               onClick={() => router.push('/chat')}
               className="rounded-3xl border border-stone-800 bg-stone-900 p-6 text-left transition hover:border-amber-400"
@@ -66,6 +66,13 @@ export default function Home() {
             >
               <div className="mb-3 text-sm uppercase tracking-wide text-sky-400">Dashboard</div>
               <div className="text-2xl font-semibold text-stone-50">Manage Memory, Research, Usage</div>
+            </button>
+            <button
+              onClick={() => router.push('/dashboard/shells')}
+              className="rounded-3xl border border-stone-800 bg-stone-900 p-6 text-left transition hover:border-fuchsia-400"
+            >
+              <div className="mb-3 text-sm uppercase tracking-wide text-fuchsia-400">Shells</div>
+              <div className="text-2xl font-semibold text-stone-50">Browse ARIA Shells</div>
             </button>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
               <div className="mb-3 text-sm uppercase tracking-wide text-emerald-400">Status</div>

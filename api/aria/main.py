@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells
+from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, devices
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -56,6 +56,7 @@ from aria.tools.builtin import (
     ListLlamaCppModelsTool,
     PiCodingAgentTool,
     ScreenshotTool,
+    SearchAgentTool,
     SendToCodingSessionTool,
     ShellTool,
     SoulTool,
@@ -97,7 +98,7 @@ async def lifespan(app: FastAPI):
     # Check LLM backends
     from aria.llm.manager import llm_manager
     available_backends = []
-    for backend_name in ("llamacpp", "anthropic", "openai", "openrouter"):
+    for backend_name in ("llamacpp", "context1", "anthropic", "openai", "openrouter"):
         avail, reason = llm_manager.is_backend_available(backend_name)
         if avail:
             available_backends.append(backend_name)
@@ -142,6 +143,12 @@ async def lifespan(app: FastAPI):
     # Register Pi Coding Agent tool (uses local LLM via orchestrator)
     tool_router.register_tool(PiCodingAgentTool(db))
     startup_logger.info("Pi Coding Agent tool registered")
+
+    # Search Agent — context-1 agentic retrieval over memory/web/files
+    ctx1_available, _ = llm_manager.is_backend_available("context1")
+    if ctx1_available:
+        tool_router.register_tool(SearchAgentTool(db))
+        startup_logger.info("Search Agent tool registered (context-1)")
 
     # Restore persisted MCP servers
     mcp_manager = get_mcp_manager()
@@ -423,6 +430,7 @@ app.include_router(heartbeat.router, prefix="/api/v1", tags=["heartbeat"])
 app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
+app.include_router(devices.router, prefix="/api/v1", tags=["devices"])
 
 
 @app.get("/")

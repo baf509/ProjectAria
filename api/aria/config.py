@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     llamacpp_url: str = "http://localhost:8080/v1"
     llamacpp_api_key: str = ""
 
+    # Chroma context-1 (local agentic search model served by a second llama.cpp)
+    context1_url: str = "http://localhost:8081/v1"
+    context1_api_key: str = ""
+    context1_model: str = "default"
+    context1_max_iterations: int = 8
+    context1_max_docs: int = 20
+    context1_fs_allowed_roots: list[str] = [
+        "/home/ben/Dev/ProjectAria",
+        "/home/ben/Dev/infrastructure",
+    ]
+
     # Cloud LLMs
     anthropic_api_key: str = ""
     openai_api_key: str = ""
@@ -102,6 +113,7 @@ class Settings(BaseSettings):
         "claude_agent",
         "pi_coding_agent",
         "deep_think",
+        "search_agent",
     ]
     tool_denied_names: list[str] = []
     tool_sensitive_names: list[str] = ["shell", "filesystem", "switch_llamacpp_model"]
@@ -241,6 +253,16 @@ class Settings(BaseSettings):
     shells_input_rate_limit_per_minute: int = 30
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
+
+    # APNs (Phase 6 — mobile push). Disabled by default; set
+    # `shells_apns_enabled=true` and configure the key + team/bundle IDs to
+    # start sending idle alerts to registered iOS devices.
+    shells_apns_enabled: bool = False
+    apns_team_id: str = ""
+    apns_key_id: str = ""
+    apns_bundle_id: str = "dev.aria.AriaMobile"
+    apns_auth_key_path: str = ""
+    apns_use_sandbox: bool = True
 
     debug: bool = False
 

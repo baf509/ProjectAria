@@ -22,6 +22,87 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-04-18] - Native iOS / iPadOS client + shells/devices API
+
+### Added
+- **`ios/` subfolder** — native SwiftUI app targeting iOS 17+, Swift 6, Xcode 26.
+  Project is generated via XcodeGen (`ios/project.yml`). See `ios/README.md`.
+  - **AriaKit** local SPM package: `Sendable` Codable models, `URLSession`-based
+    `AriaClient` with optional `X-API-Key`, `AsyncThrowingStream` SSE parser,
+    Keychain helper. Typed API clients: Shells, Conversations, Memories,
+    Health, Devices.
+  - **AriaMobile** app target: TabView root on iPhone, `NavigationSplitView`
+    on iPad. Full shells coverage — list/filter/search, create sheet, SwiftTerm
+    live ANSI terminal on detail with 2000-event backfill + SSE tail + auto
+    reconnect, input bar + key accessory bar (Esc/Tab/arrows/⏎/Ctrl-?/yes/no),
+    kill session, edit tags, 3s snapshot view, noise filter toggle. Also
+    chat with streaming SSE replies + steer, memory search (debounced
+    hybrid search).
+  - **SwiftTerm** SPM dependency for real VT100 rendering from day one.
+- **`POST /api/v1/shells`** — create a detached tmux session and register it
+  as a watched shell. Body: `{name, workdir?, launch_claude=true}`. Name is
+  prefixed with the configured shells prefix (`claude-`) if not already.
+  Launches Claude Code in the new session by default.
+- **`DELETE /api/v1/shells/{name}`** — kill a tmux session and mark its
+  shell row stopped.
+- `ShellService.create_shell` / `kill_shell` and `TmuxClient.new_session`
+  wrap these operations; existing tmux hooks (`session-created`) continue
+  to wire up pipe-pane capture for new sessions.
+- **`POST /api/v1/devices`** / **`DELETE /api/v1/devices/{token}`** — APNs
+  device-token registration for mobile push. Stored in `devices` collection.
+- **APNs idle alerts** (feature-flagged) — `IdleNotifier` now fans out to
+  `send_apns_alert` when `shells_apns_enabled=true`. Transport itself is a
+  stub (`api/aria/shells/apns.py`) with clear config-check + logging; flip
+  the flag and drop in `httpx[http2]`/`aioapns` when ready to deliver.
+
+### Changed
+- `api/aria/main.py` registers the new `devices` router.
+- `api/aria/config.py` gains `shells_apns_enabled`, `apns_team_id`,
+  `apns_key_id`, `apns_bundle_id`, `apns_auth_key_path`, `apns_use_sandbox`.
+
+### Notes
+- No change needed to the existing shells SSE payload: `ShellEvent` was
+  already serialized via `model_dump_json()` which includes `text_raw`, so
+  SwiftTerm gets raw ANSI from the existing `/shells/{name}/stream` route.
+- Route tests: `tests/test_shells_routes.py` (+6 cases) and
+  `tests/test_devices_routes.py` (+5 cases), all green.
+
+## [2026-04-15] - Local Agentic Search (Chroma context-1)
+
+### Added
+- **context-1 LLM backend** (`api/aria/llm/context1.py`) — new "context1" backend
+  registered in `llm/manager.py`, pointing at a second llama.cpp instance that
+  serves the chromadb/context-1 20B GGUF
+  (https://huggingface.co/ryancook/chromadb-context-1-gguf). Configured via
+  `context1_url`, `context1_model`, `context1_max_iterations`, `context1_max_docs`,
+  and `context1_fs_allowed_roots` in `config.py`.
+- **Search Agent tool** (`api/aria/tools/builtin/search_agent.py`) — agentic
+  observe/reason/act retrieval loop driven by context-1. Exposes six tools to
+  the model: `memory_search` (hybrid vector+BM25 over `memories`), `web_search`
+  + `web_read` (existing search provider + WebTool), `fs_grep` + `fs_read`
+  (ripgrep + bounded file reads over allowed roots), `prune`, and `finalize`.
+  Returns a ranked list of documents with stable `mem:`/`web:`/`file:` ids.
+  Registered at startup when the context1 backend is available.
+- **Search Agent profile** (`slug=search-agent`, seeded in `db/migrations.py`) —
+  named agent profile with `mode_category=research`, `backend=context1`, and
+  `enabled_tools=[search_agent, web, filesystem, deep_think]`.
+- **Research service integration** (`api/aria/research/service.py`) — when the
+  research run's backend is `context1`, the branch loop now gathers sources via
+  `search_agent` (over memory + web + local files) instead of the web-only
+  provider path. Falls back to the web provider if the tool errors.
+- **Infrastructure service** (`infrastructure/docker-compose.yml`) — new
+  `llamacpp-context1` service (profile `context1`) on port 8081 that reuses the
+  existing ROCm llama.cpp build to serve the context-1 GGUF from
+  `${LLAMACPP_MODELS_DIR}/context-1/`.
+
+### Notes
+- The GGUF must be downloaded once into `infrastructure/models/llm/context-1/`
+  (e.g. `chromadb-context-1-Q4_K_M.gguf`). Start the service with
+  `docker compose --profile context1 up -d llamacpp-context1`.
+- The model does not have upstream tool-calling templates documented; the
+  service launches with `--jinja` so llama.cpp's OpenAI-compatible tool-call
+  path is active. Adjust `CONTEXT1_ARGS` if the template needs tuning.
+
 ## [2026-04-13] - Agent Safety Subsystems & Escalation
 
 ### Added

@@ -103,6 +103,20 @@ class LLMManager:
                         "Install with: pip install openai"
                     )
 
+            elif backend == "context1":
+                try:
+                    from aria.llm.context1 import ContextOneAdapter
+                    self.adapters[key] = ContextOneAdapter(
+                        base_url=settings.context1_url,
+                        model=model,
+                        api_key=settings.context1_api_key,
+                    )
+                    logger.info(f"Created context-1 adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. Install with: pip install openai"
+                    )
+
             elif backend == "anthropic":
                 if not settings.anthropic_api_key:
                     raise ValueError(
@@ -160,7 +174,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: llamacpp, anthropic, openai, openrouter"
+                    f"Supported: llamacpp, context1, anthropic, openai, openrouter"
                 )
 
         return self.adapters[key]
@@ -190,6 +204,13 @@ class LLMManager:
                 return True, "llama.cpp is available (local)"
             except ImportError:
                 return False, "openai package not installed (required for llama.cpp)"
+
+        elif backend == "context1":
+            try:
+                import openai
+                return True, "context-1 is available (local)"
+            except ImportError:
+                return False, "openai package not installed (required for context-1)"
 
         elif backend == "anthropic":
             if not settings.anthropic_api_key:

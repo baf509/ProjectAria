@@ -72,6 +72,10 @@ models/
 widget/src-tauri/target/
 widget/node_modules/
 widget/dist/
+widget/rustup-init.exe
+
+# Scratch / transcripts
+SHELLS_CHAT_TRANSCRIPT.md
 
 # Node modules (general)
 node_modules/

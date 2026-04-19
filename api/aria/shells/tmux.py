@@ -110,3 +110,25 @@ class TmuxClient:
         rc, _out, err = await self._run("kill-session", "-t", name)
         if rc != 0 and "session not found" not in err.lower():
             raise TmuxError(f"tmux kill-session failed: {err.strip()}")
+
+    async def new_session(
+        self,
+        name: str,
+        *,
+        workdir: Optional[str] = None,
+        command: Optional[str] = None,
+    ) -> None:
+        """Create a detached tmux session.
+
+        If `command` is provided, it runs in the session shell (and the
+        session exits when it finishes). If `workdir` is provided it sets
+        the session's starting directory.
+        """
+        args: list[str] = ["new-session", "-d", "-s", name]
+        if workdir:
+            args += ["-c", workdir]
+        if command:
+            args.append(command)
+        rc, _out, err = await self._run(*args)
+        if rc != 0:
+            raise TmuxError(f"tmux new-session failed: {err.strip()}")

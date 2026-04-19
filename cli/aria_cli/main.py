@@ -1276,9 +1276,36 @@ def shells_new_cmd(name, workdir, no_claude):
 
     The session name is prefixed with 'claude-' if not already. Execs tmux
     so you're attached directly. Detach with Ctrl-b d.
+
+    If a tmux session with the target name already exists, reclaim it:
+    register it with Aria (if orphaned) and attach instead of erroring.
     """
     import os
+    import subprocess
     session = name if name.startswith("claude-") else f"claude-{name}"
+
+    exists = subprocess.run(
+        ["tmux", "has-session", "-t", session],
+        capture_output=True,
+    ).returncode == 0
+
+    if exists:
+        # Ask Aria to reclaim (best-effort — server-side also handles this idempotently).
+        try:
+            client = AriaClient()
+            client.request(
+                "POST", "/shells",
+                json={
+                    "name": name,
+                    "workdir": workdir or "",
+                    "launch_claude": not no_claude,
+                },
+            )
+        except Exception as e:
+            console.print(f"[dim]warning: could not register with Aria ({e}); attaching anyway[/dim]")
+        console.print(f"[yellow]reclaiming existing tmux session:[/yellow] {session}")
+        os.execvp("tmux", ["tmux", "attach", "-t", session])
+
     tmux_args = ["tmux", "new", "-s", session]
     if workdir:
         tmux_args += ["-c", workdir]
@@ -1427,6 +1454,32 @@ def shells_tags_cmd(name, tags):
         client = AriaClient()
         client.request("POST", f"/shells/{name}/tags", json={"tags": list(tags)})
         console.print(f"[green]✓[/green] tags updated")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        sys.exit(1)
+
+
+@shells.command("rm")
+@click.argument("name")
+@click.option(
+    "--purge", is_flag=True,
+    help="Also delete the shell row, all events, and snapshots (full wipe).",
+)
+def shells_rm_cmd(name, purge):
+    """Remove a watched shell.
+
+    Default: kill the tmux session and mark the shell stopped (history
+    preserved so `aria shells search` still works). Use --purge to also
+    delete the shell row, all events, and snapshots.
+    """
+    session = name if name.startswith("claude-") else f"claude-{name}"
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/shells/{session}", params={"purge": str(purge).lower()})
+        if purge:
+            console.print(f"[green]✓[/green] purged {session} (row, events, snapshots)")
+        else:
+            console.print(f"[green]✓[/green] stopped {session}")
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)

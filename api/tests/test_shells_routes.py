@@ -8,7 +8,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from aria.shells.models import Shell, ShellEvent
-from aria.shells.service import ShellNotFoundError, ShellStoppedError
+from aria.shells.service import (
+    ShellAlreadyExistsError,
+    ShellNotFoundError,
+    ShellStoppedError,
+)
 
 
 class FakeShellService:
@@ -17,6 +21,9 @@ class FakeShellService:
         self.events_by_shell: dict[str, list[ShellEvent]] = {}
         self.sent: list[tuple[str, str, bool, bool]] = []
         self.tags: dict[str, list[str]] = {}
+        self.created: list[tuple[str, str, bool]] = []
+        self.killed: list[str] = []
+        self.purged: list[str] = []
         self.raise_on_send: Exception | None = None
         self.events = MagicMock()  # unused in these tests
 
@@ -49,6 +56,32 @@ class FakeShellService:
         self.tags[name] = list(tags)
         if name in self.shells:
             self.shells[name].tags = list(tags)
+
+    async def create_shell(self, name, *, workdir="", launch_claude=True):
+        full_name = name if name.startswith("claude-") else f"claude-{name}"
+        existing = self.shells.get(full_name)
+        if existing is not None:
+            if existing.status in ("active", "idle"):
+                raise ShellAlreadyExistsError(full_name)
+            existing.status = "active"
+            existing.project_dir = workdir or existing.project_dir
+            self.created.append((full_name, workdir, launch_claude))
+            return existing
+        shell = _make_shell(name=full_name)
+        shell.project_dir = workdir
+        self.shells[full_name] = shell
+        self.created.append((full_name, workdir, launch_claude))
+        return shell
+
+    async def kill_shell(self, name):
+        self.killed.append(name)
+        if name in self.shells:
+            self.shells[name].status = "stopped"
+
+    async def purge_shell(self, name):
+        self.purged.append(name)
+        self.shells.pop(name, None)
+        return {"shells": 1, "events": 0, "snapshots": 0}
 
 
 def _make_shell(name="claude-proj", status="active") -> Shell:
@@ -185,3 +218,83 @@ async def test_set_tags(client):
     )
     assert resp.status_code == 200
     assert client.fake_service.tags["claude-proj"] == ["primary", "urgent"]
+
+
+@pytest.mark.asyncio
+async def test_create_shell_ok(client):
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "newproj", "workdir": "/tmp/newproj"},
+    )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "claude-newproj"
+    assert data["project_dir"] == "/tmp/newproj"
+    assert client.fake_service.created == [("claude-newproj", "/tmp/newproj", True)]
+
+
+@pytest.mark.asyncio
+async def test_create_shell_keeps_existing_prefix(client):
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "claude-already", "launch_claude": False},
+    )
+    assert resp.status_code == 201
+    assert client.fake_service.created == [("claude-already", "", False)]
+
+
+@pytest.mark.asyncio
+async def test_create_shell_conflict(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "proj"},
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_create_shell_reclaims_stopped(client):
+    stopped = _make_shell(status="stopped")
+    client.fake_service.shells["claude-proj"] = stopped
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "proj", "workdir": "/tmp/proj2"},
+    )
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "active"
+    assert client.fake_service.shells["claude-proj"].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_create_shell_rejects_bad_name(client):
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "has spaces"},
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_shell_ok(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.delete("/api/v1/shells/claude-proj")
+    assert resp.status_code == 204
+    assert client.fake_service.killed == ["claude-proj"]
+    assert client.fake_service.shells["claude-proj"].status == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_delete_shell_purge(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.delete("/api/v1/shells/claude-proj?purge=true")
+    assert resp.status_code == 204
+    assert client.fake_service.purged == ["claude-proj"]
+    assert client.fake_service.killed == []
+    assert "claude-proj" not in client.fake_service.shells
+
+
+@pytest.mark.asyncio
+async def test_delete_shell_missing(client):
+    resp = await client.delete("/api/v1/shells/claude-missing")
+    assert resp.status_code == 404

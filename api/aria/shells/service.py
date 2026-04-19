@@ -19,7 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.config import settings
 from aria.shells.ansi import strip_ansi
 from aria.shells.models import Shell, ShellEvent, ShellSnapshot
-from aria.shells.tmux import TmuxClient, TmuxSessionNotFoundError
+from aria.shells.tmux import TmuxClient, TmuxError, TmuxSessionNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,10 @@ class ShellNotFoundError(Exception):
 
 class ShellStoppedError(Exception):
     """Raised when operating on a shell whose tmux session has ended."""
+
+
+class ShellAlreadyExistsError(Exception):
+    """Raised when creating a shell whose tmux session already exists."""
 
 
 def _strip_prefix(name: str, prefix: str) -> str:
@@ -196,6 +200,65 @@ class ShellService:
         await self.shells.update_one(
             {"name": name}, {"$set": {"tags": list(tags)}}
         )
+
+    async def create_shell(
+        self,
+        name: str,
+        *,
+        workdir: str = "",
+        launch_claude: bool = True,
+    ) -> Shell:
+        """Create a detached tmux session and register it as a watched shell.
+
+        If the tmux session already exists, reclaim it unless Aria already
+        tracks it as active/idle (true duplicate). Reclaim = register a
+        missing Aria row, or reactivate a stopped one.
+        """
+        prefix = settings.shells_tmux_session_prefix
+        full_name = name if name.startswith(prefix) else f"{prefix}{name}"
+
+        if await self.tmux.has_session(full_name):
+            existing = await self.get_shell(full_name)
+            if existing and existing.status in ("active", "idle"):
+                raise ShellAlreadyExistsError(full_name)
+            logger.info("reclaiming orphan tmux session: %s", full_name)
+            return await self.register_shell(full_name, project_dir=workdir or "")
+
+        command = "claude --dangerously-skip-permissions" if launch_claude else None
+        await self.tmux.new_session(
+            full_name,
+            workdir=workdir or None,
+            command=command,
+        )
+        return await self.register_shell(full_name, project_dir=workdir or "")
+
+    async def kill_shell(self, name: str) -> None:
+        """Kill a tmux session and mark its shell row stopped.
+
+        Idempotent — a missing tmux session is not an error, the shell
+        row is still marked stopped.
+        """
+        await self.tmux.kill_session(name)
+        await self.mark_stopped(name)
+
+    async def purge_shell(self, name: str) -> dict:
+        """Kill the tmux session and delete the shell row, events, and snapshots.
+
+        Unlike `kill_shell`, this removes all history. Returns counts for
+        each deletion.
+        """
+        try:
+            await self.tmux.kill_session(name)
+        except TmuxError as exc:  # pragma: no cover - defensive
+            logger.debug("purge: kill-session failed for %s: %s", name, exc)
+        s = await self.shells.delete_one({"name": name})
+        e = await self.events.delete_many({"shell_name": name})
+        n = await self.snapshots.delete_many({"shell_name": name})
+        return {
+            "shells": s.deleted_count,
+            "events": e.deleted_count,
+            "snapshots": n.deleted_count,
+        }
 
     # -------------------------------------------------------------- write path
 

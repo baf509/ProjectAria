@@ -90,6 +90,15 @@ export const shellsApi = {
     return res.json()
   },
 
+  async getSnapshot(name: string): Promise<{ shell_name: string; ts: string; content: string } | null> {
+    const res = await fetch(`${API_URL}/api/v1/shells/${encodeURIComponent(name)}/snapshot`, {
+      headers: headers(),
+    })
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`get snapshot: ${res.status}`)
+    return res.json()
+  },
+
   async setTags(name: string, tags: string[]): Promise<Shell> {
     const res = await fetch(`${API_URL}/api/v1/shells/${encodeURIComponent(name)}/tags`, {
       method: 'POST',

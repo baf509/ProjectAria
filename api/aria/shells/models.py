@@ -57,6 +57,17 @@ class ShellInput(BaseModel):
     literal: bool = False
 
 
+class ShellCreateRequest(BaseModel):
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.\-]*$",
+    )
+    workdir: Optional[str] = None
+    launch_claude: bool = True
+
+
 class ShellTagsUpdate(BaseModel):
     tags: list[str]
 

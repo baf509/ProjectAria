@@ -19,6 +19,7 @@ from aria.api.deps import get_shell_service
 from aria.config import settings
 from aria.shells.models import (
     Shell,
+    ShellCreateRequest,
     ShellEvent,
     ShellEventsResponse,
     ShellInput,
@@ -28,6 +29,7 @@ from aria.shells.models import (
     ShellTagsUpdate,
 )
 from aria.shells.service import (
+    ShellAlreadyExistsError,
     ShellNotFoundError,
     ShellService,
     ShellStoppedError,
@@ -69,6 +71,32 @@ async def list_shells(
         status_filter = [s.strip() for s in status.split(",") if s.strip()]
     shells = await service.list_shells(status=status_filter)
     return ShellListResponse(shells=shells)
+
+
+@router.post("/shells", response_model=Shell, status_code=201)
+async def create_shell(
+    body: ShellCreateRequest,
+    service: Annotated[ShellService, Depends(get_shell_service)],
+):
+    """Create a detached tmux session and register it as a watched shell.
+
+    The session name is prefixed with the configured shells prefix
+    (e.g. `claude-`) if not already. By default Claude Code is launched
+    inside the new session; pass `launch_claude: false` for a plain shell.
+    """
+    try:
+        shell = await service.create_shell(
+            body.name,
+            workdir=body.workdir or "",
+            launch_claude=body.launch_claude,
+        )
+    except ShellAlreadyExistsError:
+        raise HTTPException(
+            status_code=409, detail=f"Shell already exists: {body.name}"
+        )
+    except TmuxError as exc:
+        raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
+    return shell
 
 
 @router.get("/shells/search")
@@ -116,6 +144,34 @@ async def get_shell(
     if not shell:
         raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
     return shell
+
+
+@router.delete("/shells/{name}", status_code=204)
+async def delete_shell(
+    name: str,
+    service: Annotated[ShellService, Depends(get_shell_service)],
+    purge: bool = Query(
+        default=False,
+        description="If true, also delete the shell row, all events, and snapshots.",
+    ),
+):
+    """Kill a tmux session and mark its shell row stopped (default).
+
+    With `?purge=true`, additionally delete the shell row, all events,
+    and snapshots. Use purge for cleanup; default preserves history so
+    `GET /shells/search` keeps working across closed sessions.
+    """
+    shell = await service.get_shell(name)
+    if not shell:
+        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    try:
+        if purge:
+            await service.purge_shell(name)
+        else:
+            await service.kill_shell(name)
+    except TmuxError as exc:
+        raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
+    return None
 
 
 @router.get("/shells/{name}/events", response_model=ShellEventsResponse)
