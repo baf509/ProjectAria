@@ -20,7 +20,7 @@ from rich.table import Table
 console = Console()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-INFRA_ROOT = Path("/home/ben/Dev/infrastructure")
+INFRA_ROOT = Path("/home/ben/Development/infrastructure")
 
 UNIT_DIR = Path("/etc/systemd/system")
 INFRA_UNIT = "aria-infra.service"

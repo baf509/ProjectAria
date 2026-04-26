@@ -30,7 +30,7 @@ fi
 cleanup() { rm -f "$pidfile" 2>/dev/null || true; }
 trap cleanup EXIT
 
-ARIA_PYTHON="${ARIA_PYTHON:-/home/ben/Dev/ProjectAria/api/.venv/bin/python3}"
-ARIA_API_DIR="${ARIA_API_DIR:-/home/ben/Dev/ProjectAria/api}"
+ARIA_PYTHON="${ARIA_PYTHON:-/home/ben/Development/ProjectAria/api/.venv/bin/python3}"
+ARIA_API_DIR="${ARIA_API_DIR:-/home/ben/Development/ProjectAria/api}"
 cd "$ARIA_API_DIR"
 exec "$ARIA_PYTHON" -m aria.shells.capture "$name"

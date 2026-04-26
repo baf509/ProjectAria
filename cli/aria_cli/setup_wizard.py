@@ -24,7 +24,7 @@ console = Console()
 # Project root is two levels up from this file (cli/aria_cli/setup_wizard.py)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
-INFRA_ROOT = Path("/home/ben/Dev/infrastructure")
+INFRA_ROOT = Path("/home/ben/Development/infrastructure")
 
 
 def _mask_key(key: str) -> str:
@@ -568,8 +568,8 @@ def setup(non_interactive: bool) -> None:
     console.print(Panel(
         "[bold green]Setup complete![/bold green]\n\n"
         "Next steps:\n"
-        "  1. Start shared infrastructure:  cd /home/ben/Dev/infrastructure && docker compose up -d\n"
-        "  2. Start ARIA:                   cd /home/ben/Dev/ProjectAria && docker compose up -d\n"
+        "  1. Start shared infrastructure:  cd /home/ben/Development/infrastructure && docker compose up -d\n"
+        "  2. Start ARIA:                   cd /home/ben/Development/ProjectAria && docker compose up -d\n"
         "  3. Verify:                        aria health",
         style="green",
     ))

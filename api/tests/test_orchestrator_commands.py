@@ -256,7 +256,7 @@ class TestCodingCommand:
         mock_manager = MagicMock()
         mock_manager.start_session = AsyncMock(return_value={
             "_id": "sess1",
-            "workspace": "/home/ben/Dev/ProjectAria",
+            "workspace": "/home/ben/Development/ProjectAria",
             "backend": "codex",
         })
         command_router.coding_manager = mock_manager

@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     context1_max_iterations: int = 8
     context1_max_docs: int = 20
     context1_fs_allowed_roots: list[str] = [
-        "/home/ben/Dev/ProjectAria",
-        "/home/ben/Dev/infrastructure",
+        "/home/ben/Development/ProjectAria",
+        "/home/ben/Development/infrastructure",
     ]
 
     # Cloud LLMs
@@ -63,12 +63,12 @@ class Settings(BaseSettings):
     codex_binary: str = "codex"
     claude_code_binary: str = "claude"
     coding_default_backend: str = "codex"
-    coding_default_workspace: str = "/home/ben/Dev/aria-projects"
+    coding_default_workspace: str = "/home/ben/Development/aria-projects"
     coding_output_lines: int = 500
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
     coding_auto_respond_prompts: bool = False
-    infrastructure_root: str = "/home/ben/Dev/infrastructure"
+    infrastructure_root: str = "/home/ben/Development/infrastructure"
 
     # Streaming
     stream_chunk_timeout_seconds: int = 60
@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     awareness_poll_interval_seconds: int = 120       # how often sensors run
     awareness_analysis_interval_minutes: int = 30    # how often ClaudeRunner analyzes
     awareness_observation_ttl_hours: int = 24        # auto-expire old observations
-    awareness_watch_dirs: list[str] = ["/home/ben/Dev/ProjectAria"]
+    awareness_watch_dirs: list[str] = ["/home/ben/Development/ProjectAria"]
     awareness_cpu_warn_percent: float = 90.0
     awareness_memory_warn_percent: float = 85.0
     awareness_disk_warn_percent: float = 90.0

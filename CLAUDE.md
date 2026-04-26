@@ -54,7 +54,7 @@ Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`. The OpenR
 
 ## Shared Infrastructure
 
-ARIA depends on shared infrastructure at `/home/ben/Dev/infrastructure/` (also used by AgentBenchPlatform). **Must be started first.**
+ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/` (also used by AgentBenchPlatform). **Must be started first.**
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -65,13 +65,13 @@ ARIA depends on shared infrastructure at `/home/ben/Dev/infrastructure/` (also u
 
 ```bash
 # Start shared infra first
-cd /home/ben/Dev/infrastructure && docker compose up -d
+cd /home/ben/Development/infrastructure && docker compose up -d
 
 # Start ARIA API (native systemd service)
 systemctl --user start aria-api
 
 # Start ARIA Docker services (tts, stt, ui)
-cd /home/ben/Dev/ProjectAria && docker compose up -d
+cd /home/ben/Development/ProjectAria && docker compose up -d
 ```
 
 **Connection string**: `mongodb://mongod:27017/?directConnection=true&replicaSet=rs0`
