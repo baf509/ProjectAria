@@ -66,6 +66,13 @@ class ShellCreateRequest(BaseModel):
     )
     workdir: Optional[str] = None
     launch_claude: bool = True
+    cols: Optional[int] = Field(default=None, ge=20, le=500)
+    rows: Optional[int] = Field(default=None, ge=10, le=200)
+
+
+class ShellResizeRequest(BaseModel):
+    cols: int = Field(..., ge=20, le=500)
+    rows: int = Field(..., ge=10, le=200)
 
 
 class ShellTagsUpdate(BaseModel):

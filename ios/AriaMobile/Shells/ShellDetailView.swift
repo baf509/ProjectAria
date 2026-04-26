@@ -49,23 +49,42 @@ struct ShellDetailView: View {
     // MARK: - UI pieces
 
     private var header: some View {
-        HStack(spacing: 10) {
-            StatusBadge(status: store?.status ?? shell.status)
-            Text(shell.shortName)
-                .font(.headline.monospaced())
-                .foregroundStyle(Neon.pink)
-            if !shell.projectDir.isEmpty {
-                Text(shell.projectDir)
-                    .font(.caption).foregroundStyle(Neon.textSecondary)
-                    .lineLimit(1).truncationMode(.head)
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                StatusBadge(status: store?.status ?? shell.status)
+                Text(shell.shortName)
+                    .font(.headline.monospaced())
+                    .foregroundStyle(Neon.pink)
+                if !shell.projectDir.isEmpty {
+                    Text(shell.projectDir)
+                        .font(.caption).foregroundStyle(Neon.textSecondary)
+                        .lineLimit(1).truncationMode(.head)
+                }
+                Spacer()
             }
-            Spacer()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             if let store, let err = store.errorMessage, !err.isEmpty {
-                Text(err).font(.caption2).foregroundStyle(Neon.neonRed).lineLimit(1)
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                    Text(err)
+                        .font(.caption)
+                        .lineLimit(2)
+                    Spacer()
+                    Button {
+                        store.errorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .foregroundStyle(Neon.neonRed)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Neon.neonRed.opacity(0.12))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
         .background(Neon.surface)
     }
 
@@ -73,18 +92,58 @@ struct ShellDetailView: View {
     private var content: some View {
         switch viewMode {
         case .terminal:
-            ShellTerminalView(
-                bridge: bridge,
-                fontName: settings.terminalFontName,
-                fontSize: CGFloat(settings.terminalFontSize),
-                onInput: { data in
-                    Task { await store?.sendInput(data, literal: true) }
+            ZStack {
+                ShellTerminalView(
+                    bridge: bridge,
+                    fontName: settings.terminalFontName,
+                    fontSize: CGFloat(settings.terminalFontSize),
+                    onInput: { data in
+                        Task { await store?.sendInput(data, literal: true) }
+                    },
+                    onResize: { cols, rows in
+                        store?.notifyResize(cols: cols, rows: rows)
+                    }
+                )
+                if let store, !store.hasReceivedOutput {
+                    waitingOverlay(state: store.connectionState)
                 }
-            )
+            }
             .ignoresSafeArea(edges: .bottom)
         case .snapshot:
             SnapshotView(shellName: shell.name)
         }
+    }
+
+    @ViewBuilder
+    private func waitingOverlay(state: ShellStreamStore.ConnectionState) -> some View {
+        VStack(spacing: 8) {
+            switch state {
+            case .backfilling:
+                ProgressView()
+                Text("Loading history…").font(.caption).foregroundStyle(Neon.textSecondary)
+            case .streaming:
+                ProgressView()
+                Text("Connected — waiting for output…")
+                    .font(.caption).foregroundStyle(Neon.textSecondary)
+            case .reconnecting:
+                Image(systemName: "arrow.clockwise")
+                    .foregroundStyle(Neon.neonYellow)
+                Text("Reconnecting…")
+                    .font(.caption).foregroundStyle(Neon.textSecondary)
+            case .stopped:
+                Image(systemName: "stop.circle")
+                    .foregroundStyle(Neon.neonRed)
+                Text("Session stopped")
+                    .font(.caption).foregroundStyle(Neon.textSecondary)
+            case .idle, .error(_):
+                EmptyView()
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 18)
+        .background(Neon.surface.opacity(0.85))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .allowsHitTesting(false)
     }
 
     private var inputBar: some View {

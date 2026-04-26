@@ -207,12 +207,19 @@ class ShellService:
         *,
         workdir: str = "",
         launch_claude: bool = True,
+        cols: Optional[int] = None,
+        rows: Optional[int] = None,
     ) -> Shell:
         """Create a detached tmux session and register it as a watched shell.
 
         If the tmux session already exists, reclaim it unless Aria already
         tracks it as active/idle (true duplicate). Reclaim = register a
         missing Aria row, or reactivate a stopped one.
+
+        `cols`/`rows` override the default tmux geometry from settings.
+        Mobile clients should pass their actual viewport size; otherwise
+        sessions are created at `shells_default_cols × shells_default_rows`
+        (much wider than tmux's 80x24 default so TUIs don't wrap).
         """
         prefix = settings.shells_tmux_session_prefix
         full_name = name if name.startswith(prefix) else f"{prefix}{name}"
@@ -225,12 +232,20 @@ class ShellService:
             return await self.register_shell(full_name, project_dir=workdir or "")
 
         command = "claude --dangerously-skip-permissions" if launch_claude else None
+        effective_cols = cols or settings.shells_default_cols
+        effective_rows = rows or settings.shells_default_rows
         await self.tmux.new_session(
             full_name,
             workdir=workdir or None,
             command=command,
+            cols=effective_cols,
+            rows=effective_rows,
         )
         return await self.register_shell(full_name, project_dir=workdir or "")
+
+    async def resize_shell(self, name: str, cols: int, rows: int) -> None:
+        """Resize a shell's tmux window. Fires SIGWINCH so the running TUI repaints."""
+        await self.tmux.resize_window(name, cols, rows)
 
     async def kill_shell(self, name: str) -> None:
         """Kill a tmux session and mark its shell row stopped.

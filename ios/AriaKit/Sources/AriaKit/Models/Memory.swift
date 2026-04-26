@@ -63,16 +63,12 @@ public struct MemorySearchResponse: Codable, Sendable {
 }
 
 public struct HealthStatus: Codable, Sendable {
-    public let status: String
+    public let status: String          // "healthy" | "degraded" | "unhealthy"
     public let version: String?
-    public let database: Component?
-    public let llm: Component?
-    public let embeddings: Component?
-
-    public struct Component: Codable, Sendable {
-        public let status: String?
-        public let detail: String?
-    }
+    public let database: String?       // e.g. "connected", "error: ...", "not checked"
+    public let llm: String?            // e.g. "available (anthropic, openrouter)", "no backends configured"
+    public let embeddings: String?     // e.g. "connected", "timeout", "unreachable"
+    public let timestamp: Date?
 }
 
 public struct DeviceRegistration: Codable, Sendable {

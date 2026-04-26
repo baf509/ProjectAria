@@ -58,6 +58,8 @@ targets:
     dependencies:
       - package: AriaKit
       - package: SwiftTerm
+    entitlements:
+      path: AriaMobile/Resources/AriaMobile.entitlements
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.aria.AriaMobile

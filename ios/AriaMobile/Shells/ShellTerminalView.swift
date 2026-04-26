@@ -33,8 +33,11 @@ struct ShellTerminalView: UIViewRepresentable {
     let fontName: String
     let fontSize: CGFloat
     let onInput: (Data) -> Void
+    let onResize: (Int, Int) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onInput: onInput) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onInput: onInput, onResize: onResize)
+    }
 
     func makeUIView(context: Context) -> TerminalView {
         let view = TerminalView()
@@ -51,6 +54,7 @@ struct ShellTerminalView: UIViewRepresentable {
 
     func updateUIView(_ uiView: TerminalView, context: Context) {
         context.coordinator.onInput = onInput
+        context.coordinator.onResize = onResize
         if let font = UIFont(name: fontName, size: fontSize), uiView.font != font {
             uiView.font = font
         }
@@ -58,15 +62,21 @@ struct ShellTerminalView: UIViewRepresentable {
 
     final class Coordinator: NSObject, TerminalViewDelegate {
         var onInput: (Data) -> Void
+        var onResize: (Int, Int) -> Void
 
-        init(onInput: @escaping (Data) -> Void) { self.onInput = onInput }
+        init(onInput: @escaping (Data) -> Void, onResize: @escaping (Int, Int) -> Void) {
+            self.onInput = onInput
+            self.onResize = onResize
+        }
 
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
             onInput(Data(data))
         }
         func scrolled(source: TerminalView, position: Double) {}
         func setTerminalTitle(source: TerminalView, title: String) {}
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+            onResize(newCols, newRows)
+        }
         func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
         func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
             if let url = URL(string: link) {

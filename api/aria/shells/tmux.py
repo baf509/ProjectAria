@@ -117,14 +117,21 @@ class TmuxClient:
         *,
         workdir: Optional[str] = None,
         command: Optional[str] = None,
+        cols: Optional[int] = None,
+        rows: Optional[int] = None,
     ) -> None:
         """Create a detached tmux session.
 
         If `command` is provided, it runs in the session shell (and the
         session exits when it finishes). If `workdir` is provided it sets
-        the session's starting directory.
+        the session's starting directory. `cols` / `rows` set the initial
+        window geometry — tmux defaults to 80x24, which is too narrow for
+        most TUIs (Claude Code, htop). Pass at least 120x40 unless the
+        client knows its real size.
         """
         args: list[str] = ["new-session", "-d", "-s", name]
+        if cols and rows:
+            args += ["-x", str(int(cols)), "-y", str(int(rows))]
         if workdir:
             args += ["-c", workdir]
         if command:
@@ -132,3 +139,19 @@ class TmuxClient:
         rc, _out, err = await self._run(*args)
         if rc != 0:
             raise TmuxError(f"tmux new-session failed: {err.strip()}")
+
+    async def resize_window(self, name: str, cols: int, rows: int) -> None:
+        """Resize a session's active window to the given geometry.
+
+        Sends SIGWINCH to processes in the pane, so TUIs (Claude Code, vim,
+        htop) repaint at the new size. tmux silently caps the size to what
+        the smallest attached client supports — for our use case there are
+        no live tmux clients (sessions are detached), so the size sticks.
+        """
+        if not await self.has_session(name):
+            raise TmuxSessionNotFoundError(name)
+        rc, _out, err = await self._run(
+            "resize-window", "-t", name, "-x", str(int(cols)), "-y", str(int(rows))
+        )
+        if rc != 0:
+            raise TmuxError(f"tmux resize-window failed: {err.strip()}")

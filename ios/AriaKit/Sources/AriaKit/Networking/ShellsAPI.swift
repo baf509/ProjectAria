@@ -63,6 +63,12 @@ public struct ShellsAPI: Sendable {
         return try await client.send(req)
     }
 
+    public func resize(name: String, cols: Int, rows: Int) async throws {
+        let body = try AriaClient.makeEncoder().encode(ShellResizeRequest(cols: cols, rows: rows))
+        let req = try client.request(method: "POST", path: "/api/v1/shells/\(name)/resize", body: body)
+        try await client.sendNoContent(req)
+    }
+
     public func search(query: String, limit: Int = 50) async throws -> [ShellEvent] {
         let items = [
             URLQueryItem(name: "q", value: query),

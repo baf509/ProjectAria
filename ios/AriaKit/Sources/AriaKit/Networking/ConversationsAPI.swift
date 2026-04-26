@@ -175,7 +175,14 @@ public struct ConversationsAPI: Sendable {
         if let a = obj["arguments"] as? String {
             args = a
         } else if let a = obj["arguments"] {
-            args = String(describing: a)
+            // Anthropic-style: arguments is a JSON object. Re-serialize so we
+            // show JSON to the user, not Swift's String(describing:) garbage.
+            if let bytes = try? JSONSerialization.data(withJSONObject: a, options: [.sortedKeys]),
+               let s = String(data: bytes, encoding: .utf8) {
+                args = s
+            } else {
+                args = ""
+            }
         } else {
             args = ""
         }

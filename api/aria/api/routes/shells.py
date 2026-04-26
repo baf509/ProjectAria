@@ -25,6 +25,7 @@ from aria.shells.models import (
     ShellInput,
     ShellInputResponse,
     ShellListResponse,
+    ShellResizeRequest,
     ShellSnapshot,
     ShellTagsUpdate,
 )
@@ -34,7 +35,7 @@ from aria.shells.service import (
     ShellService,
     ShellStoppedError,
 )
-from aria.shells.tmux import TmuxError
+from aria.shells.tmux import TmuxError, TmuxSessionNotFoundError
 
 
 router = APIRouter()
@@ -89,6 +90,8 @@ async def create_shell(
             body.name,
             workdir=body.workdir or "",
             launch_claude=body.launch_claude,
+            cols=body.cols,
+            rows=body.rows,
         )
     except ShellAlreadyExistsError:
         raise HTTPException(
@@ -288,6 +291,28 @@ async def send_shell_input(
     except TmuxError as exc:
         raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
     return ShellInputResponse(ok=True, line_number=line)
+
+
+@router.post("/shells/{name}/resize", status_code=204)
+async def resize_shell(
+    name: str,
+    body: ShellResizeRequest,
+    service: Annotated[ShellService, Depends(get_shell_service)],
+):
+    """Resize the tmux window for a shell.
+
+    Mobile and widget clients call this on view appear (and on rotation /
+    keyboard show-hide) so the running TUI repaints at the client's actual
+    geometry. Without this, sessions stay at tmux's 80x24 default and TUIs
+    wrap badly on phones.
+    """
+    try:
+        await service.resize_shell(name, body.cols, body.rows)
+    except TmuxSessionNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    except TmuxError as exc:
+        raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
+    return None
 
 
 @router.post("/shells/{name}/tags", response_model=Shell)

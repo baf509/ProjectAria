@@ -57,7 +57,7 @@ class FakeShellService:
         if name in self.shells:
             self.shells[name].tags = list(tags)
 
-    async def create_shell(self, name, *, workdir="", launch_claude=True):
+    async def create_shell(self, name, *, workdir="", launch_claude=True, cols=None, rows=None):
         full_name = name if name.startswith("claude-") else f"claude-{name}"
         existing = self.shells.get(full_name)
         if existing is not None:
@@ -71,7 +71,14 @@ class FakeShellService:
         shell.project_dir = workdir
         self.shells[full_name] = shell
         self.created.append((full_name, workdir, launch_claude))
+        self.last_geometry = (cols, rows)
         return shell
+
+    async def resize_shell(self, name, cols, rows):
+        if name not in self.shells:
+            from aria.shells.tmux import TmuxSessionNotFoundError
+            raise TmuxSessionNotFoundError(name)
+        self.resized = (name, cols, rows)
 
     async def kill_shell(self, name):
         self.killed.append(name)
@@ -298,3 +305,43 @@ async def test_delete_shell_purge(client):
 async def test_delete_shell_missing(client):
     resp = await client.delete("/api/v1/shells/claude-missing")
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_shell_passes_geometry(client):
+    resp = await client.post(
+        "/api/v1/shells",
+        json={"name": "proj", "cols": 100, "rows": 30},
+    )
+    assert resp.status_code == 201
+    assert client.fake_service.last_geometry == (100, 30)
+
+
+@pytest.mark.asyncio
+async def test_resize_shell_ok(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.post(
+        "/api/v1/shells/claude-proj/resize",
+        json={"cols": 132, "rows": 50},
+    )
+    assert resp.status_code == 204
+    assert client.fake_service.resized == ("claude-proj", 132, 50)
+
+
+@pytest.mark.asyncio
+async def test_resize_shell_missing(client):
+    resp = await client.post(
+        "/api/v1/shells/claude-missing/resize",
+        json={"cols": 132, "rows": 50},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_resize_shell_rejects_bad_geometry(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.post(
+        "/api/v1/shells/claude-proj/resize",
+        json={"cols": 5, "rows": 50},  # below min cols
+    )
+    assert resp.status_code == 422

@@ -100,8 +100,11 @@ extension Message: Codable {
 public struct ToolCall: Codable, Sendable, Hashable {
     public let id: String?
     public let name: String
-    public let arguments: String?
-    public let result: String?
+    /// Tool arguments as sent by the server. Anthropic-style backends send a JSON
+    /// object; OpenAI-style backends send a JSON-encoded string. Accept either.
+    public let arguments: JSONValue?
+    /// Tool result. Free-form — strings, dicts, lists, numbers all show up.
+    public let result: JSONValue?
 }
 
 public struct ConversationResponse: Sendable {

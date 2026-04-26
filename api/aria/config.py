@@ -253,6 +253,16 @@ class Settings(BaseSettings):
     shells_input_rate_limit_per_minute: int = 30
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
+    # Default geometry for new tmux sessions. tmux's built-in default is 80x24,
+    # which makes Claude Code's TUI render at a width that mobile clients can't
+    # display without ugly wrapping. Mobile/widget clients should call
+    # POST /shells/{name}/resize on view appear with their actual cols/rows.
+    shells_default_cols: int = 120
+    shells_default_rows: int = 40
+    shells_min_cols: int = 20
+    shells_min_rows: int = 10
+    shells_max_cols: int = 500
+    shells_max_rows: int = 200
 
     # APNs (Phase 6 — mobile push). Disabled by default; set
     # `shells_apns_enabled=true` and configure the key + team/bundle IDs to

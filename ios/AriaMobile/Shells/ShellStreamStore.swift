@@ -12,6 +12,10 @@ final class ShellStreamStore {
     var connectionState: ConnectionState = .idle
     var errorMessage: String?
     var noiseFilter: Bool = false
+    /// True once we've fed at least one byte to the terminal. Drives the
+    /// "waiting for output" overlay so the user can tell a quiet pane from
+    /// a broken connection.
+    var hasReceivedOutput: Bool = false
 
     enum ConnectionState: Equatable {
         case idle
@@ -23,6 +27,8 @@ final class ShellStreamStore {
     }
 
     private var streamTask: Task<Void, Never>?
+    private var resizeTask: Task<Void, Never>?
+    private var lastSentGeometry: (cols: Int, rows: Int)?
     private var lastLine: Int = 0
     private let bridge: TerminalBridge
     private let api: ShellsAPI
@@ -103,6 +109,7 @@ final class ShellStreamStore {
         lastLine = max(lastLine, event.lineNumber)
         lineCount = max(lineCount, event.lineNumber)
         lastActivityAt = event.ts
+        hasReceivedOutput = true
         guard !shouldFilter(event) else { return }
         // SwiftTerm expects byte-level ANSI; feed text_raw unless it's an input
         // echo (tmux already echoes inputs to the pane, so we skip input events
@@ -111,10 +118,18 @@ final class ShellStreamStore {
         let payload = terminalPayload(for: event)
         if payload.isEmpty { return }
         let bytes = Array(payload.utf8)
-        // Append CRLF between line-oriented events — tmux pipe-pane emits
-        // lines without trailing newlines.
         bridge.feed(bytes: bytes)
-        bridge.feed(bytes: [0x0D, 0x0A])
+        // Inject a bare LF only when the payload doesn't already end in a line
+        // terminator. tmux pipe-pane records one logical line per event with
+        // the trailing \n stripped (capture.py), so plain shell output needs a
+        // separator. But TUI redraws (Claude Code, vim, htop) end with cursor
+        // escapes or a CR — adding CRLF in that case clobbers in-place
+        // redraws and the spinner stacks vertically instead of overwriting.
+        // Use \n not \r\n: a bare LF advances the row without resetting the
+        // column, preserving any pending cursor positioning from the payload.
+        if let last = bytes.last, last != 0x0A && last != 0x0D {
+            bridge.feed(bytes: [0x0A])
+        }
     }
 
     private func terminalPayload(for event: ShellEvent) -> String {
@@ -150,6 +165,28 @@ final class ShellStreamStore {
             )
         } catch {
             errorMessage = "Send failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Tell the server about the client's terminal size so the running TUI
+    /// repaints at this geometry. Debounced (200ms) to absorb rapid SwiftTerm
+    /// callbacks during rotation / keyboard show-hide animations, and skipped
+    /// when geometry hasn't actually changed.
+    func notifyResize(cols: Int, rows: Int) {
+        guard cols >= 20, rows >= 10 else { return }
+        if let last = lastSentGeometry, last.cols == cols, last.rows == rows {
+            return
+        }
+        resizeTask?.cancel()
+        resizeTask = Task { [weak self, shellName = shell.name, api] in
+            try? await Task.sleep(for: .milliseconds(200))
+            if Task.isCancelled { return }
+            do {
+                try await api.resize(name: shellName, cols: cols, rows: rows)
+                self?.lastSentGeometry = (cols, rows)
+            } catch {
+                self?.errorMessage = "Resize failed: \(error.localizedDescription)"
+            }
         }
     }
 

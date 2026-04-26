@@ -20,10 +20,19 @@ struct MessageBubble: View {
                     }
                 }
                 if let calls = message.toolCalls, !calls.isEmpty {
-                    ForEach(calls, id: \.name) { call in
-                        Label(call.name, systemImage: "wrench.and.screwdriver")
-                            .font(.caption.monospaced())
-                            .foregroundStyle(Neon.violet)
+                    ForEach(Array(calls.enumerated()), id: \.offset) { _, call in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label(call.name, systemImage: "wrench.and.screwdriver")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(Neon.violet)
+                            if let args = call.arguments {
+                                Text(args.displayString)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(Neon.textSecondary)
+                                    .lineLimit(3)
+                                    .truncationMode(.tail)
+                            }
+                        }
                     }
                 }
             }

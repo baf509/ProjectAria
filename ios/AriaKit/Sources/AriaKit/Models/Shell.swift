@@ -42,16 +42,35 @@ public struct ShellCreateRequest: Codable, Sendable {
     public let name: String
     public let workdir: String?
     public let launchClaude: Bool
+    public let cols: Int?
+    public let rows: Int?
 
-    public init(name: String, workdir: String? = nil, launchClaude: Bool = true) {
+    public init(
+        name: String,
+        workdir: String? = nil,
+        launchClaude: Bool = true,
+        cols: Int? = nil,
+        rows: Int? = nil
+    ) {
         self.name = name
         self.workdir = workdir
         self.launchClaude = launchClaude
+        self.cols = cols
+        self.rows = rows
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, workdir
+        case name, workdir, cols, rows
         case launchClaude = "launch_claude"
+    }
+}
+
+public struct ShellResizeRequest: Codable, Sendable {
+    public let cols: Int
+    public let rows: Int
+    public init(cols: Int, rows: Int) {
+        self.cols = cols
+        self.rows = rows
     }
 }
 
