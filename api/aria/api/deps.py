@@ -42,6 +42,7 @@ from aria.agents.estop import EstopManager, RateLimitWatchdog
 from aria.agents.mail import AgentMailbox
 from aria.notifications.escalation import EscalationManager
 from aria.shells.service import ShellService
+from aria.planning.service import PlanningService
 
 def valid_object_id(value: str) -> ObjectId:
     """Validate and convert a string to a BSON ObjectId, raising 400 on invalid input."""
@@ -80,6 +81,7 @@ _rate_limit_watchdog: RateLimitWatchdog = None
 _agent_mailbox: AgentMailbox = None
 _escalation_manager: EscalationManager = None
 _shell_service: ShellService = None
+_planning_service: PlanningService = None
 
 
 def get_tool_router() -> ToolRouter:
@@ -530,3 +532,17 @@ async def resolve_escalation_manager(
     else:
         _escalation_manager.db = db
     return _escalation_manager
+
+
+async def get_planning_service(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> PlanningService:
+    """Get the planning (tasks + projects) service instance."""
+    global _planning_service
+    if _planning_service is None:
+        _planning_service = PlanningService(db)
+    else:
+        _planning_service.db = db
+        _planning_service.tasks = db.tasks
+        _planning_service.projects = db.projects
+    return _planning_service

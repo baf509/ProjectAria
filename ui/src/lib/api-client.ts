@@ -1,4 +1,4 @@
-import type { Agent, Conversation, HealthResponse, Memory, ResearchRun, StreamChunk, UsageSummary, Workflow } from '@/types'
+import type { Agent, Conversation, HealthResponse, Memory, PlanningProject, PlanningTask, ResearchRun, StreamChunk, UsageSummary, Workflow } from '@/types'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const API_KEY = process.env.NEXT_PUBLIC_API_KEY || ''
@@ -139,6 +139,62 @@ export const apiClient = {
   async listTasks(status?: string): Promise<any[]> {
     const res = await apiFetch(`/tasks${status ? `?status=${encodeURIComponent(status)}` : ''}`)
     return res.json()
+  },
+
+  // -------------------------------------------------- Planning (todos + projects)
+  async listTodos(status?: string, projectId?: string): Promise<PlanningTask[]> {
+    const params = new URLSearchParams()
+    if (status) params.set('status', status)
+    if (projectId) params.set('project_id', projectId)
+    const qs = params.toString()
+    const res = await apiFetch(`/todos${qs ? `?${qs}` : ''}`)
+    const body = await res.json()
+    return body.tasks || []
+  },
+
+  async createTodo(body: { title: string; notes?: string; project_id?: string; due_at?: string }): Promise<PlanningTask> {
+    const res = await apiFetch('/todos', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    return res.json()
+  },
+
+  async acceptTodo(taskId: string): Promise<PlanningTask> {
+    const res = await apiFetch(`/todos/${taskId}/accept`, { method: 'POST' })
+    return res.json()
+  },
+
+  async dismissTodo(taskId: string): Promise<PlanningTask> {
+    const res = await apiFetch(`/todos/${taskId}/dismiss`, { method: 'POST' })
+    return res.json()
+  },
+
+  async completeTodo(taskId: string): Promise<PlanningTask> {
+    const res = await apiFetch(`/todos/${taskId}/done`, { method: 'POST' })
+    return res.json()
+  },
+
+  async deleteTodo(taskId: string): Promise<void> {
+    await apiFetch(`/todos/${taskId}`, { method: 'DELETE' })
+  },
+
+  async listPlanningProjects(): Promise<PlanningProject[]> {
+    const res = await apiFetch('/projects')
+    const body = await res.json()
+    return body.projects || []
+  },
+
+  async createPlanningProject(body: { name: string; slug?: string; summary?: string }): Promise<PlanningProject> {
+    const res = await apiFetch('/projects', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    return res.json()
+  },
+
+  async deletePlanningProject(projectId: string): Promise<void> {
+    await apiFetch(`/projects/${projectId}`, { method: 'DELETE' })
   },
 
   async listWorkflows(): Promise<Workflow[]> {

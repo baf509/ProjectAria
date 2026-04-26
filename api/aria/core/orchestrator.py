@@ -31,6 +31,7 @@ from aria.core.context import ContextBuilder
 from aria.core.summarization import maybe_update_conversation_summary
 from aria.memory.extraction import MemoryExtractor
 from aria.memory.long_term import LongTermMemory
+from aria.planning.extraction import TaskExtractor
 from aria.db.usage import UsageRepo
 from aria.research.service import ResearchService
 from aria.tasks.runner import TaskRunner
@@ -53,6 +54,7 @@ class Orchestrator:
         self.db = db
         self.context_builder = ContextBuilder(db)
         self.memory_extractor = MemoryExtractor(db)
+        self.task_extractor = TaskExtractor(db)
         self.long_term_memory = LongTermMemory(db)
         self.usage_repo = UsageRepo(db)
         self.tool_router = tool_router
@@ -643,6 +645,35 @@ class Orchestrator:
                     )
                 except Exception as e:
                     logger.error("Failed to queue memory extraction: %s", e)
+
+        # 10b. Queue ambient task/project extraction. Independent of memory
+        # extraction so it runs even when memory_config.auto_extract is off,
+        # but always honors the conversation's `private` flag (extractor
+        # short-circuits internally).
+        if settings.planning_ambient_capture_enabled:
+            async def run_task_extraction():
+                try:
+                    counts = await self.task_extractor.extract_from_conversation(
+                        conversation_id,
+                        llm_backend=llm_config["backend"],
+                        llm_model=llm_config["model"],
+                        private=is_private,
+                    )
+                    if any(counts.values()):
+                        logger.info(
+                            "Task extraction: %s (conversation %s)",
+                            counts, conversation_id,
+                        )
+                except Exception as e:
+                    logger.error("Task extraction error: %s", e)
+
+            if background_tasks:
+                background_tasks.add_task(run_task_extraction)
+            else:
+                try:
+                    asyncio.create_task(run_task_extraction())
+                except Exception as e:
+                    logger.error("Failed to queue task extraction: %s", e)
 
         short_term_messages = agent.get("memory_config", {}).get("short_term_messages", 20)
 

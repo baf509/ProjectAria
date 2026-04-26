@@ -616,6 +616,278 @@ def extract_memories_cmd(conversation_id):
         sys.exit(1)
 
 
+# ---------------------------------------------------------------- planning
+
+def _truncate(s: str, n: int) -> str:
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+@cli.group()
+def todos():
+    """Manage to-do items (tasks)."""
+    pass
+
+
+@todos.command("list")
+@click.option("--status", default="proposed,active",
+              help="Comma-separated statuses (proposed,active,done,dismissed). "
+                   "Default: proposed,active")
+@click.option("--project", default=None, help="Filter by project ID")
+@click.option("--limit", default=200, help="Max results")
+def list_todos_cmd(status, project, limit):
+    """List todos. By default shows proposed (ambient) + active."""
+    try:
+        client = AriaClient()
+        params = {"limit": limit, "status": status}
+        if project:
+            params["project_id"] = project
+        resp = client.client.get(f"{client.base_url}/api/v1/todos", params=params)
+        resp.raise_for_status()
+        items = resp.json().get("tasks", [])
+        if not items:
+            console.print("No todos.")
+            return
+        table = Table(title=f"Todos ({len(items)})")
+        table.add_column("ID", style="cyan")
+        table.add_column("Status")
+        table.add_column("Title")
+        table.add_column("Source", style="dim")
+        table.add_column("Due", style="yellow")
+        for t in items:
+            status_style = {
+                "proposed": "magenta",
+                "active": "green",
+                "done": "dim",
+                "dismissed": "dim red",
+            }.get(t["status"], "white")
+            table.add_row(
+                t["id"][:8] + "…",
+                f"[{status_style}]{t['status']}[/{status_style}]",
+                _truncate(t["title"], 70),
+                t["source"]["type"],
+                (t.get("due_at") or "")[:10],
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@todos.command("add")
+@click.argument("title")
+@click.option("--notes", default=None, help="Optional notes")
+@click.option("--project", default=None, help="Project ID")
+@click.option("--due", default=None, help="ISO datetime (e.g. 2026-04-30T17:00:00Z)")
+def add_todo_cmd(title, notes, project, due):
+    """Add a to-do manually."""
+    try:
+        client = AriaClient()
+        body = {"title": title}
+        if notes:
+            body["notes"] = notes
+        if project:
+            body["project_id"] = project
+        if due:
+            body["due_at"] = due
+        resp = client.client.post(f"{client.base_url}/api/v1/todos", json=body)
+        resp.raise_for_status()
+        t = resp.json()
+        console.print(f"[green]✓[/green] Added todo {t['id'][:8]}… [{t['status']}] {t['title']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+def _set_status(task_id: str, action_path: str, label: str):
+    client = AriaClient()
+    resp = client.client.post(f"{client.base_url}/api/v1/todos/{task_id}/{action_path}")
+    resp.raise_for_status()
+    t = resp.json()
+    console.print(f"[green]✓[/green] {label}: {t['id'][:8]}… {t['title']}")
+
+
+@todos.command("accept")
+@click.argument("task_id")
+def accept_todo_cmd(task_id):
+    """Promote a proposed todo to active."""
+    try:
+        _set_status(task_id, "accept", "Accepted")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@todos.command("done")
+@click.argument("task_id")
+def done_todo_cmd(task_id):
+    """Mark a todo done."""
+    try:
+        _set_status(task_id, "done", "Completed")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@todos.command("dismiss")
+@click.argument("task_id")
+def dismiss_todo_cmd(task_id):
+    """Dismiss a todo (typically a noisy proposal)."""
+    try:
+        _set_status(task_id, "dismiss", "Dismissed")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@todos.command("delete")
+@click.argument("task_id")
+def delete_todo_cmd(task_id):
+    """Permanently delete a todo (use dismiss to keep history)."""
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/todos/{task_id}")
+        console.print(f"[green]✓[/green] Deleted todo {task_id}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@todos.command("extract")
+@click.argument("conversation_id")
+def extract_todos_cmd(conversation_id):
+    """Manually trigger ambient task extraction for a conversation."""
+    try:
+        client = AriaClient()
+        resp = client.client.post(
+            f"{client.base_url}/api/v1/todos/extract/{conversation_id}"
+        )
+        resp.raise_for_status()
+        r = resp.json()
+        console.print(f"[green]✓[/green] {r['message']}  task_id={r.get('task_id')}")
+        console.print("[dim]Extraction running in the background…[/dim]")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@cli.group()
+def projects():
+    """Manage long-running projects."""
+    pass
+
+
+@projects.command("list")
+@click.option("--status", default=None,
+              type=click.Choice(["active", "paused", "archived"]))
+def list_projects_cmd(status):
+    """List projects."""
+    try:
+        client = AriaClient()
+        params = {}
+        if status:
+            params["status"] = status
+        resp = client.client.get(f"{client.base_url}/api/v1/projects", params=params)
+        resp.raise_for_status()
+        items = resp.json().get("projects", [])
+        if not items:
+            console.print("No projects.")
+            return
+        table = Table(title=f"Projects ({len(items)})")
+        table.add_column("ID", style="cyan")
+        table.add_column("Slug", style="green")
+        table.add_column("Name")
+        table.add_column("Status")
+        table.add_column("Last Signal", style="dim")
+        for p in items:
+            table.add_row(
+                p["id"][:8] + "…",
+                p["slug"],
+                _truncate(p["name"], 40),
+                p["status"],
+                (p.get("last_signal_at") or "")[:16],
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@projects.command("show")
+@click.argument("project_id")
+def show_project_cmd(project_id):
+    """Show details for a project including next steps and recent activity."""
+    try:
+        client = AriaClient()
+        resp = client.client.get(f"{client.base_url}/api/v1/projects/{project_id}")
+        resp.raise_for_status()
+        p = resp.json()
+        console.print(f"\n[bold cyan]{p['name']}[/bold cyan]  [dim]({p['slug']})[/dim]")
+        console.print(f"Status: [green]{p['status']}[/green]   ID: {p['id']}")
+        if p.get("summary"):
+            console.print(f"\n{p['summary']}\n")
+        if p.get("next_steps"):
+            console.print("[bold]Next steps:[/bold]")
+            for step in p["next_steps"]:
+                console.print(f"  • {step}")
+        if p.get("relevant_paths"):
+            console.print(f"\n[dim]Paths: {', '.join(p['relevant_paths'])}[/dim]")
+        if p.get("recent_activity"):
+            console.print("\n[bold]Recent activity:[/bold]")
+            for a in p["recent_activity"][-10:]:
+                console.print(f"  [dim]{a['at'][:16]}[/dim]  {a['note']}")
+        # List open tasks for this project
+        tasks_resp = client.client.get(
+            f"{client.base_url}/api/v1/projects/{project_id}/tasks",
+            params={"status": "proposed,active"},
+        )
+        if tasks_resp.status_code == 200:
+            tasks_list = tasks_resp.json().get("tasks", [])
+            if tasks_list:
+                console.print(f"\n[bold]Open tasks ({len(tasks_list)}):[/bold]")
+                for t in tasks_list:
+                    icon = "○" if t["status"] == "active" else "?"
+                    console.print(f"  {icon} {t['title']}  [dim]({t['id'][:8]}…)[/dim]")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@projects.command("add")
+@click.argument("name")
+@click.option("--slug", default=None, help="URL-safe identifier (auto from name)")
+@click.option("--summary", default="", help="One-paragraph summary")
+@click.option("--path", "paths", multiple=True, help="Repeatable: relevant paths")
+def add_project_cmd(name, slug, summary, paths):
+    """Create a new project."""
+    try:
+        client = AriaClient()
+        body = {"name": name, "summary": summary}
+        if slug:
+            body["slug"] = slug
+        if paths:
+            body["relevant_paths"] = list(paths)
+        resp = client.client.post(f"{client.base_url}/api/v1/projects", json=body)
+        resp.raise_for_status()
+        p = resp.json()
+        console.print(f"[green]✓[/green] Created project [cyan]{p['name']}[/cyan] ({p['slug']})  id={p['id']}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+@projects.command("delete")
+@click.argument("project_id")
+def delete_project_cmd(project_id):
+    """Delete a project. Tasks are detached, not deleted."""
+    try:
+        client = AriaClient()
+        client.request("DELETE", f"/projects/{project_id}")
+        console.print(f"[green]✓[/green] Deleted project {project_id}")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
 @cli.group()
 def tools():
     """Manage tools."""

@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, devices
+from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, devices, planning
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -233,6 +233,21 @@ async def lifespan(app: FastAPI):
             await shell_extractor.start()
             app.state.shell_extractor = shell_extractor
 
+    # Planning subsystem (tasks + projects) — index bootstrap. Cheap, idempotent.
+    try:
+        await db.tasks.create_index([("status", 1), ("updated_at", -1)])
+        await db.tasks.create_index([("project_id", 1), ("status", 1)])
+        await db.tasks.create_index([("due_at", 1)], sparse=True)
+        await db.tasks.create_index(
+            [("content_hash", 1)],
+            partialFilterExpression={"status": {"$in": ["proposed", "active"]}},
+        )
+        await db.projects.create_index([("slug", 1)], unique=True)
+        await db.projects.create_index([("status", 1), ("last_signal_at", -1)])
+        startup_logger.info("Planning indexes ready")
+    except Exception as exc:  # pragma: no cover - non-fatal
+        startup_logger.warning("Planning index creation failed: %s", exc)
+
     yield
 
     # Shutdown — graceful drain of in-flight work
@@ -431,6 +446,7 @@ app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
 app.include_router(devices.router, prefix="/api/v1", tags=["devices"])
+app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 
 
 @app.get("/")

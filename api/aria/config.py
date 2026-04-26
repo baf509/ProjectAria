@@ -253,6 +253,11 @@ class Settings(BaseSettings):
     shells_input_rate_limit_per_minute: int = 30
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
+
+    # Planning subsystem (tasks + projects)
+    # Ambient capture runs an LLM call after each non-private conversation
+    # turn. Disable to require manual /api/v1/todos creation only.
+    planning_ambient_capture_enabled: bool = True
     # Default geometry for new tmux sessions. tmux's built-in default is 80x24,
     # which makes Claude Code's TUI render at a width that mobile clients can't
     # display without ugly wrapping. Mobile/widget clients should call

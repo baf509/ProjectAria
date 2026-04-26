@@ -2,9 +2,9 @@
 
 import { startTransition, useEffect, useMemo, useState } from 'react'
 import { apiClient } from '@/lib/api-client'
-import type { Agent, Conversation, Memory, ResearchRun, Workflow } from '@/types'
+import type { Agent, Conversation, Memory, PlanningProject, PlanningTask, ResearchRun, Workflow } from '@/types'
 
-type Tab = 'modes' | 'memories' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
+type Tab = 'modes' | 'memories' | 'tasks' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
 
 export default function DashboardPage() {
   const [tab, setTab] = useState<Tab>('modes')
@@ -21,6 +21,10 @@ export default function DashboardPage() {
   const [usageByAgent, setUsageByAgent] = useState<any[]>([])
   const [usageByModel, setUsageByModel] = useState<any[]>([])
   const [tasks, setTasks] = useState<any[]>([])
+  const [todos, setTodos] = useState<PlanningTask[]>([])
+  const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([])
+  const [newTodoTitle, setNewTodoTitle] = useState('')
+  const [newProjectName, setNewProjectName] = useState('')
   const [models, setModels] = useState<any[]>([])
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [workflowStatus, setWorkflowStatus] = useState<any | null>(null)
@@ -61,6 +65,8 @@ export default function DashboardPage() {
       apiClient.listWorkflows(),
       apiClient.auditOverview(),
       apiClient.cutoverStatus(),
+      apiClient.listTodos('proposed,active'),
+      apiClient.listPlanningProjects(),
     ])
 
     const val = <T,>(r: PromiseSettledResult<T>, fallback: T): T =>
@@ -79,7 +85,58 @@ export default function DashboardPage() {
       setWorkflows(val(results[9], []))
       setAuditOverview(val(results[10], null))
       setCutover(val(results[11], null))
+      setTodos(val(results[12], []))
+      setPlanningProjects(val(results[13], []))
     })
+  }
+
+  async function refreshPlanning() {
+    const [todosResult, projectsResult] = await Promise.allSettled([
+      apiClient.listTodos('proposed,active'),
+      apiClient.listPlanningProjects(),
+    ])
+    startTransition(() => {
+      if (todosResult.status === 'fulfilled') setTodos(todosResult.value)
+      if (projectsResult.status === 'fulfilled') setPlanningProjects(projectsResult.value)
+    })
+  }
+
+  async function handleCreateTodo() {
+    const title = newTodoTitle.trim()
+    if (!title) return
+    try {
+      await apiClient.createTodo({ title })
+      setNewTodoTitle('')
+      setStatusMessage('Todo added.')
+      await refreshPlanning()
+    } catch (e: any) {
+      setStatusMessage(`Add failed: ${e.message || e}`)
+    }
+  }
+
+  async function handleTodoAction(taskId: string, action: 'accept' | 'done' | 'dismiss' | 'delete') {
+    try {
+      if (action === 'accept') await apiClient.acceptTodo(taskId)
+      else if (action === 'done') await apiClient.completeTodo(taskId)
+      else if (action === 'dismiss') await apiClient.dismissTodo(taskId)
+      else await apiClient.deleteTodo(taskId)
+      await refreshPlanning()
+    } catch (e: any) {
+      setStatusMessage(`Action failed: ${e.message || e}`)
+    }
+  }
+
+  async function handleCreateProject() {
+    const name = newProjectName.trim()
+    if (!name) return
+    try {
+      await apiClient.createPlanningProject({ name })
+      setNewProjectName('')
+      setStatusMessage('Project added.')
+      await refreshPlanning()
+    } catch (e: any) {
+      setStatusMessage(`Add failed: ${e.message || e}`)
+    }
   }
 
   function resetModeForm() {
@@ -157,7 +214,7 @@ export default function DashboardPage() {
         ) : null}
 
         <div className="mb-8 flex flex-wrap gap-3">
-          {(['modes', 'memories', 'research', 'usage', 'conversations', 'workflows', 'settings'] as Tab[]).map((item) => (
+          {(['modes', 'memories', 'tasks', 'research', 'usage', 'conversations', 'workflows', 'settings'] as Tab[]).map((item) => (
             <button
               key={item}
               onClick={() => setTab(item)}
@@ -417,6 +474,188 @@ export default function DashboardPage() {
                   </div>
                 </article>
               ))}
+            </div>
+          </section>
+        )}
+
+        {tab === 'tasks' && (
+          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            {/* Todos column */}
+            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <h2 className="text-2xl font-semibold">Todos</h2>
+                <span className="text-xs text-stone-500">
+                  {todos.filter((t) => t.status === 'proposed').length} proposed ·{' '}
+                  {todos.filter((t) => t.status === 'active').length} active
+                </span>
+              </div>
+              <div className="mb-6 flex gap-2">
+                <input
+                  value={newTodoTitle}
+                  onChange={(e) => setNewTodoTitle(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateTodo() }}
+                  placeholder="Add a todo and press Enter…"
+                  className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleCreateTodo()}
+                  className="rounded-xl border border-amber-400 bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950 hover:bg-amber-300"
+                >
+                  Add
+                </button>
+              </div>
+
+              {/* Proposed (ambient) — review queue */}
+              {todos.filter((t) => t.status === 'proposed').length > 0 && (
+                <div className="mb-6">
+                  <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-fuchsia-400">
+                    Proposed (review)
+                  </h3>
+                  <div className="space-y-2">
+                    {todos.filter((t) => t.status === 'proposed').map((t) => (
+                      <article key={t.id} className="rounded-xl border border-fuchsia-900/50 bg-fuchsia-950/20 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm text-stone-100">{t.title}</p>
+                            {t.notes && <p className="mt-1 text-xs text-stone-400">{t.notes}</p>}
+                            <p className="mt-1 text-[11px] text-stone-500">
+                              {t.source.type === 'conversation'
+                                ? `from conversation · confidence ${(t.source.confidence ?? 0).toFixed(2)}`
+                                : `from ${t.source.type}`}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 gap-1">
+                            <button
+                              onClick={() => void handleTodoAction(t.id, 'accept')}
+                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/70"
+                            >
+                              Accept
+                            </button>
+                            <button
+                              onClick={() => void handleTodoAction(t.id, 'dismiss')}
+                              className="rounded-lg border border-stone-700 bg-stone-800 px-2 py-1 text-xs text-stone-400 hover:bg-stone-700"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Active */}
+              <div>
+                <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-400">Active</h3>
+                {todos.filter((t) => t.status === 'active').length === 0 ? (
+                  <p className="text-sm text-stone-500">Nothing on the list. Add one above or accept a proposal.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {todos.filter((t) => t.status === 'active').map((t) => (
+                      <article key={t.id} className="rounded-xl border border-stone-800 bg-stone-950 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm text-stone-100">{t.title}</p>
+                            {t.notes && <p className="mt-1 text-xs text-stone-400">{t.notes}</p>}
+                            {t.due_at && (
+                              <p className="mt-1 text-[11px] text-amber-400">due {t.due_at.slice(0, 10)}</p>
+                            )}
+                          </div>
+                          <div className="flex shrink-0 gap-1">
+                            <button
+                              onClick={() => void handleTodoAction(t.id, 'done')}
+                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/70"
+                            >
+                              Done
+                            </button>
+                            <button
+                              onClick={() => void handleTodoAction(t.id, 'delete')}
+                              className="rounded-lg border border-stone-700 bg-stone-800 px-2 py-1 text-xs text-stone-500 hover:text-rose-300"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Projects column */}
+            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <h2 className="text-2xl font-semibold">Projects</h2>
+                <span className="text-xs text-stone-500">{planningProjects.length} active</span>
+              </div>
+              <div className="mb-6 flex gap-2">
+                <input
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateProject() }}
+                  placeholder="New project name…"
+                  className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                />
+                <button
+                  onClick={() => void handleCreateProject()}
+                  className="rounded-xl border border-stone-700 bg-stone-800 px-4 py-2 text-sm text-stone-200 hover:border-amber-400 hover:text-amber-300"
+                >
+                  Add
+                </button>
+              </div>
+
+              {planningProjects.length === 0 ? (
+                <p className="text-sm text-stone-500">
+                  No projects yet. Create one above so ARIA can attach todos and capture status updates against it.
+                </p>
+              ) : (
+                <div className="space-y-3">
+                  {planningProjects.map((p) => (
+                    <article key={p.id} className="rounded-xl border border-stone-800 bg-stone-950 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="text-sm font-semibold text-stone-100">{p.name}</h3>
+                          <p className="text-[11px] text-stone-500">{p.slug}</p>
+                        </div>
+                        <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-widest ${
+                          p.status === 'active'
+                            ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300'
+                            : p.status === 'paused'
+                            ? 'border-amber-800 bg-amber-950/40 text-amber-300'
+                            : 'border-stone-700 bg-stone-800 text-stone-400'
+                        }`}>
+                          {p.status}
+                        </span>
+                      </div>
+                      {p.summary && <p className="mt-2 text-xs text-stone-400">{p.summary}</p>}
+                      {p.next_steps.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-[10px] uppercase tracking-widest text-stone-500">Next steps</p>
+                          <ul className="mt-1 space-y-0.5">
+                            {p.next_steps.map((step, i) => (
+                              <li key={i} className="text-xs text-stone-300">• {step}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {p.recent_activity.length > 0 && (
+                        <div className="mt-3">
+                          <p className="text-[10px] uppercase tracking-widest text-stone-500">Recent activity</p>
+                          <ul className="mt-1 space-y-0.5">
+                            {p.recent_activity.slice(-3).map((a, i) => (
+                              <li key={i} className="text-[11px] text-stone-400">
+                                <span className="text-stone-600">{a.at.slice(0, 16).replace('T', ' ')}</span> {a.note}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
         )}

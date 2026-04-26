@@ -156,6 +156,51 @@ export interface Memory {
   created_at: string
 }
 
+export interface PlanningTaskSource {
+  type: 'manual' | 'conversation' | 'shell' | 'awareness' | 'import'
+  conversation_id?: string | null
+  shell_name?: string | null
+  message_ids?: string[] | null
+  extracted_at?: string | null
+  confidence?: number | null
+}
+
+export interface PlanningTask {
+  id: string
+  title: string
+  notes?: string | null
+  status: 'proposed' | 'active' | 'done' | 'dismissed'
+  due_at?: string | null
+  project_id?: string | null
+  tags: string[]
+  source: PlanningTaskSource
+  content_hash: string
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
+}
+
+export interface PlanningProjectActivity {
+  at: string
+  source: string
+  note: string
+}
+
+export interface PlanningProject {
+  id: string
+  name: string
+  slug: string
+  summary: string
+  status: 'active' | 'paused' | 'archived'
+  next_steps: string[]
+  relevant_paths: string[]
+  tags: string[]
+  recent_activity: PlanningProjectActivity[]
+  created_at: string
+  updated_at: string
+  last_signal_at?: string | null
+}
+
 export interface ResearchRun {
   id: string
   query: string
