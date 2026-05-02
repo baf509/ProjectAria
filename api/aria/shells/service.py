@@ -231,7 +231,7 @@ class ShellService:
             logger.info("reclaiming orphan tmux session: %s", full_name)
             return await self.register_shell(full_name, project_dir=workdir or "")
 
-        command = "claude --dangerously-skip-permissions" if launch_claude else None
+        command = settings.shells_claude_launch_command if launch_claude else None
         effective_cols = cols or settings.shells_default_cols
         effective_rows = rows or settings.shells_default_rows
         await self.tmux.new_session(

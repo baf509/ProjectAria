@@ -277,6 +277,12 @@ class Settings(BaseSettings):
     shells_input_rate_limit_per_minute: int = 30
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
+    # Command spawned inside a new shell when launch_claude=True.
+    # --dangerously-skip-permissions matches the long-running ARIA workflow
+    # where the user has already approved the agent for filesystem/shell use;
+    # override via env var SHELLS_CLAUDE_LAUNCH_COMMAND if you need different
+    # flags or a different binary entirely.
+    shells_claude_launch_command: str = "claude --dangerously-skip-permissions"
 
     # Planning subsystem (tasks + projects)
     # Ambient capture runs an LLM call after each non-private conversation
