@@ -8,10 +8,17 @@ final class ConversationStore {
     var messages: [Message] = []
     var streamingText: String = ""
     var streamingToolCalls: [(name: String, arguments: String)] = []
+    var streamingId: String = UUID().uuidString
     var isStreaming = false
     var error: String?
     var steerDraft: String = ""
 
+    /// nonisolated(unsafe) because deinit is implicitly nonisolated and we
+    /// want to cancel the in-flight task there. This is sound: send() and
+    /// cancel() are both @MainActor methods (no concurrent writers), and
+    /// Task.cancel() is itself nonisolated and thread-safe. The "unsafe" is
+    /// only telling the compiler we've reasoned about the actor-isolation
+    /// of this storage — not about Task internals.
     nonisolated(unsafe) private var sendTask: Task<Void, Never>?
     private let api: ConversationsAPI
 
@@ -20,7 +27,9 @@ final class ConversationStore {
         self.api = api
     }
 
-    deinit { sendTask?.cancel() }
+    deinit {
+        sendTask?.cancel()
+    }
 
     func load() async {
         do {
@@ -37,6 +46,7 @@ final class ConversationStore {
         messages.append(Message(role: "user", content: text, ts: Date()))
         streamingText = ""
         streamingToolCalls.removeAll()
+        streamingId = UUID().uuidString
         isStreaming = true
 
         sendTask = Task { [weak self] in
@@ -49,16 +59,21 @@ final class ConversationStore {
                     case .toolCall(let name, let args):
                         streamingToolCalls.append((name, args))
                     case .done:
-                        finalize()
+                        await finalize()
                         return
                     case .error(let msg):
                         error = msg
                     }
                 }
-                finalize()
+                // Stream ended without an explicit .done — finalize anyway so
+                // any persisted tool/assistant messages on the server side
+                // become visible (the streaming-only buffer drops them).
+                await finalize()
+            } catch is CancellationError {
+                isStreaming = false
             } catch {
                 self.error = error.localizedDescription
-                finalize()
+                await finalize()
             }
         }
     }
@@ -66,7 +81,12 @@ final class ConversationStore {
     func cancel() {
         sendTask?.cancel()
         sendTask = nil
-        finalize()
+        // Don't re-enter finalize here; the task's catch CancellationError
+        // path resets isStreaming. Calling finalize() would hit the API and
+        // could race with reload.
+        isStreaming = false
+        streamingText = ""
+        streamingToolCalls.removeAll()
     }
 
     func steer(interrupt: Bool = false) async {
@@ -80,13 +100,28 @@ final class ConversationStore {
         }
     }
 
-    private func finalize() {
-        if !streamingText.isEmpty {
-            messages.append(Message(role: "assistant", content: streamingText, ts: Date()))
+    /// On stream completion, reload the conversation from the API. The
+    /// streaming buffer only sees text and tool-call chunks, but the server
+    /// persists `role="tool"` result messages separately — without a reload,
+    /// those would not appear in the UI until the user navigated away and
+    /// back.
+    private func finalize() async {
+        defer {
+            streamingText = ""
+            streamingToolCalls.removeAll()
+            isStreaming = false
         }
-        streamingText = ""
-        streamingToolCalls.removeAll()
-        isStreaming = false
+        do {
+            let convo = try await api.get(id: conversationId)
+            messages = convo.messages
+        } catch {
+            // Reload failed — fall back to whatever streaming captured so the
+            // user at least sees the assistant text.
+            if !streamingText.isEmpty {
+                messages.append(Message(role: "assistant", content: streamingText, ts: Date()))
+            }
+            self.error = error.localizedDescription
+        }
     }
 }
 
@@ -122,13 +157,14 @@ struct ConversationDetailView: View {
                         if store.isStreaming {
                             MessageBubble(
                                 message: Message(
-                                    id: "streaming",
+                                    id: store.streamingId,
                                     role: "assistant",
                                     content: store.streamingText
                                 ),
-                                streaming: true
+                                streaming: true,
+                                pendingToolCalls: store.streamingToolCalls
                             )
-                            .id("streaming")
+                            .id(store.streamingId)
                         }
                         if let error = store.error, !error.isEmpty {
                             Text(error).foregroundStyle(Neon.neonRed).font(.footnote).padding(.horizontal)
@@ -143,7 +179,9 @@ struct ConversationDetailView: View {
                 }
             }
             .onChange(of: store?.streamingText.count ?? 0) { _, _ in
-                proxy.scrollTo("streaming", anchor: .bottom)
+                if let id = store?.streamingId {
+                    proxy.scrollTo(id, anchor: .bottom)
+                }
             }
         }
     }

@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "dev.aria.AriaKit", category: "ConversationsAPI")
 
 public struct ConversationsAPI: Sendable {
     public let client: AriaClient
@@ -144,17 +147,23 @@ public struct ConversationsAPI: Sendable {
             if let content = decodeContent(data) {
                 continuation.yield(.text(content))
             } else {
+                // Server sent something other than {"content": "..."}; treat
+                // it as raw text but log so we can spot a regression.
+                log.debug("text event without content key, treating as raw: \(data, privacy: .public)")
                 continuation.yield(.text(data))
             }
         case "tool_call":
             if let parsed = decodeToolCall(data) {
                 continuation.yield(.toolCall(name: parsed.name, arguments: parsed.arguments))
+            } else {
+                log.error("could not decode tool_call event: \(data, privacy: .public)")
             }
         case "error":
             continuation.yield(.error(data))
         case "done":
             continuation.yield(.done)
         default:
+            log.debug("ignoring unknown SSE event: \(event, privacy: .public)")
             break
         }
     }

@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "dev.aria.AriaKit", category: "Conversation")
 
 public struct ConversationListItem: Sendable, Identifiable, Hashable {
     public let id: String
@@ -81,8 +84,17 @@ extension Message: Codable {
         self.id = try (try? c.decode(String.self, forKey: ._id))
             ?? c.decodeIfPresent(String.self, forKey: .id)
             ?? UUID().uuidString
-        self.role = try c.decode(String.self, forKey: .role)
-        self.content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
+        let role = try c.decode(String.self, forKey: .role)
+        self.role = role
+        if let content = try c.decodeIfPresent(String.self, forKey: .content) {
+            self.content = content
+        } else {
+            // Some message types (e.g. tool messages with non-string content
+            // payloads) may legitimately have no string content, but missing
+            // content on user/assistant/tool roles is usually a server bug.
+            log.debug("Message missing content field for role=\(role, privacy: .public)")
+            self.content = ""
+        }
         self.ts = try c.decodeIfPresent(Date.self, forKey: .ts)
         self.toolCalls = try c.decodeIfPresent([ToolCall].self, forKey: .toolCalls)
     }

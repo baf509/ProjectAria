@@ -2,6 +2,11 @@ import SwiftUI
 import SwiftTerm
 import UIKit
 
+/// SwiftTerm's TerminalView is UIKit and must only be touched on the main
+/// thread. The whole bridge is @MainActor so we don't need to think about
+/// races between feed() callers and view dealloc — a deallocated TerminalView
+/// can only be observed when we are on the main actor (UIKit lifecycle), and
+/// any caller that wants to feed bytes must hop here too.
 @MainActor
 final class TerminalBridge {
     weak var view: TerminalView?

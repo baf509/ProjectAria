@@ -1,25 +1,11 @@
 import SwiftUI
 
-@MainActor
-@Observable
-final class TimeTickPublisher {
-    static let shared = TimeTickPublisher()
-    var tick = Date()
-    private var task: Task<Void, Never>?
-
-    private init() {
-        task = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(30))
-                self?.tick = Date()
-            }
-        }
-    }
-}
-
+/// Renders a relative timestamp like "5m" or "2h ago" that updates as time
+/// passes. Uses TimelineView so the tick driver stops automatically when the
+/// view leaves the hierarchy — no app-wide singleton timer that would burn
+/// battery for a view nobody is looking at.
 struct RelativeTimeText: View {
     let date: Date
-    @State private var publisher = TimeTickPublisher.shared
 
     private static let formatter: RelativeDateTimeFormatter = {
         let f = RelativeDateTimeFormatter()
@@ -28,6 +14,8 @@ struct RelativeTimeText: View {
     }()
 
     var body: some View {
-        Text(Self.formatter.localizedString(for: date, relativeTo: publisher.tick))
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            Text(Self.formatter.localizedString(for: date, relativeTo: context.date))
+        }
     }
 }

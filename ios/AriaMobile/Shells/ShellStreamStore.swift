@@ -29,7 +29,11 @@ final class ShellStreamStore {
     private var streamTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
     private var lastSentGeometry: (cols: Int, rows: Int)?
-    private var lastLine: Int = 0
+    private var firstResizeAttempted: Bool = false
+    /// Highest line_number seen so far. Mutated only on @MainActor (this class
+    /// is @MainActor-isolated), so the max() guard is also a monotonicity
+    /// guard against out-of-order delivery from backfill+stream.
+    private var maxAppliedLine: Int = 0
     private let bridge: TerminalBridge
     private let api: ShellsAPI
 
@@ -51,10 +55,22 @@ final class ShellStreamStore {
     func stop() {
         streamTask?.cancel()
         streamTask = nil
+        resizeTask?.cancel()
+        resizeTask = nil
         connectionState = .idle
     }
 
     private func runLoop() async {
+        // Wait briefly for the SwiftTerm view to report its geometry so we
+        // can resize the server-side tmux pane BEFORE backfill replays. Without
+        // this, the first events the user sees are rendered at the server's
+        // wide default (120×40) and look broken on phone screens. Cap the wait
+        // at 500ms so an undersized/headless test path doesn't hang forever.
+        for _ in 0..<10 {
+            if lastSentGeometry != nil { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
         // Backfill the last 2000 events (tail), not the first 2000. For
         // long-lived shells (tens of thousands of lines) starting from 0
         // would pin the viewport to session startup and force the SSE
@@ -75,8 +91,16 @@ final class ShellStreamStore {
 
         while !Task.isCancelled {
             connectionState = .streaming
+            // Successful (re)connect: clear stale error banner so the user
+            // knows the issue resolved. Also drop the cached geometry so the
+            // server gets a fresh resize after reconnect (otherwise a rotation
+            // that happened during the disconnect can be skipped because
+            // lastSentGeometry still matches).
+            errorMessage = nil
+            lastSentGeometry = nil
+            firstResizeAttempted = false
             do {
-                for try await update in api.stream(name: shell.name, sinceLine: lastLine) {
+                for try await update in api.stream(name: shell.name, sinceLine: maxAppliedLine) {
                     try Task.checkCancellation()
                     switch update {
                     case .event(let evt):
@@ -106,7 +130,15 @@ final class ShellStreamStore {
     }
 
     private func apply(event: ShellEvent) {
-        lastLine = max(lastLine, event.lineNumber)
+        // Out-of-order delivery from backfill+stream can re-deliver lines we
+        // already saw. max() makes this idempotent.
+        guard event.lineNumber > maxAppliedLine else {
+            // Still bump activity even on duplicates so UI doesn't think the
+            // shell is dead.
+            lastActivityAt = event.ts
+            return
+        }
+        maxAppliedLine = event.lineNumber
         lineCount = max(lineCount, event.lineNumber)
         lastActivityAt = event.ts
         hasReceivedOutput = true
@@ -149,11 +181,22 @@ final class ShellStreamStore {
         }
     }
 
+    /// Send a text line as keystrokes. Uses literal=true so tmux send-keys
+    /// passes the bytes through as characters rather than interpreting them
+    /// as key names — without `-l`, characters like `;` `~` `#` get treated
+    /// as tmux key syntax which mangles user-typed code/JSON. We append a
+    /// separate Enter keypress because `-l` mode does not interpret the
+    /// "Enter" name.
     func sendLine(_ text: String) async {
+        guard !text.isEmpty else { return }
         do {
             _ = try await api.sendInput(
                 name: shell.name,
-                ShellInputRequest(text: text, appendEnter: true, literal: false)
+                ShellInputRequest(text: text, appendEnter: false, literal: true)
+            )
+            _ = try await api.sendInput(
+                name: shell.name,
+                ShellInputRequest(text: "Enter", appendEnter: false, literal: false)
             )
         } catch {
             errorMessage = "Send failed: \(error.localizedDescription)"
@@ -167,13 +210,17 @@ final class ShellStreamStore {
     ///
     /// The first resize on a new view skips the debounce — without that, the
     /// first ~200ms of TUI output renders at the server's wide default
-    /// (120×40) and looks broken on phone-sized screens.
+    /// (120×40) and looks broken on phone-sized screens. `firstResizeAttempted`
+    /// (rather than a `lastSentGeometry == nil` check) prevents a flurry of
+    /// in-flight resize calls from each thinking they're "the first" while
+    /// the network round-trip is still pending.
     func notifyResize(cols: Int, rows: Int) {
         guard cols >= 20, rows >= 10 else { return }
         if let last = lastSentGeometry, last.cols == cols, last.rows == rows {
             return
         }
-        let isFirstResize = lastSentGeometry == nil
+        let isFirstResize = !firstResizeAttempted
+        firstResizeAttempted = true
         resizeTask?.cancel()
         resizeTask = Task { [weak self, shellName = shell.name, api] in
             if !isFirstResize {

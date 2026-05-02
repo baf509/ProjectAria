@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let log = Logger(subsystem: "dev.aria.AriaKit", category: "SSE")
 
 public struct SSEEvent: Sendable, Hashable {
     public let id: String?
@@ -73,6 +76,7 @@ public enum SSE {
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    log.error("SSE stream failed for \(url.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     continuation.finish(throwing: error)
                 }
             }

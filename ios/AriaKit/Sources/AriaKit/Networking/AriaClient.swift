@@ -48,10 +48,44 @@ public struct AriaClient: Sendable {
         }
         if let date = try? Date(raw, strategy: isoWithFraction) { return date }
         if let date = try? Date(raw, strategy: isoPlain) { return date }
+        // ISO8601FormatStyle's fractional-seconds parser only accepts up to 3
+        // digits (millisecond precision). Python's datetime.isoformat() emits
+        // 6 digits (microsecond), and Mongo-via-FastAPI sometimes does too.
+        // Normalise the fraction to ≤3 digits and retry, then fall back to
+        // truncating fractions entirely.
+        if let normalised = normaliseFraction(raw, maxDigits: 3),
+           let date = try? Date(normalised, strategy: isoWithFraction) {
+            return date
+        }
+        if let stripped = normaliseFraction(raw, maxDigits: 0),
+           let date = try? Date(stripped, strategy: isoPlain) {
+            return date
+        }
         throw DecodingError.dataCorruptedError(
             in: container,
             debugDescription: "Unrecognized ISO8601 date: \(raw)"
         )
+    }
+
+    /// Trim or remove the fractional-seconds component of an ISO8601 string so
+    /// it fits the formatter's expected precision. Preserves the timezone
+    /// suffix (Z, +HH:MM, -HH:MM).
+    private static func normaliseFraction(_ raw: String, maxDigits: Int) -> String? {
+        guard let dotIdx = raw.firstIndex(of: ".") else { return nil }
+        let afterDot = raw.index(after: dotIdx)
+        guard afterDot < raw.endIndex else { return nil }
+        var fractionEnd = afterDot
+        while fractionEnd < raw.endIndex, raw[fractionEnd].isNumber {
+            fractionEnd = raw.index(after: fractionEnd)
+        }
+        let head = raw[..<dotIdx]
+        let tail = raw[fractionEnd...]
+        if maxDigits == 0 {
+            return String(head) + String(tail)
+        }
+        let fractionDigits = raw[afterDot..<fractionEnd]
+        let truncated = fractionDigits.prefix(maxDigits)
+        return String(head) + "." + String(truncated) + String(tail)
     }
 
     public static func makeDecoder() -> JSONDecoder {
