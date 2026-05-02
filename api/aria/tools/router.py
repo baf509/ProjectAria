@@ -11,14 +11,49 @@ Related Spec Sections:
 import asyncio
 import hashlib
 import json
+import re
 import time
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional
 from datetime import datetime, timezone
 from .base import BaseTool, ToolResult, ToolStatus, ToolType
 import logging
 from aria.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(api[_-]?key|access[_-]?key|secret|token|password|passwd|"
+    r"credential|bearer|cookie|authorization|private[_-]?key)"
+)
+# Common secret value shapes — covers Anthropic/OpenAI/OpenRouter, GitHub,
+# AWS access key IDs, Slack, Stripe, generic bearer headers.
+_SENSITIVE_VALUE_RE = re.compile(
+    r"(?:sk-(?:ant-|or-|proj-)?[A-Za-z0-9_\-]{20,}|"
+    r"ghp_[A-Za-z0-9]{20,}|ghs_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"Bearer\s+[A-Za-z0-9._\-]{10,})"
+)
+
+
+def _redact_for_audit(value: Any) -> Any:
+    """Redact secret-looking content from a tool-arguments structure.
+
+    Replaces values whose key looks sensitive, and substrings that match
+    common secret shapes. Recurses through dicts and lists. Non-secret values
+    are returned untouched.
+    """
+    if isinstance(value, dict):
+        return {
+            k: ("***REDACTED***" if _SENSITIVE_KEY_RE.search(str(k)) else _redact_for_audit(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_for_audit(item) for item in value]
+    if isinstance(value, str):
+        return _SENSITIVE_VALUE_RE.sub("***REDACTED***", value)
+    return value
 
 
 class _ToolRateLimiter:
@@ -347,7 +382,7 @@ class ToolRouter:
                 target=tool_name,
                 metadata={
                     "source": source,
-                    "arguments": arguments,
+                    "arguments": _redact_for_audit(arguments),
                     "error": result.error,
                     "duration_ms": result.duration_ms,
                 },

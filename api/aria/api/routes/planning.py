@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.api.deps import get_db, get_planning_service, get_task_runner
+from aria.config import settings
 from aria.planning.extraction import TaskExtractor
 from aria.planning.models import (
     Project,
@@ -149,17 +150,12 @@ async def extract_todos_from_conversation(
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    agent = await db.agents.find_one({"_id": conv.get("agent_id")})
-    llm = (agent or {}).get("llm", {})
-    backend = llm.get("backend", "llamacpp")
-    model = llm.get("model", "default")
-
     async def run_extraction():
         extractor = TaskExtractor(db)
         return await extractor.extract_from_conversation(
             conversation_id,
-            llm_backend=backend,
-            llm_model=model,
+            llm_backend=settings.planning_ambient_backend,
+            llm_model=settings.planning_ambient_model,
             private=bool(conv.get("private", False)),
         )
 

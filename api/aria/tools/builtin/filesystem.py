@@ -18,6 +18,7 @@ import pathlib
 from typing import Optional
 from datetime import datetime
 from ..base import BaseTool, ToolParameter, ToolResult, ToolStatus, ToolType
+from aria.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -55,11 +56,15 @@ class FilesystemTool(BaseTool):
         if allowed_paths is None:
             allowed_paths = [str(pathlib.Path.home())]
 
-        self.allowed_paths = [pathlib.Path(p).resolve() for p in allowed_paths]
-        self.denied_paths = [pathlib.Path(p).resolve() for p in (denied_paths or [])]
+        # Apply settings denylist on top of any explicit denied_paths
+        effective_denied = list(denied_paths or []) + list(settings.filesystem_denied_paths or [])
+
+        self.allowed_paths = [pathlib.Path(p).expanduser().resolve() for p in allowed_paths]
+        self.denied_paths = [pathlib.Path(p).expanduser().resolve() for p in effective_denied]
 
         logger.info(
-            f"Initialized FilesystemTool with allowed_paths: {self.allowed_paths}"
+            f"Initialized FilesystemTool with allowed_paths: {self.allowed_paths}, "
+            f"denied_paths: {self.denied_paths}"
         )
 
     @property
@@ -124,17 +129,20 @@ class FilesystemTool(BaseTool):
             (is_valid, error_message, resolved_path)
         """
         try:
-            resolved_path = pathlib.Path(path).resolve()
+            resolved_path = pathlib.Path(path).expanduser().resolve()
         except Exception as e:
             return False, f"Invalid path: {str(e)}", None
 
-        # Check denied paths first
+        # Check denied paths first. Match either: path IS a denied dir, or path
+        # is INSIDE a denied dir. Use both relative_to (descendant check) and
+        # equality (the denied path itself).
         for denied in self.denied_paths:
+            if resolved_path == denied:
+                return False, f"Access denied: path is in denied location", None
             try:
                 resolved_path.relative_to(denied)
                 return False, f"Access denied: path is in denied location", None
             except ValueError:
-                # Not under this denied path, continue
                 pass
 
         # Check allowed paths

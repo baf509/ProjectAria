@@ -126,9 +126,8 @@ class Settings(BaseSettings):
         "cat",
         "head",
         "tail",
-        "sed",
-        "awk",
         "rg",
+        "grep",
         "git status",
         "git diff",
         "git log",
@@ -143,6 +142,31 @@ class Settings(BaseSettings):
         "git reset",
         "git checkout --",
         "docker system prune",
+        "awk",
+        "gawk",
+        "mawk",
+        "sed",
+    ]
+    # Paths the filesystem tool must never read/write/list/delete, even though
+    # they are inside the user's home. Targets common credential stores so a
+    # prompt-injected tool call cannot exfiltrate them.
+    filesystem_denied_paths: list[str] = [
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.netrc",
+        "~/.pgpass",
+        "~/.my.cnf",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.docker/config.json",
+        "~/.kube",
+        "~/.config/gh",
+        "~/.config/google-chrome",
+        "~/.config/chromium",
+        "~/.mozilla",
+        "~/.password-store",
+        "~/.git-credentials",
     ]
     # Screenshot
     screenshot_command: str = "scrot"
@@ -168,8 +192,8 @@ class Settings(BaseSettings):
     heartbeat_interval_minutes: int = 30
     heartbeat_active_hours_start: int = 9
     heartbeat_active_hours_end: int = 22
-    heartbeat_backend: str = ""
-    heartbeat_model: str = ""
+    heartbeat_backend: str = "openrouter"
+    heartbeat_model: str = "deepseek/deepseek-v4-flash"
     heartbeat_ok_keyword: str = "HEARTBEAT_OK"
 
     # Dream Cycle
@@ -258,6 +282,10 @@ class Settings(BaseSettings):
     # Ambient capture runs an LLM call after each non-private conversation
     # turn. Disable to require manual /api/v1/todos creation only.
     planning_ambient_capture_enabled: bool = True
+    # Backend/model for ambient task extraction. Decoupled from the
+    # conversation's chat model so the hot path can use a cheap fast model.
+    planning_ambient_backend: str = "openrouter"
+    planning_ambient_model: str = "deepseek/deepseek-v4-flash"
     # Default geometry for new tmux sessions. tmux's built-in default is 80x24,
     # which makes Claude Code's TUI render at a width that mobile clients can't
     # display without ugly wrapping. Mobile/widget clients should call

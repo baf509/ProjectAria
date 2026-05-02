@@ -211,7 +211,7 @@ class CommandRouter:
     # Default models per backend — used when switching via natural language
     _BACKEND_DEFAULTS: dict[str, str] = {
         "llamacpp": "default",
-        "openrouter": "minimax/minimax-m2.7",
+        "openrouter": "deepseek/deepseek-v4-pro",
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
     }

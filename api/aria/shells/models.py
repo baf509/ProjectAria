@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 ShellStatus = Literal["active", "idle", "stopped", "unknown"]
@@ -41,6 +41,23 @@ class ShellEvent(BaseModel):
     text_clean: str
     source: ShellEventSource
     byte_offset: Optional[int] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ensure_output_newline(cls, data: Any) -> Any:
+        """Backwards-compat shim for events captured before the strip-newline
+        fix. Older capture.py rstripped '\\n' from text_raw; new capture
+        preserves it. Re-append a single LF for output events that lack one
+        so legacy data renders without running together as a single line.
+        New events (already terminated) are unaffected.
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("kind") == "output":
+            raw = data.get("text_raw")
+            if isinstance(raw, str) and raw and not raw.endswith(("\n", "\r")):
+                data = {**data, "text_raw": raw + "\n"}
+        return data
 
 
 class ShellSnapshot(BaseModel):

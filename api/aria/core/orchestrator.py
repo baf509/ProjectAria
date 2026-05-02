@@ -548,14 +548,18 @@ class Orchestrator:
                     "duration_ms": result.duration_ms,
                 })
 
-                # Build tool result content
-                tool_content = str(result.output) if result.output else (result.error or "")
+                # Persist the raw tool output to the conversation. The
+                # untrusted-content wrapper (<tool_output>…</tool_output>) is
+                # added only when constructing the next LLM round's messages,
+                # so client renderers (iOS, web, widget) display clean output
+                # without literal tag markers cluttering the chat bubble.
+                raw_content = str(result.output) if result.output else (result.error or "")
 
                 # Save tool result message
                 tool_result_msg = {
                     "id": str(uuid.uuid4()),
                     "role": "tool",
-                    "content": tool_content,
+                    "content": raw_content,
                     "tool_call_id": tool_call.id,
                     "tool_name": tool_call.name,
                     "status": result.status.value,
@@ -578,11 +582,14 @@ class Orchestrator:
                     content=f"\n[Tool {tool_call.name}: {result.status.value}]\n",
                 )
 
-                # Collect for LLM follow-up
+                # Collect for LLM follow-up — wrap in untrusted-content markers
+                # so the LLM treats it as data rather than instructions. The
+                # system prompt (see ContextBuilder) primes the model on these
+                # tags.
                 tool_results_for_llm.append({
                     "tool_call_id": tool_call.id,
                     "tool_name": tool_call.name,
-                    "content": tool_content,
+                    "content": f"<tool_output>\n{raw_content}\n</tool_output>",
                 })
 
             # Append tool call + result messages to the LLM message list
@@ -655,8 +662,8 @@ class Orchestrator:
                 try:
                     counts = await self.task_extractor.extract_from_conversation(
                         conversation_id,
-                        llm_backend=llm_config["backend"],
-                        llm_model=llm_config["model"],
+                        llm_backend=settings.planning_ambient_backend,
+                        llm_model=settings.planning_ambient_model,
                         private=is_private,
                     )
                     if any(counts.values()):

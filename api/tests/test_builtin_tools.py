@@ -118,7 +118,8 @@ class TestWebTool:
         tool = self._make_tool()
 
         import aiohttp
-        with patch("aria.tools.builtin.web.aiohttp.ClientSession") as MockSession:
+        with patch("aria.tools.builtin.web._check_url_safe", AsyncMock(return_value=None)), \
+             patch("aria.tools.builtin.web.aiohttp.ClientSession") as MockSession:
             MockSession.return_value.__aenter__ = AsyncMock(
                 side_effect=asyncio.TimeoutError()
             )
@@ -163,7 +164,8 @@ class TestWebTool:
         import aiohttp
         tool = self._make_tool()
 
-        with patch("aria.tools.builtin.web.aiohttp.ClientSession") as MockSession:
+        with patch("aria.tools.builtin.web._check_url_safe", AsyncMock(return_value=None)), \
+             patch("aria.tools.builtin.web.aiohttp.ClientSession") as MockSession:
             MockSession.return_value.__aenter__ = AsyncMock(
                 side_effect=aiohttp.ClientError("Connection refused")
             )
@@ -187,7 +189,7 @@ class TestWebTool:
         mock_response.url = "https://api.example.com"
         mock_response.content.iter_chunked = lambda _: _async_iter([b"ok"])
 
-        def mock_get(url, headers=None):
+        def mock_get(url, headers=None, allow_redirects=True):
             captured_headers.update(headers or {})
             ctx = MagicMock()
             ctx.__aenter__ = AsyncMock(return_value=mock_response)
@@ -201,7 +203,8 @@ class TestWebTool:
         mock_cs.__aenter__ = AsyncMock(return_value=mock_session)
         mock_cs.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("aria.tools.builtin.web.aiohttp.ClientSession", return_value=mock_cs):
+        with patch("aria.tools.builtin.web._check_url_safe", AsyncMock(return_value=None)), \
+             patch("aria.tools.builtin.web.aiohttp.ClientSession", return_value=mock_cs):
             await tool.execute({
                 "url": "https://api.example.com",
                 "headers": {"Authorization": "Bearer tok123"},

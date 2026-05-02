@@ -405,9 +405,11 @@ class TestMultipleToolCallsInOneRound:
         tool_msgs = [m for m in round2_msgs if m.role == "tool"]
         assert len(tool_msgs) == 2
 
-        tool_contents = {m.content for m in tool_msgs}
-        assert "shell output" in tool_contents
-        assert "web output" in tool_contents
+        tool_contents = [m.content for m in tool_msgs]
+        # Tool outputs are wrapped in <tool_output> markers for prompt-injection
+        # defense; check the inner content rather than exact equality.
+        assert any("shell output" in c for c in tool_contents)
+        assert any("web output" in c for c in tool_contents)
 
 
 class TestToolErrorPropagation:

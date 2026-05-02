@@ -119,6 +119,32 @@ class ShellTool(BaseTool):
         "\\;",     # escaped semicolon
     ]
 
+    # Per-program flag denylist for binaries that are otherwise "safe" but have
+    # subcommand features that spawn processes or write files. Matched against
+    # the post-shlex argv (argv[0] = program basename).
+    _PROGRAM_FLAG_DENYLIST = {
+        "find": frozenset({
+            "-exec", "-execdir", "-ok", "-okdir",
+            "-delete",
+            "-fprint", "-fprintf", "-fprint0", "-fls",
+        }),
+    }
+
+    def _validate_argv(self, argv: list[str]) -> tuple[bool, Optional[str]]:
+        """Per-program flag validation applied after shlex.split."""
+        if not argv:
+            return False, "Empty command"
+        program = argv[0].rsplit("/", 1)[-1]
+        denied = self._PROGRAM_FLAG_DENYLIST.get(program)
+        if denied:
+            for arg in argv[1:]:
+                if arg in denied:
+                    return False, (
+                        f"Command rejected: '{program} {arg}' is not permitted "
+                        f"(spawns processes or writes files)"
+                    )
+        return True, None
+
     def _validate_command(self, command: str) -> tuple[bool, Optional[str]]:
         """
         Validate that a command is allowed.
@@ -184,6 +210,15 @@ class ShellTool(BaseTool):
                     tool_name=self.name,
                     status=ToolStatus.ERROR,
                     error=f"Invalid command syntax: {str(e)}",
+                )
+
+            # Per-program argv-level flag check (find -exec, etc.)
+            argv_ok, argv_err = self._validate_argv(args)
+            if not argv_ok:
+                return ToolResult(
+                    tool_name=self.name,
+                    status=ToolStatus.ERROR,
+                    error=argv_err,
                 )
 
             process = await asyncio.create_subprocess_exec(

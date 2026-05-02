@@ -117,19 +117,11 @@ final class ShellStreamStore {
         if event.kind == .input { return }
         let payload = terminalPayload(for: event)
         if payload.isEmpty { return }
-        let bytes = Array(payload.utf8)
-        bridge.feed(bytes: bytes)
-        // Inject a bare LF only when the payload doesn't already end in a line
-        // terminator. tmux pipe-pane records one logical line per event with
-        // the trailing \n stripped (capture.py), so plain shell output needs a
-        // separator. But TUI redraws (Claude Code, vim, htop) end with cursor
-        // escapes or a CR — adding CRLF in that case clobbers in-place
-        // redraws and the spinner stacks vertically instead of overwriting.
-        // Use \n not \r\n: a bare LF advances the row without resetting the
-        // column, preserving any pending cursor positioning from the payload.
-        if let last = bytes.last, last != 0x0A && last != 0x0D {
-            bridge.feed(bytes: [0x0A])
-        }
+        // Feed the bytes verbatim. The server preserves the original byte
+        // stream (including any trailing \n that pipe-pane delivered), so
+        // SwiftTerm sees what the underlying TUI actually wrote — no synthetic
+        // newlines that would clobber Claude Code's cursor-positioned redraws.
+        bridge.feed(bytes: Array(payload.utf8))
     }
 
     private func terminalPayload(for event: ShellEvent) -> String {
@@ -172,15 +164,22 @@ final class ShellStreamStore {
     /// repaints at this geometry. Debounced (200ms) to absorb rapid SwiftTerm
     /// callbacks during rotation / keyboard show-hide animations, and skipped
     /// when geometry hasn't actually changed.
+    ///
+    /// The first resize on a new view skips the debounce — without that, the
+    /// first ~200ms of TUI output renders at the server's wide default
+    /// (120×40) and looks broken on phone-sized screens.
     func notifyResize(cols: Int, rows: Int) {
         guard cols >= 20, rows >= 10 else { return }
         if let last = lastSentGeometry, last.cols == cols, last.rows == rows {
             return
         }
+        let isFirstResize = lastSentGeometry == nil
         resizeTask?.cancel()
         resizeTask = Task { [weak self, shellName = shell.name, api] in
-            try? await Task.sleep(for: .milliseconds(200))
-            if Task.isCancelled { return }
+            if !isFirstResize {
+                try? await Task.sleep(for: .milliseconds(200))
+                if Task.isCancelled { return }
+            }
             do {
                 try await api.resize(name: shellName, cols: cols, rows: rows)
                 self?.lastSentGeometry = (cols, rows)

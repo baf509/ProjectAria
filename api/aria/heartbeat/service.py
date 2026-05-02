@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +26,7 @@ from aria.llm.base import Message
 from aria.llm.manager import llm_manager
 from aria.memory.long_term import LongTermMemory
 from aria.notifications.service import NotificationService
+from aria.planning.service import PlanningService
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,104 @@ class HeartbeatService:
             return None
         return content
 
+    async def _build_planning_context(self) -> tuple[str, str]:
+        """Render open tasks and active projects as prompt-ready text."""
+        try:
+            planning = PlanningService(self.db)
+            open_tasks = await planning.list_tasks(
+                status=["proposed", "active"], limit=50
+            )
+            active_projects = await planning.list_projects(status="active")
+        except Exception as e:
+            logger.warning("Heartbeat planning fetch failed: %s", e)
+            return "Planning data unavailable.", "Planning data unavailable."
+
+        now = datetime.now(timezone.utc)
+
+        def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+            if dt is None:
+                return None
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+        if not open_tasks:
+            tasks_text = "No open tasks."
+        else:
+            def sort_key(t):
+                due = _aware(t.due_at)
+                overdue = due is not None and due < now
+                effective = due or datetime.max.replace(tzinfo=timezone.utc)
+                proposed_first = 0 if t.status == "proposed" else 1
+                return (0 if overdue else (1 if due else 2), effective, proposed_first)
+
+            sorted_tasks = sorted(open_tasks, key=sort_key)[:15]
+            lines = []
+            for t in sorted_tasks:
+                tag = "[PROPOSED]" if t.status == "proposed" else "[active]"
+                due = _aware(t.due_at)
+                due_str = ""
+                if due:
+                    if due < now:
+                        days = (now - due).days
+                        due_str = f" (OVERDUE {days}d)" if days else " (OVERDUE today)"
+                    else:
+                        due_str = f" (due {due.strftime('%Y-%m-%d %H:%M')})"
+                lines.append(f"- {tag} {t.title}{due_str}")
+            tasks_text = "\n".join(lines)
+
+        if not active_projects:
+            projects_text = "No active projects."
+        else:
+            lines = []
+            for p in active_projects[:10]:
+                stale = ""
+                last = _aware(p.last_signal_at) or _aware(p.updated_at)
+                if last:
+                    days_quiet = (now - last).days
+                    if days_quiet >= 7:
+                        stale = f" (quiet {days_quiet}d)"
+                lines.append(f"- {p.name}{stale}")
+                if p.next_steps:
+                    lines.append(f"  next: {'; '.join(p.next_steps[:3])}")
+            projects_text = "\n".join(lines)
+
+        return tasks_text, projects_text
+
+    async def _build_schedules_context(self) -> str:
+        """Render schedules due in the next 6 hours."""
+        try:
+            now = datetime.now(timezone.utc)
+            cutoff = now + timedelta(hours=6)
+            cursor = self.db.schedules.find(
+                {"enabled": True, "next_run_at": {"$gte": now, "$lte": cutoff}}
+            ).sort("next_run_at", 1)
+            upcoming = await cursor.to_list(length=10)
+        except Exception as e:
+            logger.warning("Heartbeat schedule fetch failed: %s", e)
+            return "Schedule data unavailable."
+
+        if not upcoming:
+            return "No schedules in the next 6 hours."
+
+        lines = []
+        for s in upcoming:
+            nra = s.get("next_run_at")
+            if nra is not None and nra.tzinfo is None:
+                nra = nra.replace(tzinfo=timezone.utc)
+            mins = max(0, int((nra - now).total_seconds() / 60)) if nra else 0
+            when = f"in {mins}m" if mins < 60 else f"in {mins // 60}h{mins % 60:02d}m"
+            params = s.get("params") or {}
+            detail = (
+                params.get("message")
+                or params.get("detail")
+                or params.get("tool_name")
+                or ""
+            )
+            detail_str = f": {detail[:80]}" if detail else ""
+            lines.append(
+                f"- {when} — {s.get('name', '?')} ({s.get('action', '?')}){detail_str}"
+            )
+        return "\n".join(lines)
+
     async def _run_heartbeat(self):
         """Execute a single heartbeat check."""
         if not self._is_active_hours():
@@ -168,6 +267,9 @@ class HeartbeatService:
         except Exception as e:
             logger.warning("Heartbeat memory search failed: %s", e)
 
+        tasks_context, projects_context = await self._build_planning_context()
+        schedules_context = await self._build_schedules_context()
+
         # Build the heartbeat prompt
         system_prompt = "You are ARIA, a personal AI agent performing a periodic heartbeat check."
         if soul_content:
@@ -178,6 +280,9 @@ class HeartbeatService:
             checklist=checklist,
             current_time=current_time,
             memories=memory_context,
+            open_tasks=tasks_context,
+            active_projects=projects_context,
+            upcoming_schedules=schedules_context,
         )
 
         full_prompt = f"{system_prompt}\n\n{user_message}"

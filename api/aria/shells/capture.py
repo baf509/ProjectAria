@@ -115,13 +115,20 @@ async def _run_capture(shell_name: str) -> None:
             except asyncio.TimeoutError:
                 line = b""
             if line:
-                raw = line.decode("utf-8", errors="replace").rstrip("\n")
+                # Preserve the trailing newline that pipe-pane delivered.
+                # SwiftTerm/xterm.js and the TUI process the byte stream as-is;
+                # stripping the LF here would force every consumer to re-inject
+                # one, and that injection breaks Claude Code's cursor-positioning
+                # redraws (which often end mid-escape, not on a newline).
+                raw = line.decode("utf-8", errors="replace")
                 pending.append(
                     {
                         "shell_name": shell_name,
                         "kind": "output",
                         "text_raw": raw,
-                        "text_clean": strip_ansi(raw),
+                        # text_clean is for search/snapshot — keep it newline-free
+                        # so highlighting and substring matches work cleanly.
+                        "text_clean": strip_ansi(raw).rstrip("\n"),
                         "source": "pipe-pane",
                     }
                 )
