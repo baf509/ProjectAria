@@ -19,9 +19,6 @@ settings:
 packages:
   AriaKit:
     path: AriaKit
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    from: "1.2.0"
 
 targets:
   AriaMobile:
@@ -57,7 +54,6 @@ targets:
           NSAllowsArbitraryLoads: true
     dependencies:
       - package: AriaKit
-      - package: SwiftTerm
     entitlements:
       path: AriaMobile/Resources/AriaMobile.entitlements
     settings:

@@ -1,12 +1,13 @@
 # Aria — iOS / iPadOS client
 
-Native SwiftUI app for interacting with the rest of ARIA from your iPhone or iPad
-over Tailscale. Primary use case is full control of **Aria Shells** (watched tmux
-sessions): list, create, attach (live ANSI terminal via SwiftTerm), kill, tag,
-search. Also includes chat, memory search, and push-notification-driven idle
-alerts.
+Native SwiftUI **dashboard** for ARIA from your iPhone or iPad over Tailscale.
+Monitor watched shells (list, status, snapshot, recent activity, search),
+chat with ARIA, search memory, get push notifications.
 
-Inspired by Prompt 3 / Shellfish for terminal ergonomics.
+It is intentionally NOT a terminal emulator. For interactive shell work, use a
+real SSH client (Blink, Termius, etc.) and run the `claude` wrapper — you'll
+land in the same ARIA shell this app is monitoring. The "Open in Blink" button
+in the shell detail view jumps straight there via `blinkshell://run?cmd=...`.
 
 ## Requirements
 
@@ -45,7 +46,7 @@ ios/
 ├── AriaMobile/
 │   ├── App/                  — entry point, root navigation, push registrar
 │   ├── Settings/             — SettingsStore (@Observable) + SettingsView
-│   ├── Shells/               — list, detail, SwiftTerm bridge, input, create, tags, snapshot, search
+│   ├── Shells/               — list, read-only detail, snapshot, search, quick actions
 │   ├── Chat/                 — conversation list, streaming detail, message bubbles
 │   ├── Memory/               — memory search
 │   ├── Common/               — RelativeTimeText, StatusBadge
@@ -60,12 +61,11 @@ ios/
 
 ## Dependencies
 
-Pulled in via SPM (resolved on first build):
+**No third-party Swift packages.** Networking is plain `URLSession` + async/await.
 
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — the ANSI / VT100
-  terminal view backing the shell detail screen.
-
-Zero third-party deps beyond SwiftTerm. Networking uses `URLSession` + async/await.
+Earlier versions used SwiftTerm for an in-app terminal viewer. That was removed
+in favor of delegating interactive shell work to dedicated SSH apps — building
+a competitive mobile terminal emulator turned out to be out of scope.
 
 ## What the app can do
 
@@ -76,17 +76,15 @@ Zero third-party deps beyond SwiftTerm. Networking uses `URLSession` + async/awa
 | List watched shells              | Shells tab                                 |
 | Filter by status, search by name | Shells tab toolbar                         |
 | Create new session               | `+` in toolbar → sheet                     |
-| Attach (live ANSI terminal)      | Tap a row → detail view                    |
-| Backfill 2000 events on open     | Automatic on detail appear                 |
-| Live SSE stream                  | Automatic; reconnects on drop              |
-| Send input (free-form)           | Input bar                                  |
-| Special keys (Esc/Tab/arrows/⏎)  | Key accessory bar                          |
-| Ctrl-?                           | Ctrl button → letter picker sheet          |
-| Quick replies (yes/no/1/2/3)     | Key accessory bar                          |
+| Read-only monitoring             | Tap a row → detail view                    |
+| Recent-events scrollback         | Detail → Recent tab (live, ANSI-stripped)  |
+| Snapshot view (3s refresh)       | Detail → Snapshot tab                      |
+| Live SSE stream of new events    | Automatic; reconnects on drop              |
+| Quick keys (Enter / Esc / Ctrl-C)| Bottom bar in detail view                  |
+| Quick replies (yes/no/1/2/3)     | Bottom bar in detail view                  |
+| Open session in Blink            | Bottom bar → "Open in Blink"               |
 | Kill session                     | ⋯ menu → Kill (confirmed)                  |
 | Edit tags                        | ⋯ menu → Tags                              |
-| Snapshot view (3s refresh)       | ⋯ menu → View: Snapshot                    |
-| Noise filter toggle              | ⋯ menu → Noise filter                      |
 | Full-text search across shells   | Toolbar 🔍                                  |
 
 ### Chat
@@ -143,7 +141,7 @@ be committed. Everyone regenerates from `project.yml`.
 
 Fresh checkouts sometimes need:
 
-1. **File > Packages > Reset Package Caches** (if SwiftTerm doesn't resolve)
+1. **File > Packages > Reset Package Caches** (if AriaKit doesn't resolve)
 2. A clean build after setting your Team (Product > Clean Build Folder)
 3. On a device, trust the developer profile in Settings > General > VPN & Device
    Management
