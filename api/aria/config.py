@@ -282,7 +282,16 @@ class Settings(BaseSettings):
     # where the user has already approved the agent for filesystem/shell use;
     # override via env var SHELLS_CLAUDE_LAUNCH_COMMAND if you need different
     # flags or a different binary entirely.
-    shells_claude_launch_command: str = "claude --dangerously-skip-permissions"
+    #
+    # Wrapped in `bash -lc` so the login shell sources ~/.profile / ~/.bashrc
+    # and PATH includes ~/.local/bin (or wherever the user installed claude).
+    # Without this, the systemd-user context that runs the API has a minimal
+    # PATH and the spawned tmux pane exits with status 127 ("command not
+    # found") the instant it starts, killing the session before any client
+    # can attach.
+    shells_claude_launch_command: str = (
+        "bash -lc 'claude --dangerously-skip-permissions'"
+    )
 
     # Planning subsystem (tasks + projects)
     # Ambient capture runs an LLM call after each non-private conversation
