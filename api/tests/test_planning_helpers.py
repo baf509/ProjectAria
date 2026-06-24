@@ -40,7 +40,7 @@ class TestSlugify:
         assert _slugify("My Project") == "my-project"
 
     def test_strips_special_chars(self):
-        assert _slugify("iOS App!") == "ios-app"
+        assert _slugify("My App!") == "my-app"
         assert _slugify("ARIA / Shells") == "aria-shells"
 
     def test_collapses_separators(self):

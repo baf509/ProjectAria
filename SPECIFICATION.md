@@ -1687,7 +1687,6 @@ aria chat "Complex task that needs 100k context"
 - Multi-agent collaboration
 - Model fine-tuning on your data
 - Browser extension
-- Mobile app
 - Home automation integration
 
 ---

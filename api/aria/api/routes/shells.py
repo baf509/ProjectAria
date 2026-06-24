@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import Annotated, Optional
@@ -25,6 +26,7 @@ from aria.shells.models import (
     ShellInput,
     ShellInputResponse,
     ShellListResponse,
+    ShellOverviewResponse,
     ShellResizeRequest,
     ShellSnapshot,
     ShellTagsUpdate,
@@ -102,13 +104,69 @@ async def create_shell(
     return shell
 
 
+@router.get("/shells/overview", response_model=ShellOverviewResponse)
+async def shells_overview(
+    awaiting: bool = Query(
+        default=False,
+        description="If true, return only shells currently awaiting input.",
+    ),
+    service: Annotated[ShellService, Depends(get_shell_service)] = None,
+):
+    """One-call digest of the watched-shell fleet for agents.
+
+    Each shell includes `idle_seconds`, `awaiting_input` (sitting at an
+    interactive prompt past the idle threshold), the matched `prompt_line`,
+    and the `last_line` of visible output. Shells awaiting input are listed
+    first. This replaces the list-then-snapshot-each-shell loop an agent would
+    otherwise run to answer "what's my fleet doing / what needs me?".
+    """
+    items = await service.fleet_overview()
+    if awaiting:
+        items = [i for i in items if i["awaiting_input"]]
+    return ShellOverviewResponse(
+        shells=items,
+        active_count=len(items),
+        awaiting_count=sum(1 for i in items if i["awaiting_input"]),
+    )
+
+
 @router.get("/shells/search")
 async def search_shell_events(
     q: str = Query(..., min_length=1),
     limit: int = Query(default=50, le=500),
     service: Annotated[ShellService, Depends(get_shell_service)] = None,
 ):
-    """Full-text search across shell_events.text_clean."""
+    """Search across shells.
+
+    Returns two sections:
+      - `shells`: shells whose name / short_name / project_dir / tags match `q`.
+      - `events`: matching lines of captured output (full-text, regex fallback).
+
+    Previously only `events` were searched despite the tool advertising shell
+    metadata search; both are now covered.
+    """
+    regex = {"$regex": re.escape(q), "$options": "i"}
+
+    # --- shell metadata matches ---------------------------------------------
+    shell_matches: list[dict] = []
+    try:
+        scursor = service.shells.find(
+            {
+                "$or": [
+                    {"name": regex},
+                    {"short_name": regex},
+                    {"project_dir": regex},
+                    {"tags": regex},
+                ]
+            }
+        ).sort("last_activity_at", -1).limit(int(limit))
+        async for doc in scursor:
+            doc.pop("_id", None)
+            shell_matches.append(doc)
+    except Exception:  # pragma: no cover - defensive
+        shell_matches = []
+
+    # --- event (output) matches ---------------------------------------------
     try:
         cursor = (
             service.events.find(
@@ -118,24 +176,28 @@ async def search_shell_events(
             .sort([("score", {"$meta": "textScore"})])
             .limit(int(limit))
         )
-        out = []
+        events = []
         async for doc in cursor:
             doc.pop("_id", None)
-            out.append(doc)
-        return {"events": out}
+            events.append(doc)
+        return {"shells": shell_matches, "events": events}
     except Exception as exc:
-        # Fall back to a simple regex search if text index is not available.
-        regex = {"$regex": q, "$options": "i"}
+        # Fall back to a simple regex search if the text index is unavailable.
         cursor = (
             service.events.find({"text_clean": regex})
             .sort("ts", -1)
             .limit(int(limit))
         )
-        out = []
+        events = []
         async for doc in cursor:
             doc.pop("_id", None)
-            out.append(doc)
-        return {"events": out, "fallback": "regex", "error": str(exc)}
+            events.append(doc)
+        return {
+            "shells": shell_matches,
+            "events": events,
+            "fallback": "regex",
+            "error": str(exc),
+        }
 
 
 @router.get("/shells/{name}", response_model=Shell)
@@ -212,6 +274,30 @@ async def get_latest_snapshot(
     return snap
 
 
+@router.get("/shells/{name}/screen")
+async def get_current_screen(
+    name: str,
+    lines: int = Query(default=40, ge=1, le=200),
+    service: Annotated[ShellService, Depends(get_shell_service)] = None,
+):
+    """Capture the shell's visible pane live (fresh, ANSI-stripped, not stored).
+
+    Unlike `/snapshot` (which returns the last worker-stored snapshot, up to
+    ~30s stale), this captures the pane right now. Best for "what does the
+    screen look like at this moment" after sending input.
+    """
+    shell = await service.get_shell(name)
+    if not shell:
+        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    try:
+        screen = await service.current_screen(name, lines=lines)
+    except TmuxError as exc:
+        raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
+    if screen is None:
+        raise HTTPException(status_code=409, detail=f"Shell stopped: {name}")
+    return {"name": name, "lines": lines, "screen": screen}
+
+
 @router.get("/shells/{name}/stream")
 async def stream_shell_events(
     request: Request,
@@ -278,11 +364,12 @@ async def send_shell_input(
     if not _allow_input(name):
         raise HTTPException(status_code=429, detail="Rate limit exceeded for shell")
     try:
-        line = await service.send_input(
+        line, screen = await service.send_input(
             name,
             body.text,
             append_enter=body.append_enter,
             literal=body.literal,
+            wait_ms=body.wait_ms,
         )
     except ShellNotFoundError:
         raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
@@ -290,7 +377,7 @@ async def send_shell_input(
         raise HTTPException(status_code=409, detail=f"Shell stopped: {name}")
     except TmuxError as exc:
         raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
-    return ShellInputResponse(ok=True, line_number=line)
+    return ShellInputResponse(ok=True, line_number=line, screen=screen)
 
 
 @router.post("/shells/{name}/resize", status_code=204)

@@ -560,5 +560,4 @@ After setup, try:
 4. **Add MCP servers** — Connect external tool servers
 
 Future plans:
-- React Native mobile app
 - Computer use (screen control)

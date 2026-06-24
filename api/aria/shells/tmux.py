@@ -59,6 +59,17 @@ class TmuxClient:
         rc, _out, _err = await self._run("has-session", "-t", name)
         return rc == 0
 
+    async def pipe_pane(self, name: str, shim_command: str) -> None:
+        """Start capturing a session's pane output to `shim_command` via
+        `tmux pipe-pane -o`. The `-o` flag toggles: if a pipe is already
+        running for the pane this turns it OFF, so callers must only invoke
+        this when no capture is active (see ShellService.ensure_capture)."""
+        if not name:  # never run `pipe-pane -t ""` — it spams the client
+            raise TmuxError("pipe_pane requires a non-empty session name")
+        rc, _out, err = await self._run("pipe-pane", "-o", "-t", name, shim_command)
+        if rc != 0:
+            raise TmuxError(f"tmux pipe-pane failed: {err.strip()}")
+
     async def send_keys(
         self,
         name: str,

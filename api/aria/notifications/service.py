@@ -1,7 +1,12 @@
 """
 ARIA - Notification Service
 
-Purpose: Cooldown-aware notifications with Signal delivery.
+Purpose: Cooldown-aware alerting. ProjectAria does NOT deliver Signal/Telegram
+itself — that collided with the single signal-cli daemon owned by the Hermes
+agent. Instead `notify()` enqueues alerts into the `alerts` collection; Hermes
+pulls them over MCP (list_alerts / ack_alert) and relays them via its own
+Signal. The cooldown logic is retained so a sustained outage doesn't flood the
+queue.
 """
 
 from __future__ import annotations
@@ -18,23 +23,19 @@ logger = logging.getLogger(__name__)
 
 
 class NotificationService:
-    """Send notifications through configured channels with cooldowns."""
+    """Enqueue cooldown-gated alerts for the Hermes agent to relay over MCP."""
 
-    def __init__(self, signal_service: SignalService):
+    def __init__(self, signal_service: Optional[SignalService] = None):
+        # signal_service is retained for constructor compatibility but no longer
+        # used for delivery — ProjectAria queues alerts instead of sending them.
         self.signal_service = signal_service
-        self._telegram_bot = None  # Set via set_telegram_bot()
+        self._telegram_bot = None  # retained no-op; ProjectAria does not send TG
         self._cooldowns: dict[tuple[str, str], datetime] = {}
 
     def set_telegram_bot(self, bot) -> None:
-        """Set the Telegram bot for secondary delivery."""
+        """No-op retained for caller compatibility. ProjectAria no longer
+        delivers Telegram directly (alerts go to the MCP queue)."""
         self._telegram_bot = bot
-
-    def _resolve_recipient(self, recipient: Optional[str]) -> str:
-        if recipient:
-            return recipient
-        if settings.signal_allowed_senders:
-            return settings.signal_allowed_senders[0]
-        raise RuntimeError("No Signal recipient configured for notifications")
 
     def _can_send(self, source: str, event_type: str, cooldown_seconds: int) -> bool:
         key = (source, event_type)
@@ -52,52 +53,36 @@ class NotificationService:
         source: str,
         event_type: str,
         detail: str,
-        recipient: Optional[str] = None,
+        recipient: Optional[str] = None,  # accepted for compat; unused
         cooldown_seconds: int = 60,
     ) -> dict:
+        """Enqueue an alert for relay. Returns {queued: bool, ...}. Honors the
+        per-(source, event_type) cooldown so repeats within the window are
+        dropped (returns queued=False, reason='cooldown')."""
         if not self._can_send(source, event_type, cooldown_seconds):
-            return {
-                "sent": False,
-                "reason": "cooldown",
-            }
-
-        try:
-            target = self._resolve_recipient(recipient)
-        except RuntimeError as exc:
-            return {
-                "sent": False,
-                "reason": "unconfigured",
-                "detail": str(exc),
-            }
+            return {"queued": False, "reason": "cooldown"}
 
         message = f"[{source}] {event_type.upper()}: {detail}"
-        try:
-            response = await self.signal_service.send(target, message)
-        except Exception as exc:
-            return {
-                "sent": False,
-                "reason": "send_failed",
-                "detail": str(exc),
-            }
-        self._mark_sent(source, event_type)
-
-        # Also try Telegram as secondary channel
-        if self._telegram_bot and settings.telegram_enabled:
-            try:
-                for user in settings.telegram_allowed_users[:1]:
-                    # We need a chat_id, not username, for Telegram delivery.
-                    # Skip if not numeric (can't send without chat_id).
-                    if user.isdigit():
-                        await self._telegram_bot.send_message(int(user), message)
-            except Exception as exc:
-                logger.warning("Telegram notification delivery failed: %s", exc)
-
-        return {
-            "sent": True,
-            "recipient": target,
+        now = datetime.now(timezone.utc)
+        doc = {
+            "source": source,
+            "event_type": event_type,
+            "detail": detail,
             "message": message,
-            "response": response,
+            "acked": False,
+            "created_at": now,
+            "acked_at": None,
         }
+        try:
+            from aria.db.mongodb import get_database
+            db = await get_database()
+            result = await db.alerts.insert_one(doc)
+        except Exception as exc:
+            logger.warning("alert enqueue failed (%s/%s): %s", source, event_type, exc)
+            return {"queued": False, "reason": "enqueue_failed", "detail": str(exc)}
+
+        self._mark_sent(source, event_type)
+        return {"queued": True, "alert_id": str(result.inserted_id), "message": message}
 
     def status(self) -> dict:
         return {

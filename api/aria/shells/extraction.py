@@ -72,6 +72,20 @@ class ShellExtractionWorker:
             state = await state_coll.find_one({"shell_name": shell.name}) or {}
             since_line = int(state.get("last_line_extracted", 0))
 
+            # Self-heal a stale cursor. line_number is handed out from the
+            # shell's line_count counter; if that counter was reset (events
+            # pruned/recaptured, shell re-registered) the saved cursor can sit
+            # above the current max line, so the `> since_line` filter would
+            # hide every event forever and extraction would never run again.
+            # Clamp back down so we resume from what's actually there.
+            if since_line > shell.line_count:
+                logger.warning(
+                    "shells extraction: cursor for %s (%d) exceeds line_count "
+                    "(%d); resetting to resume",
+                    shell.name, since_line, shell.line_count,
+                )
+                since_line = shell.line_count
+
             events = await self.shell_service.list_events(
                 shell.name,
                 since_line=since_line,
@@ -90,10 +104,23 @@ class ShellExtractionWorker:
                 continue
 
             try:
-                extracted = await self.memory_extractor.extract_from_text(text)
+                # Bound each call: a hung backend must never stall the worker's
+                # heartbeat (a multi-hour selfcheck flatline once traced to an
+                # unbounded llama.cpp request). On timeout we skip this shell and
+                # retry it next tick — the cursor only advances on success.
+                extracted = await asyncio.wait_for(
+                    self.memory_extractor.extract_from_text(text),
+                    timeout=settings.shells_extraction_timeout_seconds,
+                )
                 logger.info(
                     "shells extraction: %s → %d memories", shell.name, len(extracted)
                 )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "shells extract timed out for %s after %ss; skipping this tick",
+                    shell.name, settings.shells_extraction_timeout_seconds,
+                )
+                continue
             except Exception as exc:
                 logger.warning("shells extract failed for %s: %s", shell.name, exc)
                 continue

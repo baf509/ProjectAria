@@ -91,6 +91,16 @@ class Project(BaseModel):
     updated_at: datetime
     last_signal_at: Optional[datetime] = None
 
+    # --- Derived fields, written by the project harvester (never hand-edited).
+    # `status` above stays the human lifecycle (active/paused/archived); machine
+    # activity lives in `activity_status` so the two never collide.
+    path: Optional[str] = None  # primary canonical path (git toplevel when available)
+    last_activity_at: Optional[datetime] = None
+    activity_status: Optional[Literal["active", "idle"]] = None
+    sources: list[dict] = Field(default_factory=list)  # provenance: git/claude/pi/shells
+    git: Optional[dict] = None  # {branch, last_commit_at, last_commit_subject}
+    harvested_at: Optional[datetime] = None
+
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)

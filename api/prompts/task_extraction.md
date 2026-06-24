@@ -13,7 +13,7 @@ intent. Examples that DO qualify:
 - "I need to add tests for the resize endpoint tomorrow"
 - "TODO: rename the Dev folder"
 - "Remind me to call Sarah on Friday"
-- "Tomorrow I'll finalize the iOS push setup"
+- "Tomorrow I'll finalize the notifier rollout"
 - "I should update CLAUDE.md before I forget"
 - "Let me file a bug for that"
 
@@ -30,7 +30,7 @@ Only emit `project_updates` when the user clearly references work on a named
 or strongly-implied existing project (a codebase, repo, initiative). Use the
 **project_hint** field for the matcher (a short string the server will fuzzy-
 match against existing project names/slugs). Examples:
-- "Just shipped the iOS chat fix" → project_hint: "iOS", status_note: "shipped chat fix"
+- "Just shipped the CLI chat fix" → project_hint: "CLI", status_note: "shipped chat fix"
 - "Made progress on ARIA shells today" → project_hint: "shells"
 
 ## Strict criteria for new_projects
@@ -60,9 +60,9 @@ intent is unambiguous.
   ],
   "project_updates": [
     {{
-      "project_hint": "iOS",
+      "project_hint": "shells",
       "status_note": "Shipped tool-call decoder fix and CRLF rendering fix",
-      "next_step": "Verify on device"
+      "next_step": "Verify in the TUI"
     }}
   ],
   "new_projects": [

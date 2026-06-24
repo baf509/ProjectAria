@@ -95,7 +95,6 @@ Hardened the sub-agent runtime with Gas Town–inspired safety layers:
 
 ### Future Enhancements
 - [ ] Voice input/output (STT/TTS) in widget
-- [ ] React Native mobile app
 - [ ] Widget settings persistence via Tauri store
 - [ ] Configurable hotkey
 - [ ] Agent management UI
@@ -568,7 +567,7 @@ PROJECT_STATUS.md (this file)
 | 4 | Cloud LLM Adapters (Anthropic, OpenAI, OpenRouter, Fallback) | COMPLETE |
 | 5 | Web UI (Next.js) | COMPLETE |
 | 6 | Desktop Widget + llama.cpp ROCm + Voice I/O | COMPLETE |
-| 7 | Signal Integration (mobile interface) | COMPLETE |
+| 7 | Signal Integration (messaging interface) | COMPLETE |
 | 8 | Hardening (tokens, summaries, resilience, migrations, usage) | COMPLETE |
 | 9 | Mode System (agent switching, keywords) | COMPLETE |
 | 10 | Memory Categories (extraction types) | COMPLETE |

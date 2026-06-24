@@ -27,7 +27,9 @@ console = Console()
 class AriaClient:
     """ARIA API client."""
 
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = None):
+        if base_url is None:
+            base_url = os.getenv("ARIA_API_URL", "http://localhost:8000")
         self.base_url = base_url.rstrip("/")
         headers = {}
         api_key = os.getenv("ARIA_API_KEY")

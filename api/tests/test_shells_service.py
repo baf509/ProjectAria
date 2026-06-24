@@ -243,7 +243,7 @@ async def test_send_input_rejects_stopped(service):
 async def test_send_input_logs_event(service):
     await service.register_shell("claude-proj")
     service._fake_tmux.sessions.add("claude-proj")
-    line = await service.send_input("claude-proj", "yes please")
+    line, screen = await service.send_input("claude-proj", "yes please")
     assert line >= 1
     events = await service.list_events("claude-proj", kinds=["input"], limit=10)
     assert len(events) == 1

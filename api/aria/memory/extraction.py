@@ -17,6 +17,38 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 logger = logging.getLogger(__name__)
 
+import re
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_memory_array(response: Optional[str]) -> Optional[list]:
+    """Best-effort parse of an LLM extraction response into a JSON list.
+
+    Tolerates reasoning-model `<think>` blocks, markdown ```json fences, and
+    leading/trailing prose by falling back to the first [...] span.
+    Returns None if nothing parseable is found.
+    """
+    if not response:
+        return None
+    cleaned = _THINK_RE.sub("", response).strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(
+            l for l in cleaned.split("\n") if not l.strip().startswith("```")
+        ).strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("["), cleaned.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            parsed = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, list) else None
+
+
 from aria.config import settings
 from aria.core.claude_runner import ClaudeRunner
 from aria.llm.manager import llm_manager
@@ -131,16 +163,9 @@ class MemoryExtractor:
             if not response:
                 return 0
 
-            # Parse JSON response — strip markdown fences if present
-            cleaned = response.strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.split("\n")
-                # Remove first line (```json or ```) and last line (```)
-                lines = [l for l in lines if not l.strip().startswith("```")]
-                cleaned = "\n".join(lines).strip()
-            memories = json.loads(cleaned)
-
-            if not isinstance(memories, list):
+            # Parse JSON response — tolerant of fences / reasoning blocks
+            memories = _parse_memory_array(response)
+            if memories is None:
                 logger.warning("Unexpected extraction response format: %s", response)
                 return 0
 
@@ -256,12 +281,8 @@ class MemoryExtractor:
             if not response:
                 return []
 
-            memories = json.loads(response.strip())
-
-            if not isinstance(memories, list):
-                return []
-
-            return memories
+            memories = _parse_memory_array(response)
+            return memories if memories is not None else []
 
         except Exception as e:
             logger.error("Text extraction error: %s", e)

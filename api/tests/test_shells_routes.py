@@ -42,7 +42,7 @@ class FakeShellService:
     async def get_last_snapshot(self, name):
         return None
 
-    async def send_input(self, name, text, *, append_enter=True, literal=False):
+    async def send_input(self, name, text, *, append_enter=True, literal=False, wait_ms=0):
         if self.raise_on_send:
             raise self.raise_on_send
         if name not in self.shells:
@@ -50,7 +50,8 @@ class FakeShellService:
         if self.shells[name].status == "stopped":
             raise ShellStoppedError(name)
         self.sent.append((name, text, append_enter, literal))
-        return 42
+        # New contract: (line_number, screen). screen is None unless wait_ms>0.
+        return 42, ("SCREEN" if wait_ms else None)
 
     async def set_tags(self, name, tags):
         self.tags[name] = list(tags)
