@@ -12,6 +12,16 @@ import re
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+# DCS / SOS / PM / APC strings: ESC P|X|^|_ ... terminated by ST (ESC \).
+_DCS_RE = re.compile(r"\x1b[P^_X].*?\x1b\\", re.DOTALL)
+# Charset designation: ESC ( | ) | * | + followed by one selector byte.
+_CHARSET_RE = re.compile(r"\x1b[()*+][\x20-\x7e]")
+# Any remaining two-byte escape: ESC + one byte in the Fp/Fe/Fs range. Catches
+# DECSC (ESC 7), DECRC (ESC 8), DECKPAM/NM (ESC = / ESC >), RI (ESC M), RIS
+# (ESC c), etc. that the CSI regex above does not match and that otherwise leak
+# into text_clean as gibberish like "\x1b7\x1b8". Run AFTER the longer
+# introducer patterns so we never bite the start of a CSI/OSC/DCS sequence.
+_ESC_SINGLE_RE = re.compile(r"\x1b[\x20-\x7e]")
 _BACKSPACE_RE = re.compile(r".\x08")
 
 
@@ -23,8 +33,11 @@ def strip_ansi(text: str) -> str:
     """
     if not text:
         return ""
+    text = _DCS_RE.sub("", text)
     text = _OSC_RE.sub("", text)
     text = _ANSI_RE.sub("", text)
+    text = _CHARSET_RE.sub("", text)
+    text = _ESC_SINGLE_RE.sub("", text)
     # Resolve backspace pairs (rare in captured output but harmless)
     prev = None
     while prev != text:

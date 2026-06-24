@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import socket
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Iterable, Optional
@@ -17,7 +18,8 @@ from typing import AsyncIterator, Iterable, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
-from aria.shells.ansi import strip_ansi
+from aria.shells.ansi import matches_prompt, parse_prompt_patterns, strip_ansi
+from aria.shells.claude_trust import ensure_trusted
 from aria.shells.models import Shell, ShellEvent, ShellSnapshot
 from aria.shells.tmux import TmuxClient, TmuxError, TmuxSessionNotFoundError
 
@@ -232,6 +234,11 @@ class ShellService:
             return await self.register_shell(full_name, project_dir=workdir or "")
 
         command = settings.shells_claude_launch_command if launch_claude else None
+        if command and settings.shells_claude_autotrust:
+            # Pre-trust the workdir so Claude Code's blocking folder-trust
+            # dialog doesn't hang the detached session. Best-effort, off the
+            # event loop; failure just falls back to the old (dialog) behaviour.
+            await asyncio.to_thread(ensure_trusted, workdir or None)
         effective_cols = cols or settings.shells_default_cols
         effective_rows = rows or settings.shells_default_rows
         await self.tmux.new_session(
@@ -382,6 +389,95 @@ class ShellService:
         await self.insert_snapshot(name, clean, h)
         return await self.get_last_snapshot(name)
 
+    # ---------------------------------------------------------------- overview
+
+    async def current_screen(self, name: str, *, lines: int = 40) -> Optional[str]:
+        """Return the live, ANSI-stripped visible pane of a shell.
+
+        Unlike `get_last_snapshot`, this captures fresh (no DB round-trip) and
+        does not persist. Returns None if the tmux session is gone (and marks
+        the shell stopped). Intended for "what's on screen right now" reads by
+        agents after sending input.
+        """
+        try:
+            raw = await self.tmux.capture_pane(name, lines=lines)
+        except TmuxSessionNotFoundError:
+            await self.mark_stopped(name)
+            return None
+        return strip_ansi(raw).rstrip()
+
+    async def fleet_overview(
+        self,
+        *,
+        statuses: Iterable[str] = ("active", "idle"),
+        tail_lines: int = 6,
+    ) -> list[dict]:
+        """Return an enriched, agent-friendly digest of watched shells.
+
+        One call per shell does a short tail to compute the last visible line
+        and whether the shell is sitting at an interactive prompt awaiting
+        input. `awaiting_input` mirrors the IdleNotifier's logic exactly (idle
+        past the threshold + last output line matches a prompt pattern) so the
+        overview agrees with what actually fires notifications.
+        """
+        patterns = parse_prompt_patterns(settings.shells_idle_prompt_patterns)
+        idle_threshold = int(settings.shells_idle_threshold_seconds or 60)
+        now = _utcnow()
+
+        shells = await self.list_shells(status=list(statuses))
+        out: list[dict] = []
+        for shell in shells:
+            la = shell.last_activity_at
+            if la.tzinfo is None:
+                la = la.replace(tzinfo=timezone.utc)
+            idle_seconds = max(0, int((now - la).total_seconds()))
+
+            tail = await self.tail(shell.name, lines=tail_lines)
+            # Prefer the most recent line with real (alphanumeric) content so a
+            # trailing spinner frame or stray escape leftover doesn't become the
+            # summary. Re-strip stored text in case it predates the ansi fixes.
+            last_line = None
+            fallback_line = None
+            for ev in reversed(tail):
+                text = strip_ansi(ev.text_clean).strip()
+                if not text:
+                    continue
+                if fallback_line is None:
+                    fallback_line = text
+                if any(c.isalnum() for c in text):
+                    last_line = text
+                    break
+            last_line = last_line or fallback_line
+
+            awaiting = False
+            prompt_line = None
+            if tail and idle_seconds >= idle_threshold:
+                last = tail[-1]
+                if last.kind == "output" and matches_prompt(last.text_clean, patterns):
+                    awaiting = True
+                    prompt_line = last.text_clean.strip()[:200]
+
+            out.append(
+                {
+                    "name": shell.name,
+                    "short_name": shell.short_name,
+                    "status": shell.status,
+                    "project_dir": shell.project_dir,
+                    "line_count": shell.line_count,
+                    "last_activity_at": la,
+                    "idle_seconds": idle_seconds,
+                    "awaiting_input": awaiting,
+                    "prompt_line": prompt_line,
+                    "last_line": (last_line or "")[:200],
+                    "tags": shell.tags,
+                }
+            )
+
+        # Surface shells that need attention first: awaiting input, then most
+        # recently active (smallest idle_seconds).
+        out.sort(key=lambda s: (not s["awaiting_input"], s["idle_seconds"]))
+        return out
+
     # -------------------------------------------------------------- reconcile
 
     async def reconcile_statuses(self) -> None:
@@ -409,6 +505,75 @@ class ShellService:
             await self.register_shell(name)
             count += 1
         return count
+
+    # --------------------------------------------------------------- adoption
+
+    @staticmethod
+    def _capture_pidfile(name: str) -> str:
+        return f"/tmp/aria-shell-capture-{name}.pid"
+
+    def _capture_alive(self, name: str) -> bool:
+        """True if a capture process for `name` is recorded and still running.
+
+        Mirrors scripts/aria-shell-register so the in-process reconciler and the
+        tmux-hook path agree on whether capture is active (shared pidfile)."""
+        try:
+            with open(self._capture_pidfile(name)) as fh:
+                pid = int(fh.read().strip())
+        except (FileNotFoundError, ValueError):
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    async def ensure_capture(self, name: str) -> bool:
+        """Start pipe-pane capture for `name` if it isn't already running.
+
+        Idempotent backstop for the tmux session-created/client-attached hooks:
+        the capture shim writes the pidfile we check here, so we never start a
+        second pipe (pipe-pane -o would otherwise toggle an active one off).
+        Returns True if capture was (re)started, False if already alive."""
+        if self._capture_alive(name):
+            return False
+        shim = settings.shells_capture_shim
+        try:
+            await self.tmux.pipe_pane(name, f"{shim} {name}")
+            logger.info("adopt: started capture for %s", name)
+            return True
+        except TmuxError as exc:
+            logger.warning("adopt: could not start capture for %s: %s", name, exc)
+            return False
+
+    async def adopt_session(self, name: str, *, project_dir: str = "") -> Shell:
+        """Adopt an externally-started tmux session: register it (idempotent)
+        and ensure capture is running. Used by the poll reconciler and can be
+        called directly to pick up a session started outside ProjectAria."""
+        shell = await self.register_shell(name, project_dir=project_dir)
+        await self.ensure_capture(name)
+        return shell
+
+    async def reconcile_adopt(self) -> int:
+        """Discover live `claude-*` sessions and ensure each is registered and
+        captured. Backstop for sessions the tmux hook missed (started before the
+        hook was installed, or whose capture process died). Returns the count of
+        sessions for which capture was (re)started."""
+        prefix = settings.shells_tmux_session_prefix
+        try:
+            names = await self.tmux.list_sessions(prefix=prefix)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("reconcile_adopt: list-sessions failed: %s", exc)
+            return 0
+        started = 0
+        for name in names:
+            try:
+                await self.register_shell(name)
+                if await self.ensure_capture(name):
+                    started += 1
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("reconcile_adopt: %s failed: %s", name, exc)
+        return started
 
     # ----------------------------------------------------------------- stream
 
@@ -444,10 +609,15 @@ class ShellService:
         *,
         append_enter: bool = True,
         literal: bool = False,
-    ) -> int:
+        wait_ms: int = 0,
+    ) -> tuple[int, Optional[str]]:
         """Dispatch text to a tmux session and log an input event.
 
-        Returns the line_number of the recorded input event.
+        Returns ``(line_number, screen)``. When ``wait_ms`` > 0, sleep that
+        long after sending and capture the resulting visible pane so the caller
+        can observe the effect of its input in a single round-trip; otherwise
+        ``screen`` is None. This closes the act→observe loop for agents like
+        Hermes that would otherwise send-then-poll.
         """
         shell = await self.get_shell(name)
         if not shell:
@@ -474,4 +644,13 @@ class ShellService:
             ],
         )
         shell = await self.get_shell(name)
-        return shell.line_count if shell else 0
+        line = shell.line_count if shell else 0
+
+        screen: Optional[str] = None
+        if wait_ms and wait_ms > 0:
+            await asyncio.sleep(min(wait_ms, 10000) / 1000.0)
+            try:
+                screen = await self.current_screen(name)
+            except TmuxError as exc:  # pragma: no cover - defensive
+                logger.debug("send_input: post-capture failed for %s: %s", name, exc)
+        return line, screen

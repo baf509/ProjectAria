@@ -127,6 +127,12 @@ class FakePlanningService:
     async def get_project(self, project_id: str):
         return self.projects.get(project_id)
 
+    async def get_project_by_slug(self, slug: str):
+        for proj in self.projects.values():
+            if getattr(proj, "slug", None) == slug:
+                return proj
+        return None
+
     async def update_project(self, project_id: str, body: ProjectUpdateRequest):
         existing = self.projects.get(project_id)
         if not existing:

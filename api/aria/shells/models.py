@@ -72,6 +72,9 @@ class ShellInput(BaseModel):
     text: str
     append_enter: bool = True
     literal: bool = False
+    # When > 0, the server waits this many ms after sending, then returns the
+    # resulting visible pane in the response `screen` field. Capped at 10s.
+    wait_ms: int = Field(default=0, ge=0, le=10000)
 
 
 class ShellCreateRequest(BaseModel):
@@ -108,3 +111,26 @@ class ShellEventsResponse(BaseModel):
 class ShellInputResponse(BaseModel):
     ok: bool
     line_number: Optional[int] = None
+    # Visible pane captured `wait_ms` after the input was sent (None unless
+    # wait_ms was requested).
+    screen: Optional[str] = None
+
+
+class ShellOverviewItem(BaseModel):
+    name: str
+    short_name: str
+    status: ShellStatus
+    project_dir: str = ""
+    line_count: int = 0
+    last_activity_at: datetime
+    idle_seconds: int = 0
+    awaiting_input: bool = False
+    prompt_line: Optional[str] = None
+    last_line: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class ShellOverviewResponse(BaseModel):
+    shells: list[ShellOverviewItem]
+    active_count: int = 0
+    awaiting_count: int = 0

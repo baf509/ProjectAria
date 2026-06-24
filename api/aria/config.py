@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # llama.cpp (local, OpenAI-compatible)
     llamacpp_url: str = "http://localhost:8080/v1"
     llamacpp_api_key: str = ""
+    # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
+    # busy/half-open local server wedge a caller for ~10min; a hang never raises
+    # so retry_async can't recover it.
+    llamacpp_timeout_seconds: int = 120
 
     # Chroma context-1 (local agentic search model served by a second llama.cpp)
     context1_url: str = "http://localhost:8081/v1"
@@ -274,6 +278,10 @@ class Settings(BaseSettings):
     shells_extraction_enabled: bool = True
     shells_extraction_interval_minutes: int = 10
     shells_extraction_min_events: int = 20
+    # Per-shell wall-clock bound on one extraction call. Belt-and-suspenders
+    # over llamacpp_timeout_seconds so a single stuck call can't wedge the
+    # worker's heartbeat past this (selfcheck watches for a stalled cursor).
+    shells_extraction_timeout_seconds: int = 240
     shells_input_rate_limit_per_minute: int = 30
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
@@ -312,15 +320,43 @@ class Settings(BaseSettings):
     shells_max_cols: int = 500
     shells_max_rows: int = 200
 
-    # APNs (Phase 6 — mobile push). Disabled by default; set
-    # `shells_apns_enabled=true` and configure the key + team/bundle IDs to
-    # start sending idle alerts to registered iOS devices.
-    shells_apns_enabled: bool = False
-    apns_team_id: str = ""
-    apns_key_id: str = ""
-    apns_bundle_id: str = "dev.aria.AriaMobile"
-    apns_auth_key_path: str = ""
-    apns_use_sandbox: bool = True
+    # Scrollback retention is a per-shell TOKEN budget, not a time TTL. The
+    # prune worker keeps only the most recent ~N tokens of raw events per
+    # shell. Derived data (memories, projects, tasks) is never touched.
+    shells_prune_enabled: bool = True
+    shells_event_token_budget: int = 150000  # ~600KB of recent scrollback/shell
+    shells_prune_interval_hours: int = 6
+
+    # Pre-seed Claude Code's folder-trust flag before launching a shell so the
+    # blocking "Do you trust the files in this folder?" dialog never appears.
+    shells_claude_autotrust: bool = True
+    shells_claude_config_path: str = ""  # defaults to ~/.claude.json if empty
+
+    # Auto-adopt: discover externally-started claude-* tmux sessions and watch
+    # them without an explicit create_shell call. Hook-based in real time (see
+    # scripts/aria-tmux-hook.conf), with this poll reconciler as a backstop.
+    shells_adopt_enabled: bool = True
+    shells_adopt_interval_seconds: int = 15
+    # pipe-pane shim the reconciler starts capture with (writes the pidfile the
+    # capture process is tracked by). Matches scripts/aria-shell-capture.
+    shells_capture_shim: str = "/home/ben/.local/bin/aria-shell-capture"
+
+    # Project registry harvester — derives the projects collection from git
+    # repos + Claude/pi sessions + live shells. Never hand-maintained.
+    projects_harvest_enabled: bool = True
+    projects_harvest_interval_minutes: int = 30
+
+    # Self-monitoring: periodically verify DB / LLM / embeddings / extraction
+    # and raise an alert (with cooldown) when something silently broke.
+    selfcheck_enabled: bool = True
+    selfcheck_interval_minutes: int = 10
+    selfcheck_alert_cooldown_minutes: int = 60
+
+    # Weekly heartbeat report so silence is never ambiguous (healthy vs the
+    # monitor itself being dead). weekday: Mon=0..Sun=6; hour is local.
+    report_enabled: bool = True
+    report_weekday: int = 6
+    report_hour: int = 9
 
     debug: bool = False
 

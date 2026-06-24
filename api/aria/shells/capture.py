@@ -116,7 +116,7 @@ async def _run_capture(shell_name: str) -> None:
                 line = b""
             if line:
                 # Preserve the trailing newline that pipe-pane delivered.
-                # SwiftTerm/xterm.js and the TUI process the byte stream as-is;
+                # xterm.js and the TUI process the byte stream as-is;
                 # stripping the LF here would force every consumer to re-inject
                 # one, and that injection breaks Claude Code's cursor-positioning
                 # redraws (which often end mid-escape, not on a newline).

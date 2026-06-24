@@ -196,7 +196,11 @@ async def get_project(
     project_id: str,
     service: Annotated[PlanningService, Depends(get_planning_service)],
 ):
+    # Accept either a Mongo ObjectId or a project slug, so agents/MCP can address
+    # a project by its stable slug without first resolving the id.
     proj = await service.get_project(project_id)
+    if not proj:
+        proj = await service.get_project_by_slug(project_id)
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
     return proj
@@ -235,6 +239,8 @@ async def list_project_tasks(
 ):
     proj = await service.get_project(project_id)
     if not proj:
+        proj = await service.get_project_by_slug(project_id)
+    if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
     status_filter: Optional[list[TaskStatus]] = None
     if status:
@@ -244,5 +250,5 @@ async def list_project_tasks(
         if bad:
             raise HTTPException(status_code=422, detail=f"Invalid status(es): {bad}")
         status_filter = parts  # type: ignore[assignment]
-    tasks = await service.list_tasks(status=status_filter, project_id=project_id)
+    tasks = await service.list_tasks(status=status_filter, project_id=proj.id)
     return TaskListResponse(tasks=tasks)

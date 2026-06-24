@@ -22,6 +22,33 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-06-24] - Remove iOS client; ARIA is Linux-only
+
+### Removed
+- **`ios/` directory** — the native SwiftUI/iPadOS client (AriaMobile + AriaKit)
+  is gone. ARIA is now exclusively a service that runs on a Linux machine,
+  accessed via the Web UI, TUI, CLI, desktop widget, Signal, Telegram, and the
+  REST API.
+- **APNs push delivery** (`api/aria/shells/apns.py`) and all `apns_*` /
+  `shells_apns_enabled` settings in `config.py` — Apple Push was only used by
+  the iOS client.
+- **Device registration API** (`api/aria/api/routes/devices.py`,
+  `POST /api/v1/devices` and friends) plus its router registration in
+  `main.py` and the `test_devices_routes.py` suite — device tokens existed
+  solely to target APNs.
+
+### Changed
+- `shells/notifier.py` no longer attempts APNs delivery; idle-prompt alerts
+  continue to route through Signal/Telegram via `NotificationService`.
+- Dropped incidental iOS references from code comments
+  (`core/orchestrator.py`, `shells/capture.py`), the task-extraction prompt,
+  a planning unit test, and the project docs (README already had none).
+
+### Notes
+- The watched-shells subsystem itself is unchanged and fully retained — it is a
+  Linux/tmux feature consumed by the Web UI dashboard, TUI, and CLI.
+- The 2026-04-18 entry below is kept as historical record.
+
 ## [2026-04-18] - Native iOS / iPadOS client + shells/devices API
 
 ### Added

@@ -15,7 +15,6 @@ from typing import Optional
 from aria.config import settings
 from aria.notifications.service import NotificationService
 from aria.shells.ansi import matches_prompt, parse_prompt_patterns
-from aria.shells.apns import send_apns_alert
 from aria.shells.service import ShellService
 
 logger = logging.getLogger(__name__)
@@ -92,14 +91,4 @@ class IdleNotifier:
                 detail=detail,
                 cooldown_seconds=300,
             )
-            if settings.shells_apns_enabled:
-                try:
-                    await send_apns_alert(
-                        self.shell_service.db,
-                        title=f"{shell.short_name or shell.name} is waiting",
-                        body=last.text_clean[:160],
-                        data={"shell_name": shell.name, "line_number": last.line_number},
-                    )
-                except Exception as exc:
-                    logger.warning("apns alert failed: %s", exc)
             self._last_notified[shell.name] = last.line_number

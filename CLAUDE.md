@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ARIA is a local-first AI agent platform — a personal AI assistant with long-term memory, tool use, and multiple interfaces.
 
 **Key principles:**
+- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, Signal/Telegram, and the REST API.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
 - **Single-user design** — Personal agent, no multi-tenancy or auth.
 - **LLM agnostic** — Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.

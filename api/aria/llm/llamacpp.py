@@ -8,6 +8,7 @@ Related Spec Sections:
 - Section 6: LLM Adapter Interface
 """
 
+from aria.config import settings
 from aria.llm.openai import OpenAIAdapter
 
 try:
@@ -34,9 +35,13 @@ class LlamaCppAdapter(OpenAIAdapter):
 
         self.api_key = api_key or "no-key"
         self.model = model
+        # Explicit timeout: the SDK default (600s) lets a busy/half-open local
+        # server hang a caller for ~10min per try. retry_async can't help — a
+        # hang never raises. See settings.llamacpp_timeout_seconds.
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=self.api_key,
+            timeout=float(settings.llamacpp_timeout_seconds),
         )
 
     @property

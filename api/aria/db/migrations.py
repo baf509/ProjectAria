@@ -24,6 +24,39 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     await _ensure_search_indexes(db)
     await _seed_pi_coding_agent(db)
     await _seed_search_agent(db)
+    await _normalize_project_status(db)
+
+
+async def _normalize_project_status(db: AsyncIOMotorDatabase) -> None:
+    """Reconcile the two project status axes after the aria-shells merge.
+
+    The harvester (carved out in aria-shells) used to write the machine activity
+    value ('active'/'idle') into the human `status` field, but ProjectAria's
+    Project model treats `status` as the lifecycle (active/paused/archived) and
+    keeps activity in `activity_status`. Any legacy doc whose `status` is 'idle'
+    (or otherwise not a valid lifecycle value) would fail model deserialization,
+    so promote those to 'active' while preserving their activity in
+    `activity_status`. Idempotent — a no-op once converged.
+    """
+    valid = {"active", "paused", "archived"}
+    try:
+        cursor = db.projects.find(
+            {"status": {"$nin": list(valid)}},
+            {"status": 1, "activity_status": 1},
+        )
+        fixed = 0
+        async for doc in cursor:
+            legacy = doc.get("status")
+            update = {"status": "active"}
+            # Preserve the legacy activity signal if it wasn't already recorded.
+            if not doc.get("activity_status") and legacy in {"active", "idle"}:
+                update["activity_status"] = legacy
+            await db.projects.update_one({"_id": doc["_id"]}, {"$set": update})
+            fixed += 1
+        if fixed:
+            logger.info("Normalized status on %d legacy project doc(s)", fixed)
+    except Exception as exc:  # pragma: no cover - non-fatal
+        logger.warning("Project status normalization failed: %s", exc)
 
 
 async def _ensure_schema_validation(db: AsyncIOMotorDatabase) -> None:

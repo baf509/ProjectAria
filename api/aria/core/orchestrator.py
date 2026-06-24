@@ -551,7 +551,7 @@ class Orchestrator:
                 # Persist the raw tool output to the conversation. The
                 # untrusted-content wrapper (<tool_output>…</tool_output>) is
                 # added only when constructing the next LLM round's messages,
-                # so client renderers (iOS, web, widget) display clean output
+                # so client renderers (web, CLI, widget) display clean output
                 # without literal tag markers cluttering the chat bubble.
                 raw_content = str(result.output) if result.output else (result.error or "")
 

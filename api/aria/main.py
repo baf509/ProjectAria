@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, devices, planning
+from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, planning, alerts
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -233,6 +233,48 @@ async def lifespan(app: FastAPI):
             await shell_extractor.start()
             app.state.shell_extractor = shell_extractor
 
+        if settings.shells_prune_enabled:
+            from aria.shells.prune import ShellEventsPruneWorker
+            shell_pruner = ShellEventsPruneWorker(db)
+            await shell_pruner.start()
+            app.state.shell_pruner = shell_pruner
+
+        if settings.selfcheck_enabled:
+            from aria.shells.selfcheck import SelfCheckWorker
+            selfcheck = SelfCheckWorker(
+                db,
+                get_notification_service(),
+                interval_minutes=settings.selfcheck_interval_minutes,
+                cooldown_minutes=settings.selfcheck_alert_cooldown_minutes,
+            )
+            await selfcheck.start()
+            app.state.selfcheck = selfcheck
+
+        if settings.report_enabled:
+            from aria.shells.report import HeartbeatReportWorker
+            report_worker = HeartbeatReportWorker(
+                db,
+                get_notification_service(),
+                weekday=settings.report_weekday,
+                hour=settings.report_hour,
+            )
+            await report_worker.start()
+            app.state.report_worker = report_worker
+
+        if settings.projects_harvest_enabled:
+            from aria.shells.harvest import ProjectHarvestWorker
+            project_harvester = ProjectHarvestWorker(
+                db, interval_minutes=settings.projects_harvest_interval_minutes
+            )
+            await project_harvester.start()
+            app.state.project_harvester = project_harvester
+
+        if settings.shells_adopt_enabled:
+            from aria.shells.adopt import ShellAdoptWorker
+            shell_adopter = ShellAdoptWorker(shell_service)
+            await shell_adopter.start()
+            app.state.shell_adopter = shell_adopter
+
     # Planning subsystem (tasks + projects) — index bootstrap. Cheap, idempotent.
     try:
         await db.tasks.create_index([("status", 1), ("updated_at", -1)])
@@ -244,6 +286,7 @@ async def lifespan(app: FastAPI):
         )
         await db.projects.create_index([("slug", 1)], unique=True)
         await db.projects.create_index([("status", 1), ("last_signal_at", -1)])
+        await db.alerts.create_index([("acked", 1), ("created_at", -1)])
         startup_logger.info("Planning indexes ready")
     except Exception as exc:  # pragma: no cover - non-fatal
         startup_logger.warning("Planning index creation failed: %s", exc)
@@ -286,7 +329,11 @@ async def lifespan(app: FastAPI):
         await _awareness_service.stop()
 
     # 3a. Stop watched shells workers
-    for attr in ("shell_notifier", "shell_extractor", "shell_worker"):
+    for attr in (
+        "shell_notifier", "shell_extractor", "shell_pruner",
+        "project_harvester", "selfcheck", "report_worker",
+        "shell_adopter", "shell_worker",
+    ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
             try:
@@ -445,8 +492,8 @@ app.include_router(heartbeat.router, prefix="/api/v1", tags=["heartbeat"])
 app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
-app.include_router(devices.router, prefix="/api/v1", tags=["devices"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
+app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
 
 
 @app.get("/")
