@@ -35,12 +35,21 @@ ARIA (Autonomous Reasoning & Intelligence Architecture) is a self-hosted AI agen
 - **Supports cloud fallback** - Anthropic/OpenAI/OpenRouter APIs when local models can't handle it
 - **Provides computer use** - Both CLI (shell, files) and GUI (screen control) capabilities
 - **Remembers everything** - Short-term context + long-term semantic memory
+- **Watches your fleet** - Auto-adopts and observes your `claude-*` tmux coding sessions (subsystem absorbed from the former standalone `aria-shells` service)
+- **Is the single always-on service** - Listens on **:8200** and exposes an **MCP server** (`mcp/server.py`) to the remote Hermes agent
 
 ### 1.2 Single-User Design
 
 This is a personal AI agent. No multi-tenancy, no complex auth. Optimized for one user running on home infrastructure (Unraid NAS + GPU machine).
 
 ### 1.3 Deployment Topology
+
+> **Current deployment (`corsair-ai`).** ARIA runs as the single always-on
+> service on one Linux host: `aria-api` (systemd user service) bound to **:8200**
+> (it took over the port from the retired `aria-shells` service; the old :8000 is
+> gone). The Web UI, TTS, and STT run as Docker containers; the MCP server is
+> launched by the Hermes gateway. The idealized NAS/GPU split below is the
+> original target topology and is retained for reference.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -211,6 +220,60 @@ MEDIUM/P2, LOW/P3). Escalation chain: (1) agent detects issue and creates an
 escalation, (2) system attempts auto-resolution (retry, fallback), (3) if
 unresolved after a threshold, escalates to user notification, (4) stale
 escalations are auto-re-escalated with increased severity.
+
+---
+
+### 2.Y Watched Shells, Project Registry & MCP Bridge
+
+This subsystem was absorbed from the former standalone `aria-shells` service so
+ARIA is the single always-on service. It watches the user's own `claude-*` tmux
+coding sessions — distinct from the sub-agents ARIA spawns herself.
+
+**Watched Shells** (`api/aria/shells/`)
+- **Auto-adopt** — sessions named `claude-*` are picked up with no explicit
+  create step. Real-time via a global tmux hook (`scripts/aria-tmux-hook.conf` →
+  `aria-shell-register --ensure-capture`, which registers the shell in Mongo and
+  starts `pipe-pane` capture), backstopped by an in-process poll reconciler
+  (`adopt.py::ShellAdoptWorker`) that re-attaches capture to any session the hook
+  missed. Capture coordination uses a shared pidfile so the two paths never
+  double-capture.
+- **Capture & storage** — `capture.py` (run via the `aria-shell-capture` shim)
+  streams each pane line, ANSI-stripped (`ansi.py`, CSI + DCS/SOS/PM/APC +
+  charset + two-byte escapes), into `shell_events` with server-assigned line
+  numbers. `snapshot.py` periodically stores the full pane buffer.
+- **Workers** (all gated by `settings` flags, wired in `main.py` lifespan):
+  `extraction` (events → memories, per-call timeout + stale-cursor self-heal),
+  `prune` (per-shell token-budget scrollback retention; never touches derived
+  data), `selfcheck` (DB/LLM/embeddings/extraction/search health → alerts with
+  cooldown + recovery notice), `report` (weekly heartbeat), and the idle
+  notifier (alerts on shells stuck at an interactive prompt).
+- **Service API** — `fleet_overview()` (one-call digest: status, idle_seconds,
+  awaiting_input, prompt_line, last_line), `current_screen()` (live ANSI-stripped
+  pane right now), `send_input(..., wait_ms=)` (act-and-observe; returns
+  `(line_number, screen)`). REST under `/api/v1/shells`.
+
+**Project Registry & Tasks** (`api/aria/planning/`)
+One `projects` collection fed by two complementary extractors: the ambient LLM
+`TaskExtractor` (from conversations) and the deterministic
+`ProjectHarvestWorker` (`shells/harvest.py`) which derives projects from git
+repos + Claude/pi session dirs + the live `shells` collection. The human
+lifecycle `status` (active/paused/archived) is kept distinct from the
+machine-derived `activity_status` (active/idle); a startup migration normalizes
+any legacy docs. To-dos live in `tasks` with a content-hash dedup lifecycle.
+REST under `/api/v1/todos` and `/api/v1/projects/{id|slug}`.
+
+**MCP Bridge** (`mcp/server.py`)
+A FastMCP server wrapping `/api/v1`, launched by the Hermes gateway
+(`~/.local/share/aria-mcp/` → `~/.hermes/config.yaml`). Tools: the fleet
+(`fleet_status`, `get_shell_screen`, `send_shell_input`, `create_shell`, …),
+projects/tasks (mapped onto the native `/todos` + `/projects/{id|slug}`), and the
+alert relay. Editing `mcp/server.py` requires restarting `hermes-gateway.service`.
+
+**Alert Relay** (`api/aria/notifications/` + `/api/v1/alerts`)
+ARIA does not send Signal/Telegram itself (that collided with the single
+signal-cli daemon owned by Hermes). `NotificationService.notify()` enqueues
+cooldown-gated alerts into the `alerts` collection; Hermes pulls them over MCP
+(`list_alerts`/`ack_alert`), relays over its own Signal, and acks them.
 
 ---
 
@@ -1280,6 +1343,17 @@ class AnthropicAdapter(LLMAdapter):
 ---
 
 ## 7. Project Structure
+
+> **Note.** The tree below is the original skeleton. The package has since grown
+> many subsystems not shown here — including those absorbed from `aria-shells`.
+> The authoritative current layout is in `README.md`; key additions:
+> `api/aria/shells/` (watched-tmux fleet: auto-adopt, capture, snapshot,
+> extraction, prune, selfcheck, report, harvest), `api/aria/planning/` (projects
+> + tasks), `api/aria/api/routes/alerts.py` (alert relay queue), `mcp/` (MCP
+> server for the Hermes agent), and `scripts/` (tmux hook + capture/register
+> shims). Other present-but-unlisted modules: `agents/`, `dreams/`, `research/`,
+> `heartbeat/`, `autopilot/`, `awareness/`, `signal/`, `telegram/`,
+> `notifications/`, `workflows/`, `tasks/`, `skills/`, `scheduler/`, `groupchat/`.
 
 ```
 aria/

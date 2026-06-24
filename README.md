@@ -72,12 +72,18 @@ A local LLM coding assistant running on llama.cpp. Free, private, always availab
 
 ARIA can observe and interact with tmux sessions *you* own — separate from the coding sub-agents she spawns herself. Point her at your Claude Code or Codex sessions and she gains situational awareness of what you're working on, can answer prompts for you, and extracts memories from the conversations.
 
+> Originally a separate service (`aria-shells`), this subsystem was absorbed back
+> into ARIA so it is the single always-on service. It is also surfaced to the
+> remote **Hermes** agent through ARIA's MCP server (see *MCP Bridge* below).
+
 **How it works:**
-- Any tmux session whose name starts with `claude-` is auto-registered via a tmux hook (`scripts/aria-tmux-hook.conf`).
+- **Auto-adopt** — any tmux session named `claude-*` is picked up automatically, with no explicit "create" step. Real-time via a tmux hook (`scripts/aria-tmux-hook.conf` → `aria-shell-register --ensure-capture`), backstopped by a poll reconciler (`ShellAdoptWorker`) that re-attaches capture to any session the hook missed.
 - A `pipe-pane` capture subprocess streams every line into the `shell_events` collection with ANSI stripping and server-assigned line numbers.
-- A snapshot worker periodically captures the full pane buffer for rehydration after restarts.
-- An idle notifier watches for shells stuck at an interactive prompt (`[y/n]`, `Human:`, etc.) and pings you via Signal/Telegram.
-- A memory extraction worker feeds accumulated events through the memory extractor so long-running coding sessions become searchable facts.
+- A **snapshot** worker periodically captures the full pane buffer for rehydration after restarts.
+- An **idle notifier** watches for shells stuck at an interactive prompt (`[y/n]`, `Human:`, etc.) and enqueues an alert that the Hermes agent relays over Signal.
+- A **memory extraction** worker (per-call timeout + cursor self-heal) feeds accumulated events through the memory extractor so long-running coding sessions become searchable facts.
+- A **prune** worker enforces per-shell scrollback retention by token budget; a **selfcheck** worker monitors DB/LLM/embeddings/extraction health and raises alerts; a weekly **report** worker texts an "all good" heartbeat (via Hermes) so silence is never ambiguous.
+- A **project harvester** derives the project registry from git repos + Claude/pi sessions + live shells.
 - The orchestrator injects a recent-activity summary into every chat so ARIA can reference "your coding agent in proj" without asking.
 
 **Using it:**
@@ -104,6 +110,12 @@ aria shells tags claude-myproject primary urgent
 **From chat:** ARIA has a `send_shell_input` tool, so you can ask her to "tell my coding agent yes" or "send Ctrl-C to claude-myproject" in any conversation.
 
 All of this is gated by `SHELLS_ENABLED` in `.env` and disabled cleanly if tmux isn't available.
+
+## MCP Bridge (Hermes)
+
+ARIA exposes its `/api/v1` surface as an **MCP server** (`mcp/server.py`, FastMCP) so the remote **Hermes** agent can drive the fleet and read state. Tools cover the fleet (`fleet_status`, `get_shell_screen`, `send_shell_input`, …), projects/tasks (mapped onto ARIA's native `/todos` + `/projects/{id|slug}`), and an **alert relay**.
+
+Because Hermes owns the single signal-cli daemon, ARIA no longer sends Signal/Telegram itself. `NotificationService` enqueues cooldown-gated alerts into the `alerts` collection; Hermes pulls them over MCP (`list_alerts` / `ack_alert`) and relays them over Signal, then acks. This keeps one Signal sender and makes ARIA's alerting fully observable and drivable by the agent.
 
 ## Background Processes
 
@@ -141,12 +153,11 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 | **TUI** | Go (Bubble Tea) | 4-quadrant terminal dashboard with sidebar, session detail, tools, vitals |
 | **Web UI** | Next.js | Chat interface with mode switching and conversation management |
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey, voice input/output |
-| **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` |
-| **REST API** | FastAPI | Full API with SSE streaming at localhost:8000 |
-| **Signal** | Signal REST API | Chat with ARIA from Signal, including voice message transcription |
-| **Telegram** | Telegram Bot API | Chat with ARIA from Telegram with allowlist enforcement |
+| **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` (honors `ARIA_API_URL`) |
+| **REST API** | FastAPI | Full API with SSE streaming at `localhost:8200` (the single always-on service) |
+| **MCP** | FastMCP (stdio) | `mcp/server.py` — fleet + projects/tasks + alert relay, consumed by the Hermes agent |
 
-Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory.
+Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory. Outbound notifications go through the MCP alert queue relayed by Hermes rather than ARIA sending Signal/Telegram directly.
 
 ## Memory System
 
@@ -257,13 +268,17 @@ ProjectAria/
 │       ├── heartbeat/          # Periodic check-in service
 │       ├── autopilot/          # Goal decomposition and execution
 │       ├── awareness/          # Environmental sensors (git, filesystem, system, sessions)
-│       ├── signal/             # Signal bot integration
-│       ├── telegram/           # Telegram bot integration
-│       ├── notifications/      # Cross-channel notification service
+│       ├── shells/             # Watched tmux fleet: auto-adopt, capture, snapshot, extraction, prune, selfcheck, report, project harvest
+│       ├── planning/           # Projects (harvested + LLM-extracted) and to-do tasks
+│       ├── signal/             # Signal bot integration (inbound chat)
+│       ├── telegram/           # Telegram bot integration (inbound chat)
+│       ├── notifications/      # Alert queue (relayed by Hermes over MCP)
 │       ├── workflows/          # Multi-step workflow engine
-│       ├── tasks/              # Task runner
+│       ├── tasks/              # Background task runner
 │       ├── skills/             # Skill registry and loader
 │       └── db/                 # MongoDB models, migrations, usage tracking
+├── mcp/                        # MCP server (FastMCP) exposed to the Hermes agent
+├── scripts/                    # tmux hook + aria-shell-capture/register shims
 ├── tui/                        # Go TUI (Bubble Tea) — 4-quadrant dashboard
 ├── ui/                         # Next.js web UI
 ├── widget/                     # Tauri v2 desktop widget
@@ -280,8 +295,9 @@ ProjectAria/
 ## Development
 
 ```bash
-# API (with hot-reload)
-cd api && uvicorn aria.main:app --reload --host 0.0.0.0 --port 8000
+# API (with hot-reload; stop the systemd service first or use a spare port — the
+# live service binds :8200)
+cd api && uvicorn aria.main:app --reload --host 0.0.0.0 --port 8200
 
 # TUI
 cd tui && go install . && aria-tui

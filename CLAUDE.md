@@ -13,8 +13,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ARIA is a local-first AI agent platform — a personal AI assistant with long-term memory, tool use, and multiple interfaces.
 
+ARIA is the **single always-on service** on this host (`corsair-ai`). It listens on
+**:8200** and has absorbed the former standalone `aria-shells` service — the
+watched-shells / fleet subsystem now lives here (see *Watched Shells & Fleet*
+below). It also exposes an **MCP server** (`mcp/server.py`) consumed by the
+remote **Hermes** agent. The `aria-shells` repo is retained only as reference.
+
 **Key principles:**
-- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, Signal/Telegram, and the REST API.
+- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, and the REST API, plus the MCP server for the Hermes agent.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
 - **Single-user design** — Personal agent, no multi-tenancy or auth.
 - **LLM agnostic** — Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.
@@ -52,6 +58,53 @@ Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`. The OpenR
 - **MCP integration**: stdio transport only, JSON-RPC 2.0 (`api/aria/tools/mcp/`)
 - **Tool router**: Central registration, execution with 30s default timeout
 - Orchestrator handles tool calls during LLM streaming, may trigger multiple rounds
+
+### Watched Shells & Fleet (`api/aria/shells/`, absorbed from aria-shells)
+
+ARIA watches the `claude-*` tmux sessions you run and mines them for memories, a
+project registry, and idle alerts.
+
+- **Auto-adopt** — any tmux session named `claude-*` is picked up automatically.
+  Real-time via the tmux hook (`scripts/aria-tmux-hook.conf` →
+  `aria-shell-register --ensure-capture`), with `ShellAdoptWorker` (`adopt.py`)
+  as a poll reconciler backstop. No explicit "create" needed.
+- **Capture** — a `tmux pipe-pane` subprocess (`capture.py` via the
+  `aria-shell-capture` shim) streams each line, ANSI-stripped, into
+  `shell_events` with server-assigned line numbers.
+- **Workers** — `snapshot` (pane rehydration), `extraction` (events → memories,
+  with a per-call timeout + cursor self-heal), `prune` (per-shell token-budget
+  scrollback retention), `selfcheck` (DB/LLM/embeddings/extraction health →
+  alerts), `report` (weekly heartbeat). All gated by `settings` flags and wired
+  in `main.py`'s lifespan.
+- **Service API** — `ShellService.fleet_overview()` (one-call digest:
+  status/idle/awaiting_input), `current_screen()` (live pane), `send_input(...,
+  wait_ms=)` (act-and-observe → returns `(line, screen)`). Routes under
+  `/api/v1/shells`.
+
+### Planning: Projects & Tasks (`api/aria/planning/`)
+
+One `projects` collection fed by **two** extractors: the ambient LLM
+`TaskExtractor` (from conversations) and the deterministic `ProjectHarvestWorker`
+(`shells/harvest.py`, from git repos + Claude/pi sessions + live shells). Human
+`status` (lifecycle: active/paused/archived) is kept distinct from machine
+`activity_status` (active/idle). To-dos live in `tasks`. Routes: `/api/v1/todos`,
+`/api/v1/projects/{id|slug}`.
+
+### MCP Server (`mcp/server.py`) — Hermes bridge
+
+ProjectAria exposes an MCP server (FastMCP, run via `~/.local/share/aria-mcp/`,
+launched by Hermes from `~/.hermes/config.yaml`). Tools wrap `/api/v1`: the fleet
+(fleet_status, get_shell_screen, send_shell_input, …), projects/tasks (targeting
+native `/todos` + `/projects/{id|slug}`), and the alert relay. After editing
+`mcp/server.py`, restart `hermes-gateway.service` to reload the toolset.
+
+### Notifications & Alerts (`api/aria/notifications/`)
+
+ProjectAria does **not** send Signal/Telegram itself (that collided with the
+single signal-cli daemon owned by Hermes). `NotificationService.notify()`
+enqueues cooldown-gated alerts into the `alerts` collection; Hermes pulls them
+over MCP (`list_alerts`/`ack_alert`) and relays via its own Signal. Routes:
+`/api/v1/alerts`.
 
 ## Shared Infrastructure
 
@@ -94,10 +147,11 @@ systemctl --user restart aria-api   # Restart
 systemctl --user status aria-api    # Check status
 journalctl --user -u aria-api -f   # View logs
 
-# For development with auto-reload:
+# For development with auto-reload (stop the systemd service first, or use a
+# spare port, since the live service already binds :8200):
 cd api
-uvicorn aria.main:app --reload --host 0.0.0.0 --port 8000
-# Docs at http://localhost:8000/docs
+uvicorn aria.main:app --reload --host 0.0.0.0 --port 8200
+# Docs at http://localhost:8200/docs
 ```
 
 ### UI (Next.js)
@@ -153,10 +207,11 @@ mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
 
 | Service | Port | How it runs | Description |
 |---------|------|-------------|-------------|
-| api | 8000 | systemd user service (`aria-api`) | FastAPI backend (native, not Docker) |
-| ui | 3000 | Docker (docker-compose.yml) | Next.js web UI |
+| api | 8200 | systemd user service (`aria-api`) | FastAPI backend (native, not Docker). Binds :8200 via a drop-in override (`~/.config/systemd/user/aria-api.service.d/override.conf`); the old :8000 is retired. |
+| ui | 3000 | Docker (docker-compose.yml) | Next.js web UI (built against `NEXT_PUBLIC_API_URL` → :8200) |
 | tts | 8002 | Docker (docker-compose.yml) | Qwen3-TTS 0.6B speech synthesis (CPU) |
 | stt | 8003 | Docker (docker-compose.yml) | whisper-large-v3-turbo transcription (CPU, int8) |
+| mcp | stdio | launched by Hermes | `mcp/server.py` — MCP bridge over `/api/v1` for the Hermes agent |
 
 ## Code Patterns
 
