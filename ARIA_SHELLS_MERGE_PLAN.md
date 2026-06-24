@@ -1,6 +1,16 @@
 # Merge Plan — Fold `aria-shells` advances back into ProjectAria
 
-Status: DRAFT for review · Author: Claude (with Ben) · Date: 2026-06-24
+Status: IMPLEMENTED + CUT OVER · Author: Claude (with Ben) · Date: 2026-06-24
+
+> **Done (2026-06-24):** All five phases implemented on branch
+> `feat/absorb-aria-shells` (full test suite green except 3 pre-existing docgen
+> failures). Cutover executed: ProjectAria now serves :8200 (systemd drop-in),
+> `aria-shells-api` stopped + disabled, capture/register/MCP symlinks repointed
+> to ProjectAria, Hermes restarted (MCP reaches :8200, keys matched), UI rebuilt
+> for :8200. Live-verified: 18 existing shells visible, a brand-new `claude-*`
+> session auto-adopted + captured in 2s, alert enqueue→list→ack round-trip.
+> Note: local llama.cpp (:8080) is down — pre-existing infra, surfaced by the
+> new selfcheck worker (not caused by the merge).
 
 ## Goal
 
