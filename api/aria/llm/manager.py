@@ -171,10 +171,30 @@ class LLMManager:
                         "Install with: pip install openai"
                     )
 
+            elif backend == "fireworks":
+                if not settings.fireworks_api_key:
+                    raise ValueError(
+                        "Fireworks API key not configured. "
+                        "Set FIREWORKS_API_KEY environment variable."
+                    )
+                try:
+                    from aria.llm.fireworks import FireworksAdapter
+                    self.adapters[key] = FireworksAdapter(
+                        api_key=settings.fireworks_api_key,
+                        model=model,
+                        base_url=settings.fireworks_base_url,
+                    )
+                    logger.info(f"Created Fireworks adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. "
+                        "Install with: pip install openai"
+                    )
+
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: llamacpp, context1, anthropic, openai, openrouter"
+                    f"Supported: llamacpp, context1, anthropic, openai, openrouter, fireworks"
                 )
 
         return self.adapters[key]
@@ -238,6 +258,15 @@ class LLMManager:
                 return True, "OpenRouter API configured"
             except ImportError:
                 return False, "openai package not installed (required for OpenRouter)"
+
+        elif backend == "fireworks":
+            if not settings.fireworks_api_key:
+                return False, "Fireworks API key not configured"
+            try:
+                import openai
+                return True, "Fireworks API configured"
+            except ImportError:
+                return False, "openai package not installed (required for Fireworks)"
 
         else:
             return False, f"Unknown backend: {backend}"

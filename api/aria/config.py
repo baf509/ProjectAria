@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openrouter_api_key: str = ""
 
+    # Fireworks AI (Firepass) — OpenAI-compatible; hosts GLM 5.2.
+    fireworks_api_key: str = ""
+    fireworks_base_url: str = "https://api.fireworks.ai/inference/v1"
+
     # TTS
     tts_url: str = "http://localhost:8002/v1"
 
