@@ -332,5 +332,142 @@ async def ack_alert(alert_id: str) -> dict:
     return await _request("POST", f"/api/v1/alerts/{alert_id}/ack")
 
 
+# ─────────────────────────────────────────────────── ARIA chat / orchestrator ──
+# Talk to ARIA herself (the orchestrator agent, currently GLM 5.2). Unlike a
+# watched shell — a foreign Claude process ARIA only observes — this drives
+# ARIA's own brain: her memory, tools, and configured model.
+
+@mcp.tool()
+async def chat(
+    message: str,
+    conversation_id: Optional[str] = None,
+    agent_slug: Optional[str] = None,
+) -> dict:
+    """Send a message to ARIA and get her reply (non-streaming).
+
+    Omit conversation_id to start a new conversation (uses the default ARIA
+    orchestrator agent unless you pass agent_slug, e.g. 'search-agent' or
+    'pi-coding-agent'). Returns {content, conversation_id, tool_calls, usage} —
+    pass the returned conversation_id back to continue the thread."""
+    if not conversation_id:
+        body: dict[str, Any] = {}
+        if agent_slug:
+            body["agent_slug"] = agent_slug
+        conv = await _request("POST", "/api/v1/conversations", json=body)
+        conversation_id = conv.get("id")
+    resp = await _request(
+        "POST",
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content": message, "stream": False},
+    )
+    out = resp if isinstance(resp, dict) else {"content": str(resp)}
+    out["conversation_id"] = conversation_id
+    return out
+
+
+@mcp.tool()
+async def list_conversations(status: str = "active", limit: int = 20) -> Any:
+    """List ARIA conversations (default: active). For reading one, use
+    read_conversation."""
+    return await _request(
+        "GET", "/api/v1/conversations", params={"status": status, "limit": limit}
+    )
+
+
+@mcp.tool()
+async def read_conversation(conversation_id: str, message_limit: int = 20) -> dict:
+    """Read one conversation including its recent messages."""
+    return await _request(
+        "GET", f"/api/v1/conversations/{conversation_id}",
+        params={"msg_limit": message_limit},
+    )
+
+
+@mcp.tool()
+async def list_agents() -> Any:
+    """List ARIA's agent personas (orchestrator + delegated agents) with their
+    configured model/backend and tools."""
+    return await _request("GET", "/api/v1/agents")
+
+
+# ──────────────────────────────────────────────────────────────────── memory ──
+
+@mcp.tool()
+async def search_memory(query: str, limit: int = 10, content_type: Optional[str] = None) -> Any:
+    """Hybrid (vector + lexical) search over ARIA's long-term memory.
+    content_type optionally filters: fact | preference | event | skill | document."""
+    body: dict[str, Any] = {"query": query, "limit": limit}
+    if content_type:
+        body["content_type"] = content_type
+    return await _request("POST", "/api/v1/memories/search", json=body)
+
+
+@mcp.tool()
+async def add_memory(
+    content: str,
+    content_type: str = "fact",
+    categories: Optional[list[str]] = None,
+    importance: float = 0.5,
+) -> dict:
+    """Store a durable memory. content_type: fact | preference | event | skill |
+    document. importance 0.0–1.0."""
+    body: dict[str, Any] = {
+        "content": content,
+        "content_type": content_type,
+        "importance": importance,
+    }
+    if categories:
+        body["categories"] = categories
+    return await _request("POST", "/api/v1/memories", json=body)
+
+
+# ───────────────────────────────────────────────── coding sessions (sub-agents) ──
+# ARIA-spawned Claude/Codex coding agents — same substrate as watched shells, but
+# launched and lifecycle-managed by ARIA (watchdog/checkpoints).
+
+@mcp.tool()
+async def list_coding_sessions(status: Optional[str] = None) -> Any:
+    """List ARIA-spawned coding sessions (sub-agents). status optionally filters
+    (e.g. 'running')."""
+    params = {"status": status} if status else None
+    return await _request("GET", "/api/v1/coding/sessions", params=params)
+
+
+@mcp.tool()
+async def create_coding_session(
+    workspace: str,
+    prompt: str,
+    backend: Optional[str] = None,
+) -> dict:
+    """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
+    backend: 'claude_code' (default), 'codex', or 'pi'."""
+    body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
+    if backend:
+        body["backend"] = backend
+    return await _request("POST", "/api/v1/coding/sessions", json=body)
+
+
+@mcp.tool()
+async def get_coding_output(session_id: str, lines: int = 100) -> Any:
+    """Read recent output from a coding sub-agent."""
+    return await _request(
+        "GET", f"/api/v1/coding/sessions/{session_id}/output", params={"lines": lines}
+    )
+
+
+@mcp.tool()
+async def send_to_coding_session(session_id: str, text: str) -> dict:
+    """Send input/instructions to a running coding sub-agent."""
+    return await _request(
+        "POST", f"/api/v1/coding/sessions/{session_id}/input", json={"text": text}
+    )
+
+
+@mcp.tool()
+async def stop_coding_session(session_id: str) -> dict:
+    """Stop a running coding sub-agent."""
+    return await _request("POST", f"/api/v1/coding/sessions/{session_id}/stop")
+
+
 if __name__ == "__main__":
     mcp.run()
