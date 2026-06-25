@@ -50,6 +50,7 @@ def serialize_session(doc: dict) -> dict:
         "pid": doc.get("pid"),
         "visible": doc.get("visible", False),
         "tmux_pane_id": doc.get("tmux_pane_id"),
+        "shell_name": doc.get("shell_name"),
         "status": doc["status"],
         "created_at": doc["created_at"],
         "updated_at": doc["updated_at"],

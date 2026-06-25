@@ -114,7 +114,12 @@ class CodingSessionManager:
         # the same observe/drive tools. The watchdog/checkpoint/review overlay
         # still manages it through this manager's interface.
         if self._use_shell_substrate():
-            argv_str = " ".join(shlex.quote(a) for a in command.argv)
+            # Launch the agent INTERACTIVELY on the shell so it stays alive and
+            # is drivable like any watched shell (send input / observe / stop),
+            # rather than -p print mode which runs once and exits. The prompt is
+            # kept as the seed positional.
+            argv = [a for a in command.argv if a not in ("-p", "--print")]
+            argv_str = " ".join(shlex.quote(a) for a in argv)
             env_prefix = " ".join(
                 f"{k}={shlex.quote(v)}" for k, v in (command.env or {}).items()
             )
@@ -217,10 +222,16 @@ class CodingSessionManager:
 
     async def get_output(self, session_id: str, lines: int = 50) -> str:
         session = await self.get_session(session_id)
-        # Shell-substrate sessions: live ANSI-stripped pane from the fleet.
+        # Shell-substrate sessions: live ANSI-stripped pane from the fleet; if the
+        # tmux session has ended (completed), fall back to captured scrollback.
         if session and session.get("shell_name") and self.shell_service:
             screen = await self.shell_service.current_screen(session["shell_name"], lines=lines)
-            return screen or ""
+            if screen:
+                return screen
+            events = await self.shell_service.list_events(
+                session["shell_name"], limit=lines, kinds=["output"], sort=1
+            )
+            return "\n".join(e.text_clean for e in events[-lines:])
         # Try tmux capture for visible (aria-agents pane) sessions
         if session and session.get("tmux_pane_id") and self.tmux_manager:
             return await self.tmux_manager.capture_output(session_id, lines=lines)
@@ -424,6 +435,12 @@ class CodingSessionManager:
                     "exit_code": None,
                 }},
             )
+            # Mark the watched-shell row stopped so a finished sub-agent doesn't
+            # linger in the fleet (its tmux session is already gone).
+            try:
+                await self.shell_service.mark_stopped(shell_name)
+            except Exception:
+                pass
             if self.notification_service:
                 try:
                     await self.notification_service.notify(

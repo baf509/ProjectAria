@@ -314,6 +314,7 @@ class CodingSessionResponse(BaseModel):
     pid: Optional[int] = None
     visible: bool = False
     tmux_pane_id: Optional[str] = None
+    shell_name: Optional[str] = None
     status: str
     created_at: datetime
     updated_at: datetime
