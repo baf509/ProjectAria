@@ -44,11 +44,11 @@ func envOr(key, fallback string, dotenv map[string]string) string {
 }
 
 func main() {
-	// Load .env from ProjectAria root (two levels up from tui/)
+	// Load .env from the ProjectAria root.
 	home, _ := os.UserHomeDir()
-	dotenv := loadDotEnv(filepath.Join(home, "Dev", "ProjectAria", ".env"))
+	dotenv := loadDotEnv(filepath.Join(home, "Development", "ProjectAria", ".env"))
 
-	baseURL := envOr("ARIA_API_URL", "http://localhost:8000", dotenv)
+	baseURL := envOr("ARIA_API_URL", "http://localhost:8200", dotenv)
 	apiKey := envOr("ARIA_API_KEY", "", dotenv)
 	if apiKey == "" {
 		apiKey = envOr("API_KEY", "", dotenv)
