@@ -209,6 +209,7 @@ class ShellService:
         *,
         workdir: str = "",
         launch_claude: bool = True,
+        launch_command: Optional[str] = None,
         cols: Optional[int] = None,
         rows: Optional[int] = None,
     ) -> Shell:
@@ -217,6 +218,11 @@ class ShellService:
         If the tmux session already exists, reclaim it unless Aria already
         tracks it as active/idle (true duplicate). Reclaim = register a
         missing Aria row, or reactivate a stopped one.
+
+        `launch_command` runs an arbitrary command in the session instead of the
+        default Claude launch command (used by the coding-session manager to run
+        a coding agent on the watched-shell substrate). When set, it takes
+        precedence over `launch_claude`.
 
         `cols`/`rows` override the default tmux geometry from settings.
         Mobile clients should pass their actual viewport size; otherwise
@@ -233,7 +239,12 @@ class ShellService:
             logger.info("reclaiming orphan tmux session: %s", full_name)
             return await self.register_shell(full_name, project_dir=workdir or "")
 
-        command = settings.shells_claude_launch_command if launch_claude else None
+        if launch_command:
+            command = launch_command
+        elif launch_claude:
+            command = settings.shells_claude_launch_command
+        else:
+            command = None
         if command and settings.shells_claude_autotrust:
             # Pre-trust the workdir so Claude Code's blocking folder-trust
             # dialog doesn't hang the detached session. Best-effort, off the

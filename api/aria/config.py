@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     coding_default_backend: str = "codex"
     coding_default_workspace: str = "/home/ben/Development/aria-projects"
     coding_output_lines: int = 500
+    # Run ARIA-spawned coding sessions on the watched-shell substrate (a tmux
+    # session that auto-adopts + captures to shell_events), so a sub-agent IS a
+    # shell — unified with the fleet, drivable via the same tools, and visible in
+    # the TUI/MCP. The watchdog/checkpoint/review overlay still manages it. Set
+    # false to fall back to the legacy raw-subprocess substrate.
+    coding_use_shell_substrate: bool = True
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
     coding_auto_respond_prompts: bool = False
