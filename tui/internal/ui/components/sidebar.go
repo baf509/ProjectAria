@@ -18,6 +18,7 @@ const (
 	NodeAgent                       // Agent template (start new conversation)
 	NodeConversation                // Existing conversation
 	NodeCodingSession               // Active coding session
+	NodeShell                       // Watched tmux shell (the fleet ARIA observes)
 )
 
 // TreeNode is a single row in the sidebar tree.
@@ -36,6 +37,7 @@ type TreeNode struct {
 	Agent          *api.Agent
 	Conversation   *api.Conversation
 	CodingSession  *api.CodingSession
+	Shell          *api.Shell
 }
 
 type Sidebar struct {
@@ -101,7 +103,7 @@ func (s *Sidebar) visibleCount() int {
 }
 
 // SetData rebuilds the tree from API data.
-func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions []api.CodingSession) {
+func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions []api.CodingSession, shells []api.Shell) {
 	s.Nodes = nil
 
 	// Build agent lookup
@@ -134,6 +136,50 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 				Status:    "idle",
 				Depth:     1,
 				Agent:     a,
+			})
+		}
+	}
+
+	// --- Watched Shells section (the fleet ARIA observes — your claude-* tmux
+	// sessions). Distinct from Agents (personas) and Coding Sessions (the ones
+	// ARIA spawns); these are live external processes you started. ---
+	if len(shells) > 0 {
+		awaiting := 0
+		for i := range shells {
+			if shells[i].AwaitingInput {
+				awaiting++
+			}
+		}
+		label := fmt.Sprintf("Shells (%d)", len(shells))
+		if awaiting > 0 {
+			label = fmt.Sprintf("Shells (%d · %d awaiting)", len(shells), awaiting)
+		}
+		s.Nodes = append(s.Nodes, TreeNode{
+			Kind:     NodeSection,
+			Label:    label,
+			Children: len(shells),
+		})
+		for i := range shells {
+			sh := &shells[i]
+			status := sh.Status
+			meta := relativeIdle(sh.IdleSeconds)
+			if sh.AwaitingInput {
+				status = "awaiting"
+				meta = "⏳ awaiting"
+			}
+			name := sh.ShortName
+			if name == "" {
+				name = sh.Name
+			}
+			s.Nodes = append(s.Nodes, TreeNode{
+				ID:       sh.Name,
+				Label:    name,
+				Kind:     NodeShell,
+				Category: "coding",
+				Status:   status,
+				Meta:     meta,
+				Depth:    1,
+				Shell:    sh,
 			})
 		}
 	}
@@ -219,7 +265,7 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 
 // Legacy compat
 func (s *Sidebar) SetConversations(convs []api.Conversation, agents []api.Agent) {
-	s.SetData(agents, convs, nil)
+	s.SetData(agents, convs, nil, nil)
 }
 
 func (s *Sidebar) fixCursor() {
@@ -375,6 +421,8 @@ func (s *Sidebar) renderNode(idx int, node TreeNode, maxWidth int) string {
 	prefix := ""
 	if node.Kind == NodeAgent {
 		prefix = "⊕ "
+	} else if node.Kind == NodeShell {
+		prefix = "❯ "
 	}
 
 	line := fmt.Sprintf("%s%s %s %s%s", indent, icon, catDot, prefix, label)
@@ -421,6 +469,20 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dh", int(d.Hours()))
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// relativeIdle renders a shell's idle duration compactly (e.g. "now", "5m", "2h").
+func relativeIdle(seconds int) string {
+	switch {
+	case seconds < 60:
+		return "now"
+	case seconds < 3600:
+		return fmt.Sprintf("%dm", seconds/60)
+	case seconds < 86400:
+		return fmt.Sprintf("%dh", seconds/3600)
+	default:
+		return fmt.Sprintf("%dd", seconds/86400)
 	}
 }
 

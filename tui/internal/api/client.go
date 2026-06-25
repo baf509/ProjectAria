@@ -216,6 +216,40 @@ func (c *Client) ListCodingSessions(status string) ([]CodingSession, error) {
 	return sessions, json.NewDecoder(resp.Body).Decode(&sessions)
 }
 
+// Shell is a watched tmux session (the fleet ARIA observes), from the
+// /shells/overview digest.
+type Shell struct {
+	Name          string `json:"name"`
+	ShortName     string `json:"short_name"`
+	Status        string `json:"status"`
+	ProjectDir    string `json:"project_dir"`
+	IdleSeconds   int    `json:"idle_seconds"`
+	AwaitingInput bool   `json:"awaiting_input"`
+	PromptLine    string `json:"prompt_line"`
+	LastLine      string `json:"last_line"`
+}
+
+type shellsOverviewResp struct {
+	Shells        []Shell `json:"shells"`
+	ActiveCount   int     `json:"active_count"`
+	AwaitingCount int     `json:"awaiting_count"`
+}
+
+// ListShells returns the watched-shell fleet digest (active/idle shells with
+// status, idle time, and whether they're awaiting input).
+func (c *Client) ListShells() ([]Shell, error) {
+	resp, err := c.get(c.Base + "/api/v1/shells/overview")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out shellsOverviewResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Shells, nil
+}
+
 func (c *Client) GetCodingOutput(sessionID string, lines int) (string, error) {
 	url := fmt.Sprintf("%s/api/v1/coding/sessions/%s/output?lines=%d", c.Base, sessionID, lines)
 	resp, err := c.get(url)
@@ -587,6 +621,7 @@ type DashboardSnapshot struct {
 	Agents         []Agent
 	Conversations  []Conversation
 	CodingSessions []CodingSession
+	Shells         []Shell
 	Usage          *UsageSummary
 	Observations   []Observation
 }
@@ -599,6 +634,7 @@ func (c *Client) FetchDashboardSnapshot() *DashboardSnapshot {
 	snap.Agents, _ = c.ListAgents()
 	snap.Conversations, _ = c.ListConversations(50, 0, "active")
 	snap.CodingSessions, _ = c.ListCodingSessions("")
+	snap.Shells, _ = c.ListShells()
 	snap.Usage, _ = c.GetUsage(24)
 	snap.Observations, _ = c.ListObservations(5)
 

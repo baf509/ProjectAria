@@ -166,7 +166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.snapshot = msg.snap
 		if msg.snap != nil {
 			m.agents = msg.snap.Agents
-			m.sidebar.SetData(msg.snap.Agents, msg.snap.Conversations, msg.snap.CodingSessions)
+			m.sidebar.SetData(msg.snap.Agents, msg.snap.Conversations, msg.snap.CodingSessions, msg.snap.Shells)
 			m.vitals.Update(msg.snap)
 		}
 

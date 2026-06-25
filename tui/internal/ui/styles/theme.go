@@ -193,6 +193,9 @@ func LifecycleIcon(status string) string {
 		return lipgloss.NewStyle().Foreground(Secondary).Render(IconActive)
 	case "streaming":
 		return lipgloss.NewStyle().Foreground(Primary).Render(IconStreaming)
+	case "awaiting":
+		// A shell blocked at an interactive prompt, waiting on you — make it pop.
+		return lipgloss.NewStyle().Foreground(Danger).Render(IconActive)
 	case "idle", "paused":
 		return lipgloss.NewStyle().Foreground(Warning).Render(IconPartial)
 	case "completed", "done":
