@@ -666,7 +666,17 @@ func (m Model) View() string {
 		body = m.renderDashboard()
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	out := lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+
+	// Safety net: never emit more rows than the terminal has. With the alt-screen
+	// buffer, an over-tall frame scrolls the top (the header) off; clamping to
+	// m.height keeps the header pinned instead of letting it disappear.
+	if m.height > 0 {
+		if lines := strings.Split(out, "\n"); len(lines) > m.height {
+			out = strings.Join(lines[:m.height], "\n")
+		}
+	}
+	return out
 }
 
 func (m Model) renderHeader() string {
@@ -755,7 +765,7 @@ func (m Model) renderDashboard() string {
 	}
 	tlTitle := styles.PanelTitle.Render(" Tasks")
 	tlContent := m.sidebar.RenderContent()
-	topLeft := tlBorder.Width(m.leftW - 2).Height(m.topH - 2).Render(
+	topLeft := tlBorder.Width(m.leftW - 2).Height(m.topH - 2).MaxHeight(m.topH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, tlTitle, tlContent))
 
 	// ---- Top-Right: Session Detail ----
@@ -768,7 +778,7 @@ func (m Model) renderDashboard() string {
 	if detailContent == "" {
 		detailContent = lipgloss.NewStyle().Foreground(styles.Muted).Render("\n  Select a task or session")
 	}
-	topRight := trBorder.Width(m.rightW - 2).Height(m.topH - 2).Render(
+	topRight := trBorder.Width(m.rightW - 2).Height(m.topH - 2).MaxHeight(m.topH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, trTitle, "", detailContent))
 
 	// ---- Bottom-Left: Tools Menu ----
@@ -778,7 +788,7 @@ func (m Model) renderDashboard() string {
 	}
 	blTitle := styles.PanelTitle.Render(" Tools")
 	toolsContent := m.menu.RenderItems(m.botH - 4)
-	botLeft := blBorder.Width(m.leftW - 2).Height(m.botH - 2).Render(
+	botLeft := blBorder.Width(m.leftW - 2).Height(m.botH - 2).MaxHeight(m.botH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, blTitle, toolsContent))
 
 	// ---- Bottom-Right: System Vitals ----
@@ -788,7 +798,7 @@ func (m Model) renderDashboard() string {
 	}
 	brTitle := styles.PanelTitle.Render(" System Vitals")
 	vitalsContent := m.vitals.RenderContent(m.rightW-6, m.botH-4)
-	botRight := brBorder.Width(m.rightW - 2).Height(m.botH - 2).Render(
+	botRight := brBorder.Width(m.rightW - 2).Height(m.botH - 2).MaxHeight(m.botH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, brTitle, vitalsContent))
 
 	// Compose grid
