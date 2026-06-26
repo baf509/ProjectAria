@@ -131,8 +131,14 @@ class SelfCheckWorker:
         if failed:
             detail = "; ".join(f"{c['name']} ({c['detail']})" for c in failed)
             logger.warning("selfcheck FAIL: %s", detail)
-            self._degraded = True
-            await self._alert("degraded", detail, self.cooldown)
+            # Alert only on the transition INTO degraded, not every tick while it
+            # stays broken — otherwise one outage = hourly Signal spam. The
+            # `recovered` notice tells you when it clears; the cooldown dampens
+            # flapping. (A process restart resets _degraded, so a still-broken
+            # dependency re-alerts once after restart — intentional.)
+            if not self._degraded:
+                self._degraded = True
+                await self._alert("degraded", detail, self.cooldown)
         else:
             if self._degraded:
                 self._degraded = False
