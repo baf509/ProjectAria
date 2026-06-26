@@ -59,6 +59,16 @@ class NotificationService:
         """Enqueue an alert for relay. Returns {queued: bool, ...}. Honors the
         per-(source, event_type) cooldown so repeats within the window are
         dropped (returns queued=False, reason='cooldown')."""
+        # The alert queue is for actionable system-health degradations that
+        # warrant triage (selfcheck, idle shells, the weekly report). Job-
+        # lifecycle notices (a coding sub-agent or background task starting/
+        # stopping/finishing) are informational, not alerts. Enqueuing them would
+        # spam the queue AND make the Hermes triage loop spawn a fixer agent for
+        # every finished session — whose own 'stopped' event becomes another
+        # alert → an endless loop. Drop them here.
+        if source.startswith("coding:") or source == "task":
+            logger.debug("notify: dropping informational %s/%s (not an alert)", source, event_type)
+            return {"queued": False, "reason": "informational"}
         if not self._can_send(source, event_type, cooldown_seconds):
             return {"queued": False, "reason": "cooldown"}
 
