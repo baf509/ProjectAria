@@ -23,8 +23,8 @@ remote **Hermes** agent. The `aria-shells` repo is retained only as reference.
 - **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, and the REST API, plus the MCP server for the Hermes agent.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
 - **Single-user design** — Personal agent, no multi-tenancy or auth.
-- **LLM agnostic** — Adapter pattern for llama.cpp (local), Anthropic, OpenAI, and OpenRouter.
-- **Local-first** — llama.cpp primary, cloud APIs as fallback.
+- **LLM agnostic** — Adapter pattern for local llama.cpp (qwen models), context-1, Anthropic, OpenAI, OpenRouter, and Fireworks (GLM 5.2). Backend + model are selected **per agent**.
+- **Local-capable** — local qwen + context-1 models run on the GPU box; default agents currently run on GLM 5.2 via Fireworks. Backends are swappable per agent.
 - **MongoDB 8.2 + mongot** — Self-hosted vector search without Atlas subscription.
 
 ### Core Flow
@@ -50,7 +50,12 @@ All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
 - `complete()` → non-streaming completion
 - Per-provider message format conversion and tool call support
 
-Adapters: `llamacpp.py`, `anthropic.py`, `openai.py`, `openrouter.py`. The OpenRouter adapter uses the OpenAI SDK internally (OpenAI-compatible API). Manager (`manager.py`) handles backend selection and fallback chain.
+Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter.py`, `fireworks.py`. The OpenRouter and Fireworks adapters use the OpenAI SDK internally (OpenAI-compatible); `fireworks.py` subclasses `OpenRouterAdapter` to reuse its GLM reasoning-mode handling. Manager (`manager.py`) handles backend selection and fallback chain.
+
+**Current model topology** (the agents are config rows in `db.agents`):
+- **ARIA** (default orchestrator) and **Pi Coding Agent** → `fireworks` / `accounts/fireworks/models/glm-5p2` (GLM 5.2), hard-pinned (no fallback). Key in `.env` as `FIREWORKS_API_KEY`.
+- **Search Agent** → `context1` (the chromadb/context-1 agentic model) on `:8081`.
+- Local llama.cpp endpoints on the GPU box (the `qwen-rocmfp4` compose project under `infrastructure/`): **qwen-chat** 35B-A3B `:8092` (`llamacpp_url` points here), **qwen-agentic** 27B `:8093`, **context-1** `:8081`. These are also exposed to Hermes.
 
 ### Tool System
 
@@ -93,18 +98,41 @@ One `projects` collection fed by **two** extractors: the ambient LLM
 ### MCP Server (`mcp/server.py`) — Hermes bridge
 
 ProjectAria exposes an MCP server (FastMCP, run via `~/.local/share/aria-mcp/`,
-launched by Hermes from `~/.hermes/config.yaml`). Tools wrap `/api/v1`: the fleet
-(fleet_status, get_shell_screen, send_shell_input, …), projects/tasks (targeting
-native `/todos` + `/projects/{id|slug}`), and the alert relay. After editing
-`mcp/server.py`, restart `hermes-gateway.service` to reload the toolset.
+launched by Hermes from `~/.hermes/config.yaml`). It surfaces **all of ARIA** to
+Hermes — ~31 tools wrapping `/api/v1`:
+- **Fleet** — fleet_status, get_shell_screen, send_shell_input, create/delete/tag/resize, search.
+- **Chat / agents** — chat (drive the ARIA orchestrator agent), list/read conversations, list_agents.
+- **Memory** — search_memory, add_memory.
+- **Coding sub-agents** — list/create/get_output/send_to/stop coding sessions.
+- **Projects / tasks** — native `/todos` + `/projects/{id|slug}`.
+- **Alerts** — list_alerts, ack_alert.
 
-### Notifications & Alerts (`api/aria/notifications/`)
+After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset.
 
-ProjectAria does **not** send Signal/Telegram itself (that collided with the
-single signal-cli daemon owned by Hermes). `NotificationService.notify()`
-enqueues cooldown-gated alerts into the `alerts` collection; Hermes pulls them
-over MCP (`list_alerts`/`ack_alert`) and relays via its own Signal. Routes:
-`/api/v1/alerts`.
+### Coding Sub-agents on the Shell Substrate (`api/aria/agents/`)
+
+ARIA-spawned coding sessions (`start_coding_session`, watchdog, checkpoints,
+review) run **on the watched-shell substrate** by default
+(`coding_use_shell_substrate`): `session.py` creates a `claude-coding-*` tmux
+shell via `ShellService` (interactive, not `-p` batch), so a sub-agent **is** a
+watched shell — auto-captured, in the fleet/TUI, and drivable via the same
+tools. `get_output`/`send_input`/`stop` route to the shell; the
+watchdog/checkpoint/review overlay still manages it through the manager
+interface. Subprocess + visible-tmux substrates remain as fallbacks.
+
+### Notifications, Alerts & Self-Healing (`api/aria/notifications/`)
+
+ProjectAria does **not** send Signal/Telegram itself. `NotificationService.notify()`
+enqueues cooldown-gated, **actionable** alerts into the `alerts` collection (it
+**drops** `coding:*` / `task` lifecycle events — those aren't alerts, and
+enqueuing them would loop the triage below). `selfcheck` alerts **once per state
+transition** (degraded → recovered), not every tick.
+
+Hermes owns the **self-healing loop** (a cron job, `~/.hermes/cron/jobs.json`):
+on each unacked alert it spawns a diagnostic coding sub-agent via the aria MCP,
+collects a root-cause + proposed fix, relays *that* to Signal ("reply APPLY…"),
+and acks. On APPLY, Hermes spawns a fixer agent. Routes: `/api/v1/alerts`
+(`list_alerts` / `ack_alert`).
 
 ## Shared Infrastructure
 
@@ -114,8 +142,17 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 |---------|------|---------|
 | mongod | 27017 | MongoDB 8.2 data (replica set `rs0`) |
 | mongot | 27028 | MongoDB search (vector + text) |
-| llamacpp | 8080 | ROCm-accelerated local LLM |
+| qwen-chat | 8092 | local LLM — Qwen3.6 **35B-A3B** (ROCm); `llamacpp_url` |
+| qwen-agentic | 8093 | local LLM — Qwen3.6 **27B** (ROCm) |
+| context-1 | 8081 | local LLM — chromadb/context-1 20B (Search Agent backend) |
 | embeddings | 8001 | voyage-4-nano via sentence-transformers (CPU) |
+
+> The three local LLMs run as Docker containers in `infrastructure/qwen-rocmfp4/`
+> (image `qwen-rocmfp4:latest`, services `qwen-chat` / `qwen-agentic` / `context1`).
+> The old single `llamacpp` on `:8080` is **retired** (behind the compose `legacy`
+> profile). To add/restart a model: edit `qwen-rocmfp4/docker-compose.yml` and
+> `docker compose up -d <service>`. GLM 5.2 (default chat/coding model) is cloud
+> via Fireworks, not on the GPU box.
 
 ```bash
 # Start shared infra first

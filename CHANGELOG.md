@@ -22,6 +22,34 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-06-26] - Absorb aria-shells; GLM 5.2; unified sub-agents; self-healing alerts
+
+### Added
+- **Fireworks LLM backend** (`llm/fireworks.py`) serving **GLM 5.2**; ARIA orchestrator + Pi Coding Agent switched to it (hard-pinned). `FIREWORKS_API_KEY` / `fireworks_base_url` in config.
+- **Watched-shells / fleet subsystem** absorbed from the standalone `aria-shells` service (`api/aria/shells/`): auto-adopt via tmux hook + `ShellAdoptWorker`, capture, snapshot, extraction, `prune`, `selfcheck`, weekly `report`, project `harvest`. `fleet_overview`/`current_screen`/`send_input(wait_ms)`; routes under `/api/v1/shells`.
+- **MCP server** (`mcp/server.py`) exposing ~31 tools to the Hermes agent — fleet, chat (ARIA orchestrator), conversations, agents, memory, coding sub-agents, projects/tasks, alerts.
+- **Planning** projects fed by both the LLM `TaskExtractor` and the deterministic `ProjectHarvestWorker`; `/api/v1/todos` + `/projects/{id|slug}` (slug-or-id).
+- **Alert queue** (`/api/v1/alerts`) + **Hermes self-healing triage**: on each alert Hermes spawns a diagnostic coding sub-agent, relays a root-cause + proposed fix to Signal, and applies on `APPLY` (verified end-to-end).
+- **TUI** shows watched shells as a labeled sidebar group (with awaiting-input highlighting).
+- Local LLMs **context-1** (`:8081`) and qwen **27B** (`:8093`) deployed alongside **qwen-chat 35B-A3B** (`:8092`) via `infrastructure/qwen-rocmfp4/`.
+
+### Changed
+- **ARIA is the single always-on service on `:8200`** (took over the port from the retired `aria-shells`; systemd drop-in). UI/CLI/TUI default to `:8200`.
+- **Coding sub-agents run on the watched-shell substrate** (`coding_use_shell_substrate`): each is an interactive `claude-coding-*` shell — unified with the fleet, drivable via the same tools, visible in the TUI/MCP. Watchdog/checkpoint/review overlay retained.
+- `llamacpp_url` → `:8092` (qwen-chat); `context1_url` → `:8081`. The old single llama.cpp on `:8080` retired (compose `legacy` profile).
+- Notifications: ARIA no longer sends Signal/Telegram; `selfcheck` alerts **once per state-transition** (not hourly).
+
+### Fixed
+- `NotificationService.notify()` drops `coding:*` / `task` lifecycle events — they were polluting the alert queue and creating a triage feedback loop.
+- TUI default port `:8000`→`:8200` and dotenv path; dashboard panel height clamp (header no longer scrolls off).
+- Tolerant memory-extraction parser; per-call llama.cpp timeout; shells ANSI hardening.
+
+### Removed
+- ~187 GB of unused docker images + build cache (old llama.cpp variants).
+
+### Notes
+- `aria-shells` repo retained as reference only; its service is decommissioned.
+
 ## [2026-06-24] - Remove iOS client; ARIA is Linux-only
 
 ### Removed

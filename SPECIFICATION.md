@@ -262,18 +262,38 @@ machine-derived `activity_status` (active/idle); a startup migration normalizes
 any legacy docs. To-dos live in `tasks` with a content-hash dedup lifecycle.
 REST under `/api/v1/todos` and `/api/v1/projects/{id|slug}`.
 
+**Coding Sub-agents on the Shell Substrate** (`api/aria/agents/`)
+ARIA-spawned coding sessions run on the watched-shell substrate by default
+(`coding_use_shell_substrate`): `session.py` launches the agent **interactively**
+as a `claude-coding-*` tmux shell via `ShellService`, so a sub-agent *is* a
+watched shell — captured, in the fleet/TUI, and drivable via the same tools.
+`get_output`/`send_input`/`stop` route to the shell; the watchdog/checkpoint/
+review/mail overlay still manages it through the manager interface. Subprocess +
+visible-tmux substrates remain as fallbacks.
+
 **MCP Bridge** (`mcp/server.py`)
 A FastMCP server wrapping `/api/v1`, launched by the Hermes gateway
-(`~/.local/share/aria-mcp/` → `~/.hermes/config.yaml`). Tools: the fleet
-(`fleet_status`, `get_shell_screen`, `send_shell_input`, `create_shell`, …),
-projects/tasks (mapped onto the native `/todos` + `/projects/{id|slug}`), and the
-alert relay. Editing `mcp/server.py` requires restarting `hermes-gateway.service`.
+(`~/.local/share/aria-mcp/` → `~/.hermes/config.yaml`). It surfaces **all of
+ARIA** (~31 tools): the fleet, `chat` (drive the orchestrator) + conversations +
+agents, memory (`search_memory`/`add_memory`), coding sub-agents
+(create/drive/stop), projects/tasks (native `/todos` + `/projects/{id|slug}`),
+and alerts. Editing `mcp/server.py` requires restarting `hermes-gateway.service`.
 
-**Alert Relay** (`api/aria/notifications/` + `/api/v1/alerts`)
-ARIA does not send Signal/Telegram itself (that collided with the single
-signal-cli daemon owned by Hermes). `NotificationService.notify()` enqueues
-cooldown-gated alerts into the `alerts` collection; Hermes pulls them over MCP
-(`list_alerts`/`ack_alert`), relays over its own Signal, and acks them.
+**Alerts & Self-Healing** (`api/aria/notifications/` + `/api/v1/alerts`)
+ARIA does not send Signal/Telegram itself. `NotificationService.notify()`
+enqueues cooldown-gated, **actionable** alerts into the `alerts` collection — it
+drops `coding:*`/`task` lifecycle events (not alerts), and `selfcheck` alerts
+once per state transition. Hermes owns the resolution loop (a cron job): per
+unacked alert it spins up a diagnostic coding sub-agent via the MCP, relays a
+root-cause + proposed fix to Signal ("reply APPLY…"), and acks; on `APPLY` it
+spawns a fixer agent to apply the change.
+
+**LLM topology**
+Backend + model are selected per agent (`db.agents`). Default orchestrator + Pi
+Coding Agent run on **Fireworks GLM 5.2** (cloud, OpenAI-compatible, `fireworks.py`).
+Local models on the GPU box (`infrastructure/qwen-rocmfp4/`): qwen-chat 35B-A3B
+(`:8092`, `llamacpp_url`), qwen-agentic 27B (`:8093`), context-1 20B (`:8081`,
+Search Agent). The old single llama.cpp on `:8080` is retired.
 
 ---
 

@@ -66,7 +66,9 @@ Same infrastructure as Claude Code but using OpenAI's Codex CLI with `--sandbox 
 
 ### Pi Coding Agent
 
-A local LLM coding assistant running on llama.cpp. Free, private, always available. ARIA creates a persistent conversation and processes it through her own orchestrator using the local model.
+A coding-assistant persona. ARIA creates a persistent conversation and processes it through her own orchestrator. (Its model is configurable per agent — currently GLM 5.2 via Fireworks; it can be pointed at a local qwen backend instead.)
+
+> **Note on coding sub-agents:** ARIA-spawned coding sessions now run on the **watched-shell substrate** — each becomes an interactive `claude-coding-*` tmux shell, captured and visible in the fleet/TUI and drivable via the same tools, with the watchdog/checkpoint/review overlay still managing it.
 
 ## Watched Shells
 
@@ -113,9 +115,10 @@ All of this is gated by `SHELLS_ENABLED` in `.env` and disabled cleanly if tmux 
 
 ## MCP Bridge (Hermes)
 
-ARIA exposes its `/api/v1` surface as an **MCP server** (`mcp/server.py`, FastMCP) so the remote **Hermes** agent can drive the fleet and read state. Tools cover the fleet (`fleet_status`, `get_shell_screen`, `send_shell_input`, …), projects/tasks (mapped onto ARIA's native `/todos` + `/projects/{id|slug}`), and an **alert relay**.
+ARIA exposes its `/api/v1` surface as an **MCP server** (`mcp/server.py`, FastMCP) so the remote **Hermes** agent can drive *all of ARIA* — ~31 tools: the fleet (`fleet_status`, `send_shell_input`, …), **chat with the ARIA orchestrator** + conversations + agents, **memory** (`search_memory`/`add_memory`), **coding sub-agents** (create/drive/stop), projects/tasks (`/todos` + `/projects/{id|slug}`), and alerts.
 
-Because Hermes owns the single signal-cli daemon, ARIA no longer sends Signal/Telegram itself. `NotificationService` enqueues cooldown-gated alerts into the `alerts` collection; Hermes pulls them over MCP (`list_alerts` / `ack_alert`) and relays them over Signal, then acks. This keeps one Signal sender and makes ARIA's alerting fully observable and drivable by the agent.
+### Self-healing alerts
+Because Hermes owns the single signal-cli daemon, ARIA no longer sends Signal/Telegram itself — it enqueues actionable, cooldown-gated alerts into the `alerts` collection (`selfcheck` alerts once per state-transition; job-lifecycle events are filtered out). Hermes owns the resolution loop (a cron job): on each alert it **spins up a diagnostic coding sub-agent** via the MCP, collects a root-cause + proposed fix, relays *that* to Signal ("reply APPLY…"), and acks. On `APPLY`, Hermes spawns a fixer agent to apply it — verified end-to-end. So ARIA's alerting is fully observable and self-remediating, not just forwarded.
 
 ## Background Processes
 
@@ -155,7 +158,7 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey, voice input/output |
 | **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` (honors `ARIA_API_URL`) |
 | **REST API** | FastAPI | Full API with SSE streaming at `localhost:8200` (the single always-on service) |
-| **MCP** | FastMCP (stdio) | `mcp/server.py` — fleet + projects/tasks + alert relay, consumed by the Hermes agent |
+| **MCP** | FastMCP (stdio) | `mcp/server.py` — ~31 tools (fleet, chat, memory, coding sub-agents, projects/tasks, alerts), consumed by the Hermes agent |
 
 Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory. Outbound notifications go through the MCP alert queue relayed by Hermes rather than ARIA sending Signal/Telegram directly.
 
@@ -174,14 +177,16 @@ Memories have content types (fact/preference/experience/relationship), categorie
 
 ## LLM Backends
 
-| Backend | Type | Config |
+| Backend | Type | Config / models |
 |---------|------|--------|
-| **llama.cpp** | Local (ROCm) | AMD APU/GPU acceleration via [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm) |
+| **Fireworks** | Cloud | `FIREWORKS_API_KEY` — **GLM 5.2** (`glm-5p2`); the default model for the ARIA orchestrator + Pi Coding Agent |
+| **llama.cpp** | Local (ROCm) | Qwen3.6 **35B-A3B** `:8092` (`llamacpp_url`) and **27B** `:8093` — AMD Strix Halo GPU box |
+| **context-1** | Local (ROCm) | chromadb/context-1 20B `:8081` — the Search Agent's agentic backend |
 | **Anthropic** | Cloud | `ANTHROPIC_API_KEY` in `.env` |
 | **OpenAI** | Cloud | `OPENAI_API_KEY` in `.env` |
 | **OpenRouter** | Cloud (multi) | `OPENROUTER_API_KEY` in `.env` |
 
-All backends implement the same adapter interface. The LLM manager handles backend selection and automatic fallback chains.
+All backends implement the same adapter interface; **backend + model are chosen per agent** (config rows in `db.agents`). The local models run as Docker containers in `infrastructure/qwen-rocmfp4/`. The LLM manager handles selection and fallback chains. (The old single `llama.cpp` on `:8080` is retired.)
 
 ## Tools
 
@@ -237,8 +242,10 @@ git clone https://github.com/baf509/ProjectAria.git
 cd ProjectAria
 cp .env.example .env        # Edit with your API keys
 
-# 2. Start shared infrastructure (MongoDB, llama.cpp, embeddings)
+# 2. Start shared infrastructure (MongoDB + mongot + embeddings)
 cd ../infrastructure && docker compose up -d
+# Local LLMs (qwen-chat/agentic + context-1) run from infrastructure/qwen-rocmfp4/
+cd qwen-rocmfp4 && docker compose up -d && cd ..
 
 # 3. Start ARIA API (native service for filesystem/process access)
 systemctl --user start aria-api
@@ -259,7 +266,7 @@ ProjectAria/
 ├── api/                        # FastAPI backend
 │   └── aria/
 │       ├── core/               # Orchestrator, context builder, ClaudeRunner, OODA, steering
-│       ├── llm/                # LLM adapters (llamacpp, anthropic, openai, openrouter)
+│       ├── llm/                # LLM adapters (llamacpp, context1, anthropic, openai, openrouter, fireworks)
 │       ├── memory/             # Short-term + long-term memory, embeddings, extraction
 │       ├── tools/              # Built-in tools + MCP integration
 │       ├── agents/             # Coding session manager, watchdog, tmux backend, budget guard, checkpoint, estop, mail
