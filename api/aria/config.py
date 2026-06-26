@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     mongodb_min_pool_size: int = 5
 
     # llama.cpp (local, OpenAI-compatible)
-    llamacpp_url: str = "http://localhost:8080/v1"
+    llamacpp_url: str = "http://localhost:8092/v1"
     llamacpp_api_key: str = ""
     # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
     # busy/half-open local server wedge a caller for ~10min; a hang never raises
