@@ -85,6 +85,14 @@ class CommandRouter:
         if result is not None:
             return result
 
+        result = await self._handle_model_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
+        result = await self._handle_route_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
         result = await self._handle_backend_switch(conversation_id, user_message)
         if result is not None:
             return result
@@ -272,6 +280,93 @@ class CommandRouter:
         r"^(?:use|switch to|change to|go to|talk to)\s+(.+?)(?:\s+model)?$",
         re_module.IGNORECASE,
     )
+
+    async def _pin_override(self, conversation_id: str, backend: str, model: str) -> None:
+        await self.db.conversations.update_one(
+            {"_id": ObjectId(conversation_id)},
+            {"$set": {
+                "llm_config_override": {"backend": backend, "model": model, "temperature": 0.7},
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+
+    async def _handle_model_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """Pin this conversation to a SPECIFIC model (the explicit override).
+
+        /model                       → show the current pin / default
+        /model auto|default|reset    → unpin (use the agent default)
+        /model <backend>             → pin to that backend's default model
+        /model <backend> <model-id>  → pin to a specific model id
+        """
+        text = user_message.strip()
+        low = text.lower()
+        if not (low == "/model" or low.startswith("/model ")):
+            return None
+        arg = text[len("/model"):].strip()
+        now = datetime.now(timezone.utc)
+
+        if not arg:
+            conv = await self.db.conversations.find_one({"_id": ObjectId(conversation_id)})
+            override = (conv or {}).get("llm_config_override")
+            if override:
+                msg = (
+                    f"Pinned to {override.get('backend')}/{override.get('model')}. "
+                    "Use '/model auto' to unpin."
+                )
+            else:
+                llmc = (conv or {}).get("llm_config", {})
+                msg = (
+                    f"Using the agent default ({llmc.get('backend')}/{llmc.get('model')}). "
+                    "Pin with '/model <backend> [<model-id>]'."
+                )
+            return CommandResult(assistant_content=msg)
+
+        if arg.lower() in ("auto", "default", "reset", "off", "none", "unpin"):
+            await self.db.conversations.update_one(
+                {"_id": ObjectId(conversation_id)},
+                {"$unset": {"llm_config_override": ""}, "$set": {"updated_at": now}},
+            )
+            return CommandResult(assistant_content="Unpinned — back to the agent default model.")
+
+        # "<backend> [<model-id>]" — split on first whitespace so model ids that
+        # contain '/' (fireworks/openrouter) are preserved verbatim.
+        parts = arg.split(maxsplit=1)
+        alias = parts[0].lower()
+        backend = self._BACKEND_ALIASES.get(alias)
+        if backend is None:
+            known = ", ".join(sorted(set(self._BACKEND_ALIASES.values())))
+            return CommandResult(assistant_content=f"Unknown backend '{alias}'. Known: {known}.")
+        model = parts[1].strip() if len(parts) > 1 else self._BACKEND_DEFAULTS.get(backend, "default")
+        await self._pin_override(conversation_id, backend, model)
+        return CommandResult(
+            assistant_content=f"Pinned this conversation to {backend}/{model}. (Use '/model auto' to unpin.)"
+        )
+
+    async def _handle_route_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/route <task>` — suggest a backend by heuristic and pin it. Advisory;
+        you can always override with `/model`."""
+        text = user_message.strip()
+        if not text.lower().startswith("/route"):
+            return None
+        hint = text[len("/route"):].strip()
+        if not hint:
+            return CommandResult(assistant_content="Usage: /route <describe the task> — picks and pins a model.")
+
+        from aria.core.router import suggest_backend
+        backend, why = suggest_backend(hint, has_fireworks=bool(settings.fireworks_api_key))
+        model = self._BACKEND_DEFAULTS.get(backend, "default")
+        await self._pin_override(conversation_id, backend, model)
+        return CommandResult(
+            assistant_content=f"Routed to {backend}/{model} — {why}. Pinned for this conversation (override with /model)."
+        )
 
     async def _handle_backend_switch(
         self,
