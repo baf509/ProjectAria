@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # so retry_async can't recover it.
     llamacpp_timeout_seconds: int = 120
 
+    # Qwen-agentic (local, OpenAI-compatible) — a second coresident llama.cpp
+    # server tuned for agentic/tool-use with long context, served on :8093.
+    # Distinct from llamacpp (:8092, qwen-chat); address it with backend "agentic".
+    agentic_url: str = "http://localhost:8093/v1"
+    agentic_api_key: str = ""
+
     # Chroma context-1 (local agentic search model served by a second llama.cpp)
     context1_url: str = "http://localhost:8081/v1"
     context1_api_key: str = ""

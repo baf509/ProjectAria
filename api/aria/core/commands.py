@@ -211,6 +211,8 @@ class CommandRouter:
     # Default models per backend — used when switching via natural language
     _BACKEND_DEFAULTS: dict[str, str] = {
         "llamacpp": "default",
+        "agentic": "default",
+        "fireworks": "accounts/fireworks/models/glm-5p2",
         "openrouter": "deepseek/deepseek-v4-pro",
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
@@ -226,7 +228,10 @@ class CommandRouter:
             return None
 
         backends = []
-        backends.append(f"  local (llamacpp) — {self._BACKEND_DEFAULTS['llamacpp']}")
+        backends.append(f"  local (llamacpp/qwen-chat) — {self._BACKEND_DEFAULTS['llamacpp']}")
+        backends.append(f"  agentic (qwen-agentic) — {self._BACKEND_DEFAULTS['agentic']}")
+        if settings.fireworks_api_key:
+            backends.append(f"  fireworks (GLM 5.2) — {self._BACKEND_DEFAULTS['fireworks']}")
         if settings.openrouter_api_key:
             backends.append(f"  openrouter — {self._BACKEND_DEFAULTS['openrouter']}")
         if settings.anthropic_api_key:
@@ -250,6 +255,11 @@ class CommandRouter:
         "local": "llamacpp",
         "llama": "llamacpp",
         "llamacpp": "llamacpp",
+        "qwen-chat": "llamacpp",
+        "agentic": "agentic",
+        "qwen-agentic": "agentic",
+        "fireworks": "fireworks",
+        "glm": "fireworks",
         "openrouter": "openrouter",
         "anthropic": "anthropic",
         "claude": "anthropic",
