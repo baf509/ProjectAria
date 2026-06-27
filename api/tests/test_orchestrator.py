@@ -116,7 +116,7 @@ class TestGetLLMCandidates:
         assert candidates[0][1] is False
 
     def test_conversation_override(self):
-        """Conversation with llm_config_override uses that instead of agent primary."""
+        """An llm_config_override is a STRICT pin: just that model, no fallbacks."""
         orch = _make_orchestrator()
         agent = {
             "llm": {"backend": "llamacpp", "model": "m1"},
@@ -130,9 +130,8 @@ class TestGetLLMCandidates:
         candidates = orch._get_llm_candidates(agent, conversation)
         assert candidates[0][0]["backend"] == "openrouter"
         assert candidates[0][0]["model"] == "override-model"
-        # Fallbacks still present
-        assert len(candidates) == 2
-        assert candidates[1][0]["backend"] == "anthropic"
+        # Pin is fallback-free — exactly one candidate.
+        assert len(candidates) == 1
 
 
 # ---------------------------------------------------------------------------
