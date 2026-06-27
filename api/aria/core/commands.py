@@ -97,6 +97,10 @@ class CommandRouter:
         if result is not None:
             return result
 
+        result = await self._handle_forget_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
         result = await self._handle_backend_switch(conversation_id, user_message)
         if result is not None:
             return result
@@ -413,6 +417,36 @@ class CommandRouter:
             return CommandResult(assistant_content="\n".join(lines))
         except Exception as e:
             return CommandResult(assistant_content=f"Search error: {e}")
+
+    async def _handle_forget_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/forget <query>` — remove the single best-matching long-term memory
+        (one at a time, so it's reviewable rather than a bulk wipe)."""
+        text = user_message.strip()
+        if not text.lower().startswith("/forget"):
+            return None
+        query = text[len("/forget"):].strip()
+        if not query:
+            return CommandResult(
+                assistant_content="Usage: /forget <what to forget> — removes the single best-matching memory."
+            )
+        if not self.long_term_memory:
+            return CommandResult(assistant_content="Long-term memory is not available.")
+        try:
+            results = await self.long_term_memory.search(query, limit=1)
+        except Exception as e:
+            return CommandResult(assistant_content=f"Forget failed during search: {e}")
+        if not results:
+            return CommandResult(assistant_content=f"No memory matched '{query}'.")
+        top = results[0]
+        ok = await self.long_term_memory.delete_memory(top.id)
+        if ok:
+            snippet = (top.content or "").strip()[:160]
+            return CommandResult(assistant_content=f"Forgotten: \"{snippet}\"")
+        return CommandResult(assistant_content="Could not delete that memory.")
 
     async def _handle_backend_switch(
         self,
