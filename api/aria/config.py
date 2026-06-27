@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     fireworks_api_key: str = ""
     fireworks_base_url: str = "https://api.fireworks.ai/inference/v1"
 
+    # Spend circuit-breaker: if >0, the rate-limit watchdog trips the global
+    # emergency stop when the last hour's priced usage exceeds this many USD.
+    spend_cap_usd_per_hour: float = 0.0
+
     # TTS
     tts_url: str = "http://localhost:8002/v1"
 

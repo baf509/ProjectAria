@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from aria.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +210,7 @@ class RateLimitWatchdog:
 
         rate_limited_backends = []
 
-        for backend_name in ("anthropic", "openai", "openrouter"):
+        for backend_name in ("anthropic", "openai", "openrouter", "fireworks"):
             available, _ = llm_manager.is_backend_available(backend_name)
             if not available:
                 continue
@@ -219,11 +221,27 @@ class RateLimitWatchdog:
                 failures = llm_manager._failure_counts.get(backend_name, 0)
                 rate_limited_backends.append(f"{backend_name} ({failures} failures)")
 
+        # Combine rate-limit and spend-cap conditions into one freeze decision.
+        reasons = []
+        if rate_limited_backends:
+            reasons.append(f"API rate limit detected: {', '.join(rate_limited_backends)}")
+        cap = settings.spend_cap_usd_per_hour
+        if cap and cap > 0:
+            try:
+                from aria.db.usage import UsageRepo
+                spend = await UsageRepo(self.db).cost_since(
+                    datetime.now(timezone.utc) - timedelta(hours=1)
+                )
+                if spend > cap:
+                    reasons.append(f"Spend cap exceeded: ${spend:.2f}/hr > ${cap:.2f}/hr")
+            except Exception as e:
+                logger.debug("spend-cap check failed: %s", e)
+
         estop_state = await self.estop.get_state()
 
-        if rate_limited_backends:
+        if reasons:
             if not estop_state.active:
-                reason = f"API rate limit detected: {', '.join(rate_limited_backends)}"
+                reason = "; ".join(reasons)
                 await self.estop.activate(
                     reason=reason,
                     triggered_by="rate_limit_watchdog",
