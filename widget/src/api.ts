@@ -38,6 +38,7 @@ export interface StreamChunk {
   event_id?: string;
   content?: string;
   error?: string;
+  tool_call?: { id?: string; name?: string; arguments?: unknown };
 }
 
 let apiUrl = DEFAULT_API_URL;
@@ -248,7 +249,7 @@ export async function transcribeSpeech(
   language?: string
 ): Promise<{ text: string; language: string; duration: number }> {
   const formData = new FormData();
-  formData.append("file", audioBlob, "recording.wav");
+  formData.append("file", audioBlob, "recording.webm");
   if (language) {
     formData.append("language", language);
   }

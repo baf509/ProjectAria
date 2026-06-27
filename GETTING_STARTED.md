@@ -9,7 +9,7 @@ Complete guide to setting up and running ARIA on your machine.
 | Service | Purpose | Port |
 |---------|---------|------|
 | **Shared Infrastructure** | MongoDB, llama.cpp, embeddings (shared with ABP) | 27017, 8080, 8001 |
-| **ARIA API** | FastAPI backend — chat, memory, tools | 8000 |
+| **ARIA API** | FastAPI backend — chat, memory, tools | 8200 |
 | **TTS** (optional) | Qwen3-TTS text-to-speech (CPU) | 8002 |
 | **STT** (optional) | Whisper speech-to-text (CPU) | 8003 |
 | **Web UI** | Next.js chat interface | 3000 |
@@ -151,13 +151,13 @@ aria-ui           running
 
 ```bash
 # Check API health
-curl http://localhost:8000/api/v1/health
+curl http://localhost:8200/api/v1/health
 
 # Expected:
 # {"status":"healthy","version":"0.2.0","database":"connected",...}
 
 # Check LLM backends
-curl http://localhost:8000/api/v1/health/llm
+curl http://localhost:8200/api/v1/health/llm
 
 # Check embedding service (via shared infra)
 curl http://localhost:8001/health
@@ -174,7 +174,7 @@ curl http://localhost:8080/health
 
 Open the Web UI: **http://localhost:3000**
 
-Open the API docs: **http://localhost:8000/docs**
+Open the API docs: **http://localhost:8200/docs**
 
 ---
 
@@ -184,10 +184,10 @@ ARIA creates a default agent on first run. To switch it to use llama.cpp:
 
 ```bash
 # List agents to get the agent ID
-curl -s http://localhost:8000/api/v1/agents | python3 -m json.tool
+curl -s http://localhost:8200/api/v1/agents | python3 -m json.tool
 
 # Update agent to use llama.cpp
-curl -X PUT http://localhost:8000/api/v1/agents/YOUR_AGENT_ID \
+curl -X PUT http://localhost:8200/api/v1/agents/YOUR_AGENT_ID \
   -H "Content-Type: application/json" \
   -d '{
     "llm": {
@@ -236,12 +236,12 @@ aria memories add "Important fact to remember"
 
 ```bash
 # Create a conversation
-CONV_ID=$(curl -s -X POST http://localhost:8000/api/v1/conversations \
+CONV_ID=$(curl -s -X POST http://localhost:8200/api/v1/conversations \
   -H "Content-Type: application/json" \
   -d '{"title":"My Chat"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
 # Send a message (streaming)
-curl -N -X POST "http://localhost:8000/api/v1/conversations/$CONV_ID/messages" \
+curl -N -X POST "http://localhost:8200/api/v1/conversations/$CONV_ID/messages" \
   -H "Content-Type: application/json" \
   -d '{"content":"Hello ARIA!","stream":true}'
 ```
@@ -294,7 +294,7 @@ npm run tauri:build
 
 ### Configuration
 
-Once running, open the settings panel in the widget and set the API URL to your ARIA server (e.g., `http://your-server:8000`). The default is `http://localhost:8000`.
+Once running, open the settings panel in the widget and set the API URL to your ARIA server (e.g., `http://your-server:8200`). The default is `http://localhost:8200`.
 
 **Widget features:**
 - `Ctrl+Space` — Toggle the chat window
@@ -345,8 +345,8 @@ docker compose logs -f mongod       # MongoDB logs
 | Service | URL | Description |
 |---------|-----|-------------|
 | Web UI | http://localhost:3000 | Chat interface |
-| API | http://localhost:8000 | REST API |
-| API Docs | http://localhost:8000/docs | Swagger/OpenAPI |
+| API | http://localhost:8200 | REST API |
+| API Docs | http://localhost:8200/docs | Swagger/OpenAPI |
 | Embeddings | http://localhost:8001 | OpenAI-compatible embedding API (shared infra) |
 | TTS | http://localhost:8002 | Qwen3-TTS speech synthesis |
 | STT | http://localhost:8003 | Whisper transcription |
@@ -356,36 +356,36 @@ docker compose logs -f mongod       # MongoDB logs
 
 ```bash
 # Health
-curl http://localhost:8000/api/v1/health
-curl http://localhost:8000/api/v1/health/llm
+curl http://localhost:8200/api/v1/health
+curl http://localhost:8200/api/v1/health/llm
 
 # Conversations
-curl http://localhost:8000/api/v1/conversations
-curl http://localhost:8000/api/v1/conversations/ID
+curl http://localhost:8200/api/v1/conversations
+curl http://localhost:8200/api/v1/conversations/ID
 
 # Memories
-curl http://localhost:8000/api/v1/memories
-curl -X POST http://localhost:8000/api/v1/memories/search \
+curl http://localhost:8200/api/v1/memories
+curl -X POST http://localhost:8200/api/v1/memories/search \
   -H "Content-Type: application/json" \
   -d '{"query":"search term","limit":10}'
 
 # Agents
-curl http://localhost:8000/api/v1/agents
+curl http://localhost:8200/api/v1/agents
 
 # Tools
-curl http://localhost:8000/api/v1/tools
+curl http://localhost:8200/api/v1/tools
 
 # TTS - synthesize speech
-curl -X POST http://localhost:8000/api/v1/tts/synthesize \
+curl -X POST http://localhost:8200/api/v1/tts/synthesize \
   -H "Content-Type: application/json" \
-  -d '{"text":"Hello from ARIA","speaker":"Chelsie"}' \
+  -d '{"text":"Hello from ARIA","speaker":"Vivian"}' \
   --output hello.wav
 
 # TTS - list speakers
-curl http://localhost:8000/api/v1/tts/speakers
+curl http://localhost:8200/api/v1/tts/speakers
 
 # STT - transcribe audio
-curl -X POST http://localhost:8000/api/v1/stt/transcribe \
+curl -X POST http://localhost:8200/api/v1/stt/transcribe \
   -F "file=@recording.wav"
 ```
 

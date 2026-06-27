@@ -342,29 +342,37 @@ func (c *Client) DeleteMemory(id string) error {
 // ---------- Usage ----------
 
 type UsageSummary struct {
-	TotalInputTokens  int `json:"total_input_tokens"`
-	TotalOutputTokens int `json:"total_output_tokens"`
-	TotalRequests     int `json:"total_requests"`
+	TotalInputTokens  int `json:"input_tokens"`
+	TotalOutputTokens int `json:"output_tokens"`
+	TotalRequests     int `json:"requests"`
 }
 
 type AgentUsage struct {
-	AgentID      string `json:"agent_id"`
-	AgentName    string `json:"agent_name"`
+	AgentName    string `json:"_id"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	Requests     int    `json:"requests"`
 }
 
 type ModelUsage struct {
-	Backend      string `json:"backend"`
-	Model        string `json:"model"`
+	Model        string `json:"_id"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	Requests     int    `json:"requests"`
 }
 
+// daysForHours converts a desired hour window to whole days for the API,
+// which only accepts a ?days= parameter (minimum 1 day).
+func daysForHours(hours int) int {
+	days := hours / 24
+	if days < 1 {
+		days = 1
+	}
+	return days
+}
+
 func (c *Client) GetUsage(hours int) (*UsageSummary, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/summary?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/summary?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -375,7 +383,7 @@ func (c *Client) GetUsage(hours int) (*UsageSummary, error) {
 }
 
 func (c *Client) GetUsageByAgent(hours int) ([]AgentUsage, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/by-agent?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/by-agent?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -386,7 +394,7 @@ func (c *Client) GetUsageByAgent(hours int) ([]AgentUsage, error) {
 }
 
 func (c *Client) GetUsageByModel(hours int) ([]ModelUsage, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/by-model?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/by-model?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -518,10 +526,10 @@ func (c *Client) ListTools() ([]Tool, error) {
 }
 
 type MCPServer struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Tools  int    `json:"tool_count"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	Tools     int    `json:"tool_count"`
 }
 
 func (c *Client) ListMCPServers() ([]MCPServer, error) {

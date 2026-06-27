@@ -129,7 +129,7 @@ These are autonomous tasks where ARIA delegates work to a Claude Code CLI instan
 | **Dream Cycle** | Every 6h, quiet hours (1am-5am) | Reviews memories, finds patterns, writes journal entries, proposes identity evolution |
 | **Research** | On demand (`/research query`) | Recursive web research with branching queries, learning extraction, report synthesis |
 | **Heartbeat** | Every 30min, active hours (9am-10pm) | Reviews checklist, alerts via Signal/Telegram if anything needs attention |
-| **OODA Loop** | During responses (if enabled) | Scores ARIA's own response quality (0-1), retries if below threshold |
+| **OODA Loop** | Non-streaming responses (if enabled per-agent) | Scores ARIA's own response quality (0-1), retries if below threshold — only on the non-streaming path, not the default streaming chat |
 | **Autopilot** | On demand via API | Decomposes goals into steps, executes sequentially with optional approval gates |
 | **Awareness** | Every 30min (if enabled) | Monitors git activity, system health, filesystem changes, produces situational summary |
 | **Summarization** | Auto when context grows | Rolling conversation compaction preserving goals, decisions, progress, open questions |
@@ -142,12 +142,12 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 
 | Subsystem | Purpose |
 |-----------|---------|
-| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92%. |
+| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92% — thresholds are heuristic labels derived from output signals, not exact token metering. |
 | **Session Checkpoints** | Persists task, modified files, branch, last commit, and notes to MongoDB so crashed agents can be resumed with full context. |
 | **Emergency Stop (Estop)** | MongoDB-backed global freeze that halts all agent activity on API rate limits or critical errors. Visible across processes, auto-thaws when clear. |
-| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` messages routed through MongoDB between the orchestrator and sub-agents. |
-| **Tmux Backend** | Optional visible backend that spawns each coding agent in its own color-coded tmux pane inside an `aria-agents` session. |
-| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items. |
+| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` message types in MongoDB. Currently carries sub-agent completion signals (`TASK_DONE`); full bidirectional polling by the orchestrator isn't wired yet. |
+| **Tmux Backend** | Visible-pane overlay used when a coding session is started with `visible=True` — each agent gets its own color-coded tmux pane inside an `aria-agents` session. (Not a selectable backend in the registry, which exposes `codex` + `claude_code`.) |
+| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items (subsystem implemented; not yet wired into the live alert path). |
 
 ## Interfaces
 
@@ -197,7 +197,7 @@ Built-in tools ARIA can call during conversations:
 | `shell` | Execute shell commands |
 | `filesystem` | Read, write, list, delete files |
 | `web_fetch` | HTTP requests |
-| `screenshot` | Capture and analyze screen |
+| `screenshot_analyze` | Capture and analyze screen |
 | `start_coding_session` | Spawn Claude Code or Codex |
 | `stop_coding_session` | Stop a running session |
 | `get_coding_output` | Read session output |
@@ -206,7 +206,7 @@ Built-in tools ARIA can call during conversations:
 | `claude_agent` | Delegate a one-shot task to Claude Code |
 | `pi_coding_agent` | Delegate to Pi Coding Agent (local LLM) |
 | `update_soul` | Read or modify SOUL.md |
-| `document_generation` | Generate documentation |
+| `generate_document` | Generate documentation |
 
 Additionally, MCP servers provide dynamic tools via JSON-RPC 2.0, and the skill system allows installing packaged tool bundles.
 

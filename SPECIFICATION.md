@@ -982,7 +982,7 @@ GET  /api/v1/tools/{id}                # Get tool
 PATCH /api/v1/tools/{id}               # Update tool
 DELETE /api/v1/tools/{id}              # Uninstall tool
 
-# Settings
+# Settings (not implemented — no settings route exists)
 GET  /api/v1/settings                  # Get settings
 PATCH /api/v1/settings                 # Update settings
 POST /api/v1/settings/test-llm         # Test LLM connection
@@ -991,7 +991,7 @@ POST /api/v1/settings/test-llm         # Test LLM connection
 ### 5.2 WebSocket Endpoint
 
 ```
-WS /api/v1/ws
+WS /api/v1/ws   # (not implemented; streaming is SSE-only)
 
 # Client -> Server
 {

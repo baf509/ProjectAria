@@ -29,7 +29,7 @@ class AriaClient:
 
     def __init__(self, base_url: str = None):
         if base_url is None:
-            base_url = os.getenv("ARIA_API_URL", "http://localhost:8000")
+            base_url = os.getenv("ARIA_API_URL", "http://localhost:8200")
         self.base_url = base_url.rstrip("/")
         headers = {}
         api_key = os.getenv("ARIA_API_KEY")
@@ -90,14 +90,23 @@ class AriaClient:
         return response.json()
 
     def send_message(self, conversation_id: str, message: str):
-        """Send a message and stream the response."""
-        response = self.client.post(
+        """Send a message and stream the response.
+
+        Yields parsed SSE event dicts as they arrive (true streaming).
+        """
+        with self.client.stream(
+            "POST",
             f"{self.base_url}/api/v1/conversations/{conversation_id}/messages",
             json={"content": message, "stream": True},
             headers={"Accept": "text/event-stream"},
-        )
-        response.raise_for_status()
-        return response
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line.startswith("data: "):
+                    try:
+                        yield json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
 
     def list_agents(self):
         """List agents."""
@@ -269,53 +278,40 @@ def chat(message, conversation, new):
                         continue
 
                     console.print("[green]ARIA:[/green] ", end="")
-                    response = client.send_message(conversation, message)
 
                     # Stream response
                     response_text = []
-                    for line in response.iter_lines():
-                        if line.startswith("data: "):
-                            try:
-                                data = json.loads(line[6:])
-                            except json.JSONDecodeError:
-                                continue
-                            if data["type"] == "text":
-                                console.print(data["content"], end="")
-                                response_text.append(data["content"])
-                            elif data["type"] == "error":
-                                console.print(
-                                    f"\\n[red]Error:[/red] {data['error']}"
-                                )
-                                break
+                    for data in client.send_message(conversation, message):
+                        if data["type"] == "text":
+                            console.print(data["content"], end="")
+                            response_text.append(data["content"])
+                        elif data["type"] == "error":
+                            console.print(
+                                f"\n[red]Error:[/red] {data['error']}"
+                            )
+                            break
 
                     console.print("\n")
                 except KeyboardInterrupt:
-                    console.print("\\n[dim]Goodbye![/dim]")
+                    console.print("\n[dim]Goodbye![/dim]")
                     break
         else:
             # One-shot mode
             console.print(f"[cyan]You:[/cyan] {message}\n")
             console.print("[green]ARIA:[/green] ", end="")
 
-            response = client.send_message(conversation, message)
-
             # Stream response
-            for line in response.iter_lines():
-                if line.startswith("data: "):
-                    try:
-                        data = json.loads(line[6:])
-                    except json.JSONDecodeError:
-                        continue
-                    if data["type"] == "text":
-                        console.print(data["content"], end="")
-                    elif data["type"] == "error":
-                        console.print(f"\\n[red]Error:[/red] {data['error']}")
-                        sys.exit(1)
+            for data in client.send_message(conversation, message):
+                if data["type"] == "text":
+                    console.print(data["content"], end="")
+                elif data["type"] == "error":
+                    console.print(f"\n[red]Error:[/red] {data['error']}")
+                    sys.exit(1)
 
             console.print("\n")
 
     except Exception as e:
-        console.print(f"\\n[red]Error:[/red] {str(e)}")
+        console.print(f"\n[red]Error:[/red] {str(e)}")
         sys.exit(1)
 
 
@@ -431,18 +427,26 @@ def update_agent_cmd(agent_id, name, system_prompt, backend, model, temperature)
             data["name"] = name
         if system_prompt is not None:
             data["system_prompt"] = system_prompt
-        if backend is not None:
-            data["backend"] = backend
-        if model is not None:
-            data["model"] = model
-        if temperature is not None:
-            data["temperature"] = temperature
+
+        # LLM settings must be nested under "llm" (AgentLLMConfig).
+        # backend and model are required together when updating LLM config.
+        if backend is not None or model is not None or temperature is not None:
+            if backend is None or model is None:
+                console.print(
+                    "[red]Error:[/red] --backend and --model must be provided "
+                    "together when updating LLM settings"
+                )
+                sys.exit(1)
+            llm = {"backend": backend, "model": model}
+            if temperature is not None:
+                llm["temperature"] = temperature
+            data["llm"] = llm
 
         if not data:
             console.print("[red]Error:[/red] No fields provided to update")
             sys.exit(1)
 
-        result = client.request("PATCH", f"/agents/{agent_id}", json=data).json()
+        result = client.request("PUT", f"/agents/{agent_id}", json=data).json()
         console.print(f"[green]✓[/green] Updated agent: {result['name']} ({result['id'][:8]}...)")
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
@@ -1211,37 +1215,6 @@ def create_workflow_cmd(name, steps_json, description):
             json={"name": name, "description": description, "steps": steps},
         ).json()
         console.print(f"[green]✓[/green] Created workflow {workflow['_id']}")
-    except Exception as e:
-        console.print(f"[red]Error:[/red] {str(e)}")
-        sys.exit(1)
-
-
-@workflows.command("update")
-@click.argument("workflow_id")
-@click.option("--name", help="New workflow name")
-@click.option("--description", help="Workflow description")
-@click.option("--steps", "steps_json", help="Steps as JSON array")
-def update_workflow_cmd(workflow_id, name, description, steps_json):
-    """Update a workflow."""
-    try:
-        client = AriaClient()
-        data = {}
-        if name is not None:
-            data["name"] = name
-        if description is not None:
-            data["description"] = description
-        if steps_json is not None:
-            data["steps"] = json.loads(steps_json)
-
-        if not data:
-            console.print("[red]Error:[/red] No fields provided to update")
-            sys.exit(1)
-
-        result = client.request("PATCH", f"/workflows/{workflow_id}", json=data).json()
-        console.print(f"[green]✓[/green] Updated workflow: {result.get('name', workflow_id)}")
-    except json.JSONDecodeError:
-        console.print("[red]Error:[/red] Invalid JSON for steps")
-        sys.exit(1)
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         sys.exit(1)
