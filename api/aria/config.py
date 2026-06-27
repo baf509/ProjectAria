@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     tool_execution_policy: str = "allowlist"
     tool_allowed_names: list[str] = [
         "web",
+        "browse_page",
         "list_coding_sessions",
         "get_coding_output",
         "get_coding_diff",

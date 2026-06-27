@@ -190,6 +190,32 @@ class SchedulerService:
                     notify=True,
                     metadata={"task_kind": "scheduled_tool", "schedule_id": str(schedule["_id"])},
                 )
+        elif action == "autopilot":
+            # Scheduled autonomous routine: decompose + execute a goal on a
+            # schedule (e.g. "every morning, triage my repos").
+            goal = params.get("goal", "")
+            if goal:
+                mode = params.get("mode", "safe")
+                backend = params.get("backend", "fireworks")
+                model = params.get("model", "") or "accounts/fireworks/models/glm-5p2"
+                context = params.get("context", "")
+
+                async def _run_autopilot():
+                    from aria.api.deps import get_killswitch, get_tool_router
+                    from aria.autopilot.service import AutopilotService
+                    svc = AutopilotService(
+                        self.db, get_killswitch(), self.task_runner, get_tool_router()
+                    )
+                    return await svc.start(
+                        goal=goal, mode=mode, backend=backend, model=model, context=context
+                    )
+
+                await self.task_runner.submit_task(
+                    name=f"routine:{schedule.get('name', 'autopilot')}",
+                    coroutine_factory=_run_autopilot,
+                    notify=True,
+                    metadata={"task_kind": "scheduled_autopilot", "schedule_id": str(schedule["_id"])},
+                )
         elif action == "notify":
             await self.notification_service.notify(
                 source="scheduler",
