@@ -27,15 +27,21 @@ class StartCodingSessionTool(_CodingBaseTool):
 
     @property
     def description(self) -> str:
-        return "Start an external coding agent session in a workspace."
+        return (
+            "Start a coding agent session in a workspace. backend is one of "
+            "'claude_code', 'codex', or 'pi-code'. For 'pi-code' (ARIA's own "
+            "agentic loop), set llm to the LLM backend (e.g. 'fireworks', "
+            "'agentic', 'llamacpp') and model to pin a specific model."
+        )
 
     @property
     def parameters(self) -> list[ToolParameter]:
         return [
             ToolParameter(name="workspace", type="string", description="Workspace path", required=True),
             ToolParameter(name="prompt", type="string", description="Task prompt", required=True),
-            ToolParameter(name="backend", type="string", description="Backend name", required=False),
-            ToolParameter(name="model", type="string", description="Model override", required=False),
+            ToolParameter(name="backend", type="string", description="Backend: claude_code | codex | pi-code", required=False),
+            ToolParameter(name="llm", type="string", description="For pi-code: LLM backend (fireworks|agentic|llamacpp)", required=False),
+            ToolParameter(name="model", type="string", description="Model id to pin", required=False),
             ToolParameter(name="branch", type="string", description="Branch hint", required=False),
         ]
 

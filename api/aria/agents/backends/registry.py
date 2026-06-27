@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from aria.agents.backends.claude_code import ClaudeCodeBackend
 from aria.agents.backends.codex import CodexBackend
+from aria.agents.backends.pi_code import PiCodeBackend
 
 
 class BackendRegistry:
@@ -15,6 +16,7 @@ class BackendRegistry:
         self._backends = {
             "codex": CodexBackend(),
             "claude_code": ClaudeCodeBackend(),
+            "pi-code": PiCodeBackend(),
         }
 
     def get(self, name: str):

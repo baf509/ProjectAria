@@ -294,6 +294,7 @@ class CodingSessionCreate(BaseModel):
     workspace: str
     prompt: str
     backend: Optional[str] = None
+    llm: Optional[str] = None
     model: Optional[str] = None
     branch: Optional[str] = None
 
