@@ -164,6 +164,40 @@ def health():
         sys.exit(1)
 
 
+@cli.command()
+@click.argument("query", nargs=-1, required=True)
+def search(query):
+    """Search ARIA's memory, web, and files via the search agent."""
+    q = " ".join(query)
+    try:
+        client = AriaClient()
+        resp = client.request(
+            "POST", "/tools/execute",
+            json={"tool_name": "search_agent", "arguments": {"query": q}},
+        )
+        data = resp.json()
+        if data.get("status") != "success":
+            console.print(f"[red]✗[/red] {data.get('error') or 'search failed'}", style="red")
+            sys.exit(1)
+        docs = (data.get("output") or {}).get("documents", [])
+        if not docs:
+            console.print(f"[yellow]No results for[/yellow] {q}")
+            return
+        console.print(f"[bold cyan]{len(docs)} result(s) for[/bold cyan] {q}\n")
+        for i, d in enumerate(docs[:10], 1):
+            src = d.get("source", "?")
+            title = d.get("title") or d.get("id", "")
+            console.print(f"[bold green]{i}.[/bold green] [dim]\\[{src}][/dim] {title}")
+            snippet = (d.get("content") or "").strip().replace("\n", " ")[:200]
+            if snippet:
+                console.print(f"   {snippet}")
+            if d.get("url"):
+                console.print(f"   [blue]{d['url']}[/blue]")
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}", style="red")
+        sys.exit(1)
+
+
 @cli.group()
 def conversations():
     """Manage conversations."""

@@ -93,6 +93,10 @@ class CommandRouter:
         if result is not None:
             return result
 
+        result = await self._handle_search_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
         result = await self._handle_backend_switch(conversation_id, user_message)
         if result is not None:
             return result
@@ -367,6 +371,48 @@ class CommandRouter:
         return CommandResult(
             assistant_content=f"Routed to {backend}/{model} — {why}. Pinned for this conversation (override with /model)."
         )
+
+    async def _handle_search_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/search <query>` — run the context-1 search agent directly and show
+        the ranked documents (memory / web / files)."""
+        text = user_message.strip()
+        if not text.lower().startswith("/search"):
+            return None
+        query = text[len("/search"):].strip()
+        if not query:
+            return CommandResult(assistant_content="Usage: /search <query>")
+        try:
+            from aria.api.deps import get_tool_router
+            from aria.tools.base import ToolStatus
+            router = get_tool_router()
+            result = await router.execute_tool("search_agent", {"query": query})
+            if result.status != ToolStatus.SUCCESS:
+                return CommandResult(
+                    assistant_content=(
+                        f"Search unavailable: {result.error or 'search_agent not registered (is context-1 up?)'}"
+                    )
+                )
+            docs = (result.output or {}).get("documents", [])
+            if not docs:
+                return CommandResult(assistant_content=f"No documents found for '{query}'.")
+            lines = [f"Found {len(docs)} result(s) for '{query}':", ""]
+            for i, d in enumerate(docs[:10], 1):
+                src = d.get("source", "?")
+                title = d.get("title") or d.get("id", "")
+                snippet = (d.get("content") or "").strip().replace("\n", " ")[:200]
+                url = d.get("url")
+                lines.append(f"{i}. [{src}] {title}".rstrip())
+                if snippet:
+                    lines.append(f"   {snippet}")
+                if url:
+                    lines.append(f"   {url}")
+            return CommandResult(assistant_content="\n".join(lines))
+        except Exception as e:
+            return CommandResult(assistant_content=f"Search error: {e}")
 
     async def _handle_backend_switch(
         self,
