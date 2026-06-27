@@ -98,13 +98,15 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     # API
+    # Port 8200 is canonical post-cutover (ProjectAria absorbed aria-shells;
+    # the old :8000 is retired). The systemd unit pins --port 8200.
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 8200
     api_auth_enabled: bool = True
     api_key: str = "aria-local-admin-key"
     cors_origins: list[str] = [
         "http://localhost:3000",
-        "http://localhost:8000",
+        "http://localhost:8200",
         "http://localhost:1420",
         "http://127.0.0.1:3000",
         "http://aria-ui:3000",

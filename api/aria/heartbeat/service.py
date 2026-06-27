@@ -323,12 +323,15 @@ class HeartbeatService:
         self._last_run = datetime.now(timezone.utc)
         self._last_result = response_text
 
-        # Check for HEARTBEAT_OK
+        # Check for HEARTBEAT_OK. Require the keyword to LEAD the response (sole
+        # content or start of the first line) — an alert that merely ends with
+        # or contains the token must NOT be swallowed. Avoid a global replace.
         ok_keyword = settings.heartbeat_ok_keyword
         stripped = response_text.strip()
-        if stripped == ok_keyword or stripped.startswith(ok_keyword) or stripped.endswith(ok_keyword):
-            # Check if there's meaningful content beyond the OK token
-            remaining = stripped.replace(ok_keyword, "").strip()
+        first_line = stripped.splitlines()[0].strip() if stripped else ""
+        if stripped == ok_keyword or first_line.startswith(ok_keyword):
+            # Allow a short trailing note after the leading OK token.
+            remaining = stripped[len(ok_keyword):].strip() if stripped.startswith(ok_keyword) else ""
             if len(remaining) <= 300:
                 logger.info("Heartbeat OK — nothing needs attention")
                 return

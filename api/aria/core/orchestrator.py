@@ -60,6 +60,9 @@ class Orchestrator:
         self.tool_router = tool_router
         self.research_service = ResearchService(db, task_runner) if task_runner else None
         self.coding_manager = coding_manager
+        # Retain strong references to fire-and-forget background tasks so the
+        # event loop can't GC them mid-flight (usage recording, extraction, …).
+        self._bg_tasks: set = set()
 
         # Command router handles all command parsing and dispatch
         self.command_router = CommandRouter(
@@ -69,6 +72,12 @@ class Orchestrator:
             research_service=self.research_service,
             coding_manager=self.coding_manager,
         )
+
+    def _spawn_bg(self, coro) -> None:
+        """Schedule a fire-and-forget coroutine while retaining a strong ref."""
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def _get_llm_candidates(self, agent: dict, conversation: dict | None = None) -> list[tuple]:
         """Build LLM candidate list from conversation override, primary, plus fallbacks."""
@@ -485,7 +494,7 @@ class Orchestrator:
                 except Exception as e:
                     logger.error("Failed to record usage: %s", e)
 
-            asyncio.create_task(_record_usage())
+            self._spawn_bg(_record_usage())
 
             # If no tool calls, we're done — break out of the tool-call loop
             if not tool_calls or not self.tool_router:
@@ -609,6 +618,19 @@ class Orchestrator:
                     tool_call_id=tr["tool_call_id"],
                 ))
             # Loop continues — LLM will be called again with tool results
+        else:
+            # The for-loop ran every round without an early break, meaning the
+            # final round still produced tool calls that were executed but never
+            # sent back to the LLM for a closing answer. Tell the user rather
+            # than silently ending with no final response.
+            logger.warning(
+                "Conversation %s hit max_tool_rounds (%d) with pending tool calls",
+                conversation_id, max_tool_rounds,
+            )
+            yield StreamChunk(
+                type="text",
+                content="\n[Reached the maximum number of tool rounds; stopping here without a final summary.]\n",
+            )
 
         # After the tool-call loop, emit the final "done" event
         usage = total_usage
@@ -642,7 +664,7 @@ class Orchestrator:
                 # Fallback to asyncio.create_task if BackgroundTasks not available
                 # This can happen in non-HTTP contexts (e.g., CLI, tests)
                 try:
-                    asyncio.create_task(
+                    self._spawn_bg(
                         self.memory_extractor.extract_from_conversation(
                             conversation_id,
                             llm_backend=llm_config["backend"],
@@ -678,7 +700,7 @@ class Orchestrator:
                 background_tasks.add_task(run_task_extraction)
             else:
                 try:
-                    asyncio.create_task(run_task_extraction())
+                    self._spawn_bg(run_task_extraction())
                 except Exception as e:
                     logger.error("Failed to queue task extraction: %s", e)
 
@@ -703,12 +725,12 @@ class Orchestrator:
             background_tasks.add_task(run_summary_update)
         else:
             try:
-                asyncio.create_task(run_summary_update())
+                self._spawn_bg(run_summary_update())
             except Exception as e:
                 logger.error("Failed to queue summary update: %s", e)
 
         # Fire post_message hook (fire-and-forget to not block response)
-        asyncio.create_task(hook_registry.fire("post_message", {
+        self._spawn_bg(hook_registry.fire("post_message", {
             "conversation_id": conversation_id,
             "assistant_content": assistant_content,
             "usage": usage,

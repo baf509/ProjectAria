@@ -145,11 +145,15 @@ class _SearchCache:
         if time.monotonic() - ts > self._ttl:
             del self._cache[key]
             return None
-        return results
+        # Return a shallow copy so callers mutating the result don't corrupt
+        # the cached list for other callers (cache aliasing bug).
+        return list(results)
 
     def put(self, query: str, limit: int, filters: Optional[dict], results: list):
         key = self._make_key(query, limit, filters)
-        self._cache[key] = (time.monotonic(), results)
+        # Store a shallow copy so a later caller mutation of the returned list
+        # can't reach back into the cache entry.
+        self._cache[key] = (time.monotonic(), list(results))
         # Evict stale entries periodically
         if len(self._cache) > 100:
             now = time.monotonic()
@@ -289,6 +293,15 @@ class LongTermMemory:
         Returns:
             List of (Memory, score) tuples
         """
+        # Recall mitigation: the BM25 `$search` stage cannot share the arbitrary
+        # MQL `filter` dict the way `$vectorSearch` does (mongot `$search`
+        # filtering requires operator-form clauses, and `filter` here is a
+        # dynamic MQL shape like {"status": "active", "private": {"$ne": True}}).
+        # Without pushing the filter in, the post-`$match`/`$limit` would prune
+        # an already-truncated result set and often return far fewer than
+        # `limit`. So we fetch a much larger candidate set from `$search` before
+        # filtering, so enough survive the `$match` to satisfy `limit`.
+        search_limit = limit * 5
         pipeline = [
             {
                 "$search": {
@@ -300,6 +313,7 @@ class LongTermMemory:
                     },
                 }
             },
+            {"$limit": search_limit},
             {"$match": filter},
             {"$limit": limit},
             {
@@ -539,11 +553,23 @@ class LongTermMemory:
         """
         updates["updated_at"] = datetime.now(timezone.utc)
 
-        # If content changed, regenerate embedding
+        # If content changed, regenerate embedding — gracefully degrade if the
+        # embedding service is unavailable (mirrors create_memory). On outage,
+        # leave the existing embedding untouched rather than overwriting it with
+        # null, and flag it as stale so it can be re-embedded later.
         if "content" in updates:
-            embedding = await embedding_service.embed(updates["content"])
-            updates["embedding"] = embedding_to_binary(embedding)
-            updates["embedding_model"] = settings.embedding_model
+            embedding = await embedding_service.embed_or_none(updates["content"])
+            if embedding is not None:
+                updates["embedding"] = embedding_to_binary(embedding)
+                updates["embedding_model"] = settings.embedding_model
+                updates["embedding_pending"] = False
+            else:
+                logger.warning(
+                    "Embedding service unavailable; keeping existing embedding "
+                    "and marking stale for memory %s",
+                    memory_id,
+                )
+                updates["embedding_pending"] = True
 
         result = await self.db.memories.update_one(
             {"_id": ObjectId(memory_id)}, {"$set": updates}

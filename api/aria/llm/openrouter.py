@@ -171,8 +171,22 @@ class OpenRouterAdapter(LLMAdapter):
             stream = await self.client.chat.completions.create(**request_params)
 
             tool_calls_accumulator = {}
+            captured_usage = {}
+            done_emitted = False
 
             async for chunk in stream:
+                # Trailing usage-only chunk has choices == []. Capture usage
+                # from it (and any other chunk that carries usage) and skip
+                # indexing into choices, which would IndexError.
+                if hasattr(chunk, "usage") and chunk.usage:
+                    captured_usage = {
+                        "input_tokens": chunk.usage.prompt_tokens,
+                        "output_tokens": chunk.usage.completion_tokens,
+                    }
+
+                if not chunk.choices:
+                    continue
+
                 delta = chunk.choices[0].delta
 
                 # Text content
@@ -204,8 +218,12 @@ class OpenRouterAdapter(LLMAdapter):
                             if tc_delta.function.arguments is not None:
                                 tool_calls_accumulator[idx]["arguments"] += tc_delta.function.arguments
 
-                # Check if done
-                if chunk.choices[0].finish_reason:
+                # Check if done. Don't break here — the trailing usage-only
+                # chunk arrives AFTER the finish_reason chunk, so we let the
+                # loop continue to read it and emit `done` afterwards.
+                if chunk.choices[0].finish_reason and not done_emitted:
+                    done_emitted = True
+
                     # Yield completed tool calls
                     for tool_call_data in tool_calls_accumulator.values():
                         try:
@@ -222,19 +240,12 @@ class OpenRouterAdapter(LLMAdapter):
                             ),
                         )
 
-                    # Yield usage if available
-                    usage = {}
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage = {
-                            "input_tokens": chunk.usage.prompt_tokens,
-                            "output_tokens": chunk.usage.completion_tokens,
-                        }
-
-                    yield StreamChunk(
-                        type="done",
-                        usage=usage,
-                    )
-                    break
+            # Emit the final done chunk with usage captured from the trailing
+            # usage-only chunk (or any chunk that carried usage).
+            yield StreamChunk(
+                type="done",
+                usage=captured_usage,
+            )
 
         except Exception as e:
             yield StreamChunk(

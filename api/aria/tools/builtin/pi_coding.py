@@ -90,6 +90,29 @@ class PiCodingAgentTool(BaseTool):
                 error="Task description is required",
             )
 
+        # Safety gates (fail closed): block delegation while the killswitch or
+        # the automated emergency stop is engaged.
+        try:
+            from aria.api.deps import get_killswitch, resolve_estop_manager
+            get_killswitch().check_or_raise("pi coding delegation")
+            estop = await resolve_estop_manager(self._db)
+            estop_active = await estop.is_active()
+            estop_reason = (await estop.get_state()).reason if estop_active else None
+        except RuntimeError as exc:
+            return ToolResult(tool_name=self.name, status=ToolStatus.ERROR, error=str(exc))
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=f"Safety check failed, refusing to delegate: {exc}",
+            )
+        if estop_active:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=f"Emergency stop active: {estop_reason}. Delegation paused.",
+            )
+
         title = arguments.get("title") or f"Pi Coding: {task[:60]}..."
 
         # Find the Pi Coding Agent

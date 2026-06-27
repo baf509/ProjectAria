@@ -170,10 +170,13 @@ class RateLimitWatchdog:
         db: AsyncIOMotorDatabase,
         estop: EstopManager,
         notification_service=None,
+        escalation_manager=None,
     ):
         self.db = db
         self.estop = estop
         self.notification_service = notification_service
+        self.escalation_manager = escalation_manager
+        self._active_escalation_id: Optional[str] = None
         self._task: Optional[asyncio.Task] = None
         self._check_interval = 180  # 3 minutes
 
@@ -236,6 +239,18 @@ class RateLimitWatchdog:
                         )
                     except Exception:
                         pass
+                if self.escalation_manager:
+                    try:
+                        from aria.notifications.escalation import Severity
+                        esc = await self.escalation_manager.escalate(
+                            source="rate_limit_watchdog",
+                            severity=Severity.CRITICAL,
+                            description=reason,
+                            metadata={"backends": rate_limited_backends},
+                        )
+                        self._active_escalation_id = esc.escalation_id
+                    except Exception as e:
+                        logger.error("Failed to create rate-limit escalation: %s", e)
         else:
             # All backends healthy — thaw if estop was triggered by us
             if (
@@ -244,6 +259,14 @@ class RateLimitWatchdog:
                 and estop_state.triggered_by == "rate_limit_watchdog"
             ):
                 await self.estop.deactivate(reason="Rate limits cleared")
+                if self.escalation_manager and self._active_escalation_id:
+                    try:
+                        await self.escalation_manager.resolve(
+                            self._active_escalation_id, "Rate limits cleared"
+                        )
+                    except Exception:
+                        pass
+                    self._active_escalation_id = None
                 if self.notification_service:
                     try:
                         await self.notification_service.notify(

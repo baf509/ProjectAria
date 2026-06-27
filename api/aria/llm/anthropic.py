@@ -164,7 +164,8 @@ class AnthropicAdapter(LLMAdapter):
             # Stream the response
             async with self.client.messages.stream(**request_params) as stream_ctx:
                 tool_uses = []
-                tool_input_buffers = {}  # index -> accumulated JSON string
+                tool_input_buffers = {}  # content-block index -> accumulated JSON string
+                block_index_to_tool = {}  # content-block index -> position in tool_uses
 
                 async for event in stream_ctx:
                     # Text or tool input delta
@@ -175,15 +176,17 @@ class AnthropicAdapter(LLMAdapter):
                                 content=event.delta.text,
                             )
                         elif hasattr(event.delta, "partial_json"):
-                            # Accumulate tool input JSON fragments
-                            if tool_uses:
-                                idx = len(tool_uses) - 1
-                                tool_input_buffers[idx] = tool_input_buffers.get(idx, "") + event.delta.partial_json
+                            # Accumulate tool input JSON fragments, keyed by the
+                            # event's content-block index so fragments are
+                            # attributed to the correct tool block.
+                            idx = event.index
+                            tool_input_buffers[idx] = tool_input_buffers.get(idx, "") + event.delta.partial_json
 
                     # Tool use block start
                     elif event.type == "content_block_start":
                         if hasattr(event.content_block, "type"):
                             if event.content_block.type == "tool_use":
+                                block_index_to_tool[event.index] = len(tool_uses)
                                 tool_uses.append({
                                     "id": event.content_block.id,
                                     "name": event.content_block.name,
@@ -192,13 +195,13 @@ class AnthropicAdapter(LLMAdapter):
 
                     # Tool use block end — parse accumulated JSON
                     elif event.type == "content_block_stop":
-                        if tool_uses:
-                            idx = len(tool_uses) - 1
-                            if idx in tool_input_buffers:
-                                try:
-                                    tool_uses[idx]["input"] = json.loads(tool_input_buffers[idx])
-                                except json.JSONDecodeError:
-                                    tool_uses[idx]["input"] = {}
+                        idx = event.index
+                        if idx in block_index_to_tool and idx in tool_input_buffers:
+                            tool_pos = block_index_to_tool[idx]
+                            try:
+                                tool_uses[tool_pos]["input"] = json.loads(tool_input_buffers[idx])
+                            except json.JSONDecodeError:
+                                tool_uses[tool_pos]["input"] = {}
 
                 # Get final message for usage stats
                 final_message = await stream_ctx.get_final_message()

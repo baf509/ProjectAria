@@ -801,7 +801,10 @@ class TestClaudeAgentTool:
     @pytest.mark.asyncio
     async def test_cli_not_available(self):
         with patch("aria.tools.builtin.claude_agent.settings") as mock_s, \
-             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner:
+             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner, \
+             patch("aria.api.deps.get_db", new=AsyncMock(return_value=None)), \
+             patch("aria.api.deps.get_estop_manager",
+                   new=AsyncMock(return_value=AsyncMock(is_active=AsyncMock(return_value=False)))):
             mock_s.claude_runner_timeout_seconds = 120
             mock_s.claude_code_binary = "claude"
             MockRunner.is_available.return_value = False
@@ -814,7 +817,10 @@ class TestClaudeAgentTool:
     @pytest.mark.asyncio
     async def test_execute_success(self):
         with patch("aria.tools.builtin.claude_agent.settings") as mock_s, \
-             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner:
+             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner, \
+             patch("aria.api.deps.get_db", new=AsyncMock(return_value=None)), \
+             patch("aria.api.deps.get_estop_manager",
+                   new=AsyncMock(return_value=AsyncMock(is_active=AsyncMock(return_value=False)))):
             mock_s.claude_runner_timeout_seconds = 120
             mock_s.coding_default_workspace = "/tmp"
             mock_s.claude_code_binary = "claude"
@@ -834,7 +840,10 @@ class TestClaudeAgentTool:
     @pytest.mark.asyncio
     async def test_execute_failure(self):
         with patch("aria.tools.builtin.claude_agent.settings") as mock_s, \
-             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner:
+             patch("aria.tools.builtin.claude_agent.ClaudeRunner") as MockRunner, \
+             patch("aria.api.deps.get_db", new=AsyncMock(return_value=None)), \
+             patch("aria.api.deps.get_estop_manager",
+                   new=AsyncMock(return_value=AsyncMock(is_active=AsyncMock(return_value=False)))):
             mock_s.claude_runner_timeout_seconds = 120
             mock_s.coding_default_workspace = "/tmp"
             mock_s.claude_code_binary = "claude"
@@ -1070,21 +1079,21 @@ class TestDocumentGenerationTool:
             from aria.tools.builtin.docgen import DocumentGenerationTool
             tool = DocumentGenerationTool()
 
-        result = await tool.execute({
-            "format": "docx",
-            "filename": "test_doc",
-            "content": {
-                "title": "Test Document",
-                "paragraphs": ["Paragraph one.", "Paragraph two."],
-            },
-        })
+            result = await tool.execute({
+                "format": "docx",
+                "filename": "test_doc",
+                "content": {
+                    "title": "Test Document",
+                    "paragraphs": ["Paragraph one.", "Paragraph two."],
+                },
+            })
 
-        # python-docx may or may not be installed
-        if result.status == ToolStatus.SUCCESS:
-            assert (tmp_path / "test_doc.docx").exists()
-            assert "saved" in result.output.lower()
-        else:
-            assert "python-docx" in result.error
+            # python-docx may or may not be installed
+            if result.status == ToolStatus.SUCCESS:
+                assert (tmp_path / "test_doc.docx").exists()
+                assert "saved" in result.output.lower()
+            else:
+                assert "python-docx" in result.error
 
     @pytest.mark.asyncio
     async def test_generate_xlsx(self, tmp_path):
@@ -1093,22 +1102,22 @@ class TestDocumentGenerationTool:
             from aria.tools.builtin.docgen import DocumentGenerationTool
             tool = DocumentGenerationTool()
 
-        result = await tool.execute({
-            "format": "xlsx",
-            "filename": "test_sheet",
-            "content": {
-                "sheets": [{
-                    "name": "Data",
-                    "headers": ["Name", "Value"],
-                    "rows": [["a", 1], ["b", 2]],
-                }],
-            },
-        })
+            result = await tool.execute({
+                "format": "xlsx",
+                "filename": "test_sheet",
+                "content": {
+                    "sheets": [{
+                        "name": "Data",
+                        "headers": ["Name", "Value"],
+                        "rows": [["a", 1], ["b", 2]],
+                    }],
+                },
+            })
 
-        if result.status == ToolStatus.SUCCESS:
-            assert (tmp_path / "test_sheet.xlsx").exists()
-        else:
-            assert "openpyxl" in result.error
+            if result.status == ToolStatus.SUCCESS:
+                assert (tmp_path / "test_sheet.xlsx").exists()
+            else:
+                assert "openpyxl" in result.error
 
     @pytest.mark.asyncio
     async def test_generate_pdf(self, tmp_path):
@@ -1117,19 +1126,19 @@ class TestDocumentGenerationTool:
             from aria.tools.builtin.docgen import DocumentGenerationTool
             tool = DocumentGenerationTool()
 
-        result = await tool.execute({
-            "format": "pdf",
-            "filename": "test_pdf",
-            "content": {
-                "title": "Test PDF",
-                "paragraphs": ["Hello PDF."],
-            },
-        })
+            result = await tool.execute({
+                "format": "pdf",
+                "filename": "test_pdf",
+                "content": {
+                    "title": "Test PDF",
+                    "paragraphs": ["Hello PDF."],
+                },
+            })
 
-        if result.status == ToolStatus.SUCCESS:
-            assert (tmp_path / "test_pdf.pdf").exists()
-        else:
-            assert "reportlab" in result.error
+            if result.status == ToolStatus.SUCCESS:
+                assert (tmp_path / "test_pdf.pdf").exists()
+            else:
+                assert "reportlab" in result.error
 
 
 # ============================================================================

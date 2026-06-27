@@ -35,6 +35,11 @@ class TaskRunner:
         metadata: Optional[dict] = None,
         timeout_seconds: Optional[int] = None,
     ) -> str:
+        # Killswitch gate: refuse to launch new autonomous background work
+        # while the global killswitch is engaged.
+        from aria.api.deps import get_killswitch
+        get_killswitch().check_or_raise(f"background task '{name}'")
+
         task_id = str(uuid4())
         now = datetime.now(timezone.utc)
         timeout = timeout_seconds or settings.task_default_timeout_seconds

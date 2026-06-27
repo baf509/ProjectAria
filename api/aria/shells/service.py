@@ -315,20 +315,25 @@ class ShellService:
         count = len(events)
 
         # Atomically bump the counter and stamp last_activity_at.
+        # Build the update conditionally: an empty "$set" ({}) is rejected by
+        # MongoDB, so only include it when we actually have a field to set
+        # (the stop path passes update_shell_timestamps=False).
+        update: dict = {
+            "$inc": {"line_count": count},
+            "$setOnInsert": {
+                "short_name": _strip_prefix(name, settings.shells_tmux_session_prefix),
+                "project_dir": "",
+                "host": socket.gethostname(),
+                "created_at": now,
+                "status": "active",
+                "tags": [],
+            },
+        }
+        if update_shell_timestamps:
+            update["$set"] = {"last_activity_at": now}
         doc = await self.shells.find_one_and_update(
             {"name": name},
-            {
-                "$inc": {"line_count": count},
-                "$set": {"last_activity_at": now} if update_shell_timestamps else {},
-                "$setOnInsert": {
-                    "short_name": _strip_prefix(name, settings.shells_tmux_session_prefix),
-                    "project_dir": "",
-                    "host": socket.gethostname(),
-                    "created_at": now,
-                    "status": "active",
-                    "tags": [],
-                },
-            },
+            update,
             upsert=True,
             return_document=True,
         )

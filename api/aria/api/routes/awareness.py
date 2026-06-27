@@ -53,7 +53,7 @@ async def awareness_status(
 @router.get("/awareness/observations", response_model=list[ObservationResponse])
 async def list_observations(
     limit: int = Query(20, ge=1, le=100),
-    category: Optional[str] = Query(None, pattern="^(git|system|filesystem)$"),
+    category: Optional[str] = Query(None, pattern="^(git|system|filesystem|claude)$"),
     severity: Optional[str] = Query(None, pattern="^(info|notice|warning)$"),
     hours: float = Query(1.0, ge=0.1, le=168),
     service: AwarenessService = Depends(get_awareness_service),

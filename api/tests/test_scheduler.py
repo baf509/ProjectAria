@@ -48,8 +48,10 @@ class TestComputeNextRun:
 
     def test_daily(self, scheduler):
         result = scheduler._compute_next_run("daily 09:30")
-        assert result.hour == 9
-        assert result.minute == 30
+        # HH:MM is interpreted in local time; compare in local time.
+        local = result.astimezone()
+        assert local.hour == 9
+        assert local.minute == 30
         assert result > datetime.now(timezone.utc) - timedelta(seconds=1)
 
     def test_weekly_future_day(self, scheduler):
@@ -59,8 +61,9 @@ class TestComputeNextRun:
         future_day = days[(now.weekday() + 3) % 7]
         result = scheduler._compute_next_run(f"weekly {future_day} 10:00")
         assert result > now
-        assert result.hour == 10
-        assert result.minute == 0
+        local = result.astimezone()
+        assert local.hour == 10
+        assert local.minute == 0
 
     def test_min_1_minute(self, scheduler):
         """'every 0m' should be clamped to 1 minute."""
@@ -103,8 +106,10 @@ class TestParseReminder:
         result = await scheduler.parse_reminder("remind me to take a break at 15:00")
         assert result is not None
         assert result["schedule_type"] == "once"
-        assert result["run_at"].hour == 15
-        assert result["run_at"].minute == 0
+        # Wall-clock time is interpreted in local time; compare in local time.
+        local = result["run_at"].astimezone()
+        assert local.hour == 15
+        assert local.minute == 0
 
     @pytest.mark.asyncio
     async def test_every_recurring(self, scheduler):

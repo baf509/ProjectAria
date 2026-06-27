@@ -81,7 +81,9 @@ class MCPClient:
                 *self.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                # Discard stderr at the OS level so a chatty server can't fill
+                # an unread pipe buffer and deadlock.
+                stderr=asyncio.subprocess.DEVNULL,
                 env=self.env,
             )
 
@@ -217,9 +219,10 @@ class MCPClient:
 
         async with self._io_lock:
             self._request_id += 1
+            request_id = self._request_id
             request = {
                 "jsonrpc": "2.0",
-                "id": self._request_id,
+                "id": request_id,
                 "method": method,
                 "params": params,
             }
@@ -229,30 +232,40 @@ class MCPClient:
             self.process.stdin.write(request_json.encode("utf-8"))
             await self.process.stdin.drain()
 
-            # Read response
+            # Read response. Correlate by matching the response `id` to the
+            # request `id` — skip log lines that aren't JSON and skip
+            # notifications / responses whose id doesn't match this request.
             try:
-                response_line = await asyncio.wait_for(
-                    self.process.stdout.readline(),
-                    timeout=30,
-                )
+                while True:
+                    response_line = await asyncio.wait_for(
+                        self.process.stdout.readline(),
+                        timeout=30,
+                    )
 
-                if not response_line:
-                    logger.error("MCP server closed connection")
-                    return None
+                    if not response_line:
+                        logger.error("MCP server closed connection")
+                        return None
 
-                response = json.loads(response_line.decode("utf-8"))
+                    try:
+                        response = json.loads(response_line.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        # Non-JSON line (e.g. a server log line); ignore it.
+                        continue
 
-                if "error" in response:
-                    logger.error(f"MCP error: {response['error']}")
-                    return None
+                    # Ignore anything that isn't the response to this request:
+                    # notifications have no "id", and other responses carry a
+                    # different id.
+                    if not isinstance(response, dict) or response.get("id") != request_id:
+                        continue
 
-                return response.get("result")
+                    if "error" in response:
+                        logger.error(f"MCP error: {response['error']}")
+                        return None
+
+                    return response.get("result")
 
             except asyncio.TimeoutError:
                 logger.error(f"Timeout waiting for response to {method}")
-                return None
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode MCP response: {str(e)}")
                 return None
 
     async def _send_notification(self, method: str, params: dict = None) -> None:

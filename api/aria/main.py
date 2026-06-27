@@ -37,6 +37,8 @@ from aria.api.deps import (
     get_telegram_handler,
     get_tool_router,
     resolve_coding_watchdog,
+    resolve_rate_limit_watchdog,
+    resolve_escalation_manager,
     resolve_awareness_service,
     resolve_dream_service,
     resolve_heartbeat_service,
@@ -162,6 +164,17 @@ async def lifespan(app: FastAPI):
 
     watchdog = await resolve_coding_watchdog(db, coding_manager)
     await watchdog.start()
+
+    # Automated emergency stop: watches cloud-backend circuit breakers for
+    # rate limiting and freezes/thaws the global estop accordingly. It also
+    # raises/resolves a CRITICAL escalation on each rate-limit episode.
+    rate_limit_watchdog = await resolve_rate_limit_watchdog(db)
+    await rate_limit_watchdog.start()
+
+    # Escalation protocol: periodically re-escalate stale open escalations.
+    escalation_manager = await resolve_escalation_manager(db)
+    await escalation_manager.start()
+
     await task_runner.recover_stale_tasks()
 
     scheduler = await resolve_scheduler(db, task_runner)
@@ -301,9 +314,15 @@ async def lifespan(app: FastAPI):
     shutdown_logger.info("Initiating graceful shutdown...")
 
     # 1. Stop accepting new scheduled work
-    from aria.api.deps import _scheduler, _task_runner
+    from aria.api.deps import (
+        _scheduler, _task_runner, _rate_limit_watchdog, _escalation_manager,
+    )
     if _scheduler is not None:
         await _scheduler.stop()
+    if _rate_limit_watchdog is not None:
+        await _rate_limit_watchdog.stop()
+    if _escalation_manager is not None:
+        await _escalation_manager.stop()
 
     # 2. Drain in-flight background tasks (up to 10s)
     if _task_runner is not None:
@@ -420,16 +439,24 @@ async def rate_limit_middleware(request: Request, call_next):
     client_key = request.headers.get("X-API-Key") or (request.client.host if request.client else "unknown")
     allowed, remaining = rate_limiter.check(f"{client_key}:{request.url.path}")
     if not allowed:
-        db = await get_database()
-        audit = await get_audit_service(db)
-        await audit.log_event(
-            category="security",
-            action="rate_limit",
-            status="blocked",
-            actor=client_key,
-            target=request.url.path,
-            metadata={"method": request.method},
-        )
+        # Best-effort audit — a DB failure here must NOT turn the intended 429
+        # into a 500.
+        try:
+            db = await get_database()
+            audit = await get_audit_service(db)
+            await audit.log_event(
+                category="security",
+                action="rate_limit",
+                status="blocked",
+                actor=client_key,
+                target=request.url.path,
+                metadata={"method": request.method},
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("aria.middleware").warning(
+                "Failed to write rate-limit audit event", exc_info=True
+            )
         return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 
     response = await call_next(request)
@@ -452,16 +479,23 @@ async def api_key_middleware(request: Request, call_next):
 
     provided = request.headers.get("X-API-Key")
     if not settings.api_key or provided != settings.api_key:
-        db = await get_database()
-        audit = await get_audit_service(db)
-        await audit.log_event(
-            category="security",
-            action="api_auth",
-            status="denied",
-            actor=request.client.host if request.client else "unknown",
-            target=request.url.path,
-            metadata={"method": request.method},
-        )
+        # Best-effort audit — a DB failure must NOT turn the intended 401 into a 500.
+        try:
+            db = await get_database()
+            audit = await get_audit_service(db)
+            await audit.log_event(
+                category="security",
+                action="api_auth",
+                status="denied",
+                actor=request.client.host if request.client else "unknown",
+                target=request.url.path,
+                metadata={"method": request.method},
+            )
+        except Exception:
+            import logging as _logging
+            _logging.getLogger("aria.middleware").warning(
+                "Failed to write api-auth audit event", exc_info=True
+            )
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
 

@@ -64,6 +64,18 @@ class CodingSessionManager:
         conversation_id: Optional[str] = None,
         visible: bool = False,
     ) -> dict:
+        # Safety gates: refuse to spawn an autonomous coding agent while the
+        # manual killswitch or the automated emergency stop is engaged.
+        # Fail CLOSED — a verification error denies the spawn.
+        from aria.api.deps import get_killswitch, resolve_estop_manager
+        get_killswitch().check_or_raise("coding session start")
+        estop = await resolve_estop_manager(self.db)
+        if await estop.is_active():
+            state = await estop.get_state()
+            raise RuntimeError(
+                f"Emergency stop active — coding session start blocked. Reason: {state.reason}"
+            )
+
         backend_name = backend or settings.coding_default_backend
         selected_backend = self.registry.get(backend_name)
         workspace_path = os.path.abspath(workspace)
@@ -261,7 +273,12 @@ class CodingSessionManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return "[git diff timed out after 30s]"
         output = stdout.decode("utf-8", errors="replace")
         error = stderr.decode("utf-8", errors="replace")
         return output or error

@@ -56,9 +56,9 @@ async def run_workflow(
 
 @router.delete("/{workflow_id}", status_code=204)
 async def delete_workflow(workflow_id: str, engine: WorkflowEngine = Depends(get_workflow_engine)):
-    from aria.api.deps import valid_object_id
-
-    result = await engine.db.workflows.delete_one({"_id": valid_object_id(workflow_id)})
+    # Workflow _id is a UUID string (see engine.create_workflow), not a BSON
+    # ObjectId — match it directly rather than coercing via valid_object_id.
+    result = await engine.db.workflows.delete_one({"_id": workflow_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return None

@@ -74,6 +74,13 @@ class SkillLoader:
         with zipfile.ZipFile(zip_path, "r") as zf:
             # Extract to temp dir first, then move
             with tempfile.TemporaryDirectory() as tmp:
+                # Guard against Zip-Slip: reject any member that would resolve
+                # outside the temp dir (e.g. '../' traversal or absolute paths).
+                tmp_root = Path(tmp).resolve()
+                for member in zf.namelist():
+                    dest = (tmp_root / member).resolve()
+                    if dest != tmp_root and tmp_root not in dest.parents:
+                        raise ValueError(f"Unsafe path in skill archive: {member!r}")
                 zf.extractall(tmp)
                 extracted = Path(tmp)
 

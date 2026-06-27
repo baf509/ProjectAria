@@ -39,6 +39,10 @@ from aria.shells.service import (
 )
 from aria.shells.tmux import TmuxError, TmuxSessionNotFoundError
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
@@ -182,7 +186,9 @@ async def search_shell_events(
             events.append(doc)
         return {"shells": shell_matches, "events": events}
     except Exception as exc:
-        # Fall back to a simple regex search if the text index is unavailable.
+        # Fall back to a bounded regex search if the text index is unavailable.
+        # Log the underlying error server-side rather than leaking it to clients.
+        logger.warning("shells $text search failed, falling back to regex scan: %s", exc)
         cursor = (
             service.events.find({"text_clean": regex})
             .sort("ts", -1)
@@ -196,7 +202,6 @@ async def search_shell_events(
             "shells": shell_matches,
             "events": events,
             "fallback": "regex",
-            "error": str(exc),
         }
 
 

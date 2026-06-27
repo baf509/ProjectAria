@@ -218,6 +218,10 @@ def make_mock_db() -> MagicMock:
         "coding_sessions",
         "workflows",
         "workflow_runs",
+        "estop",
+        "estop_log",
+        "killswitch",
+        "background_tasks",
     ]:
         setattr(db, name, _make_collection(name))
 

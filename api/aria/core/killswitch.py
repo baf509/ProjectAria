@@ -28,6 +28,8 @@ class Killswitch:
         self._activated_at: Optional[datetime] = None
         self._reason: Optional[str] = None
         self._db: Optional[AsyncIOMotorDatabase] = None
+        self._escalation_manager = None
+        self._escalation_id: Optional[str] = None
 
     @property
     def is_active(self) -> bool:
@@ -68,6 +70,7 @@ class Killswitch:
         *,
         task_runner=None,
         notification_service=None,
+        escalation_manager=None,
     ) -> dict:
         """Activate the killswitch, cancelling all running autonomous work."""
         self._active = True
@@ -90,6 +93,20 @@ class Killswitch:
             except Exception as exc:
                 logger.warning("Failed to send killswitch notification: %s", exc)
 
+        if escalation_manager is not None:
+            try:
+                from aria.notifications.escalation import Severity
+                esc = await escalation_manager.escalate(
+                    source="killswitch",
+                    severity=Severity.CRITICAL,
+                    description=f"Killswitch activated: {reason}",
+                    metadata={"cancelled_tasks": cancelled_tasks},
+                )
+                self._escalation_manager = escalation_manager
+                self._escalation_id = esc.escalation_id
+            except Exception as exc:
+                logger.warning("Failed to create killswitch escalation: %s", exc)
+
         logger.warning(
             "Killswitch ACTIVATED: %s (cancelled %d tasks)", reason, cancelled_tasks
         )
@@ -110,6 +127,14 @@ class Killswitch:
         self._reason = None
         self._activated_at = None
         await self._persist()
+        if self._escalation_id and self._escalation_manager is not None:
+            try:
+                await self._escalation_manager.resolve(
+                    self._escalation_id, "Killswitch deactivated"
+                )
+            except Exception as exc:
+                logger.warning("Failed to resolve killswitch escalation: %s", exc)
+            self._escalation_id = None
         logger.info("Killswitch deactivated")
         return {"active": False}
 
