@@ -25,6 +25,9 @@ const (
 	screenTools
 	screenObservations
 	screenDB
+	screenFleet
+	screenHealth
+	screenSearch
 )
 
 // Which quadrant has focus on the dashboard
@@ -70,6 +73,16 @@ type observationsLoaded struct{ obs []api.Observation }
 type collectionsLoaded struct{ cols []api.CollectionInfo }
 type queryResultLoaded struct{ result *api.QueryResult }
 type documentLoaded struct{ doc map[string]interface{} }
+type fleetLoaded struct {
+	sessions []api.CodingSession
+	shells   []api.Shell
+	usage    []api.SessionUsage
+}
+type healthLoaded struct{ health *api.ServicesHealth }
+type searchResultLoaded struct {
+	result *api.ToolExecuteResult
+	err    error
+}
 type errMsg struct{ err error }
 
 // ---- Main Model ----
@@ -88,6 +101,9 @@ type Model struct {
 	toolsBrowser *components.ToolsBrowser
 	obsView      *components.ObservationsView
 	dbBrowser    *components.DBBrowser
+	fleetView    *components.FleetView
+	healthView   *components.HealthView
+	searchView   *components.SearchView
 
 	// Navigation
 	screen     screen
@@ -127,6 +143,9 @@ func NewModel(client *api.Client) Model {
 		toolsBrowser: components.NewToolsBrowser(),
 		obsView:      components.NewObservationsView(),
 		dbBrowser:    components.NewDBBrowser(),
+		fleetView:    components.NewFleetView(),
+		healthView:   components.NewHealthView(),
+		searchView:   components.NewSearchView(),
 		screen:       screenDashboard,
 		quad:         quadTopLeft,
 		headerH:      1,
@@ -265,6 +284,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case documentLoaded:
 		m.dbBrowser.SetDocument(msg.doc)
 
+	case fleetLoaded:
+		m.fleetView.SetData(msg.sessions, msg.shells, msg.usage)
+
+	case healthLoaded:
+		m.healthView.SetData(msg.health)
+
+	case searchResultLoaded:
+		errStr := ""
+		if msg.err != nil {
+			errStr = msg.err.Error()
+		}
+		m.searchView.SetResult(msg.result, errStr)
+
 	case errMsg:
 		if m.screen == screenChat {
 			m.chat.AppendStreamChunk("\n[Error: " + msg.err.Error() + "]")
@@ -300,6 +332,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	} else if m.screen == screenDB {
 		var cmd tea.Cmd
 		m.dbBrowser, cmd = m.dbBrowser.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenFleet {
+		var cmd tea.Cmd
+		m.fleetView, cmd = m.fleetView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenHealth {
+		var cmd tea.Cmd
+		m.healthView, cmd = m.healthView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenSearch {
+		var cmd tea.Cmd
+		m.searchView, cmd = m.searchView.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -384,6 +428,15 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 	case "b":
 		m.pushScreen(screenDB)
 		return loadCollections(m.client)
+	case "f":
+		m.pushScreen(screenFleet)
+		return loadFleet(m.client, m.snapshot)
+	case "h":
+		m.pushScreen(screenHealth)
+		return loadServicesHealth(m.client)
+	case "s":
+		m.pushScreen(screenSearch)
+		return nil
 	case "d":
 		node := m.sidebar.Selected()
 		if node != nil && node.Kind == components.NodeConversation {
@@ -444,7 +497,7 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			return loadMemories(m.client, query, 20)
 		}
-	case screenUsage, screenTools, screenObservations:
+	case screenUsage, screenTools, screenObservations, screenFleet, screenHealth:
 		if key == "r" {
 			switch m.screen {
 			case screenUsage:
@@ -453,7 +506,20 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) tea.Cmd {
 				return loadTools(m.client)
 			case screenObservations:
 				return loadObservations(m.client, 50)
+			case screenFleet:
+				return loadFleet(m.client, m.snapshot)
+			case screenHealth:
+				return loadServicesHealth(m.client)
 			}
+		}
+	case screenSearch:
+		if key == "enter" {
+			query := m.searchView.GetQuery()
+			if query == "" {
+				return nil
+			}
+			m.searchView.SetSearching(true)
+			return runSearch(m.client, query)
 		}
 	case screenDB:
 		if m.dbBrowser.IsEditing() {
@@ -542,6 +608,8 @@ func (m *Model) pushScreen(s screen) {
 		m.memBrowser.Focus()
 	} else if s == screenDB {
 		m.dbBrowser.Focus()
+	} else if s == screenSearch {
+		m.searchView.Focus()
 	}
 }
 
@@ -550,6 +618,7 @@ func (m *Model) popScreen() {
 	m.session.Blur()
 	m.memBrowser.Blur()
 	m.dbBrowser.Blur()
+	m.searchView.Blur()
 	m.screen = m.prevScreen
 	m.prevScreen = screenDashboard
 }
@@ -644,6 +713,9 @@ func (m *Model) layout() {
 	m.toolsBrowser.SetSize(m.width, bodyH)
 	m.obsView.SetSize(m.width, bodyH)
 	m.dbBrowser.SetSize(m.width, bodyH)
+	m.fleetView.SetSize(m.width, bodyH)
+	m.healthView.SetSize(m.width, bodyH)
+	m.searchView.SetSize(m.width, bodyH)
 
 	m.sidebar.SetSize(m.leftW, m.topH)
 	m.vitals.SetSize(m.rightW, m.botH)
@@ -712,7 +784,8 @@ func (m Model) renderHeader() string {
 		labels := map[screen]string{
 			screenChat: "chat", screenSession: "session", screenMemory: "memory",
 			screenUsage: "usage", screenTools: "tools", screenObservations: "awareness",
-			screenDB: "database",
+			screenDB: "database", screenFleet: "fleet", screenHealth: "health",
+			screenSearch: "search",
 		}
 		screenLabel = " › " + labels[m.screen]
 	}
@@ -733,9 +806,13 @@ func (m Model) renderFooter() string {
 			hk("c", "chat") + " " + hk("m", "mem") + " " +
 			hk("u", "usage") + " " + hk("t", "tools") + " " +
 			hk("o", "obs") + " " + hk("b", "db") + " " +
+			hk("f", "fleet") + " " + hk("h", "health") + " " +
+			hk("s", "search") + " " +
 			hk("n", "new") + " " + hk("p", "private") + " " +
 			hk("r", "refresh") + " " + hk("tab", "focus") + " " +
 			hk("q", "quit")
+	} else if m.screen == screenSearch {
+		hints = hk("⏎", "search") + " " + hk("esc", "back")
 	} else if m.screen == screenChat {
 		hints = hk("⏎", "send") + " " + hk("esc", "back") + " " + hk("ctrl+c", "quit")
 	} else if m.screen == screenSession {
@@ -832,6 +909,15 @@ func (m Model) renderSubScreen() string {
 	case screenDB:
 		m.dbBrowser.SetSize(m.width, bodyH)
 		return m.dbBrowser.View()
+	case screenFleet:
+		m.fleetView.SetSize(m.width, bodyH)
+		return m.fleetView.View()
+	case screenHealth:
+		m.healthView.SetSize(m.width, bodyH)
+		return m.healthView.View()
+	case screenSearch:
+		m.searchView.SetSize(m.width, bodyH)
+		return m.searchView.View()
 	}
 	return ""
 }
@@ -996,6 +1082,39 @@ func queryCollection(client *api.Client, collection string, limit, skip int, fil
 			return errMsg{err}
 		}
 		return queryResultLoaded{result: result}
+	}
+}
+
+func loadFleet(client *api.Client, snap *api.DashboardSnapshot) tea.Cmd {
+	return func() tea.Msg {
+		usage, _ := client.GetUsageBySession()
+		var sessions []api.CodingSession
+		var shells []api.Shell
+		if snap != nil {
+			sessions = snap.CodingSessions
+			shells = snap.Shells
+		} else {
+			sessions, _ = client.ListCodingSessions("")
+			shells, _ = client.ListShells()
+		}
+		return fleetLoaded{sessions: sessions, shells: shells, usage: usage}
+	}
+}
+
+func loadServicesHealth(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		health, err := client.GetServicesHealth()
+		if err != nil {
+			return errMsg{err}
+		}
+		return healthLoaded{health: health}
+	}
+}
+
+func runSearch(client *api.Client, query string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.ExecuteTool("search_agent", map[string]interface{}{"query": query})
+		return searchResultLoaded{result: result, err: err}
 	}
 }
 

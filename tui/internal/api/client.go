@@ -404,6 +404,81 @@ func (c *Client) GetUsageByModel(hours int) ([]ModelUsage, error) {
 	return usage, json.NewDecoder(resp.Body).Decode(&usage)
 }
 
+// SessionUsage is per-coding-session token + cost usage from
+// /usage/by-session, joined to coding sessions in the Fleet view.
+type SessionUsage struct {
+	SessionID   string  `json:"session_id"`
+	Backend     string  `json:"backend"`
+	LLM         *string `json:"llm"`
+	Model       *string `json:"model"`
+	Status      string  `json:"status"`
+	TotalTokens int     `json:"total_tokens"`
+	Cost        float64 `json:"cost"`
+}
+
+func (c *Client) GetUsageBySession() ([]SessionUsage, error) {
+	resp, err := c.get(c.Base + "/api/v1/usage/by-session")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var usage []SessionUsage
+	return usage, json.NewDecoder(resp.Body).Decode(&usage)
+}
+
+// ---------- Services Health ----------
+
+type ServiceHealth struct {
+	Name      string `json:"name"`
+	OK        bool   `json:"ok"`
+	LatencyMS int    `json:"latency_ms"`
+	Detail    string `json:"detail"`
+}
+
+type ServicesHealth struct {
+	Services []ServiceHealth `json:"services"`
+	Healthy  int             `json:"healthy"`
+	Total    int             `json:"total"`
+}
+
+func (c *Client) GetServicesHealth() (*ServicesHealth, error) {
+	resp, err := c.get(c.Base + "/api/v1/health/services")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var h ServicesHealth
+	return &h, json.NewDecoder(resp.Body).Decode(&h)
+}
+
+// ---------- Tool Execution ----------
+
+type ToolExecuteResult struct {
+	ToolName string                 `json:"tool_name"`
+	Status   string                 `json:"status"`
+	Output   map[string]interface{} `json:"output"`
+	Error    string                 `json:"error"`
+}
+
+func (c *Client) ExecuteTool(name string, args map[string]interface{}) (*ToolExecuteResult, error) {
+	body := map[string]interface{}{
+		"tool_name": name,
+		"arguments": args,
+	}
+	b, _ := json.Marshal(body)
+	resp, err := c.post(c.Base+"/api/v1/tools/execute", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		rb, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, rb)
+	}
+	var result ToolExecuteResult
+	return &result, json.NewDecoder(resp.Body).Decode(&result)
+}
+
 // ---------- Streaming Messages (SSE) ----------
 
 type StreamChunk struct {
