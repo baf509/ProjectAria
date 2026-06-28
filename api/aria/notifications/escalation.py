@@ -22,6 +22,7 @@ Escalation chain:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
@@ -124,6 +125,31 @@ class EscalationManager:
         self.routes = dict(DEFAULT_ROUTES)
         self.stale_thresholds = dict(DEFAULT_STALE_THRESHOLDS)
         self.max_re_escalations = 2
+        self._task: Optional[asyncio.Task] = None
+        self._check_interval = 300  # re-scan for stale escalations every 5 min
+
+    async def start(self) -> None:
+        """Start the periodic stale-escalation re-check loop."""
+        if self._task and not self._task.done():
+            return
+        self._task = asyncio.create_task(self._loop())
+        logger.info("Escalation stale-check loop started (interval=%ds)", self._check_interval)
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            self._task = None
+            logger.info("Escalation stale-check loop stopped")
+
+    async def _loop(self) -> None:
+        while True:
+            try:
+                await self.check_stale()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Escalation stale-check error: %s", e)
+            await asyncio.sleep(self._check_interval)
 
     async def escalate(
         self,

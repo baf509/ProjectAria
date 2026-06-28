@@ -260,7 +260,7 @@ Tools ARIA can call during conversations:
 | `shell` | Execute shell commands |
 | `filesystem` | Read, write, list, delete files |
 | `web_fetch` | HTTP requests |
-| `screenshot` | Capture and analyze screen |
+| `screenshot_analyze` | Capture and analyze screen |
 | `start_coding_session` | Spawn Claude Code or Codex |
 | `stop_coding_session` | Stop a running session |
 | `get_coding_output` | Read session output |
@@ -272,7 +272,7 @@ Tools ARIA can call during conversations:
 | `claude_agent` | Delegate a one-shot task to Claude Code |
 | `pi_coding_agent` | Delegate to Pi Coding Agent (local LLM) |
 | `update_soul` | Read or modify SOUL.md |
-| `document_generation` | Generate documentation |
+| `generate_document` | Generate documentation |
 
 Additionally, MCP servers provide dynamic tools via JSON-RPC 2.0, and the skill system allows installing packaged tool bundles.
 
@@ -301,7 +301,7 @@ Memories have: content, content_type (fact/preference/experience/relationship), 
 | **TUI** | Go (Bubble Tea) | Terminal dashboard with sidebar, chat, sessions, memory browser, usage monitor, tools browser, observations |
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey |
 | **CLI** | Python | `aria chat "message"`, `aria conversations list`, etc. |
-| **REST API** | FastAPI | Full API with SSE streaming at localhost:8000 |
+| **REST API** | FastAPI | Full API with SSE streaming at localhost:8200 |
 
 ---
 

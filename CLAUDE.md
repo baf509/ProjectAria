@@ -55,7 +55,12 @@ Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter
 **Current model topology** (the agents are config rows in `db.agents`):
 - **ARIA** (default orchestrator) and **Pi Coding Agent** → `fireworks` / `accounts/fireworks/models/glm-5p2` (GLM 5.2), hard-pinned (no fallback). Key in `.env` as `FIREWORKS_API_KEY`.
 - **Search Agent** → `context1` (the chromadb/context-1 agentic model) on `:8081`.
-- Local llama.cpp endpoints on the GPU box (the `qwen-rocmfp4` compose project under `infrastructure/`): **qwen-chat** 35B-A3B `:8092` (`llamacpp_url` points here), **qwen-agentic** 27B `:8093`, **context-1** `:8081`. These are also exposed to Hermes.
+- Local llama.cpp endpoints on the GPU box (the `qwen-rocmfp4` compose project under `infrastructure/`): **qwen-chat** 35B-A3B `:8092` (`llamacpp_url`), **qwen-agentic** 27B `:8093` (`agentic_url`, addressable as backend `agentic` / `qwen-agentic`), **context-1** `:8081` (`context1_url`). These are also exposed to Hermes.
+
+**Model pinning, cost & health:**
+- A conversation can be pinned to a specific backend/model via `/model <backend> [<model-id>]` (strict — no fallback); `/model auto` unpins; `/route <task>` applies an advisory heuristic pin. Backend aliases include `agentic`/`qwen-agentic` and `fireworks`/`glm`.
+- Cost accounting lives in `llm/pricing.py` (local backends = $0; cloud priced; unknown cloud → conservative default). Usage records carry `backend` + `session_id`; query via `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`, `/usage/by-model`. A spend circuit-breaker (`spend_cap_usd_per_hour`, 0=off) trips the global e-stop when hourly priced spend exceeds the cap.
+- `GET /health/services` concurrently probes all backing services (mongod, mongot, qwen-chat, qwen-agentic, context-1, embeddings, tts, stt, fireworks).
 
 ### Tool System
 
@@ -63,6 +68,7 @@ Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter
 - **MCP integration**: stdio transport only, JSON-RPC 2.0 (`api/aria/tools/mcp/`)
 - **Tool router**: Central registration, execution with 30s default timeout
 - Orchestrator handles tool calls during LLM streaming, may trigger multiple rounds
+- **Coding-session backends**: `start_coding_session(backend=...)` supports `claude_code`, `codex`, and `pi-code` (ARIA's own agentic loop with a pinned `llm`/`model`, supervised by the watchdog + e-stop/killswitch). `browse_page` fetches a URL as readable text; full computer-use is available via the Playwright MCP `browser_*` family (gated by `tool_allowed_prefixes`).
 
 ### Watched Shells & Fleet (`api/aria/shells/`, absorbed from aria-shells)
 

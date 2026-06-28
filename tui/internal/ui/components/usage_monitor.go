@@ -94,10 +94,7 @@ func (um *UsageMonitor) refreshContent() {
 			total := a.InputTokens + a.OutputTokens
 			name := a.AgentName
 			if name == "" {
-				name = a.AgentID
-				if len(name) > 20 {
-					name = name[:20]
-				}
+				name = "(unattributed)"
 			}
 			b.WriteString(fmt.Sprintf("  %-20s %10s %10s %10s %6d\n",
 				lipgloss.NewStyle().Foreground(styles.Text).Render(truncate(name, 20)),
@@ -115,14 +112,13 @@ func (um *UsageMonitor) refreshContent() {
 		b.WriteString("\n\n")
 
 		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render(
-			fmt.Sprintf("  %-14s %-22s %10s %10s %6s\n", "Backend", "Model", "Input", "Output", "Calls")))
+			fmt.Sprintf("  %-38s %10s %10s %6s\n", "Model", "Input", "Output", "Calls")))
 		b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
 			"  " + strings.Repeat("─", cw-4) + "\n"))
 
 		for _, m := range um.ByModel {
-			b.WriteString(fmt.Sprintf("  %-14s %-22s %10s %10s %6d\n",
-				lipgloss.NewStyle().Foreground(styles.Info).Render(truncate(m.Backend, 14)),
-				lipgloss.NewStyle().Foreground(styles.Text).Render(truncate(m.Model, 22)),
+			b.WriteString(fmt.Sprintf("  %-38s %10s %10s %6d\n",
+				lipgloss.NewStyle().Foreground(styles.Text).Render(truncate(m.Model, 38)),
 				formatTokensLong(m.InputTokens),
 				formatTokensLong(m.OutputTokens),
 				m.Requests))

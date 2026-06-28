@@ -20,6 +20,7 @@ import {
 import { init as initInput, setDisabled, focus } from "./components/ChatInput";
 import {
   appendMessage,
+  appendToolActivity,
   appendStreamingMessage,
   updateStreamingMessage,
   finalizeStreamingMessage,
@@ -331,6 +332,8 @@ async function handleSubmit(message: string) {
       if (chunk.type === "text" && chunk.content) {
         fullContent += chunk.content;
         updateStreamingMessage(streamEl, fullContent);
+      } else if (chunk.type === "tool_call") {
+        appendToolActivity(chunk.tool_call?.name || "unknown");
       } else if (chunk.type === "error") {
         finalizeStreamingMessage(streamEl, "");
         streamEl.remove();

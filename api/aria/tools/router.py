@@ -197,10 +197,18 @@ class ToolRouter:
         """
         definitions = []
 
+        # An enabled_tools entry ending in "*" is a prefix wildcard, so an agent
+        # can enable a whole family (e.g. "browser_*" for all Playwright tools)
+        # without listing each one.
+        prefixes = tuple(t[:-1] for t in (enabled_tools or []) if t.endswith("*"))
+
         for tool_name, tool in self._tools.items():
             # Filter by enabled tools if specified
-            if enabled_tools is not None and tool_name not in enabled_tools:
-                continue
+            if enabled_tools is not None:
+                if tool_name not in enabled_tools and not (
+                    prefixes and tool_name.startswith(prefixes)
+                ):
+                    continue
 
             definitions.append(tool.definition.to_llm_tool())
 
@@ -344,9 +352,15 @@ class ToolRouter:
         denied_names = set(settings.tool_denied_names or [])
         sensitive_names = set(settings.tool_sensitive_names or [])
 
+        allowed_prefixes = tuple(settings.tool_allowed_prefixes or [])
+
         if tool_name in denied_names:
             return False, f"Tool '{tool_name}' is denied by policy"
-        if policy == "allowlist" and tool_name not in allowed_names:
+        if (
+            policy == "allowlist"
+            and tool_name not in allowed_names
+            and not (allowed_prefixes and tool_name.startswith(allowed_prefixes))
+        ):
             return False, f"Tool '{tool_name}' is not in the tool allowlist"
         if not allow_sensitive and tool_name in sensitive_names:
             return False, f"Tool '{tool_name}' is restricted for this execution path"

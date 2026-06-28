@@ -458,12 +458,14 @@ async def resolve_rate_limit_watchdog(
     db: AsyncIOMotorDatabase,
 ) -> RateLimitWatchdog:
     """Resolve rate limit watchdog outside FastAPI dependency injection."""
-    global _rate_limit_watchdog, _estop_manager
+    global _rate_limit_watchdog, _estop_manager, _escalation_manager
     if _estop_manager is None:
         _estop_manager = EstopManager(db)
+    if _escalation_manager is None:
+        _escalation_manager = EscalationManager(db, get_notification_service())
     if _rate_limit_watchdog is None:
         _rate_limit_watchdog = RateLimitWatchdog(
-            db, _estop_manager, get_notification_service()
+            db, _estop_manager, get_notification_service(), _escalation_manager
         )
     return _rate_limit_watchdog
 

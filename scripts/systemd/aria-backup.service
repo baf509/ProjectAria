@@ -1,0 +1,8 @@
+[Unit]
+Description=ARIA backup (MongoDB + identity state)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/Development/ProjectAria/scripts/aria-backup.sh
+Nice=10

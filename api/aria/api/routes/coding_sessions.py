@@ -69,6 +69,7 @@ async def start_coding_session(
         prompt=body.prompt,
         branch=body.branch,
         model=body.model,
+        llm=body.llm,
     )
     return CodingSessionResponse(**serialize_session(session))
 

@@ -85,6 +85,22 @@ class CommandRouter:
         if result is not None:
             return result
 
+        result = await self._handle_model_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
+        result = await self._handle_route_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
+        result = await self._handle_search_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
+        result = await self._handle_forget_command(conversation_id, user_message)
+        if result is not None:
+            return result
+
         result = await self._handle_backend_switch(conversation_id, user_message)
         if result is not None:
             return result
@@ -211,6 +227,8 @@ class CommandRouter:
     # Default models per backend — used when switching via natural language
     _BACKEND_DEFAULTS: dict[str, str] = {
         "llamacpp": "default",
+        "agentic": "default",
+        "fireworks": "accounts/fireworks/models/glm-5p2",
         "openrouter": "deepseek/deepseek-v4-pro",
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
@@ -226,7 +244,10 @@ class CommandRouter:
             return None
 
         backends = []
-        backends.append(f"  local (llamacpp) — {self._BACKEND_DEFAULTS['llamacpp']}")
+        backends.append(f"  local (llamacpp/qwen-chat) — {self._BACKEND_DEFAULTS['llamacpp']}")
+        backends.append(f"  agentic (qwen-agentic) — {self._BACKEND_DEFAULTS['agentic']}")
+        if settings.fireworks_api_key:
+            backends.append(f"  fireworks (GLM 5.2) — {self._BACKEND_DEFAULTS['fireworks']}")
         if settings.openrouter_api_key:
             backends.append(f"  openrouter — {self._BACKEND_DEFAULTS['openrouter']}")
         if settings.anthropic_api_key:
@@ -250,6 +271,11 @@ class CommandRouter:
         "local": "llamacpp",
         "llama": "llamacpp",
         "llamacpp": "llamacpp",
+        "qwen-chat": "llamacpp",
+        "agentic": "agentic",
+        "qwen-agentic": "agentic",
+        "fireworks": "fireworks",
+        "glm": "fireworks",
         "openrouter": "openrouter",
         "anthropic": "anthropic",
         "claude": "anthropic",
@@ -262,6 +288,165 @@ class CommandRouter:
         r"^(?:use|switch to|change to|go to|talk to)\s+(.+?)(?:\s+model)?$",
         re_module.IGNORECASE,
     )
+
+    async def _pin_override(self, conversation_id: str, backend: str, model: str) -> None:
+        await self.db.conversations.update_one(
+            {"_id": ObjectId(conversation_id)},
+            {"$set": {
+                "llm_config_override": {"backend": backend, "model": model, "temperature": 0.7},
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+
+    async def _handle_model_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """Pin this conversation to a SPECIFIC model (the explicit override).
+
+        /model                       → show the current pin / default
+        /model auto|default|reset    → unpin (use the agent default)
+        /model <backend>             → pin to that backend's default model
+        /model <backend> <model-id>  → pin to a specific model id
+        """
+        text = user_message.strip()
+        low = text.lower()
+        if not (low == "/model" or low.startswith("/model ")):
+            return None
+        arg = text[len("/model"):].strip()
+        now = datetime.now(timezone.utc)
+
+        if not arg:
+            conv = await self.db.conversations.find_one({"_id": ObjectId(conversation_id)})
+            override = (conv or {}).get("llm_config_override")
+            if override:
+                msg = (
+                    f"Pinned to {override.get('backend')}/{override.get('model')}. "
+                    "Use '/model auto' to unpin."
+                )
+            else:
+                llmc = (conv or {}).get("llm_config", {})
+                msg = (
+                    f"Using the agent default ({llmc.get('backend')}/{llmc.get('model')}). "
+                    "Pin with '/model <backend> [<model-id>]'."
+                )
+            return CommandResult(assistant_content=msg)
+
+        if arg.lower() in ("auto", "default", "reset", "off", "none", "unpin"):
+            await self.db.conversations.update_one(
+                {"_id": ObjectId(conversation_id)},
+                {"$unset": {"llm_config_override": ""}, "$set": {"updated_at": now}},
+            )
+            return CommandResult(assistant_content="Unpinned — back to the agent default model.")
+
+        # "<backend> [<model-id>]" — split on first whitespace so model ids that
+        # contain '/' (fireworks/openrouter) are preserved verbatim.
+        parts = arg.split(maxsplit=1)
+        alias = parts[0].lower()
+        backend = self._BACKEND_ALIASES.get(alias)
+        if backend is None:
+            known = ", ".join(sorted(set(self._BACKEND_ALIASES.values())))
+            return CommandResult(assistant_content=f"Unknown backend '{alias}'. Known: {known}.")
+        model = parts[1].strip() if len(parts) > 1 else self._BACKEND_DEFAULTS.get(backend, "default")
+        await self._pin_override(conversation_id, backend, model)
+        return CommandResult(
+            assistant_content=f"Pinned this conversation to {backend}/{model}. (Use '/model auto' to unpin.)"
+        )
+
+    async def _handle_route_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/route <task>` — suggest a backend by heuristic and pin it. Advisory;
+        you can always override with `/model`."""
+        text = user_message.strip()
+        if not text.lower().startswith("/route"):
+            return None
+        hint = text[len("/route"):].strip()
+        if not hint:
+            return CommandResult(assistant_content="Usage: /route <describe the task> — picks and pins a model.")
+
+        from aria.core.router import suggest_backend
+        backend, why = suggest_backend(hint, has_fireworks=bool(settings.fireworks_api_key))
+        model = self._BACKEND_DEFAULTS.get(backend, "default")
+        await self._pin_override(conversation_id, backend, model)
+        return CommandResult(
+            assistant_content=f"Routed to {backend}/{model} — {why}. Pinned for this conversation (override with /model)."
+        )
+
+    async def _handle_search_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/search <query>` — run the context-1 search agent directly and show
+        the ranked documents (memory / web / files)."""
+        text = user_message.strip()
+        if not text.lower().startswith("/search"):
+            return None
+        query = text[len("/search"):].strip()
+        if not query:
+            return CommandResult(assistant_content="Usage: /search <query>")
+        try:
+            from aria.api.deps import get_tool_router
+            from aria.tools.base import ToolStatus
+            router = get_tool_router()
+            result = await router.execute_tool("search_agent", {"query": query})
+            if result.status != ToolStatus.SUCCESS:
+                return CommandResult(
+                    assistant_content=(
+                        f"Search unavailable: {result.error or 'search_agent not registered (is context-1 up?)'}"
+                    )
+                )
+            docs = (result.output or {}).get("documents", [])
+            if not docs:
+                return CommandResult(assistant_content=f"No documents found for '{query}'.")
+            lines = [f"Found {len(docs)} result(s) for '{query}':", ""]
+            for i, d in enumerate(docs[:10], 1):
+                src = d.get("source", "?")
+                title = d.get("title") or d.get("id", "")
+                snippet = (d.get("content") or "").strip().replace("\n", " ")[:200]
+                url = d.get("url")
+                lines.append(f"{i}. [{src}] {title}".rstrip())
+                if snippet:
+                    lines.append(f"   {snippet}")
+                if url:
+                    lines.append(f"   {url}")
+            return CommandResult(assistant_content="\n".join(lines))
+        except Exception as e:
+            return CommandResult(assistant_content=f"Search error: {e}")
+
+    async def _handle_forget_command(
+        self,
+        conversation_id: str,
+        user_message: str,
+    ) -> Optional[CommandResult]:
+        """`/forget <query>` — remove the single best-matching long-term memory
+        (one at a time, so it's reviewable rather than a bulk wipe)."""
+        text = user_message.strip()
+        if not text.lower().startswith("/forget"):
+            return None
+        query = text[len("/forget"):].strip()
+        if not query:
+            return CommandResult(
+                assistant_content="Usage: /forget <what to forget> — removes the single best-matching memory."
+            )
+        if not self.long_term_memory:
+            return CommandResult(assistant_content="Long-term memory is not available.")
+        try:
+            results = await self.long_term_memory.search(query, limit=1)
+        except Exception as e:
+            return CommandResult(assistant_content=f"Forget failed during search: {e}")
+        if not results:
+            return CommandResult(assistant_content=f"No memory matched '{query}'.")
+        top = results[0]
+        ok = await self.long_term_memory.delete_memory(top.id)
+        if ok:
+            snippet = (top.content or "").strip()[:160]
+            return CommandResult(assistant_content=f"Forgotten: \"{snippet}\"")
+        return CommandResult(assistant_content="Could not delete that memory.")
 
     async def _handle_backend_switch(
         self,

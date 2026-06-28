@@ -129,8 +129,9 @@ These are autonomous tasks where ARIA delegates work to a Claude Code CLI instan
 | **Dream Cycle** | Every 6h, quiet hours (1am-5am) | Reviews memories, finds patterns, writes journal entries, proposes identity evolution |
 | **Research** | On demand (`/research query`) | Recursive web research with branching queries, learning extraction, report synthesis |
 | **Heartbeat** | Every 30min, active hours (9am-10pm) | Reviews checklist, alerts via Signal/Telegram if anything needs attention |
-| **OODA Loop** | During responses (if enabled) | Scores ARIA's own response quality (0-1), retries if below threshold |
-| **Autopilot** | On demand via API | Decomposes goals into steps, executes sequentially with optional approval gates |
+| **OODA Loop** | Non-streaming responses (if enabled per-agent) | Scores ARIA's own response quality (0-1), retries if below threshold — only on the non-streaming path, not the default streaming chat |
+| **Autopilot** | On demand via API, or scheduled | Decomposes goals into steps, executes sequentially with optional approval gates. The scheduler's `autopilot` action can run an autonomous goal (e.g. "every morning, triage my repos") on a local-time cadence |
+| **Backups** | Daily @ 03:30 (systemd timer) | `scripts/aria-backup.sh` — mongodump of the `aria` DB plus SOUL/journals/skills, with rotation (`aria-backup.timer`) |
 | **Awareness** | Every 30min (if enabled) | Monitors git activity, system health, filesystem changes, produces situational summary |
 | **Summarization** | Auto when context grows | Rolling conversation compaction preserving goals, decisions, progress, open questions |
 | **Memory Extraction** | After conversations | Extracts facts, relationships, events, beliefs with categories and confidence scores |
@@ -142,25 +143,41 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 
 | Subsystem | Purpose |
 |-----------|---------|
-| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92%. |
+| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92% — thresholds are heuristic labels derived from output signals, not exact token metering. |
 | **Session Checkpoints** | Persists task, modified files, branch, last commit, and notes to MongoDB so crashed agents can be resumed with full context. |
 | **Emergency Stop (Estop)** | MongoDB-backed global freeze that halts all agent activity on API rate limits or critical errors. Visible across processes, auto-thaws when clear. |
-| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` messages routed through MongoDB between the orchestrator and sub-agents. |
-| **Tmux Backend** | Optional visible backend that spawns each coding agent in its own color-coded tmux pane inside an `aria-agents` session. |
-| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items. |
+| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` message types in MongoDB. Currently carries sub-agent completion signals (`TASK_DONE`); full bidirectional polling by the orchestrator isn't wired yet. |
+| **Tmux Backend** | Visible-pane overlay used when a coding session is started with `visible=True` — each agent gets its own color-coded tmux pane inside an `aria-agents` session. (Not a selectable backend in the registry, which exposes `codex` + `claude_code`.) |
+| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items (subsystem implemented; not yet wired into the live alert path). |
 
 ## Interfaces
 
 | Interface | Technology | Description |
 |-----------|-----------|-------------|
 | **TUI** | Go (Bubble Tea) | 4-quadrant terminal dashboard with sidebar, session detail, tools, vitals |
-| **Web UI** | Next.js | Chat interface with mode switching and conversation management |
+| **Web UI** | Next.js | Chat interface with mode switching and conversation management; **installable PWA** (manifest + service worker, network-first, bypasses `/api` + SSE) |
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey, voice input/output |
 | **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` (honors `ARIA_API_URL`) |
 | **REST API** | FastAPI | Full API with SSE streaming at `localhost:8200` (the single always-on service) |
 | **MCP** | FastMCP (stdio) | `mcp/server.py` — ~31 tools (fleet, chat, memory, coding sub-agents, projects/tasks, alerts), consumed by the Hermes agent |
 
 Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory. Outbound notifications go through the MCP alert queue relayed by Hermes rather than ARIA sending Signal/Telegram directly.
+
+The **TUI** also has Fleet (`f`: all coding sessions + watched shells with backend/model, status, idle, tokens + $cost), Health (`h`: per-service status from `/health/services`), and Search (`s`: runs the search agent) screens.
+
+### Slash Commands
+
+In-chat commands handled before the LLM sees the message:
+
+| Command | Effect |
+|---------|--------|
+| `/model <backend> [<model-id>]` | Pin the conversation to a specific backend/model (strict — no fallback). `/model` shows the current pin; `/model auto` unpins |
+| `/route <task>` | Apply an advisory heuristic suggestion as a pin (overridable with `/model`) |
+| `/models` (`/backends`) | List available backends and the current selection |
+| `/search <query>` | Run the context-1 search agent inline and show ranked documents |
+| `/forget <query>` | Remove the single best-matching long-term memory (reviewable, one at a time) |
+
+The same search is available as `aria search <query>` from the CLI and the TUI Search screen.
 
 ## Memory System
 
@@ -179,14 +196,17 @@ Memories have content types (fact/preference/experience/relationship), categorie
 
 | Backend | Type | Config / models |
 |---------|------|--------|
-| **Fireworks** | Cloud | `FIREWORKS_API_KEY` — **GLM 5.2** (`glm-5p2`); the default model for the ARIA orchestrator + Pi Coding Agent |
-| **llama.cpp** | Local (ROCm) | Qwen3.6 **35B-A3B** `:8092` (`llamacpp_url`) and **27B** `:8093` — AMD Strix Halo GPU box |
+| **Fireworks** | Cloud | `FIREWORKS_API_KEY` — **GLM 5.2** (`glm-5p2`); the default model for the ARIA orchestrator + Pi Coding Agent. Aliases: `fireworks`, `glm` |
+| **llama.cpp** (qwen-chat) | Local (ROCm) | Qwen3.6 **35B-A3B** `:8092` (`llamacpp_url`) — AMD Strix Halo GPU box. Aliases: `llamacpp`, `local`, `qwen-chat` |
+| **agentic** (qwen-agentic) | Local (ROCm) | Qwen3.6 **27B** `:8093` (`agentic_url`) — coresident tool-use/long-context server. Aliases: `agentic`, `qwen-agentic` |
 | **context-1** | Local (ROCm) | chromadb/context-1 20B `:8081` — the Search Agent's agentic backend |
 | **Anthropic** | Cloud | `ANTHROPIC_API_KEY` in `.env` |
 | **OpenAI** | Cloud | `OPENAI_API_KEY` in `.env` |
 | **OpenRouter** | Cloud (multi) | `OPENROUTER_API_KEY` in `.env` |
 
-All backends implement the same adapter interface; **backend + model are chosen per agent** (config rows in `db.agents`). The local models run as Docker containers in `infrastructure/qwen-rocmfp4/`. The LLM manager handles selection and fallback chains. (The old single `llama.cpp` on `:8080` is retired.)
+All backends implement the same adapter interface; **backend + model are chosen per agent** (config rows in `db.agents`), and a conversation can be **pinned** to a specific backend/model with `/model` (an explicit pin is strict — no fallback). The three local models (qwen-chat `:8092`, qwen-agentic `:8093`, context-1 `:8081`) run coresident as Docker containers in `infrastructure/qwen-rocmfp4/`. The LLM manager handles selection and fallback chains. (The old single `llama.cpp` on `:8080` is retired.)
+
+**Cost & health:** usage records carry backend + session id and are priced via `llm/pricing.py` (local backends are $0); see `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`, and `/usage/by-model`. A spend circuit-breaker (`spend_cap_usd_per_hour`) trips the global e-stop when hourly priced spend exceeds the cap. `GET /health/services` concurrently probes every backing service (mongod, mongot, the three local llama.cpp servers, embeddings, tts, stt, fireworks) for the TUI/web health page.
 
 ## Tools
 
@@ -197,8 +217,9 @@ Built-in tools ARIA can call during conversations:
 | `shell` | Execute shell commands |
 | `filesystem` | Read, write, list, delete files |
 | `web_fetch` | HTTP requests |
-| `screenshot` | Capture and analyze screen |
-| `start_coding_session` | Spawn Claude Code or Codex |
+| `browse_page` | Fetch a URL and return readable text (title + main content), following allowlisted redirects |
+| `screenshot_analyze` | Capture and analyze screen |
+| `start_coding_session` | Spawn a coding session — backend `claude_code`, `codex`, or `pi-code` (ARIA's own loop, with a pinned LLM/model) |
 | `stop_coding_session` | Stop a running session |
 | `get_coding_output` | Read session output |
 | `send_to_coding_session` | Send input to running session |
@@ -206,9 +227,28 @@ Built-in tools ARIA can call during conversations:
 | `claude_agent` | Delegate a one-shot task to Claude Code |
 | `pi_coding_agent` | Delegate to Pi Coding Agent (local LLM) |
 | `update_soul` | Read or modify SOUL.md |
-| `document_generation` | Generate documentation |
+| `generate_document` | Generate documentation |
 
 Additionally, MCP servers provide dynamic tools via JSON-RPC 2.0, and the skill system allows installing packaged tool bundles.
+
+### Computer Use (Playwright)
+
+ARIA can drive a real headless browser via the [Playwright MCP](https://github.com/microsoft/playwright-mcp) server — navigate, read the accessibility snapshot, click/type by element ref, screenshot, evaluate JS, etc. (23 `browser_*` tools).
+
+One-time setup (already done on `corsair-ai`):
+
+```bash
+# 1. Install the Playwright MCP server + its browser build
+npm install -g @playwright/mcp@latest
+node "$(npm root -g)/@playwright/mcp/cli.js" install-browser chrome-for-testing
+
+# 2. Register it with ARIA (persisted in Mongo, restored on startup)
+curl -X POST -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"server_id":"playwright","command":["node","'"$(npm root -g)"'/@playwright/mcp/cli.js","--headless","--isolated","--browser","chromium"]}' \
+  http://localhost:8200/api/v1/mcp/servers
+```
+
+The `browser_*` tools pass the allowlist via `tool_allowed_prefixes` (config), and agents enable the whole family with a single `"browser_*"` entry in `enabled_tools` (the ARIA and pi-code agents have it enabled). So in chat you can just ask ARIA to "open example.com and tell me what's on the page."
 
 ## Voice Services
 

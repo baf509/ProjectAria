@@ -102,20 +102,33 @@ class ClaudeAgentTool(BaseTool):
                 error="Task description is required",
             )
 
-        # Check global emergency stop before spawning agents
+        # Safety gates before spawning agents. Fail CLOSED — if the killswitch
+        # is engaged or the safety state cannot be verified, deny the operation.
         try:
-            from aria.api.deps import get_estop_manager, get_db
+            from aria.api.deps import get_estop_manager, get_db, get_killswitch
+            get_killswitch().check_or_raise("claude agent spawn")
             db = await get_db()
             estop = await get_estop_manager(db=db)
-            if await estop.is_active():
-                state = await estop.get_state()
-                return ToolResult(
-                    tool_name=self.name,
-                    status=ToolStatus.ERROR,
-                    error=f"Emergency stop active: {state.reason}. Agent spawning is paused.",
-                )
-        except Exception:
-            pass  # If estop check fails, allow the operation
+            estop_active = await estop.is_active()
+            estop_reason = (await estop.get_state()).reason if estop_active else None
+        except RuntimeError as exc:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=str(exc),
+            )
+        except Exception as exc:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=f"Safety check failed, refusing to spawn agent: {exc}",
+            )
+        if estop_active:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=f"Emergency stop active: {estop_reason}. Agent spawning is paused.",
+            )
 
         if not ClaudeRunner.is_available():
             return ToolResult(

@@ -342,29 +342,37 @@ func (c *Client) DeleteMemory(id string) error {
 // ---------- Usage ----------
 
 type UsageSummary struct {
-	TotalInputTokens  int `json:"total_input_tokens"`
-	TotalOutputTokens int `json:"total_output_tokens"`
-	TotalRequests     int `json:"total_requests"`
+	TotalInputTokens  int `json:"input_tokens"`
+	TotalOutputTokens int `json:"output_tokens"`
+	TotalRequests     int `json:"requests"`
 }
 
 type AgentUsage struct {
-	AgentID      string `json:"agent_id"`
-	AgentName    string `json:"agent_name"`
+	AgentName    string `json:"_id"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	Requests     int    `json:"requests"`
 }
 
 type ModelUsage struct {
-	Backend      string `json:"backend"`
-	Model        string `json:"model"`
+	Model        string `json:"_id"`
 	InputTokens  int    `json:"input_tokens"`
 	OutputTokens int    `json:"output_tokens"`
 	Requests     int    `json:"requests"`
 }
 
+// daysForHours converts a desired hour window to whole days for the API,
+// which only accepts a ?days= parameter (minimum 1 day).
+func daysForHours(hours int) int {
+	days := hours / 24
+	if days < 1 {
+		days = 1
+	}
+	return days
+}
+
 func (c *Client) GetUsage(hours int) (*UsageSummary, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/summary?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/summary?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -375,7 +383,7 @@ func (c *Client) GetUsage(hours int) (*UsageSummary, error) {
 }
 
 func (c *Client) GetUsageByAgent(hours int) ([]AgentUsage, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/by-agent?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/by-agent?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -386,7 +394,7 @@ func (c *Client) GetUsageByAgent(hours int) ([]AgentUsage, error) {
 }
 
 func (c *Client) GetUsageByModel(hours int) ([]ModelUsage, error) {
-	url := fmt.Sprintf("%s/api/v1/usage/by-model?hours=%d", c.Base, hours)
+	url := fmt.Sprintf("%s/api/v1/usage/by-model?days=%d", c.Base, daysForHours(hours))
 	resp, err := c.get(url)
 	if err != nil {
 		return nil, err
@@ -394,6 +402,81 @@ func (c *Client) GetUsageByModel(hours int) ([]ModelUsage, error) {
 	defer resp.Body.Close()
 	var usage []ModelUsage
 	return usage, json.NewDecoder(resp.Body).Decode(&usage)
+}
+
+// SessionUsage is per-coding-session token + cost usage from
+// /usage/by-session, joined to coding sessions in the Fleet view.
+type SessionUsage struct {
+	SessionID   string  `json:"session_id"`
+	Backend     string  `json:"backend"`
+	LLM         *string `json:"llm"`
+	Model       *string `json:"model"`
+	Status      string  `json:"status"`
+	TotalTokens int     `json:"total_tokens"`
+	Cost        float64 `json:"cost"`
+}
+
+func (c *Client) GetUsageBySession() ([]SessionUsage, error) {
+	resp, err := c.get(c.Base + "/api/v1/usage/by-session")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var usage []SessionUsage
+	return usage, json.NewDecoder(resp.Body).Decode(&usage)
+}
+
+// ---------- Services Health ----------
+
+type ServiceHealth struct {
+	Name      string `json:"name"`
+	OK        bool   `json:"ok"`
+	LatencyMS int    `json:"latency_ms"`
+	Detail    string `json:"detail"`
+}
+
+type ServicesHealth struct {
+	Services []ServiceHealth `json:"services"`
+	Healthy  int             `json:"healthy"`
+	Total    int             `json:"total"`
+}
+
+func (c *Client) GetServicesHealth() (*ServicesHealth, error) {
+	resp, err := c.get(c.Base + "/api/v1/health/services")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var h ServicesHealth
+	return &h, json.NewDecoder(resp.Body).Decode(&h)
+}
+
+// ---------- Tool Execution ----------
+
+type ToolExecuteResult struct {
+	ToolName string                 `json:"tool_name"`
+	Status   string                 `json:"status"`
+	Output   map[string]interface{} `json:"output"`
+	Error    string                 `json:"error"`
+}
+
+func (c *Client) ExecuteTool(name string, args map[string]interface{}) (*ToolExecuteResult, error) {
+	body := map[string]interface{}{
+		"tool_name": name,
+		"arguments": args,
+	}
+	b, _ := json.Marshal(body)
+	resp, err := c.post(c.Base+"/api/v1/tools/execute", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		rb, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, rb)
+	}
+	var result ToolExecuteResult
+	return &result, json.NewDecoder(resp.Body).Decode(&result)
 }
 
 // ---------- Streaming Messages (SSE) ----------
@@ -518,10 +601,10 @@ func (c *Client) ListTools() ([]Tool, error) {
 }
 
 type MCPServer struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Tools  int    `json:"tool_count"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	Tools     int    `json:"tool_count"`
 }
 
 func (c *Client) ListMCPServers() ([]MCPServer, error) {

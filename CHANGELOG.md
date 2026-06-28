@@ -22,6 +22,31 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-06-28] - Multi-runtime fleet, cost/health, model pinning, search, routines, PWA, backups, and computer-use
+
+### Added
+- **qwen-agentic addressable as backend `agentic`** — a 3rd coresident local llama.cpp server (Qwen3.6-27B, `:8093`, `agentic_url`) is now reachable as backend `"agentic"`. Local topology is now `llamacpp`/qwen-chat (`:8092`), `agentic`/qwen-agentic (`:8093`), `context1` (`:8081`) — all coresident on the APU. Aliases: `agentic`/`qwen-agentic`, plus `fireworks`/`glm` for Fireworks GLM 5.2.
+- **pi-code as a first-class coding-session backend** — `start_coding_session(backend="pi-code", llm=<fireworks|agentic|llamacpp>, model=<id>)` runs ARIA's own agentic loop as a supervised, spawnable coding session alongside `claude_code` and `codex`. The LLM/model is **pinned** for the session and it inherits the watchdog + e-stop/killswitch gates. The three deployable runtimes are now Claude Code, pi-code+GLM (Fireworks), and pi-code+local-qwen — one unified `start_coding_session` path. Orchestrator default model is Fireworks GLM 5.2.
+- **Cost accounting + spend circuit-breaker** — new `llm/pricing.py` price table (local backends + "default" = $0; cloud models priced; unknown cloud → conservative default). New endpoints `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`; `/usage/by-model` now includes cost. Usage records now carry `backend` + `session_id`. A spend circuit-breaker (`spend_cap_usd_per_hour`, 0=off) trips the global e-stop (and escalates) when the last hour's priced spend exceeds the cap; the rate-limit watchdog also now watches fireworks.
+- **`GET /health/services`** — concurrently probes all backing services (mongod, mongot, qwen-chat, qwen-agentic, context-1, embeddings, tts, stt, fireworks) returning per-service `{name, ok, latency_ms, detail}`. context-1/fireworks also added to the deep `/health` and `/health/llm` coverage.
+- **Model pinning + routing** — `/model <backend> [<model-id>]` pins a conversation to a specific model (ids with `/` preserved); `/model` shows the current pin; `/model auto` unpins. An explicit pin is now **strict/fallback-free**. `/route <task>` applies an advisory heuristic suggestion as a pin you can override.
+- **TUI fleet/health/search screens** — Fleet view (`f`: all coding sessions + watched shells with backend/model, status, idle, tokens + $cost), Health view (`h`: per-service status from `/health/services`), Search view (`s`: runs the search agent). Binary rebuilt.
+- **Search agent easily invokable** — `/search <query>` (runs the context-1 search agent inline, shows ranked documents), `aria search <query>` CLI command, and the TUI search screen.
+- **Scheduled autonomous routines** — the scheduler gained an `autopilot` action: schedule an autonomous goal (e.g. "every morning, triage my repos") that decomposes + executes via the autopilot service on a local-time cadence.
+- **`browse_page` tool** — a built-in tool that fetches a URL and returns readable text (title + main content), following redirects (allowlisted).
+- **Full computer-use via Playwright MCP** — ARIA drives a real headless browser (23 `browser_*` tools: navigate, accessibility snapshot, click/type by ref, screenshot, evaluate JS, tabs, network). Enabled via `tool_allowed_prefixes` (`browser_*` passes the allowlist) and a `"*"` wildcard in agent `enabled_tools` (one `browser_*` entry enables the family; the ARIA + pi-code agents have it). See the README "Computer Use (Playwright)" setup section.
+- **Installable PWA** — the Next.js web UI now ships a manifest, service worker (network-first, bypasses `/api` + SSE), icons, and is installable.
+- **Automated backups** — `scripts/aria-backup.sh` (mongodump of the `aria` DB via the mongod container + SOUL/journals/skills, with rotation), installed as a daily systemd user timer (`aria-backup.timer` @ 03:30). Restore is documented via mongorestore.
+- **`/forget <query>`** — removes the single best-matching long-term memory (reviewable, one at a time).
+
+### Changed
+- The default ARIA orchestrator model remains Fireworks GLM 5.2, but conversations can now be pinned to any backend/model strictly (no fallback) via `/model`.
+- `/models` (a.k.a. `/backends`) now lists `agentic` (qwen-agentic) alongside the other backends.
+- The rate-limit / spend watchdog now also covers the `fireworks` backend.
+
+### Notes
+- Conversation branching/export already existed; this batch adds `/forget` for single-memory removal.
+
 ## [2026-06-26] - Absorb aria-shells; GLM 5.2; unified sub-agents; self-healing alerts
 
 ### Added

@@ -61,12 +61,40 @@ class CodingSessionManager:
         prompt: str,
         branch: Optional[str] = None,
         model: Optional[str] = None,
+        llm: Optional[str] = None,
         conversation_id: Optional[str] = None,
         visible: bool = False,
     ) -> dict:
+        # Safety gates: refuse to spawn an autonomous coding agent while the
+        # manual killswitch or the automated emergency stop is engaged.
+        # Fail CLOSED — a verification error denies the spawn.
+        from aria.api.deps import get_killswitch, resolve_estop_manager
+        get_killswitch().check_or_raise("coding session start")
+        estop = await resolve_estop_manager(self.db)
+        if await estop.is_active():
+            state = await estop.get_state()
+            raise RuntimeError(
+                f"Emergency stop active — coding session start blocked. Reason: {state.reason}"
+            )
+
         backend_name = backend or settings.coding_default_backend
         selected_backend = self.registry.get(backend_name)
         workspace_path = os.path.abspath(workspace)
+
+        # In-process substrate (pi-code): run ARIA's own agentic loop with a
+        # pinned LLM instead of exec'ing an external CLI. It still gets a
+        # coding_sessions doc + supervising task, so it inherits the watchdog
+        # and the safety gates above for free.
+        if getattr(selected_backend, "is_in_process", False) is True:
+            return await self._start_pi_code_session(
+                workspace=workspace_path,
+                prompt=prompt,
+                llm=llm,
+                model=model,
+                branch=branch,
+                conversation_id=conversation_id,
+            )
+
         params = StartParams(workspace=workspace_path, prompt=prompt, model=model, branch=branch)
         command = selected_backend.start_command(params)
         session_id = str(uuid4())
@@ -167,13 +195,174 @@ class CodingSessionManager:
         self._watch_tasks[session_id] = asyncio.create_task(self._watch_session(session_id))
         return await self.get_session(session_id)
 
+    async def _start_pi_code_session(
+        self,
+        *,
+        workspace: str,
+        prompt: str,
+        llm: Optional[str],
+        model: Optional[str],
+        branch: Optional[str],
+        conversation_id: Optional[str],
+    ) -> dict:
+        """Spawn an in-process pi-code session: a working conversation pinned to
+        the chosen LLM, driven by ARIA's orchestrator in a background task."""
+        agent = (
+            await self.db.agents.find_one({"slug": "pi-code"})
+            or await self.db.agents.find_one({"slug": "pi-coding"})
+        )
+        if not agent:
+            raise RuntimeError(
+                "pi-code agent not found (slug 'pi-code' or 'pi-coding'); run migrations."
+            )
+        llm_backend = llm or agent["llm"]["backend"]
+        llm_model = model or agent["llm"]["model"]
+        session_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+
+        # Working conversation for the agentic loop. The model is PINNED via
+        # llm_config_override, which the orchestrator treats as authoritative
+        # and fallback-free — so a session keeps the model the user chose.
+        conv = {
+            "agent_id": agent["_id"],
+            "active_agent_id": None,
+            "title": f"pi-code: {prompt[:60]}",
+            "summary": None,
+            "status": "active",
+            "created_at": now,
+            "updated_at": now,
+            "llm_config": {
+                "backend": llm_backend,
+                "model": llm_model,
+                "temperature": agent["llm"].get("temperature", 0.3),
+            },
+            "llm_config_override": {"backend": llm_backend, "model": llm_model},
+            "messages": [],
+            "tags": ["pi-code"],
+            "pinned": False,
+            "private": False,
+            "stats": {"message_count": 0, "total_tokens": 0, "tool_calls": 0},
+        }
+        res = await self.db.conversations.insert_one(conv)
+        agent_conv_id = str(res.inserted_id)
+
+        doc = {
+            "_id": session_id,
+            "backend": "pi-code",
+            "llm": llm_backend,
+            "model": llm_model,
+            "workspace": workspace,
+            "prompt": prompt,
+            "branch": branch,
+            "conversation_id": conversation_id,        # the spawning conversation (may be None)
+            "agent_conversation_id": agent_conv_id,    # the loop's own conversation
+            "visible": False,
+            "status": "running",
+            "pid": None,
+            "tmux_pane_id": None,
+            "shell_name": None,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+        await self.db.coding_sessions.insert_one(doc)
+        self._watch_tasks[session_id] = asyncio.create_task(
+            self._run_pi_code_session(session_id, agent_conv_id, prompt)
+        )
+        logger.info(
+            "Started pi-code session %s (llm=%s model=%s)", session_id, llm_backend, llm_model
+        )
+        return await self.get_session(session_id)
+
+    async def _run_pi_code_session(
+        self, session_id: str, conversation_id: str, prompt: str
+    ) -> None:
+        """Drive the orchestrator over the session's conversation until the turn
+        completes, then finalize. Cancellation (stop_session) ends it cleanly."""
+        try:
+            from aria.api.deps import (
+                get_tool_router,
+                get_task_runner,
+                get_coding_session_manager,
+            )
+            from aria.core.orchestrator import Orchestrator
+
+            tool_router = get_tool_router()
+            task_runner = await get_task_runner(self.db)
+            coding_manager = await get_coding_session_manager(self.db)
+            orchestrator = Orchestrator(
+                db=self.db,
+                tool_router=tool_router,
+                task_runner=task_runner,
+                coding_manager=coding_manager,
+            )
+            async for chunk in orchestrator.process_message(
+                conversation_id, prompt, stream=False
+            ):
+                if chunk.type == "error":
+                    raise RuntimeError(chunk.error or "pi-code stream error")
+            await self._finalize_pi_code(session_id, "completed")
+        except asyncio.CancelledError:
+            await self._finalize_pi_code(session_id, "stopped")
+            raise
+        except Exception as e:
+            logger.warning("pi-code session %s failed: %s", session_id, e)
+            await self._finalize_pi_code(session_id, "failed", error=str(e))
+        finally:
+            self._watch_tasks.pop(session_id, None)
+
+    async def _finalize_pi_code(
+        self, session_id: str, status: str, error: Optional[str] = None
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        res = await self.db.coding_sessions.update_one(
+            {"_id": session_id, "status": "running"},
+            {"$set": {
+                "status": status,
+                "updated_at": now,
+                "completed_at": now,
+                "exit_code": 0 if status == "completed" else None,
+                "error": error,
+            }},
+        )
+        if res.modified_count == 0:
+            return  # already finalized elsewhere (e.g. stop_session)
+        session = await self.get_session(session_id)
+        try:
+            output_tail = await self.get_output(session_id, lines=10)
+            await self.mailbox.send_task_done(
+                sender="coding:pi-code",
+                recipient="orchestrator",
+                session_id=session_id,
+                result_summary=output_tail or f"pi-code {status}",
+                exit_status=status,
+                conversation_id=(session or {}).get("conversation_id"),
+            )
+        except Exception as e:
+            logger.debug("Failed to send pi-code task_done mail: %s", e)
+        if self.notification_service:
+            try:
+                await self.notification_service.notify(
+                    source=f"coding:{session_id}",
+                    event_type=status,
+                    detail=f"pi-code session {status}",
+                    cooldown_seconds=10,
+                )
+            except Exception:
+                pass
+
     async def stop_session(self, session_id: str) -> bool:
         session = await self.get_session(session_id)
         if not session:
             return False
 
+        # In-process pi-code session: cancel its driver task.
+        if session.get("backend") == "pi-code":
+            task = self._watch_tasks.pop(session_id, None)
+            if task is not None:
+                task.cancel()
         # Handle shell-substrate sessions (kill the watched tmux shell)
-        if session.get("shell_name") and self.shell_service:
+        elif session.get("shell_name") and self.shell_service:
             try:
                 await self.shell_service.kill_shell(session["shell_name"])
             except Exception as exc:  # pragma: no cover - defensive
@@ -222,6 +411,22 @@ class CodingSessionManager:
 
     async def get_output(self, session_id: str, lines: int = 50) -> str:
         session = await self.get_session(session_id)
+        # In-process pi-code: synthesize a transcript from the loop's conversation
+        # messages (restart-safe; gives the watchdog signal for idle detection).
+        if session and session.get("backend") == "pi-code" and session.get("agent_conversation_id"):
+            try:
+                conv = await self.db.conversations.find_one(
+                    {"_id": ObjectId(session["agent_conversation_id"])},
+                    {"messages": {"$slice": -int(lines)}},
+                )
+            except Exception:
+                conv = None
+            out = []
+            for m in (conv or {}).get("messages", []):
+                content = str(m.get("content", "")).strip()
+                if content:
+                    out.append(f"[{m.get('role', '?')}] {content}")
+            return "\n".join(out)
         # Shell-substrate sessions: live ANSI-stripped pane from the fleet; if the
         # tmux session has ended (completed), fall back to captured scrollback.
         if session and session.get("shell_name") and self.shell_service:
@@ -239,6 +444,26 @@ class CodingSessionManager:
 
     async def send_input(self, session_id: str, text: str) -> bool:
         session = await self.get_session(session_id)
+        # In-process pi-code: a follow-up message = a new orchestrator turn.
+        if session and session.get("backend") == "pi-code":
+            conv_id = session.get("agent_conversation_id")
+            if not conv_id:
+                return False
+            existing = self._watch_tasks.get(session_id)
+            if existing is not None and not existing.done():
+                return False  # a turn is already running
+            await self.db.coding_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {
+                    "status": "running",
+                    "updated_at": datetime.now(timezone.utc),
+                    "completed_at": None,
+                }},
+            )
+            self._watch_tasks[session_id] = asyncio.create_task(
+                self._run_pi_code_session(session_id, conv_id, text)
+            )
+            return True
         if session and session.get("shell_name") and self.shell_service:
             try:
                 line, _screen = await self.shell_service.send_input(session["shell_name"], text)
@@ -261,7 +486,12 @@ class CodingSessionManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            return "[git diff timed out after 30s]"
         output = stdout.decode("utf-8", errors="replace")
         error = stderr.decode("utf-8", errors="replace")
         return output or error

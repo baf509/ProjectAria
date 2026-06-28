@@ -22,7 +22,7 @@ router = APIRouter(prefix="/schedules", tags=["schedules"])
 class CreateScheduleRequest(BaseModel):
     name: str = Field(..., description="Human-readable schedule name")
     schedule_type: str = Field(..., description="'once' or 'recurring'")
-    action: str = Field(..., description="'remind', 'prompt', 'tool', or 'notify'")
+    action: str = Field(..., description="'remind', 'prompt', 'tool', 'notify', or 'autopilot'")
     params: dict = Field(default_factory=dict, description="Action-specific parameters")
     cron_expr: Optional[str] = Field(None, description="Simplified cron expression for recurring schedules")
     run_at: Optional[datetime] = Field(None, description="ISO datetime for one-shot schedules (UTC)")

@@ -82,3 +82,6 @@ node_modules/
 
 # Virtual environments
 .venv/
+
+# Playwright MCP runtime output (snapshots/screenshots)
+.playwright-mcp/

@@ -21,6 +21,7 @@ from .filesystem import FilesystemTool
 from .model_switch import ListLlamaCppModelsTool, SwitchLlamaCppModelTool
 from .shell import ShellTool
 from .web import WebTool
+from .browse import BrowsePageTool
 from .screenshot import ScreenshotTool
 from .docgen import DocumentGenerationTool
 from .shells import SendShellInputTool
@@ -46,4 +47,5 @@ __all__ = [
     "StopCodingSessionTool",
     "SwitchLlamaCppModelTool",
     "WebTool",
+    "BrowsePageTool",
 ]

@@ -18,6 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.agents.budget_guard import BudgetLevel, ContextBudgetGuard
 from aria.agents.checkpoint import write_checkpoint
+from aria.agents.mail import AgentMailbox, MessageType
 from aria.config import settings
 from aria.notifications.service import NotificationService
 from aria.agents.review import CodingReviewService
@@ -130,6 +131,7 @@ class CodingWatchdog:
         self.notification_service = notification_service
         self.review_service = review_service
         self.budget_guard = ContextBudgetGuard()
+        self.mailbox = AgentMailbox(db)
         self._task: asyncio.Task | None = None
         self._session_state: dict[str, dict] = {}
 
@@ -168,7 +170,53 @@ class CodingWatchdog:
                 raise
             except Exception as e:
                 logger.error("Watchdog check error: %s", e, exc_info=True)
+            try:
+                await self._drain_orchestrator_mail()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("Watchdog mail drain error: %s", e, exc_info=True)
             await asyncio.sleep(settings.coding_watchdog_interval_seconds)
+
+    async def _drain_orchestrator_mail(self) -> None:
+        """Consume inter-agent mail addressed to the orchestrator and surface it.
+
+        Sub-agents send TASK_DONE / ERROR / HANDOFF messages to
+        recipient="orchestrator" (see agents/session.py). Nothing else reads
+        that mailbox, so the watchdog drains it, notifies the user, and marks
+        each message read so it isn't re-processed.
+        """
+        unread = await self.mailbox.get_unread("orchestrator", limit=20)
+        for msg in unread:
+            try:
+                if msg.msg_type == MessageType.TASK_DONE:
+                    exit_status = (msg.metadata or {}).get("exit_status", "completed")
+                    detail = f"Sub-agent {msg.sender} finished ({exit_status}): {msg.body[:200]}"
+                    event_type = "agent_task_done"
+                elif msg.msg_type == MessageType.ERROR:
+                    detail = f"Sub-agent {msg.sender} reported an error: {msg.body[:200]}"
+                    event_type = "agent_error"
+                elif msg.msg_type == MessageType.HANDOFF:
+                    detail = f"Sub-agent {msg.sender} handed off work: {msg.subject}"
+                    event_type = "agent_handoff"
+                else:
+                    detail = f"Mail from {msg.sender}: {msg.subject}"
+                    event_type = "agent_mail"
+                try:
+                    await self.notification_service.notify(
+                        source="agents",
+                        event_type=event_type,
+                        detail=detail,
+                        cooldown_seconds=0,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to notify for agent mail: %s", e)
+                await self.mailbox.mark_read(msg.message_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to process agent mail %s: %s",
+                    getattr(msg, "message_id", "?"), e,
+                )
 
     async def _check_sessions(self) -> None:
         sessions = await self.session_manager.list_sessions(status="running")

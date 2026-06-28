@@ -38,6 +38,10 @@ class NotificationService:
         self._telegram_bot = bot
 
     def _can_send(self, source: str, event_type: str, cooldown_seconds: int) -> bool:
+        # cooldown_seconds <= 0 means "always send" — don't let same-granularity
+        # repeats get suppressed by the >= comparison.
+        if cooldown_seconds <= 0:
+            return True
         key = (source, event_type)
         last_sent = self._cooldowns.get(key)
         if last_sent is None:

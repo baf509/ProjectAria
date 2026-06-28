@@ -94,7 +94,11 @@ func (tb *ToolsBrowser) refreshContent() {
 		b.WriteString("\n\n")
 
 		for _, s := range tb.MCPServers {
-			icon := styles.LifecycleIcon(s.Status)
+			lifecycle := "failed"
+			if s.Connected {
+				lifecycle = "active"
+			}
+			icon := styles.LifecycleIcon(lifecycle)
 			name := lipgloss.NewStyle().Foreground(styles.Text).Bold(true).Render(s.Name)
 			tools := lipgloss.NewStyle().Foreground(styles.Muted).Render(
 				fmt.Sprintf("(%d tools)", s.Tools))

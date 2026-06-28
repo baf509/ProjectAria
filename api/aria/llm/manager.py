@@ -117,6 +117,22 @@ class LLMManager:
                         "openai package not installed. Install with: pip install openai"
                     )
 
+            elif backend == "agentic":
+                # qwen-agentic — a second local llama.cpp server (:8093) tuned
+                # for tool-use. OpenAI-compatible, so reuse the llama.cpp adapter.
+                try:
+                    from aria.llm.llamacpp import LlamaCppAdapter
+                    self.adapters[key] = LlamaCppAdapter(
+                        base_url=settings.agentic_url,
+                        model=model,
+                        api_key=settings.agentic_api_key,
+                    )
+                    logger.info(f"Created qwen-agentic adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. Install with: pip install openai"
+                    )
+
             elif backend == "anthropic":
                 if not settings.anthropic_api_key:
                     raise ValueError(
@@ -194,7 +210,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: llamacpp, context1, anthropic, openai, openrouter, fireworks"
+                    f"Supported: llamacpp, agentic, context1, anthropic, openai, openrouter, fireworks"
                 )
 
         return self.adapters[key]
@@ -231,6 +247,13 @@ class LLMManager:
                 return True, "context-1 is available (local)"
             except ImportError:
                 return False, "openai package not installed (required for context-1)"
+
+        elif backend == "agentic":
+            try:
+                import openai
+                return True, "qwen-agentic is available (local)"
+            except ImportError:
+                return False, "openai package not installed (required for qwen-agentic)"
 
         elif backend == "anthropic":
             if not settings.anthropic_api_key:

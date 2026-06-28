@@ -7,6 +7,7 @@ Purpose: Background recursive research orchestration.
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 import re
@@ -280,7 +281,16 @@ class ResearchService:
             run_state=run_state,
         )
         run_state["learnings"].extend(learnings)
-        run_state["sources"].extend(result.to_dict() for result in results[: config.breadth])
+        # Dedupe sources by URL across branches (learnings are deduped too).
+        seen_urls = {src.get("url") for src in run_state["sources"]}
+        for result in results[: config.breadth]:
+            source_dict = result.to_dict()
+            url = source_dict.get("url")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            run_state["sources"].append(source_dict)
         run_state["queries_completed"] += 1
 
         await self._update_progress(
@@ -615,9 +625,17 @@ class ResearchService:
         return deduped
 
     def _strip_html(self, value: str) -> str:
-        value = re.sub(r"<script.*?</script>", " ", value, flags=re.DOTALL | re.IGNORECASE)
-        value = re.sub(r"<style.*?</style>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+        # Drop script/style blocks first. Content is often truncated mid-tag,
+        # so also handle blocks whose closing tag is missing (open-ended tail).
+        value = re.sub(r"<script\b.*?</script>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+        value = re.sub(r"<style\b.*?</style>", " ", value, flags=re.DOTALL | re.IGNORECASE)
+        value = re.sub(r"<script\b.*", " ", value, flags=re.DOTALL | re.IGNORECASE)
+        value = re.sub(r"<style\b.*", " ", value, flags=re.DOTALL | re.IGNORECASE)
+        # Strip remaining tags, including a trailing tag truncated mid-open.
         value = re.sub(r"<[^>]+>", " ", value)
+        value = re.sub(r"<[^>]*$", " ", value)
+        # Decode HTML entities (e.g. &amp;, &#39;) that survive tag stripping.
+        value = html.unescape(value)
         return re.sub(r"\s+", " ", value).strip()
 
     def _query_tags(self, query: str) -> list[str]:

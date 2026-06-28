@@ -117,9 +117,18 @@ class AutopilotExecutor:
                 results.append({"index": step_index, "status": "failed", "error": error})
                 break
 
+        completed = sum(1 for r in results if r["status"] == "completed")
         logger.info(
             "Autopilot %s: plan execution finished (%d/%d steps completed)",
-            session_id, sum(1 for r in results if r["status"] == "completed"), len(steps),
+            session_id, completed, len(steps),
+        )
+        # Drive the session to a terminal status so pollers don't see it stuck
+        # at "running" forever. Guard on status=="running" so we never clobber
+        # an external "stopped".
+        final_status = "completed" if (steps and completed == len(steps)) else "failed"
+        await self.db.autopilot_sessions.update_one(
+            {"_id": session_id, "status": "running"},
+            {"$set": {"status": final_status, "updated_at": datetime.now(timezone.utc)}},
         )
         return results
 

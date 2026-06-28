@@ -146,8 +146,22 @@ class OpenAIAdapter(LLMAdapter):
             in_reasoning = False
             has_content = False
             reasoning_parts = []
+            captured_usage = {}
+            done_emitted = False
 
             async for chunk in stream_resp:
+                # Trailing usage-only chunk has choices == []. Capture usage
+                # from it (and any other chunk that carries usage) and skip
+                # indexing into choices, which would IndexError.
+                if hasattr(chunk, "usage") and chunk.usage:
+                    captured_usage = {
+                        "input_tokens": chunk.usage.prompt_tokens,
+                        "output_tokens": chunk.usage.completion_tokens,
+                    }
+
+                if not chunk.choices:
+                    continue
+
                 delta = chunk.choices[0].delta
 
                 # Reasoning content (e.g. Qwen3 thinking mode)
@@ -196,8 +210,12 @@ class OpenAIAdapter(LLMAdapter):
                             if tc_delta.function.arguments is not None:
                                 tool_calls_accumulator[idx]["arguments"] += tc_delta.function.arguments
 
-                # Check if done
-                if chunk.choices[0].finish_reason:
+                # Check if done. Don't break here — the trailing usage-only
+                # chunk arrives AFTER the finish_reason chunk, so we let the
+                # loop continue to read it and emit `done` afterwards.
+                if chunk.choices[0].finish_reason and not done_emitted:
+                    done_emitted = True
+
                     # If model produced ONLY reasoning and no content,
                     # emit the reasoning as the actual response
                     if reasoning_parts and not has_content:
@@ -221,19 +239,12 @@ class OpenAIAdapter(LLMAdapter):
                             ),
                         )
 
-                    # Yield usage if available
-                    usage = {}
-                    if hasattr(chunk, "usage") and chunk.usage:
-                        usage = {
-                            "input_tokens": chunk.usage.prompt_tokens,
-                            "output_tokens": chunk.usage.completion_tokens,
-                        }
-
-                    yield StreamChunk(
-                        type="done",
-                        usage=usage,
-                    )
-                    break
+            # Emit the final done chunk with usage captured from the trailing
+            # usage-only chunk (or any chunk that carried usage).
+            yield StreamChunk(
+                type="done",
+                usage=captured_usage,
+            )
 
         except Exception as e:
             yield StreamChunk(

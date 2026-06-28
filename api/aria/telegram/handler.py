@@ -32,10 +32,15 @@ class TelegramHandler:
         self._allowed_users = set(settings.telegram_allowed_users)
         self._poll_task: Optional[asyncio.Task] = None
 
-    def _is_user_allowed(self, username: str) -> bool:
+    def _is_user_allowed(self, username: str, user_id: Optional[int] = None) -> bool:
         if settings.telegram_dm_policy == "open":
             return True
-        return username in self._allowed_users
+        # Allow if either the numeric user id (as string) or the @username is
+        # allowlisted. This keeps backward compatibility with username-based
+        # entries while supporting users who have no @username set.
+        if user_id is not None and str(user_id) in self._allowed_users:
+            return True
+        return bool(username) and username in self._allowed_users
 
     async def _get_or_create_conversation(
         self, chat_id: int, username: str, db: "AsyncIOMotorDatabase"
@@ -101,13 +106,16 @@ class TelegramHandler:
         chat_id = chat.get("id")
         from_user = message.get("from", {})
         username = from_user.get("username", "")
+        user_id = from_user.get("id")
 
         if not chat_id or not text.strip():
             return
 
-        # Allowlist check
-        if not self._is_user_allowed(username):
-            logger.info("Telegram message from unauthorized user: %s", username)
+        # Allowlist check (by numeric id or @username)
+        if not self._is_user_allowed(username, user_id):
+            logger.info(
+                "Telegram message from unauthorized user: %s (id=%s)", username, user_id
+            )
             return
 
         try:

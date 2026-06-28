@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # so retry_async can't recover it.
     llamacpp_timeout_seconds: int = 120
 
+    # Qwen-agentic (local, OpenAI-compatible) — a second coresident llama.cpp
+    # server tuned for agentic/tool-use with long context, served on :8093.
+    # Distinct from llamacpp (:8092, qwen-chat); address it with backend "agentic".
+    agentic_url: str = "http://localhost:8093/v1"
+    agentic_api_key: str = ""
+
     # Chroma context-1 (local agentic search model served by a second llama.cpp)
     context1_url: str = "http://localhost:8081/v1"
     context1_api_key: str = ""
@@ -47,6 +53,10 @@ class Settings(BaseSettings):
     # Fireworks AI (Firepass) — OpenAI-compatible; hosts GLM 5.2.
     fireworks_api_key: str = ""
     fireworks_base_url: str = "https://api.fireworks.ai/inference/v1"
+
+    # Spend circuit-breaker: if >0, the rate-limit watchdog trips the global
+    # emergency stop when the last hour's priced usage exceeds this many USD.
+    spend_cap_usd_per_hour: float = 0.0
 
     # TTS
     tts_url: str = "http://localhost:8002/v1"
@@ -98,13 +108,15 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
 
     # API
+    # Port 8200 is canonical post-cutover (ProjectAria absorbed aria-shells;
+    # the old :8000 is retired). The systemd unit pins --port 8200.
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 8200
     api_auth_enabled: bool = True
     api_key: str = "aria-local-admin-key"
     cors_origins: list[str] = [
         "http://localhost:3000",
-        "http://localhost:8000",
+        "http://localhost:8200",
         "http://localhost:1420",
         "http://127.0.0.1:3000",
         "http://aria-ui:3000",
@@ -119,6 +131,7 @@ class Settings(BaseSettings):
     tool_execution_policy: str = "allowlist"
     tool_allowed_names: list[str] = [
         "web",
+        "browse_page",
         "list_coding_sessions",
         "get_coding_output",
         "get_coding_diff",
@@ -129,6 +142,9 @@ class Settings(BaseSettings):
         "deep_think",
         "search_agent",
     ]
+    # Tools whose name starts with one of these prefixes are allowed under the
+    # allowlist policy — e.g. the Playwright MCP computer-use tools (browser_*).
+    tool_allowed_prefixes: list[str] = ["browser_"]
     tool_denied_names: list[str] = []
     tool_sensitive_names: list[str] = ["shell", "filesystem", "switch_llamacpp_model"]
     tool_api_sensitive_enabled: bool = False

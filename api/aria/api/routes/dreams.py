@@ -216,8 +216,10 @@ async def trigger_dream(
     Manually trigger a dream cycle (ignores active hours).
     Uses Claude Code CLI — runs on subscription tokens.
     """
-    from aria.dreams.service import DreamService
-    service = DreamService(db)
+    # Use the shared singleton so /dreams/status reflects manual runs and the
+    # throttle/lock state is shared with the scheduled cycle.
+    from aria.api.deps import resolve_dream_service
+    service = await resolve_dream_service(db)
     result = await service.trigger()
     return result
 

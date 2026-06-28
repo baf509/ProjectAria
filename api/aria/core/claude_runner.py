@@ -47,6 +47,8 @@ class ClaudeRunner:
         self.cwd = cwd or settings.coding_default_workspace
         self.allowed_tools = allowed_tools
         self.skip_permissions = skip_permissions or settings.claude_runner_skip_permissions
+        # Initialize so reading it on a fresh/successful runner never AttributeErrors.
+        self.last_error: Optional[str] = None
 
     async def run(self, prompt: str) -> Optional[str]:
         """

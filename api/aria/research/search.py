@@ -6,6 +6,7 @@ Purpose: Search provider abstraction for research tasks.
 
 from __future__ import annotations
 
+import logging
 import re
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -14,6 +15,8 @@ from urllib.parse import quote_plus
 import httpx
 
 from aria.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,8 +100,35 @@ class DuckDuckGoSearchProvider(SearchProvider):
         return re.sub(r"\s+", " ", self._tag_pattern.sub("", value)).strip()
 
 
+class FallbackSearchProvider(SearchProvider):
+    """Tries a primary provider, falling back to a secondary on failure.
+
+    Without this, a transient primary-provider failure (rate limit, 401,
+    network error) aborts the entire research run with no recovery.
+    """
+
+    def __init__(self, primary: SearchProvider, fallback: SearchProvider):
+        self.primary = primary
+        self.fallback = fallback
+
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        try:
+            return await self.primary.search(query, max_results=max_results)
+        except Exception as exc:
+            logger.warning(
+                "Primary search provider %s failed (%s); falling back to %s",
+                type(self.primary).__name__,
+                exc,
+                type(self.fallback).__name__,
+            )
+            return await self.fallback.search(query, max_results=max_results)
+
+
 def get_search_provider() -> SearchProvider:
     """Resolve the configured search provider."""
     if settings.brave_search_api_key:
-        return BraveSearchProvider()
+        # Fall back to the HTML provider if Brave fails at request time.
+        return FallbackSearchProvider(
+            BraveSearchProvider(), DuckDuckGoSearchProvider()
+        )
     return DuckDuckGoSearchProvider()

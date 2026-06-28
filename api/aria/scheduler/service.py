@@ -118,6 +118,33 @@ class SchedulerService:
         action = schedule["action"]
         params = schedule.get("params", {})
 
+        # For recurring schedules, compute and VALIDATE the next run *before*
+        # firing the action. Otherwise a malformed cron_expr raises only after
+        # the action has fired, leaving next_run_at stale so the schedule
+        # re-fires on every tick forever. Anchor to the scheduled time so the
+        # cadence doesn't drift.
+        next_run = None
+        if schedule["schedule_type"] == "recurring":
+            try:
+                next_run = self._compute_next_run(
+                    schedule.get("cron_expr") or "",
+                    anchor=schedule.get("next_run_at"),
+                )
+            except ValueError as e:
+                logger.error(
+                    "Disabling recurring schedule '%s' — invalid cron_expr: %s",
+                    schedule.get("name", schedule["_id"]), e,
+                )
+                await self.db.schedules.update_one(
+                    {"_id": schedule["_id"]},
+                    {"$set": {
+                        "enabled": False,
+                        "last_error": str(e),
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+                return
+
         if action == "remind":
             await self.notification_service.notify(
                 source="scheduler",
@@ -163,6 +190,32 @@ class SchedulerService:
                     notify=True,
                     metadata={"task_kind": "scheduled_tool", "schedule_id": str(schedule["_id"])},
                 )
+        elif action == "autopilot":
+            # Scheduled autonomous routine: decompose + execute a goal on a
+            # schedule (e.g. "every morning, triage my repos").
+            goal = params.get("goal", "")
+            if goal:
+                mode = params.get("mode", "safe")
+                backend = params.get("backend", "fireworks")
+                model = params.get("model", "") or "accounts/fireworks/models/glm-5p2"
+                context = params.get("context", "")
+
+                async def _run_autopilot():
+                    from aria.api.deps import get_killswitch, get_tool_router
+                    from aria.autopilot.service import AutopilotService
+                    svc = AutopilotService(
+                        self.db, get_killswitch(), self.task_runner, get_tool_router()
+                    )
+                    return await svc.start(
+                        goal=goal, mode=mode, backend=backend, model=model, context=context
+                    )
+
+                await self.task_runner.submit_task(
+                    name=f"routine:{schedule.get('name', 'autopilot')}",
+                    coroutine_factory=_run_autopilot,
+                    notify=True,
+                    metadata={"task_kind": "scheduled_autopilot", "schedule_id": str(schedule["_id"])},
+                )
         elif action == "notify":
             await self.notification_service.notify(
                 source="scheduler",
@@ -184,7 +237,6 @@ class SchedulerService:
                 }},
             )
         elif schedule["schedule_type"] == "recurring":
-            next_run = self._compute_next_run(schedule.get("cron_expr") or "")
             await self.db.schedules.update_one(
                 {"_id": schedule["_id"]},
                 {"$set": {
@@ -201,64 +253,72 @@ class SchedulerService:
         )
 
     @staticmethod
-    def _compute_next_run(cron_expr: str) -> datetime:
+    def _compute_next_run(cron_expr: str, anchor: Optional[datetime] = None) -> datetime:
         """Compute the next run time from a simplified cron expression.
 
         Supported formats:
             "every Xm"          - every X minutes
             "every Xh"          - every X hours
             "hourly"            - every hour on the hour
-            "daily HH:MM"       - daily at HH:MM UTC
-            "weekly DAY HH:MM"  - weekly on DAY at HH:MM UTC
+            "daily HH:MM"       - daily at HH:MM (server local time)
+            "weekly DAY HH:MM"  - weekly on DAY at HH:MM (server local time)
+
+        For interval schedules ("every Xm/Xh") the next run is anchored to
+        `anchor` (the schedule's previous next_run_at) and rolled forward past
+        now, so a backlog/latency doesn't cause the cadence to drift.
+        Time-of-day schedules interpret HH:MM in the server's LOCAL timezone.
         """
         now = datetime.now(timezone.utc)
+        if anchor is not None and anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
         expr = cron_expr.strip().lower()
+
+        def _interval(delta: timedelta) -> datetime:
+            nxt = (anchor or now) + delta
+            while nxt <= now:
+                nxt += delta
+            return nxt
+
+        def _local_time_utc(hour: int, minute: int, weekday: Optional[int] = None) -> datetime:
+            # Interpret HH:MM (and optional weekday) in the server's local
+            # timezone, return the next future occurrence as tz-aware UTC.
+            local_now = now.astimezone()
+            candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if weekday is not None:
+                days_ahead = (weekday - candidate.weekday()) % 7
+                candidate += timedelta(days=days_ahead)
+                if candidate <= local_now:
+                    candidate += timedelta(weeks=1)
+            elif candidate <= local_now:
+                candidate += timedelta(days=1)
+            return candidate.astimezone(timezone.utc)
 
         # "every Xm"
         match = re.match(r"every\s+(\d+)\s*m(?:in(?:ute)?s?)?$", expr)
         if match:
-            minutes = int(match.group(1))
-            if minutes < 1:
-                minutes = 1
-            return now + timedelta(minutes=minutes)
+            return _interval(timedelta(minutes=max(1, int(match.group(1)))))
 
         # "every Xh"
         match = re.match(r"every\s+(\d+)\s*h(?:(?:ou)?rs?)?$", expr)
         if match:
-            hours = int(match.group(1))
-            if hours < 1:
-                hours = 1
-            return now + timedelta(hours=hours)
+            return _interval(timedelta(hours=max(1, int(match.group(1)))))
 
         # "hourly"
         if expr == "hourly":
-            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-            return next_hour
+            return now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
 
         # "daily HH:MM"
         match = re.match(r"daily\s+(\d{1,2}):(\d{2})$", expr)
         if match:
-            hour = int(match.group(1))
-            minute = int(match.group(2))
-            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if candidate <= now:
-                candidate += timedelta(days=1)
-            return candidate
+            return _local_time_utc(int(match.group(1)), int(match.group(2)))
 
         # "weekly DAY HH:MM"
         match = re.match(r"weekly\s+(\w+)\s+(\d{1,2}):(\d{2})$", expr)
         if match:
-            day_name = match.group(1).lower()
-            hour = int(match.group(2))
-            minute = int(match.group(3))
-            target_weekday = _DAY_MAP.get(day_name)
+            target_weekday = _DAY_MAP.get(match.group(1).lower())
             if target_weekday is None:
-                raise ValueError(f"Unknown day name: {day_name}")
-            days_ahead = (target_weekday - now.weekday()) % 7
-            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
-            if candidate <= now:
-                candidate += timedelta(weeks=1)
-            return candidate
+                raise ValueError(f"Unknown day name: {match.group(1)}")
+            return _local_time_utc(int(match.group(2)), int(match.group(3)), target_weekday)
 
         raise ValueError(
             f"Unsupported cron expression: '{cron_expr}'. "
@@ -397,10 +457,12 @@ class SchedulerService:
             minute = int(match.group(3))
             if not (0 <= hour <= 23 and 0 <= minute <= 59):
                 return None
-            now = datetime.now(timezone.utc)
-            run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if run_at <= now:
-                run_at += timedelta(days=1)
+            # Interpret the wall-clock time in the server's local timezone.
+            local_now = datetime.now(timezone.utc).astimezone()
+            run_at_local = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if run_at_local <= local_now:
+                run_at_local += timedelta(days=1)
+            run_at = run_at_local.astimezone(timezone.utc)
             return {
                 "name": f"Reminder: {message}",
                 "schedule_type": "once",

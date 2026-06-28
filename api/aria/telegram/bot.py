@@ -67,19 +67,32 @@ class TelegramBot:
             return updates
         except (httpx.TimeoutException, httpx.HTTPError) as exc:
             logger.warning("Telegram getUpdates error: %s", exc)
+            # Backoff before next poll so a bad token / 409 conflict doesn't spin hot.
+            await asyncio.sleep(5)
             return []
 
     async def send_message(self, chat_id: int, text: str) -> dict:
-        """Send a text message."""
+        """Send a text message.
+
+        Uses Markdown parse mode, but unbalanced Markdown in LLM output makes
+        Telegram reject the message with HTTP 400. In that case retry once as
+        plain text so the user always receives the reply.
+        """
         client = await self._ensure_client()
-        resp = await client.post(
-            f"{self._base_url}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "Markdown",
-            },
-        )
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+        }
+        resp = await client.post(f"{self._base_url}/sendMessage", json=payload)
+        if resp.status_code == 400:
+            # Likely a Markdown parse error; retry as plain text.
+            logger.warning(
+                "Telegram sendMessage 400 (markdown parse?); retrying as plain text: %s",
+                resp.text,
+            )
+            payload.pop("parse_mode", None)
+            resp = await client.post(f"{self._base_url}/sendMessage", json=payload)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("ok"):

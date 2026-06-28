@@ -91,7 +91,12 @@ async def create_conversation(
     elif body.agent_slug:
         agent = await db.agents.find_one({"slug": body.agent_slug})
     else:
+        # Prefer the flagged default; fall back to the oldest agent so a chat
+        # can still be created if no agent was explicitly marked is_default
+        # (e.g. a DB seeded without init-mongo.js's default ARIA agent).
         agent = await db.agents.find_one({"is_default": True})
+        if not agent:
+            agent = await db.agents.find_one(sort=[("created_at", 1)])
 
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -141,12 +146,10 @@ async def get_conversation(
         msg_limit: Maximum number of messages to return (default 100)
         msg_skip: Number of messages to skip from the end (0 = most recent)
     """
-    # Use projection to paginate messages
-    if msg_skip > 0:
-        # Slice from end: skip oldest, then limit
-        projection = {"messages": {"$slice": [msg_skip, msg_limit]}}
-    else:
-        projection = {"messages": {"$slice": -msg_limit}}
+    # Paginate backward from the most recent message: skip `msg_skip` from the
+    # end, then take a window of `msg_limit`. A negative start makes msg_skip=0
+    # return the last `msg_limit` and successive pages tile without overlap.
+    projection = {"messages": {"$slice": [-(msg_skip + msg_limit), msg_limit]}}
 
     conversation = await db.conversations.find_one(
         {"_id": valid_object_id(conversation_id)},

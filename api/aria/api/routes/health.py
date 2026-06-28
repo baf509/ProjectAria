@@ -73,7 +73,7 @@ async def health_check(
 
     # 3. LLM availability
     available_backends = []
-    for b in ("llamacpp", "anthropic", "openai", "openrouter"):
+    for b in ("llamacpp", "agentic", "context1", "anthropic", "openai", "openrouter", "fireworks"):
         avail, _ = llm_manager.is_backend_available(b)
         if avail:
             available_backends.append(b)
@@ -107,7 +107,7 @@ async def health_check(
 @router.get("/health/llm", response_model=list[LLMStatusResponse])
 async def llm_health_check():
     """Check status of all LLM backends."""
-    backends = ["llamacpp", "anthropic", "openai", "openrouter"]
+    backends = ["llamacpp", "agentic", "context1", "anthropic", "openai", "openrouter", "fireworks"]
     statuses = []
 
     for backend in backends:
@@ -121,6 +121,82 @@ async def llm_health_check():
         )
 
     return statuses
+
+
+@router.get("/health/services")
+async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
+    """Concurrently probe every backing service and report per-service health.
+
+    Powers the TUI/web health page: mongod, mongot, the three local llama.cpp
+    servers, embeddings, tts, stt, and Fireworks reachability.
+    """
+    import asyncio
+    import time
+    import httpx
+
+    def _base(url: str) -> str:
+        return url.rstrip("/").replace("/v1", "")
+
+    async def http_ping(name: str, url: str, headers: dict | None = None) -> dict:
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.get(url, headers=headers or {})
+            return {
+                "name": name,
+                "ok": resp.status_code < 500,
+                "latency_ms": round((time.monotonic() - t0) * 1000),
+                "detail": f"http {resp.status_code}",
+            }
+        except Exception as e:
+            return {
+                "name": name,
+                "ok": False,
+                "latency_ms": round((time.monotonic() - t0) * 1000),
+                "detail": type(e).__name__,
+            }
+
+    async def mongo_ping() -> dict:
+        t0 = time.monotonic()
+        try:
+            await db.command("ping")
+            return {"name": "mongod", "ok": True, "latency_ms": round((time.monotonic() - t0) * 1000), "detail": "ping ok"}
+        except Exception as e:
+            return {"name": "mongod", "ok": False, "latency_ms": round((time.monotonic() - t0) * 1000), "detail": str(e)[:80]}
+
+    async def mongot_ping() -> dict:
+        # mongot isn't exposed on the host; verify it via a search-index list
+        # (which is served by mongot through mongod).
+        t0 = time.monotonic()
+        try:
+            cur = db.memories.aggregate([{"$listSearchIndexes": {}}])
+            await cur.to_list(length=1)
+            return {"name": "mongot", "ok": True, "latency_ms": round((time.monotonic() - t0) * 1000), "detail": "search indexes ok"}
+        except Exception as e:
+            return {"name": "mongot", "ok": False, "latency_ms": round((time.monotonic() - t0) * 1000), "detail": str(e)[:80]}
+
+    tasks = [
+        mongo_ping(),
+        mongot_ping(),
+        http_ping("qwen-chat", f"{settings.llamacpp_url.rstrip('/')}/models"),
+        http_ping("qwen-agentic", f"{settings.agentic_url.rstrip('/')}/models"),
+        http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"),
+        http_ping("embeddings", f"{_base(settings.embedding_url)}/health"),
+        http_ping("tts", f"{_base(settings.tts_url)}/health"),
+        http_ping("stt", f"{_base(settings.stt_url)}/health"),
+    ]
+    if settings.fireworks_api_key:
+        tasks.append(http_ping(
+            "fireworks",
+            f"{settings.fireworks_base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {settings.fireworks_api_key}"},
+        ))
+    results = list(await asyncio.gather(*tasks))
+    if not settings.fireworks_api_key:
+        results.append({"name": "fireworks", "ok": False, "latency_ms": 0, "detail": "not configured"})
+
+    healthy = sum(1 for r in results if r["ok"])
+    return {"services": results, "healthy": healthy, "total": len(results)}
 
 
 @router.get("/health/telemetry")

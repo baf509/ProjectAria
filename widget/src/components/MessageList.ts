@@ -19,6 +19,15 @@ export function appendMessage(
   return el;
 }
 
+export function appendToolActivity(toolName: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "message tool-activity";
+  el.textContent = `using tool: ${toolName}`;
+  container.appendChild(el);
+  scrollToBottom();
+  return el;
+}
+
 export function appendStreamingMessage(): HTMLElement {
   const el = document.createElement("div");
   el.className = "message assistant";
@@ -116,7 +125,7 @@ export function clearMessages() {
 
 export function showEmptyState() {
   container.innerHTML =
-    '<div class="empty-state">Press Ctrl+Space to toggle.<br>Type a message to start chatting.</div>';
+    '<div class="empty-state">Press Ctrl+Shift+Space to toggle.<br>Type a message to start chatting.</div>';
 }
 
 export function renderMessages(messages: Message[]) {
