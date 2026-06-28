@@ -1,11 +1,28 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-04-13
+**Last Updated:** 2026-06-28
 **Updated By:** Claude Code
 
 ---
 
-## Latest Milestone: Agent Safety Subsystems (2026-04-13)
+## Latest Milestone: Multi-runtime fleet, cost/health, pinning, search, routines (2026-06-28)
+
+Shipped on `feature/multi-runtime-fleet`:
+
+- [x] **qwen-agentic (`:8093`) addressable as backend `agentic`** (`agentic_url`) — local 3-model topology: qwen-chat `:8092`, qwen-agentic `:8093`, context-1 `:8081`, all coresident on the APU
+- [x] **pi-code as a first-class coding-session backend** — `start_coding_session(backend="pi-code", llm=…, model=…)` runs ARIA's own agentic loop with a pinned model, under the watchdog + e-stop gates (alongside `claude_code` / `codex`)
+- [x] **Cost accounting + spend circuit-breaker** (`llm/pricing.py`, `spend_cap_usd_per_hour`) — `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`, `/usage/by-model`
+- [x] **`GET /health/services`** — concurrent per-service probes (mongod, mongot, qwen-chat, qwen-agentic, context-1, embeddings, tts, stt, fireworks)
+- [x] **Model pinning + routing** — strict `/model <backend> [<model-id>]` pin, `/model auto` unpin, advisory `/route <task>`
+- [x] **TUI Fleet / Health / Search screens** (`f` / `h` / `s`); binary rebuilt
+- [x] **Search agent invokable** — `/search`, `aria search <query>`, TUI Search screen
+- [x] **Scheduled autonomous routines** — scheduler `autopilot` action on a local-time cadence
+- [x] **`browse_page` tool** + **full computer-use** via the Playwright MCP `browser_*` family (23 tools)
+- [x] **Installable PWA** (manifest + service worker), **automated daily backups** (`aria-backup.timer` @ 03:30), **`/forget <query>`**
+
+---
+
+## Previous Milestone: Agent Safety Subsystems (2026-04-13)
 
 Hardened the sub-agent runtime with Gas Town–inspired safety layers:
 
