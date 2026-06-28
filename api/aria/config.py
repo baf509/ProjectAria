@@ -142,6 +142,9 @@ class Settings(BaseSettings):
         "deep_think",
         "search_agent",
     ]
+    # Tools whose name starts with one of these prefixes are allowed under the
+    # allowlist policy — e.g. the Playwright MCP computer-use tools (browser_*).
+    tool_allowed_prefixes: list[str] = ["browser_"]
     tool_denied_names: list[str] = []
     tool_sensitive_names: list[str] = ["shell", "filesystem", "switch_llamacpp_model"]
     tool_api_sensitive_enabled: bool = False

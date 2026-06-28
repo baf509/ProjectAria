@@ -210,6 +210,25 @@ Built-in tools ARIA can call during conversations:
 
 Additionally, MCP servers provide dynamic tools via JSON-RPC 2.0, and the skill system allows installing packaged tool bundles.
 
+### Computer Use (Playwright)
+
+ARIA can drive a real headless browser via the [Playwright MCP](https://github.com/microsoft/playwright-mcp) server — navigate, read the accessibility snapshot, click/type by element ref, screenshot, evaluate JS, etc. (23 `browser_*` tools).
+
+One-time setup (already done on `corsair-ai`):
+
+```bash
+# 1. Install the Playwright MCP server + its browser build
+npm install -g @playwright/mcp@latest
+node "$(npm root -g)/@playwright/mcp/cli.js" install-browser chrome-for-testing
+
+# 2. Register it with ARIA (persisted in Mongo, restored on startup)
+curl -X POST -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"server_id":"playwright","command":["node","'"$(npm root -g)"'/@playwright/mcp/cli.js","--headless","--isolated","--browser","chromium"]}' \
+  http://localhost:8200/api/v1/mcp/servers
+```
+
+The `browser_*` tools pass the allowlist via `tool_allowed_prefixes` (config), and agents enable the whole family with a single `"browser_*"` entry in `enabled_tools` (the ARIA and pi-code agents have it enabled). So in chat you can just ask ARIA to "open example.com and tell me what's on the page."
+
 ## Voice Services
 
 ### Text-to-Speech (TTS)
