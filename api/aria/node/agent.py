@@ -251,13 +251,28 @@ class NodeAgent:
 
         if kind == "start_session":
             name = args["shell_name"]
+            workdir = args.get("workdir") or None
+            # Pre-trust the workspace so Claude Code's blocking folder-trust
+            # dialog doesn't hang the detached session (best-effort).
+            try:
+                from aria.shells.claude_trust import ensure_trusted
+                if workdir:
+                    ensure_trusted(workdir)
+            except Exception as e:
+                logger.debug("ensure_trusted(%s) failed: %s", workdir, e)
+            # Inject THIS node's PATH into the session so the agent binary is
+            # found — a `bash -l` login shell rebuilds PATH via path_helper and
+            # drops ~/.local/bin (where `claude` lives), so the launch would
+            # otherwise fail with 'command not found' and the session would exit.
             await self.tmux.new_session(
                 name,
-                workdir=args.get("workdir") or None,
+                workdir=workdir,
                 command=args.get("launch") or None,
                 cols=int(args.get("cols") or 160),
                 rows=int(args.get("rows") or 48),
+                env={"PATH": os.environ.get("PATH", "")},
             )
+            logger.info("start_session created %s in %s", name, workdir)
             return {"shell_name": name, "ok": True}
 
         raise ValueError(f"unknown command kind: {kind}")

@@ -272,6 +272,40 @@ async def test_remote_session_node_unreachable_marks_failed(monkeypatch):
     assert update["status"] == "failed"
 
 
+@pytest.mark.asyncio
+async def test_remote_launch_uses_basename_and_path_prepend(monkeypatch):
+    """Regression: the backend builds argv[0] with THIS host's absolute binary
+    path; on a remote node ($HOME differs) it must become a bare name resolved
+    via a PATH that includes ~/.local/bin, or claude isn't found and the session
+    exits immediately."""
+    monkeypatch.setattr(settings, "local_node_id", "corsair")
+    from tests.test_coding_session import _make_manager
+    db = make_mock_db()
+    mgr = _make_manager(db=db)
+    mgr.shell_service = MagicMock()
+    mgr.shell_service.register_shell = AsyncMock()
+    command = MagicMock(
+        argv=["/home/ben/.local/bin/claude", "--dangerously-skip-permissions", "-p", "hi"],
+        env=None, cwd="/w",
+    )
+    captured = {}
+
+    async def fake_enqueue(db, node, kind, args, **kw):
+        captured.update(args)
+        return "c1"
+
+    with patch("aria.nodes.commands.enqueue_command", new=fake_enqueue), \
+         patch("aria.nodes.commands.await_result",
+               new=AsyncMock(return_value={"status": "done", "result": {"shell_name": "x"}})):
+        await mgr._start_remote_shell_session("sid", "mac", command, "/w")
+
+    launch = captured["launch"]
+    assert "/home/ben/.local/bin/claude" not in launch      # absolute path stripped
+    assert "claude --dangerously-skip-permissions" in launch  # bare binary name
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in launch    # PATH prepend
+    assert " -p " not in launch                               # -p stripped for interactive
+
+
 # ------------------------------------------------------------- node agent side
 def _agent():
     from aria.node.agent import NodeAgent

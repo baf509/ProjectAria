@@ -266,11 +266,24 @@ class CodingSessionManager:
         from aria.nodes import commands as node_commands
 
         argv = [a for a in command.argv if a not in ("-p", "--print")]
+        # The backend built argv[0] with THIS host's absolute binary path (e.g.
+        # /home/ben/.local/bin/claude). On a remote node the same tool lives at a
+        # different path ($HOME differs: /Users/ben vs /home/ben), so use the
+        # basename and resolve it via the node's PATH (prepended below).
+        if argv and "/" in argv[0]:
+            argv[0] = os.path.basename(argv[0])
         argv_str = " ".join(shlex.quote(a) for a in argv)
         env_prefix = " ".join(
             f"{k}={shlex.quote(v)}" for k, v in (command.env or {}).items()
         )
         inner = (env_prefix + " " + argv_str).strip()
+        # Ensure user-local bin dirs (e.g. ~/.local/bin, where `claude` lives on
+        # macOS) are on PATH. A `bash -l` login shell rebuilds PATH via
+        # path_helper — which drops ~/.local/bin — so prepend it INSIDE the
+        # command, which runs after profile sourcing. Otherwise the agent binary
+        # isn't found and the session exits immediately. Harmless where it's
+        # already on PATH.
+        inner = 'export PATH="$HOME/.local/bin:$PATH"; ' + inner
         launch = "bash -lc " + shlex.quote(inner)
         shell_name = f"{settings.shells_tmux_session_prefix}coding-{session_id[:8]}"
         workdir = command.cwd or workspace_path

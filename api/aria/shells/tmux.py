@@ -140,6 +140,7 @@ class TmuxClient:
         command: Optional[str] = None,
         cols: Optional[int] = None,
         rows: Optional[int] = None,
+        env: Optional[dict] = None,
     ) -> None:
         """Create a detached tmux session.
 
@@ -155,6 +156,12 @@ class TmuxClient:
             args += ["-x", str(int(cols)), "-y", str(int(rows))]
         if workdir:
             args += ["-c", workdir]
+        # Set session environment (tmux -e). Used to inject a PATH that finds the
+        # coding-agent binary, since a `bash -l` login shell rebuilds PATH via
+        # path_helper and can drop dirs like ~/.local/bin.
+        for k, v in (env or {}).items():
+            if v:
+                args += ["-e", f"{k}={v}"]
         if command:
             args.append(command)
         rc, _out, err = await self._run(*args)
