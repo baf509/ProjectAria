@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  aria-node launchd agent (macOS). Install:
+    cp scripts/com.aria.node.plist ~/Library/LaunchAgents/
+    # edit the paths, ARIA_API_KEY, and ARIA_NODE_ID below, then:
+    launchctl load ~/Library/LaunchAgents/com.aria.node.plist
+  Tail logs: tail -f /tmp/aria-node.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aria.node</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/ben/Development/ProjectAria/api/.venv/bin/python3</string>
+        <string>-m</string>
+        <string>aria.node</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ARIA_API_URL</key>
+        <string>http://corsair-ai:8200</string>
+        <key>ARIA_API_KEY</key>
+        <string>REPLACE_WITH_CORSAIR_API_KEY</string>
+        <key>ARIA_NODE_ID</key>
+        <string>bens-macbook-air</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ben/Development/ProjectAria/api</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/aria-node.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/aria-node.log</string>
+</dict>
+</plist>

@@ -85,3 +85,7 @@ node_modules/
 
 # Playwright MCP runtime output (snapshots/screenshots)
 .playwright-mcp/
+
+# TUI cross-compiled build outputs (native aria-tui is committed; these build on-demand)
+tui/aria-tui-darwin-arm64
+tui/aria-tui-linux-amd64

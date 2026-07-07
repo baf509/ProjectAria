@@ -1,7 +1,7 @@
 """
 ARIA - Alert Queue Routes
 
-ProjectAria does not deliver Signal/Telegram itself; its workers (selfcheck,
+ProjectAria does not push notifications itself; its workers (selfcheck,
 idle-notifier, weekly report) enqueue alerts via NotificationService into the
 `alerts` collection. The Hermes agent pulls them over MCP (list_alerts), relays
 them over its own Signal daemon, and acks each one (ack_alert) so it is not

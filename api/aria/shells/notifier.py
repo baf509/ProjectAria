@@ -2,7 +2,7 @@
 ARIA - Watched Shells Idle Notifier
 
 Purpose: Detects shells idling at an interactive prompt (e.g. Claude "yes/no?"
-dialogs) and fires a Signal/Telegram notification via NotificationService.
+dialogs) and enqueues an alert via NotificationService (relayed by Hermes).
 """
 
 from __future__ import annotations

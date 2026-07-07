@@ -21,7 +21,7 @@ Tool groups:
   - Projects/tasks : list_projects, get_project, list_tasks, create_task, update_task
   - Alerts (relay) : list_alerts, ack_alert  — ProjectAria queues alerts here and
                      Hermes relays them over Signal, since ProjectAria no longer
-                     sends Signal/Telegram directly.
+                     pushes notifications directly.
 
 ProjectAria listens on :8200 after the cutover (it inherited aria-shells' port).
 """
@@ -312,8 +312,8 @@ async def update_task(
 
 
 # ──────────────────────────────────────────────────────────── alerts ──
-# ProjectAria no longer sends Signal/Telegram itself; it queues alerts here and
-# Hermes (which owns the signal-cli daemon) relays them, then acks.
+# ProjectAria no longer pushes notifications itself; it queues alerts here and
+# Hermes (which owns the signal-cli daemon) relays them over Signal, then acks.
 
 @mcp.tool()
 async def list_alerts(unacked_only: bool = True, limit: int = 50) -> dict:
@@ -438,13 +438,32 @@ async def create_coding_session(
     workspace: str,
     prompt: str,
     backend: Optional[str] = None,
+    loop: bool = False,
+    host: Optional[str] = None,
 ) -> dict:
     """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
-    backend: 'claude_code' (default), 'codex', or 'pi'."""
+    backend: 'claude_code' (default), 'codex', or 'pi'.
+    loop=True keeps the session going — the watchdog nudges it forward whenever
+    it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (a Ralph
+    loop). Use set_coding_loop to toggle this on an already-running session.
+    host: run the session on a remote node (its aria-node id, e.g. a MacBook from
+    list_nodes) instead of this host; omit to run locally."""
     body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
     if backend:
         body["backend"] = backend
+    if loop:
+        body["loop"] = {}  # server defaults fill in the loop config
+    if host:
+        body["host"] = host
     return await _request("POST", "/api/v1/coding/sessions", json=body)
+
+
+@mcp.tool()
+async def list_nodes() -> Any:
+    """List the machines in the fleet (aria-node agents) with online/offline
+    status. Use a node's id as the `host` for create_coding_session to run work
+    on that machine (e.g. a MacBook for iOS builds)."""
+    return await _request("GET", "/api/v1/nodes")
 
 
 @mcp.tool()
@@ -467,6 +486,42 @@ async def send_to_coding_session(session_id: str, text: str) -> dict:
 async def stop_coding_session(session_id: str) -> dict:
     """Stop a running coding sub-agent."""
     return await _request("POST", f"/api/v1/coding/sessions/{session_id}/stop")
+
+
+@mcp.tool()
+async def set_coding_loop(
+    session_id: str,
+    enabled: bool,
+    nudge_prompt: Optional[str] = None,
+    nudge_prompt_file: Optional[str] = None,
+    done_regex: Optional[str] = None,
+    idle_seconds: Optional[int] = None,
+    max_nudges: Optional[int] = None,
+    deadline_minutes: Optional[int] = None,
+    notify_every: Optional[int] = None,
+) -> dict:
+    """Turn the Ralph loop on or off for a running coding sub-agent.
+
+    enabled=True keeps the session going: the watchdog nudges it forward each
+    time it idles at its prompt (re-checking the killswitch/e-stop every nudge)
+    until it emits the done token (`done_regex`, default RALPH_DONE) or hits
+    `max_nudges`/`deadline_minutes`. enabled=False stops nudging but leaves the
+    session alive. Unset options fall back to the server's coding_loop_* defaults.
+    `nudge_prompt_file` is re-read fresh on every nudge, so editing it steers a
+    live session."""
+    body: dict[str, Any] = {"enabled": enabled}
+    for key, val in (
+        ("nudge_prompt", nudge_prompt),
+        ("nudge_prompt_file", nudge_prompt_file),
+        ("done_regex", done_regex),
+        ("idle_seconds", idle_seconds),
+        ("max_nudges", max_nudges),
+        ("deadline_minutes", deadline_minutes),
+        ("notify_every", notify_every),
+    ):
+        if val is not None:
+            body[key] = val
+    return await _request("POST", f"/api/v1/coding/sessions/{session_id}/loop", json=body)
 
 
 if __name__ == "__main__":

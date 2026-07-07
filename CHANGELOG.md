@@ -22,6 +22,48 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-07-06] - Multi-machine fleet: Layer B2 (`aria-node` agent)
+
+### Added
+- **The fleet now spans machines.** A remote `aria-node` agent registers its host with the central brain, captures its local `claude-*` tmux shells (pushing events + snapshots over the API), and long-polls a command queue to be driven back — so a MacBook's shells and coding sessions appear in, and are drivable from, the one corsair fleet. One brain (corsair Mongo/memory), many hands.
+  - **Central:** `api/aria/nodes/` (`NodeService`, `models`, `commands` queue) + `POST/GET /api/v1/nodes/*` (register, heartbeat, events, snapshot, command long-poll + result, list); `nodes` + `shell_commands` collections (with a TTL) in migrations; `local_node_id` + node timeouts in config; `get_node_service` DI.
+  - **Host-aware `ShellService`:** `register_shell`/`insert_events_batch` accept a `host` override; `send_input`/`current_screen`/`session_alive`/`kill_shell` dispatch by the shell's host — **local → tmux (unchanged, zero regression); remote → the node command queue** (`_dispatch`/`_remote_command`). The reconciler skips remote shells. Reads (`fleet_overview`, scrollback) were already host-agnostic.
+  - **Remote coding sessions + Ralph over the wire:** `start_coding_session(host=<node>)` runs the session on that node (it creates the `claude-coding-*` shell locally); `host`/`node_id` on `coding_sessions`; the watchdog + **Ralph loop drive remote sessions for free** through the host-aware manager. MCP gains `list_nodes` + `create_coding_session(host=…)`; the TUI fleet HOST column now shows remote coding sessions.
+  - **The node agent** (`aria/node/`, run via `python -m aria.node` / `scripts/aria-node`, + a macOS launchd plist): outbound-only, depends on httpx + the local tmux driver (no Mongo), so it runs on a MacBook against corsair over the tailnet with the shared `X-API-Key`.
+  - Tests: `api/tests/test_nodes.py` (command queue, NodeService ingest/registry, ShellService local-vs-remote dispatch, remote-session routing, node-agent handlers). Full suite 755 green. Live loopback verification pending an `aria-api` restart (loads the new routes/migrations).
+
+## [2026-07-04] - Telegram removal + documentation streamline
+
+### Removed
+- **Telegram integration deleted as dead code.** After the 2026-06 move to the Hermes/MCP alert queue, the Telegram bot was disused. Removed `api/aria/telegram/` (bot + handler), the `/api/v1/telegram` routes, `get_telegram_handler` + startup/shutdown wiring in `main.py`/`deps.py`, all `telegram_*` settings in `config.py`, the `set_telegram_bot` no-op in `NotificationService`, and the wizard's Telegram section. Full suite green (732). Signal is unaffected.
+
+### Changed
+- **Documentation streamlined** to reduce overlap/drift (from a 15-doc root):
+  - **Archived** 5 historical artifacts to `docs/archive/` (with an index): `IMPLEMENTATION_PLAN.md` (Signal-centric ABP→ARIA plan), `SHELLS_DESIGN.md` + `SHELLS_CHAT_TRANSCRIPT.md` + `ARIA_SHELLS_MERGE_PLAN.md` (post-merge shells design/history), `REVIEW_SUMMARY.md` (superseded review snapshot).
+  - **Merged** `IDEAS.md` + `FUTURE_INVESTIGATIONS.md` → one **`BACKLOG.md`** (shipped items — Dream Cycle, Ambient Awareness, proactive behavior — pruned).
+  - **Slimmed** `PROJECT_STATUS.md` (612→~90 lines) to a living status page; `CHANGELOG.md` is now the single source of shipped history. Rewrote `GETTING_STARTED.md` (~580→~330) correct + non-duplicative (native-systemd API, three-server LLM topology, no `:8080`/`:8000`).
+  - **Scrubbed** stale facts: `:8000`→`:8200` (ui/README, SPEC, wizard), Signal/Telegram-as-live-channel lines (README, ARCHITECTURE), Pi-Coding-on-llama.cpp framing (ARCHITECTURE), + a living-truth banner on `SPECIFICATION.md`.
+  - Added a **Documentation Map** (source-of-truth per doc) to `README.md`.
+
+## [2026-07-04] - Multi-machine cockpit: design doc + Layer A (remote cockpit)
+
+### Added
+- **`MULTI_MACHINE_FLEET_DESIGN.md`** — design doc for making the TUI a cross-machine cockpit and letting the fleet span corsair-ai (the brain) and the MacBook (iOS/Xcode work). Two layers: **A** remote cockpit (native macOS TUI build + `aria tui --host` profiles + a fleet HOST column — the TUI is already a thin pure-HTTP client, so this is near-free), and **B2** an API-mediated, pull-based `aria-node` agent that registers the Mac's tmux shells/coding sessions into the single corsair brain and is driven back through a `shell_commands` queue via a host-aware `ShellService._dispatch`. Principle: one brain (corsair Mongo/memory), many hands; the watchdog + Ralph loop inherit remote sessions for free.
+- **Layer A — remote cockpit (implemented).** The Go TUI can now run natively on any machine and point at a remote ARIA over the tailnet:
+  - `tui/Makefile` with `build` / `build-darwin` (Apple-Silicon, `CGO_ENABLED=0`) / `build-linux` / `install` — verified the macOS cross-compile produces a working `Mach-O arm64` binary with no code changes.
+  - **Host profiles**: `aria-tui --host <name|host:port|url>` resolves against a dependency-free `~/.config/aria/hosts` file (`$ARIA_HOSTS` override); precedence is flag → `ARIA_API_URL` env/.env → `default` profile → `http://localhost:8200`. `aria tui` (CLI) forwards extra args through to the binary. Covered by `tui/main_test.go`.
+  - **`.env` fallback chain** in `tui/main.go`: `$ARIA_ENV` → `~/.config/aria/env` → the repo `.env`, so a MacBook needs no repo checkout to configure the cockpit.
+  - **Fleet HOST column**: `host` added to `ShellOverviewItem` + `/shells/overview` (from the already-stamped `Shell.host`) and to the Go `Shell` struct; the TUI fleet view renders a compact HOST column (blank for coding sessions until Layer B2 adds session host).
+
+## [2026-07-03] - Ralph loop (keep-a-session-going) + `aria tui` launcher
+
+### Added
+- **Ralph loop — opt-in, per-session "keep it going".** A coding session carrying a `loop_config` is nudged forward by the watchdog whenever it idles at its prompt (re-checking killswitch/e-stop **every nudge**) until it emits the done token (`coding_loop_done_regex`, default `RALPH_DONE`) or hits `max_nudges`/`deadline_minutes`. Absent `loop_config` = one-shot (unchanged; not default). Reuses the existing safety net (killswitch, e-stop, spend-cap, context-budget) and, because it drives through `session_manager.send_input`, works for any substrate.
+  - New: `POST /api/v1/coding/sessions/{id}/loop {enabled, …overrides}` toggle; `loop_config` + bookkeeping on the `coding_sessions` doc + `set_loop_config()` (`agents/session.py`); `_maybe_nudge`/`_end_loop` in `agents/watchdog.py`; `loop_enabled` on `CodingSessionResponse`; `coding_loop_*` settings in `config.py`.
+  - Surfaces: MCP `set_coding_loop` tool + `create_coding_session(loop=true)`; `start_coding_session` `loop` param; TUI toggle with `l` on both the **session** screen and the **fleet** screen (`⟳` marks looping sessions).
+  - Tests: `api/tests/test_coding_loop.py` (normalize/toggle + watchdog nudge/done/cap/deadline/e-stop/killswitch/debounce).
+- **`aria tui`** — the Python CLI now launches the Go TUI (resolves the binary from `$ARIA_TUI_BIN` / the repo `tui/` dir / PATH; `--build` to rebuild; extra args pass through).
+
 ## [2026-06-28] - Multi-runtime fleet, cost/health, model pinning, search, routines, PWA, backups, and computer-use
 
 ### Added

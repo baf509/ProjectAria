@@ -14,22 +14,29 @@ type MenuItem struct {
 	Desc  string
 }
 
-// ToolsMenu is the quick-nav panel shown on the dashboard.
+// ToolsMenu is the quick-nav panel shown on the dashboard. When focused it acts
+// as a selectable list (arrows move the cursor, Enter launches the entry); the
+// Key of each item matches its dashboard hotkey so both paths open the same
+// screen.
 type ToolsMenu struct {
 	Width  int
 	Height int
 	Items  []MenuItem
+	Cursor int
 }
 
 func NewToolsMenu() *ToolsMenu {
 	return &ToolsMenu{
 		Items: []MenuItem{
 			{Key: "c", Label: "ARIA Chat", Desc: "Talk to ARIA"},
+			{Key: "f", Label: "Fleet", Desc: "Coding sessions & shells"},
 			{Key: "m", Label: "Memories", Desc: "Search & browse memories"},
 			{Key: "u", Label: "Usage", Desc: "Token usage & LLM status"},
 			{Key: "t", Label: "Tools", Desc: "Registered tools & MCP"},
+			{Key: "s", Label: "Search", Desc: "Search the agent"},
 			{Key: "o", Label: "Observations", Desc: "Awareness sensor data"},
-			{Key: "s", Label: "Sessions", Desc: "Coding sessions"},
+			{Key: "b", Label: "Database", Desc: "Browse collections"},
+			{Key: "h", Label: "Health", Desc: "Service health"},
 		},
 	}
 }
@@ -39,12 +46,41 @@ func (tm *ToolsMenu) SetSize(w, h int) {
 	tm.Height = h
 }
 
+// Up moves the selection up (clamped).
+func (tm *ToolsMenu) Up() {
+	if tm.Cursor > 0 {
+		tm.Cursor--
+	}
+}
+
+// Down moves the selection down (clamped).
+func (tm *ToolsMenu) Down() {
+	if tm.Cursor < len(tm.Items)-1 {
+		tm.Cursor++
+	}
+}
+
+// Selected returns the highlighted item (falls back to the first entry).
+func (tm *ToolsMenu) Selected() MenuItem {
+	if tm.Cursor < 0 || tm.Cursor >= len(tm.Items) {
+		return tm.Items[0]
+	}
+	return tm.Items[tm.Cursor]
+}
+
 // RenderItems returns the menu items as raw content without border wrapping.
-func (tm *ToolsMenu) RenderItems(maxLines int) string {
+// When focused, the selected row is highlighted so the user can see which entry
+// Enter will launch.
+func (tm *ToolsMenu) RenderItems(maxLines int, focused bool) string {
 	var b strings.Builder
 	for i, item := range tm.Items {
 		if i >= maxLines {
 			break
+		}
+		if focused && i == tm.Cursor {
+			line := "[" + item.Key + "] " + item.Label + "  " + item.Desc
+			b.WriteString(styles.SidebarSelected.Render(line) + "\n")
+			continue
 		}
 		key := styles.HelpKey.Render("[" + item.Key + "]")
 		label := lipgloss.NewStyle().Foreground(styles.Text).Render(" " + item.Label)

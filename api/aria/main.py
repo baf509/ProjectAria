@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, telegram, heartbeat, dreams, awareness, shells, planning, alerts
+from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -34,7 +34,6 @@ from aria.api.deps import (
     get_signal_service,
     get_skill_registry,
     get_task_runner,
-    get_telegram_handler,
     get_tool_router,
     resolve_coding_watchdog,
     resolve_rate_limit_watchdog,
@@ -195,11 +194,6 @@ async def lifespan(app: FastAPI):
         await signal_service.start()
         orchestrator = await get_orchestrator(db, tool_router, task_runner, coding_manager)
         await signal_service.start_polling(db=db, orchestrator=orchestrator)
-
-    if settings.telegram_enabled and settings.telegram_bot_token:
-        telegram_handler = get_telegram_handler()
-        orchestrator = await get_orchestrator(db, tool_router, task_runner, coding_manager)
-        await telegram_handler.start_polling(db=db, orchestrator=orchestrator)
 
     if settings.heartbeat_enabled:
         heartbeat_service = await resolve_heartbeat_service(db)
@@ -367,11 +361,6 @@ async def lifespan(app: FastAPI):
     if _heartbeat_service is not None:
         await _heartbeat_service.stop()
 
-    # 4. Stop Telegram polling
-    if settings.telegram_enabled:
-        telegram_handler = get_telegram_handler()
-        await telegram_handler.stop_polling()
-
     # 4. Stop Signal polling
     signal_service = get_signal_service()
     await signal_service.shutdown()
@@ -523,11 +512,11 @@ app.include_router(killswitch.router, prefix="/api/v1", tags=["killswitch"])
 app.include_router(skills.router, prefix="/api/v1", tags=["skills"])
 app.include_router(groupchat.router, prefix="/api/v1", tags=["groupchat"])
 app.include_router(autopilot.router, prefix="/api/v1", tags=["autopilot"])
-app.include_router(telegram.router, prefix="/api/v1", tags=["telegram"])
 app.include_router(heartbeat.router, prefix="/api/v1", tags=["heartbeat"])
 app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
+app.include_router(nodes.router, prefix="/api/v1", tags=["nodes"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
 

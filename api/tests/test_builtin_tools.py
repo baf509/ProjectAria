@@ -685,7 +685,10 @@ class TestCodingSessionTools:
         result = await tool.execute({"workspace": "/tmp/ws", "prompt": "Fix the bug"})
         assert result.status == ToolStatus.SUCCESS
         assert result.output["session_id"] == "sess-1"
-        mgr.start_session.assert_called_once_with(workspace="/tmp/ws", prompt="Fix the bug")
+        # loop defaults to off (None) when not requested
+        mgr.start_session.assert_called_once_with(
+            workspace="/tmp/ws", prompt="Fix the bug", loop=None
+        )
 
     # -- StopCodingSessionTool --
 

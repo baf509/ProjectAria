@@ -273,12 +273,15 @@ class CodingWatchdog:
                         preview = "\n".join(output.splitlines()[-3:])
                         detail = preview or "No output"
 
-                    await self.notification_service.notify(
-                        source=f"coding:{session_id}",
-                        event_type=f"stalled:{reason.value}",
-                        detail=detail,
-                        cooldown_seconds=60,
-                    )
+                    # A looping session is *expected* to sit idle at its prompt —
+                    # the nudge handles it, so skip the generic stall alert.
+                    if not session.get("loop_config"):
+                        await self.notification_service.notify(
+                            source=f"coding:{session_id}",
+                            event_type=f"stalled:{reason.value}",
+                            detail=detail,
+                            cooldown_seconds=60,
+                        )
 
             deadline_at = state.get("deadline_at")
             if deadline_at and datetime.now(timezone.utc) >= deadline_at:
@@ -333,6 +336,13 @@ class CodingWatchdog:
                         cooldown_seconds=300,
                     )
 
+            # Ralph loop: nudge a looping session forward when it goes idle.
+            if session.get("loop_config"):
+                try:
+                    await self._maybe_nudge(session, state)
+                except Exception as e:
+                    logger.error("Loop nudge error for %s: %s", session_id, e, exc_info=True)
+
             if settings.coding_auto_respond_prompts:
                 await self._auto_respond(session_id, output)
 
@@ -359,3 +369,122 @@ class CodingWatchdog:
             if pattern.search(output):
                 await self.session_manager.send_input(session_id, "y")
                 return
+
+    # ----- Ralph loop: keep a session going, nudge it forward when idle -----
+
+    @staticmethod
+    def _loop_nudge_text(loop: dict) -> str:
+        """The instruction to feed on each nudge. A nudge_prompt_file is re-read
+        fresh every time, so you can edit it to steer a live session."""
+        path = loop.get("nudge_prompt_file")
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    text = fh.read().strip()
+                if text:
+                    return text
+            except OSError as e:
+                logger.debug("loop nudge_prompt_file unreadable (%s): %s", path, e)
+        return loop.get("nudge_prompt") or settings.coding_loop_nudge_prompt
+
+    async def _end_loop(self, session_id: str, reason: str, *, stop: bool) -> None:
+        """Clear loop_config so nudging stops; optionally stop the session too.
+        The workspace/git state is the durable record, so stopping is safe."""
+        await self.db.coding_sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"loop_config": None, "updated_at": datetime.now(timezone.utc)}},
+        )
+        logger.info("Ralph loop ended for %s: %s", session_id, reason)
+        try:
+            await self.notification_service.notify(
+                source=f"coding:{session_id}",
+                event_type="loop:ended",
+                detail=f"Ralph loop ended: {reason}",
+                cooldown_seconds=30,
+            )
+        except Exception:
+            pass
+        if stop:
+            try:
+                await self.session_manager.stop_session(session_id)
+            except Exception as e:
+                logger.debug("loop-end stop_session failed for %s: %s", session_id, e)
+
+    async def _maybe_nudge(self, session: dict, state: dict) -> None:
+        loop = session.get("loop_config") or {}
+        session_id = str(session["_id"])
+        now = datetime.now(timezone.utc)
+        output = state.get("last_output") or ""
+
+        # 1) Safety leash — re-checked on EVERY tick, not just at launch.
+        from aria.api.deps import get_killswitch, resolve_estop_manager
+        try:
+            get_killswitch().check_or_raise("ralph loop nudge")
+        except Exception:
+            await self._end_loop(session_id, "killswitch engaged", stop=False)
+            return
+        try:
+            estop = await resolve_estop_manager(self.db)
+            if await estop.is_active():
+                await self._end_loop(session_id, "emergency stop active", stop=False)
+                return
+        except Exception as e:  # fail closed — stop nudging if we can't verify
+            await self._end_loop(session_id, f"e-stop check failed: {e}", stop=False)
+            return
+
+        # 2) Done? (done token seen in the visible output)
+        done_regex = loop.get("done_regex")
+        if done_regex:
+            try:
+                if re.search(done_regex, output):
+                    await self._end_loop(session_id, "done signal seen", stop=True)
+                    return
+            except re.error:
+                pass
+
+        # 3) Wall-clock deadline.
+        started = session.get("loop_started_at")
+        deadline_minutes = int(loop.get("deadline_minutes") or 0)
+        if started and deadline_minutes and now - started >= timedelta(minutes=deadline_minutes):
+            await self._end_loop(session_id, f"deadline reached ({deadline_minutes}m)", stop=True)
+            return
+
+        # 4) Nudge cap.
+        nudges = int(session.get("loop_nudges", 0))
+        max_nudges = int(loop.get("max_nudges") or 0)
+        if max_nudges and nudges >= max_nudges:
+            await self._end_loop(session_id, f"max nudges reached ({max_nudges})", stop=True)
+            return
+
+        # 5) Idle long enough at the prompt? (debounced so we don't double-nudge)
+        idle_seconds = int(loop.get("idle_seconds") or settings.coding_loop_idle_seconds)
+        idle_for = (now - state.get("last_changed_at", now)).total_seconds()
+        if idle_for < idle_seconds:
+            return
+        last_nudge = session.get("last_nudge_at")
+        if last_nudge and (now - last_nudge).total_seconds() < idle_seconds:
+            return
+
+        # 6) Nudge it forward.
+        nudge_text = self._loop_nudge_text(loop)
+        await self.session_manager.send_input(session_id, nudge_text)
+        nudges += 1
+        await self.db.coding_sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"last_nudge_at": now, "updated_at": now, "loop_nudges": nudges}},
+        )
+        # Reset the idle clock so the next nudge waits for a fresh stall.
+        state["last_changed_at"] = now
+        logger.info("Ralph loop nudged session %s (nudge #%d)", session_id, nudges)
+
+        notify_every = int(loop.get("notify_every") or 0)
+        if notify_every and nudges % notify_every == 0:
+            try:
+                await self.notification_service.notify(
+                    source=f"coding:{session_id}",
+                    event_type="loop:nudge",
+                    detail=f"Ralph loop still running — {nudges} nudges so far",
+                    cooldown_seconds=0,
+                )
+            except Exception:
+                pass

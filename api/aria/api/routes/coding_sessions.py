@@ -34,6 +34,19 @@ class SessionResumeRequest(BaseModel):
     model: str | None = None
 
 
+class SessionLoopRequest(BaseModel):
+    """Toggle the Ralph loop on a session. enabled=false clears it; the other
+    fields (all optional) override the coding_loop_* defaults when enabling."""
+    enabled: bool
+    nudge_prompt: str | None = None
+    nudge_prompt_file: str | None = None
+    idle_seconds: int | None = None
+    done_regex: str | None = None
+    max_nudges: int | None = None
+    deadline_minutes: int | None = None
+    notify_every: int | None = None
+
+
 class EstopRequest(BaseModel):
     reason: str = "Manual activation"
     auto_thaw: bool = False
@@ -52,6 +65,8 @@ def serialize_session(doc: dict) -> dict:
         "tmux_pane_id": doc.get("tmux_pane_id"),
         "shell_name": doc.get("shell_name"),
         "status": doc["status"],
+        "host": doc.get("host"),
+        "loop_enabled": bool(doc.get("loop_config")),
         "created_at": doc["created_at"],
         "updated_at": doc["updated_at"],
         "completed_at": doc.get("completed_at"),
@@ -70,6 +85,8 @@ async def start_coding_session(
         branch=body.branch,
         model=body.model,
         llm=body.llm,
+        loop=body.loop.model_dump(exclude_none=True) if body.loop else None,
+        host=body.host,
     )
     return CodingSessionResponse(**serialize_session(session))
 
@@ -195,6 +212,24 @@ async def set_coding_deadline(
         raise HTTPException(status_code=404, detail="Coding session not found")
     await watchdog.set_deadline(session_id, body.minutes)
     return {"session_id": session_id, "deadline_minutes": body.minutes}
+
+
+@router.post("/{session_id}/loop", response_model=CodingSessionResponse)
+async def set_coding_loop(
+    session_id: str,
+    body: SessionLoopRequest,
+    manager: CodingSessionManager = Depends(get_coding_session_manager),
+):
+    """Enable or disable the per-session Ralph loop. When enabled, the watchdog
+    nudges the session forward whenever it idles at its prompt, re-checking the
+    killswitch/e-stop each nudge, until it emits the done token or hits a cap."""
+    config = None
+    if body.enabled:
+        config = body.model_dump(exclude={"enabled"}, exclude_none=True)
+    updated = await manager.set_loop_config(session_id, config)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Coding session not found")
+    return CodingSessionResponse(**serialize_session(updated))
 
 
 @router.post("/resume")

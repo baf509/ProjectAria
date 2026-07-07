@@ -180,6 +180,17 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
 
     await _safe_create_index(db.agents, "slug", name="agent_slug", unique=True)
 
+    # Multi-machine fleet: aria-node registry + the per-node command queue.
+    await _safe_create_index(db.nodes, "last_heartbeat_at", name="node_last_heartbeat_at")
+    await _safe_create_index(
+        db.shell_commands, [("node_id", 1), ("status", 1)], name="shell_command_node_status"
+    )
+    await _safe_create_index(db.shell_commands, "created_at", name="shell_command_created_at")
+    # TTL: expire finished/stale commands at their per-doc expires_at.
+    await _safe_create_index(
+        db.shell_commands, "expires_at", name="shell_command_ttl", expireAfterSeconds=0
+    )
+
     await _safe_create_index(db.dream_journal, "created_at", name="dream_journal_created")
     await _safe_create_index(
         db.dream_soul_proposals,

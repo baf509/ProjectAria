@@ -33,8 +33,6 @@ from aria.core.killswitch import Killswitch
 from aria.skills.registry import SkillRegistry
 from aria.groupchat.service import GroupChatService
 from aria.autopilot.service import AutopilotService
-from aria.telegram.bot import TelegramBot
-from aria.telegram.handler import TelegramHandler
 from aria.heartbeat.service import HeartbeatService
 from aria.awareness.service import AwarenessService
 from aria.dreams.service import DreamService
@@ -42,6 +40,7 @@ from aria.agents.estop import EstopManager, RateLimitWatchdog
 from aria.agents.mail import AgentMailbox
 from aria.notifications.escalation import EscalationManager
 from aria.shells.service import ShellService
+from aria.nodes.service import NodeService
 from aria.planning.service import PlanningService
 
 def valid_object_id(value: str) -> ObjectId:
@@ -71,8 +70,6 @@ _killswitch: Killswitch = None
 _skill_registry: SkillRegistry = None
 _groupchat_service: GroupChatService = None
 _autopilot_service: AutopilotService = None
-_telegram_bot: TelegramBot = None
-_telegram_handler: TelegramHandler = None
 _heartbeat_service: HeartbeatService = None
 _dream_service: DreamService = None
 _awareness_service: AwarenessService = None
@@ -81,6 +78,7 @@ _rate_limit_watchdog: RateLimitWatchdog = None
 _agent_mailbox: AgentMailbox = None
 _escalation_manager: EscalationManager = None
 _shell_service: ShellService = None
+_node_service: NodeService = None
 _planning_service: PlanningService = None
 
 
@@ -333,16 +331,6 @@ async def get_autopilot_service(
     return _autopilot_service
 
 
-def get_telegram_handler() -> TelegramHandler:
-    """Get Telegram handler singleton."""
-    global _telegram_handler, _telegram_bot
-    if _telegram_handler is None:
-        if _telegram_bot is None:
-            _telegram_bot = TelegramBot()
-        _telegram_handler = TelegramHandler(_telegram_bot)
-    return _telegram_handler
-
-
 async def get_heartbeat_service(
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
 ) -> HeartbeatService:
@@ -507,6 +495,20 @@ async def get_shell_service(
         _shell_service.events = db.shell_events
         _shell_service.snapshots = db.shell_snapshots
     return _shell_service
+
+
+async def get_node_service(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+) -> NodeService:
+    """Get the multi-machine node service instance."""
+    global _node_service
+    if _node_service is None:
+        _node_service = NodeService(db)
+    else:
+        _node_service.db = db
+        _node_service.nodes = db.nodes
+        _node_service.shell_service.db = db
+    return _node_service
 
 
 async def resolve_shell_service(

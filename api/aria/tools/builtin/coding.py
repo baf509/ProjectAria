@@ -43,9 +43,15 @@ class StartCodingSessionTool(_CodingBaseTool):
             ToolParameter(name="llm", type="string", description="For pi-code: LLM backend (fireworks|agentic|llamacpp)", required=False),
             ToolParameter(name="model", type="string", description="Model id to pin", required=False),
             ToolParameter(name="branch", type="string", description="Branch hint", required=False),
+            ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (Ralph loop). Default false.", required=False, default=False),
+            ToolParameter(name="host", type="string", description="Run on a remote node (its aria-node id, e.g. a MacBook). Omit to run on this host.", required=False),
         ]
 
     async def execute(self, arguments: dict) -> ToolResult:
+        arguments = dict(arguments)
+        # The tool exposes loop as a simple on/off; start_session takes a config
+        # dict, so an enabled loop → {} (server defaults fill it in).
+        arguments["loop"] = {} if arguments.get("loop") else None
         session = await self.manager.start_session(**arguments)
         return ToolResult(tool_name=self.name, status=ToolStatus.SUCCESS, output=session)
 

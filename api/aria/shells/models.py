@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 ShellStatus = Literal["active", "idle", "stopped", "unknown"]
 ShellEventKind = Literal["output", "input", "system"]
-ShellEventSource = Literal["pipe-pane", "send-keys", "hook", "reconciler", "backfill"]
+ShellEventSource = Literal["pipe-pane", "send-keys", "hook", "reconciler", "backfill", "node-capture"]
 
 
 class Shell(BaseModel):
@@ -120,6 +120,7 @@ class ShellOverviewItem(BaseModel):
     name: str
     short_name: str
     status: ShellStatus
+    host: str = ""
     project_dir: str = ""
     line_count: int = 0
     last_activity_at: datetime

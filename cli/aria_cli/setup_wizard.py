@@ -58,10 +58,6 @@ def _write_env(path: Path, values: dict[str, str]) -> None:
         ("Embeddings", ["EMBEDDING_URL", "EMBEDDING_MODEL", "EMBEDDING_DIMENSION", "VOYAGE_API_KEY"]),
         ("Voice Services (optional)", ["TTS_URL", "STT_URL"]),
         ("Signal (optional)", ["SIGNAL_ENABLED", "SIGNAL_REST_URL", "SIGNAL_ACCOUNT", "SIGNAL_DM_POLICY"]),
-        ("Telegram (optional)", [
-            "TELEGRAM_ENABLED", "TELEGRAM_BOT_TOKEN", "TELEGRAM_DM_POLICY",
-            "TELEGRAM_ALLOWED_USERS", "TELEGRAM_POLL_INTERVAL_SECONDS",
-        ]),
         ("Search (optional)", ["BRAVE_SEARCH_API_KEY"]),
         ("Screenshot (optional)", ["SCREENSHOT_COMMAND", "SCREENSHOT_VISION_BACKEND", "SCREENSHOT_VISION_MODEL"]),
         ("Document Generation (optional)", ["DOCGEN_OUTPUT_DIR"]),
@@ -287,37 +283,6 @@ def _section_signal(existing: dict[str, str], env: dict[str, str]) -> None:
     console.print()
 
 
-def _section_telegram(existing: dict[str, str], env: dict[str, str]) -> None:
-    """Configure Telegram bot integration."""
-    console.print(Panel("[bold]7/12  Telegram Bot[/bold]", style="blue"))
-
-    enabled = Confirm.ask(
-        "Enable Telegram bot integration?",
-        default=existing.get("TELEGRAM_ENABLED", "false").lower() == "true",
-    )
-    env["TELEGRAM_ENABLED"] = str(enabled).lower()
-
-    if enabled:
-        env["TELEGRAM_BOT_TOKEN"] = _prompt(
-            "Telegram bot token (from @BotFather)",
-            default=existing.get("TELEGRAM_BOT_TOKEN", ""),
-            password=True,
-        )
-        env["TELEGRAM_DM_POLICY"] = _prompt(
-            "DM policy (allowlist/open)",
-            default=existing.get("TELEGRAM_DM_POLICY", "allowlist"),
-        )
-        env["TELEGRAM_ALLOWED_USERS"] = _prompt(
-            "Allowed Telegram usernames (comma-separated, no @)",
-            default=existing.get("TELEGRAM_ALLOWED_USERS", ""),
-        )
-        env["TELEGRAM_POLL_INTERVAL_SECONDS"] = _prompt(
-            "Poll interval (seconds)",
-            default=existing.get("TELEGRAM_POLL_INTERVAL_SECONDS", "5"),
-        )
-    console.print()
-
-
 def _section_features(existing: dict[str, str], env: dict[str, str]) -> None:
     """Configure new feature settings."""
     console.print(Panel("[bold]10/12  Features[/bold]", style="blue"))
@@ -503,11 +468,6 @@ def setup(non_interactive: bool) -> None:
             "SIGNAL_REST_URL": existing.get("SIGNAL_REST_URL", "http://signal-cli:8080"),
             "SIGNAL_ACCOUNT": existing.get("SIGNAL_ACCOUNT", ""),
             "SIGNAL_DM_POLICY": existing.get("SIGNAL_DM_POLICY", "allowlist"),
-            "TELEGRAM_ENABLED": existing.get("TELEGRAM_ENABLED", "false"),
-            "TELEGRAM_BOT_TOKEN": existing.get("TELEGRAM_BOT_TOKEN", ""),
-            "TELEGRAM_DM_POLICY": existing.get("TELEGRAM_DM_POLICY", "allowlist"),
-            "TELEGRAM_ALLOWED_USERS": existing.get("TELEGRAM_ALLOWED_USERS", ""),
-            "TELEGRAM_POLL_INTERVAL_SECONDS": existing.get("TELEGRAM_POLL_INTERVAL_SECONDS", "5"),
             "BRAVE_SEARCH_API_KEY": existing.get("BRAVE_SEARCH_API_KEY", ""),
             "SCREENSHOT_COMMAND": existing.get("SCREENSHOT_COMMAND", "scrot"),
             "SCREENSHOT_VISION_BACKEND": existing.get("SCREENSHOT_VISION_BACKEND", "anthropic"),
@@ -521,7 +481,7 @@ def setup(non_interactive: bool) -> None:
             "GROUPCHAT_DEFAULT_ROUNDS": existing.get("GROUPCHAT_DEFAULT_ROUNDS", "3"),
             "GROUPCHAT_MAX_PERSONAS": existing.get("GROUPCHAT_MAX_PERSONAS", "6"),
             "API_HOST": existing.get("API_HOST", "0.0.0.0"),
-            "API_PORT": existing.get("API_PORT", "8000"),
+            "API_PORT": existing.get("API_PORT", "8200"),
             "API_AUTH_ENABLED": existing.get("API_AUTH_ENABLED", "true"),
             "API_KEY": existing.get("API_KEY", "") or secrets.token_hex(32),
             "ENCRYPTION_KEY": existing.get("ENCRYPTION_KEY", "") or secrets.token_hex(32),
@@ -542,7 +502,6 @@ def setup(non_interactive: bool) -> None:
     _section_embeddings(existing, env)
     _section_voice(existing, env)
     _section_signal(existing, env)
-    _section_telegram(existing, env)
     _section_search(existing, env)
     _section_api(existing, env)
     _section_features(existing, env)

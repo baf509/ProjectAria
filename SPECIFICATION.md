@@ -4,6 +4,15 @@
 **Last Updated:** November 2025  
 **Target Developer:** Claude Code
 
+> **⚠️ Living-truth pointer.** This is a deep reference (data models, memory
+> internals, API surface, patterns). Its intro is current, but parts of the
+> **config, deployment, and LLM-topology** sections lag the code (they may still
+> show `:8000`, a single `llama.cpp` on `:8080`, or an idealized multi-host
+> layout). For **current** ports, services, and model topology, **CLAUDE.md** and
+> **CHANGELOG.md** are authoritative. The single always-on service listens on
+> **:8200**; local LLMs are three servers (qwen-chat `:8092`, qwen-agentic
+> `:8093`, context-1 `:8081`) and the default agents run on GLM 5.2 via Fireworks.
+
 ---
 
 ## Quick Navigation for Claude Code
@@ -1950,7 +1959,7 @@ VOYAGE_API_KEY=
 
 # API
 API_HOST=0.0.0.0
-API_PORT=8000
+API_PORT=8200
 DEBUG=false
 
 # Security (generate with: openssl rand -hex 32)
@@ -1983,7 +1992,7 @@ class Settings(BaseSettings):
     
     # API
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 8200
     debug: bool = False
     
     class Config:

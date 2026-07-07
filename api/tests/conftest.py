@@ -188,8 +188,9 @@ def make_mock_db() -> MagicMock:
         coll = MagicMock()
         coll.find_one = AsyncMock(return_value=None)
         coll.insert_one = AsyncMock(return_value=MagicMock(inserted_id="mock-id"))
-        coll.update_one = AsyncMock(return_value=MagicMock(modified_count=1))
+        coll.update_one = AsyncMock(return_value=MagicMock(modified_count=1, matched_count=1))
         coll.delete_one = AsyncMock(return_value=MagicMock(deleted_count=1))
+        coll.find_one_and_update = AsyncMock(return_value=None)
 
         # find() returns a mock cursor with sort/limit/to_list
         cursor = MagicMock()
@@ -222,6 +223,11 @@ def make_mock_db() -> MagicMock:
         "estop_log",
         "killswitch",
         "background_tasks",
+        "nodes",
+        "shell_commands",
+        "shells",
+        "shell_events",
+        "shell_snapshots",
     ]:
         setattr(db, name, _make_collection(name))
 

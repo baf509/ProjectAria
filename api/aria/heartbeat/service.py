@@ -2,8 +2,8 @@
 ARIA - Heartbeat Service
 
 Purpose: Periodic agent turns that check HEARTBEAT.md and surface
-anything needing the user's attention. Alerts are delivered via
-configured notification channels (Signal, Telegram).
+anything needing the user's attention. Alerts are enqueued for the
+Hermes agent to relay (see NotificationService).
 """
 
 from __future__ import annotations

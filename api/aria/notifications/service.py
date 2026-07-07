@@ -1,7 +1,7 @@
 """
 ARIA - Notification Service
 
-Purpose: Cooldown-aware alerting. ProjectAria does NOT deliver Signal/Telegram
+Purpose: Cooldown-aware alerting. ProjectAria does NOT push notifications
 itself — that collided with the single signal-cli daemon owned by the Hermes
 agent. Instead `notify()` enqueues alerts into the `alerts` collection; Hermes
 pulls them over MCP (list_alerts / ack_alert) and relays them via its own
@@ -29,13 +29,7 @@ class NotificationService:
         # signal_service is retained for constructor compatibility but no longer
         # used for delivery — ProjectAria queues alerts instead of sending them.
         self.signal_service = signal_service
-        self._telegram_bot = None  # retained no-op; ProjectAria does not send TG
         self._cooldowns: dict[tuple[str, str], datetime] = {}
-
-    def set_telegram_bot(self, bot) -> None:
-        """No-op retained for caller compatibility. ProjectAria no longer
-        delivers Telegram directly (alerts go to the MCP queue)."""
-        self._telegram_bot = bot
 
     def _can_send(self, source: str, event_type: str, cooldown_seconds: int) -> bool:
         # cooldown_seconds <= 0 means "always send" — don't let same-granularity

@@ -11,7 +11,7 @@ Most AI chat apps are stateless wrappers around an API. ARIA is an **agent platf
 - **She remembers everything** — Hybrid vector + lexical search across all conversations, all interfaces
 - **She can delegate work** — Spawns Claude Code or Codex sessions that code autonomously with `--dangerously-skip-permissions`
 - **She runs background processes** — Dreams, research, heartbeat checks, self-correction, all running as autonomous Claude Code subprocesses
-- **She's everywhere** — Same agent accessible from terminal, browser, desktop widget, Signal, Telegram, or REST API
+- **She's everywhere** — Same agent accessible from terminal (TUI/CLI), browser, desktop widget, or REST API — plus the MCP bridge to the Hermes agent, which relays alerts to Signal
 - **She evolves** — Dream cycle reflects on memories, proposes changes to her own identity (with your approval)
 
 ## Architecture
@@ -21,7 +21,7 @@ Most AI chat apps are stateless wrappers around an API. ARIA is an **agent platf
                      |
         +------------+------------+
         |            |            |
-     Web UI     TUI (Go)    Widget/CLI/Signal/Telegram
+     Web UI     TUI (Go)     Widget / CLI / REST / MCP
         |            |            |
         +------------+------------+
                      |
@@ -68,7 +68,7 @@ Same infrastructure as Claude Code but using OpenAI's Codex CLI with `--sandbox 
 
 A coding-assistant persona. ARIA creates a persistent conversation and processes it through her own orchestrator. (Its model is configurable per agent — currently GLM 5.2 via Fireworks; it can be pointed at a local qwen backend instead.)
 
-> **Note on coding sub-agents:** ARIA-spawned coding sessions now run on the **watched-shell substrate** — each becomes an interactive `claude-coding-*` tmux shell, captured and visible in the fleet/TUI and drivable via the same tools, with the watchdog/checkpoint/review overlay still managing it.
+> **Note on coding sub-agents:** ARIA-spawned coding sessions now run on the **watched-shell substrate** — each becomes an interactive `claude-coding-*` tmux shell, captured and visible in the fleet/TUI and drivable via the same tools, with the watchdog/checkpoint/review overlay still managing it. A session can opt into the **Ralph loop** to keep running: the watchdog re-feeds it whenever it idles (re-checking killswitch/e-stop each nudge) until it emits `RALPH_DONE` or hits a nudge/deadline cap. Toggle it from the TUI (`l`), `POST /coding/sessions/{id}/loop`, or the MCP `set_coding_loop` tool.
 
 ## Watched Shells
 
@@ -128,7 +128,7 @@ These are autonomous tasks where ARIA delegates work to a Claude Code CLI instan
 |---------|----------|--------------|
 | **Dream Cycle** | Every 6h, quiet hours (1am-5am) | Reviews memories, finds patterns, writes journal entries, proposes identity evolution |
 | **Research** | On demand (`/research query`) | Recursive web research with branching queries, learning extraction, report synthesis |
-| **Heartbeat** | Every 30min, active hours (9am-10pm) | Reviews checklist, alerts via Signal/Telegram if anything needs attention |
+| **Heartbeat** | Every 30min, active hours (9am-10pm) | Reviews checklist, enqueues an alert (relayed by Hermes to Signal) if anything needs attention |
 | **OODA Loop** | Non-streaming responses (if enabled per-agent) | Scores ARIA's own response quality (0-1), retries if below threshold — only on the non-streaming path, not the default streaming chat |
 | **Autopilot** | On demand via API, or scheduled | Decomposes goals into steps, executes sequentially with optional approval gates. The scheduler's `autopilot` action can run an autonomous goal (e.g. "every morning, triage my repos") on a local-time cadence |
 | **Backups** | Daily @ 03:30 (systemd timer) | `scripts/aria-backup.sh` — mongodump of the `aria` DB plus SOUL/journals/skills, with rotation (`aria-backup.timer`) |
@@ -154,7 +154,7 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 
 | Interface | Technology | Description |
 |-----------|-----------|-------------|
-| **TUI** | Go (Bubble Tea) | 4-quadrant terminal dashboard with sidebar, session detail, tools, vitals |
+| **TUI** | Go (Bubble Tea) | 4-quadrant terminal dashboard with sidebar, session detail, tools, vitals. A thin pure-HTTP client, so it runs **remotely** as a cross-machine cockpit (`aria tui --host <name>` → `~/.config/aria/hosts`) |
 | **Web UI** | Next.js | Chat interface with mode switching and conversation management; **installable PWA** (manifest + service worker, network-first, bypasses `/api` + SSE) |
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey, voice input/output |
 | **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` (honors `ARIA_API_URL`) |
@@ -163,7 +163,9 @@ ARIA's long-running agents are supervised by a layer of safety subsystems inspir
 
 Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory. Outbound notifications go through the MCP alert queue relayed by Hermes rather than ARIA sending Signal/Telegram directly.
 
-The **TUI** also has Fleet (`f`: all coding sessions + watched shells with backend/model, status, idle, tokens + $cost), Health (`h`: per-service status from `/health/services`), and Search (`s`: runs the search agent) screens.
+The **TUI** also has Fleet (`f`: all coding sessions + watched shells with **host**, backend/model, status, idle, tokens + $cost — `↑↓` select, `l` toggle the Ralph loop, `⏎` open), Health (`h`: per-service status from `/health/services`), and Search (`s`: runs the search agent) screens. On a session screen, `l` toggles the **Ralph loop** (keep the session going: the watchdog nudges it forward whenever it idles until it emits `RALPH_DONE` or hits a cap).
+
+**Cross-machine cockpit:** because the TUI only speaks `/api/v1` HTTP, you can run it on the MacBook and point it at corsair over the tailnet instead of SSHing in. Build with `cd tui && make build-darwin`, drop a `~/.config/aria/hosts` profile, and run `aria-tui --host corsair`. Full setup (Taildrop/scp transfer, ad-hoc `codesign`) is in [`tui/README.md`](tui/README.md); the plan to make the *fleet* span machines is [`MULTI_MACHINE_FLEET_DESIGN.md`](MULTI_MACHINE_FLEET_DESIGN.md).
 
 ### Slash Commands
 
@@ -318,7 +320,6 @@ ProjectAria/
 │       ├── shells/             # Watched tmux fleet: auto-adopt, capture, snapshot, extraction, prune, selfcheck, report, project harvest
 │       ├── planning/           # Projects (harvested + LLM-extracted) and to-do tasks
 │       ├── signal/             # Signal bot integration (inbound chat)
-│       ├── telegram/           # Telegram bot integration (inbound chat)
 │       ├── notifications/      # Alert queue (relayed by Hermes over MCP)
 │       ├── workflows/          # Multi-step workflow engine
 │       ├── tasks/              # Background task runner
@@ -346,8 +347,11 @@ ProjectAria/
 # live service binds :8200)
 cd api && uvicorn aria.main:app --reload --host 0.0.0.0 --port 8200
 
-# TUI
-cd tui && go install . && aria-tui
+# TUI (local)
+cd tui && make install && aria-tui        # or: aria tui  (via the Python CLI)
+# TUI (remote cockpit, e.g. from a MacBook — see tui/README.md)
+cd tui && make build-darwin               # → aria-tui-darwin-arm64
+aria-tui --host corsair                    # profile in ~/.config/aria/hosts
 
 # Web UI (with hot-reload)
 cd ui && npm run dev
@@ -362,13 +366,23 @@ cd cli && pip install -e .
 cd api && python3 -m pytest tests/ -v
 ```
 
-## Documentation
+## Documentation map
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — How ARIA thinks, delegates, and gets things done
-- **[GETTING_STARTED.md](GETTING_STARTED.md)** — Full setup and usage guide
-- **[SPECIFICATION.md](SPECIFICATION.md)** — Detailed architecture and requirements
-- **[PROJECT_STATUS.md](PROJECT_STATUS.md)** — Current phase and progress
-- **[CHANGELOG.md](CHANGELOG.md)** — Change history
+Each doc owns one thing — check the owner rather than duplicating facts across docs.
+
+| Doc | Source of truth for |
+|-----|---------------------|
+| **README.md** (this file) | Project overview + capability tour |
+| **[CLAUDE.md](CLAUDE.md)** | Agent/contributor guide: current ports, model topology, services, run commands, gotchas |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | How ARIA thinks: orchestrator loop + background-process catalog |
+| **[GETTING_STARTED.md](GETTING_STARTED.md)** | Operator setup + troubleshooting |
+| **[SPECIFICATION.md](SPECIFICATION.md)** | Deep reference: data models, memory internals, API surface |
+| **[CHANGELOG.md](CHANGELOG.md)** | What shipped, when (the single history) |
+| **[PROJECT_STATUS.md](PROJECT_STATUS.md)** | Thin living status: current focus + next actions |
+| **[BACKLOG.md](BACKLOG.md)** | Uncommitted product vision + open research questions |
+| **[MULTI_MACHINE_FLEET_DESIGN.md](MULTI_MACHINE_FLEET_DESIGN.md)** | Design: cross-machine cockpit + fleet (Layer A shipped, B2 planned) |
+| **[tui/README.md](tui/README.md)** · **[cli/README.md](cli/README.md)** · **[ui/README.md](ui/README.md)** | Each frontend component |
+| **[docs/archive/](docs/archive/)** | Historical, superseded docs (completed plans, v1 designs) — not current truth |
 
 ## Key Design Decisions
 

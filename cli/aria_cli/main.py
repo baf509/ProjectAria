@@ -150,6 +150,59 @@ def help(ctx):
     console.print()
 
 
+@cli.command("tui", context_settings=dict(ignore_unknown_options=True))
+@click.option("--build", is_flag=True, help="Rebuild the TUI binary before launching (needs Go).")
+@click.argument("tui_args", nargs=-1, type=click.UNPROCESSED)
+def tui_cmd(build, tui_args):
+    """Launch the ARIA terminal UI (the Go dashboard).
+
+    Resolves the aria-tui binary from $ARIA_TUI_BIN, the repo's tui/ directory,
+    or PATH, then execs it so it takes over the terminal. Quit the TUI with 'q'.
+
+    Extra args pass through to the binary, e.g. 'aria tui --host corsair' selects
+    a profile from ~/.config/aria/hosts (or accepts a bare host[:port]/URL).
+    """
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    repo_bin = Path(__file__).resolve().parents[2] / "tui" / "aria-tui"
+
+    # Resolve the binary: env override, repo build, then PATH.
+    candidates = []
+    if os.getenv("ARIA_TUI_BIN"):
+        candidates.append(Path(os.environ["ARIA_TUI_BIN"]))
+    candidates.append(repo_bin)
+    if shutil.which("aria-tui"):
+        candidates.append(Path(shutil.which("aria-tui")))
+    binary = next(
+        (p for p in candidates if p.is_file() and os.access(p, os.X_OK)), None
+    )
+
+    # Build from source if requested, or if we couldn't find a binary.
+    if build or binary is None:
+        go = shutil.which("go")
+        if go and repo_bin.parent.is_dir():
+            console.print("[cyan]building aria-tui…[/cyan]")
+            result = subprocess.run([go, "build", "-o", "aria-tui", "."], cwd=str(repo_bin.parent))
+            if result.returncode != 0:
+                console.print("[red]go build failed[/red]")
+                raise SystemExit(1)
+            binary = repo_bin
+        elif build:
+            console.print("[red]Go not found on PATH — cannot --build.[/red]")
+            raise SystemExit(1)
+
+    if binary is None or not binary.is_file():
+        console.print("[red]aria-tui binary not found.[/red] Build it with:")
+        console.print(f"  [dim]cd {repo_bin.parent} && go build -o aria-tui .[/dim]")
+        console.print("  or point [cyan]ARIA_TUI_BIN[/cyan] at the binary.")
+        raise SystemExit(1)
+
+    os.execv(str(binary), [str(binary), *tui_args])
+
+
 @cli.command()
 def health():
     """Check ARIA API health."""

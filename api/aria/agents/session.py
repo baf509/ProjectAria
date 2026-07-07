@@ -53,6 +53,43 @@ class CodingSessionManager:
     def _use_shell_substrate(self) -> bool:
         return bool(settings.coding_use_shell_substrate and self.shell_service)
 
+    @staticmethod
+    def _normalize_loop_config(raw: dict) -> dict:
+        """Fill a Ralph-loop config with settings defaults so the stored doc is
+        self-describing (what you read is what the watchdog runs)."""
+        raw = raw or {}
+        return {
+            "nudge_prompt": raw.get("nudge_prompt") or settings.coding_loop_nudge_prompt,
+            "nudge_prompt_file": raw.get("nudge_prompt_file") or None,
+            "idle_seconds": int(raw.get("idle_seconds") or settings.coding_loop_idle_seconds),
+            "done_regex": raw.get("done_regex") or settings.coding_loop_done_regex,
+            "max_nudges": int(raw.get("max_nudges") or settings.coding_loop_max_nudges),
+            "deadline_minutes": int(
+                raw.get("deadline_minutes") or settings.coding_loop_deadline_minutes
+            ),
+            "notify_every": int(raw.get("notify_every") or 0),
+        }
+
+    async def set_loop_config(
+        self, session_id: str, config: Optional[dict]
+    ) -> Optional[dict]:
+        """Enable (config dict) or disable (None) the Ralph nudge loop on an
+        existing session. Enabling resets the nudge counter + deadline clock."""
+        session = await self.get_session(session_id)
+        if not session:
+            return None
+        now = datetime.now(timezone.utc)
+        updates: dict = {"updated_at": now}
+        if config is None:
+            updates["loop_config"] = None
+        else:
+            updates["loop_config"] = self._normalize_loop_config(config)
+            updates["loop_nudges"] = 0
+            updates["last_nudge_at"] = None
+            updates["loop_started_at"] = now
+        await self.db.coding_sessions.update_one({"_id": session_id}, {"$set": updates})
+        return await self.get_session(session_id)
+
     async def start_session(
         self,
         *,
@@ -64,6 +101,8 @@ class CodingSessionManager:
         llm: Optional[str] = None,
         conversation_id: Optional[str] = None,
         visible: bool = False,
+        loop: Optional[dict] = None,
+        host: Optional[str] = None,
     ) -> dict:
         # Safety gates: refuse to spawn an autonomous coding agent while the
         # manual killswitch or the automated emergency stop is engaged.
@@ -100,6 +139,7 @@ class CodingSessionManager:
         session_id = str(uuid4())
         now = datetime.now(timezone.utc)
 
+        loop_config = self._normalize_loop_config(loop) if loop else None
         doc = {
             "_id": session_id,
             "backend": backend_name,
@@ -113,11 +153,31 @@ class CodingSessionManager:
             "pid": None,
             "tmux_pane_id": None,
             "shell_name": None,
+            # Which machine this session runs on (None = this host). A remote
+            # host runs the session on its aria-node; drive/get_output dispatch
+            # by the shell's host, so the watchdog + Ralph loop work over the wire.
+            "host": host,
+            "node_id": host if host else None,
+            # Ralph loop bookkeeping (loop_config None = not looping).
+            "loop_config": loop_config,
+            "loop_nudges": 0,
+            "last_nudge_at": None,
+            "loop_started_at": now if loop_config else None,
             "created_at": now,
             "updated_at": now,
             "completed_at": None,
         }
         await self.db.coding_sessions.insert_one(doc)
+
+        # Remote host: run the session on that machine's aria-node. The node
+        # creates a claude-coding-* tmux shell locally (auto-captured back into
+        # the fleet); we drive it via the host-aware ShellService dispatch, so
+        # the watchdog/checkpoint/review overlay + Ralph loop work unchanged.
+        from aria.nodes import is_remote_host
+        if is_remote_host(host):
+            return await self._start_remote_shell_session(
+                session_id, host, command, workspace_path
+            )
 
         # If visible mode requested and tmux is available, spawn in a tmux pane
         if visible and self.tmux_manager:
@@ -193,6 +253,63 @@ class CodingSessionManager:
             },
         )
         self._watch_tasks[session_id] = asyncio.create_task(self._watch_session(session_id))
+        return await self.get_session(session_id)
+
+    async def _start_remote_shell_session(
+        self, session_id: str, node_id: str, command, workspace_path: str
+    ) -> dict:
+        """Start a coding session on a remote node: enqueue a start_session
+        command (the node creates the claude-coding-* tmux shell locally), then
+        drive it via the host-aware ShellService dispatch."""
+        if not self.shell_service:
+            raise RuntimeError("shells disabled — cannot start a remote coding session")
+        from aria.nodes import commands as node_commands
+
+        argv = [a for a in command.argv if a not in ("-p", "--print")]
+        argv_str = " ".join(shlex.quote(a) for a in argv)
+        env_prefix = " ".join(
+            f"{k}={shlex.quote(v)}" for k, v in (command.env or {}).items()
+        )
+        inner = (env_prefix + " " + argv_str).strip()
+        launch = "bash -lc " + shlex.quote(inner)
+        shell_name = f"{settings.shells_tmux_session_prefix}coding-{session_id[:8]}"
+        workdir = command.cwd or workspace_path
+
+        cmd_id = await node_commands.enqueue_command(
+            self.db, node_id, "start_session",
+            {"shell_name": shell_name, "launch": launch, "workdir": workdir},
+        )
+        result = await node_commands.await_result(
+            self.db, cmd_id, timeout_seconds=settings.node_command_timeout_seconds
+        )
+        if not result or result.get("status") != "done":
+            now = datetime.now(timezone.utc)
+            await self.db.coding_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {
+                    "status": "failed",
+                    "error": f"node {node_id} unreachable",
+                    "updated_at": now,
+                    "completed_at": now,
+                }},
+            )
+            raise RuntimeError(f"coding node {node_id} unreachable — session not started")
+
+        # Pre-register the shell doc (host=node_id) so it's drivable immediately,
+        # before the node's capture loop first pushes events for it.
+        await self.shell_service.register_shell(shell_name, project_dir=workdir, host=node_id)
+        now = datetime.now(timezone.utc)
+        await self.db.coding_sessions.update_one(
+            {"_id": session_id},
+            {"$set": {"status": "running", "shell_name": shell_name, "updated_at": now}},
+        )
+        self._watch_tasks[session_id] = asyncio.create_task(
+            self._watch_shell_session(session_id)
+        )
+        logger.info(
+            "Started remote coding session %s on node %s (shell %s)",
+            session_id, node_id, shell_name,
+        )
         return await self.get_session(session_id)
 
     async def _start_pi_code_session(
@@ -645,8 +762,10 @@ class CodingSessionManager:
             interval = max(2, settings.coding_watchdog_interval_seconds)
             while True:
                 await asyncio.sleep(interval)
-                if not await self.shell_service.tmux.has_session(shell_name):
-                    break  # tmux session gone -> agent finished
+                # Host-aware liveness: local → tmux has_session; remote → node
+                # online and the shell not marked stopped.
+                if not await self.shell_service.session_alive(shell_name):
+                    break  # session gone -> agent finished
                 cur = await self.get_session(session_id)
                 if cur and cur.get("status") in ("stopped", "completed", "failed"):
                     return  # finalized elsewhere (e.g. stop_session)

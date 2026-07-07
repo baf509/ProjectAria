@@ -58,6 +58,10 @@ type codingOutputLoaded struct {
 	sessionID string
 	output    string
 }
+type codingLoopToggled struct {
+	sessionID string
+	enabled   bool
+}
 type memoriesLoaded struct{ memories []api.Memory }
 type usageDataLoaded struct {
 	summary *api.UsageSummary
@@ -173,9 +177,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		cmd := m.handleKey(msg)
+		cmd, consumed := m.handleKey(msg)
 		if cmd != nil {
 			cmds = append(cmds, cmd)
+		}
+		// If the key was an app-level action (submit, navigation, hotkey, esc),
+		// don't also forward it to the focused child component. Forwarding a
+		// handled Enter to the chat/session textarea, for instance, injects a
+		// stray newline after every send. Unhandled keys (ordinary typing,
+		// viewport scroll) fall through to the child updates below.
+		if consumed {
+			return m, tea.Batch(cmds...)
 		}
 
 	case dashboardTick:
@@ -262,6 +274,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeSessionID == msg.sessionID && m.screen == screenSession {
 			m.session.SetOutput(msg.output)
 		}
+
+	case codingLoopToggled:
+		if m.session.Session != nil && m.activeSessionID == msg.sessionID {
+			m.session.Session.LoopEnabled = msg.enabled
+		}
+		// Reflect the toggle in the fleet table immediately; snapshot refresh
+		// keeps the underlying data consistent.
+		m.fleetView.SetLoopEnabled(msg.sessionID, msg.enabled)
+		cmds = append(cmds, fetchSnapshot(m.client))
 
 	case memoriesLoaded:
 		m.memBrowser.SetMemories(msg.memories)
@@ -352,37 +373,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // ---- Key Handling ----
 
-func (m *Model) handleKey(msg tea.KeyMsg) tea.Cmd {
+// handleKey routes a key press and reports whether it was consumed as an
+// app-level action. When consumed is false the key is ordinary input (typing,
+// scrolling) and the caller forwards it to the focused child component.
+func (m *Model) handleKey(msg tea.KeyMsg) (cmd tea.Cmd, consumed bool) {
 	key := msg.String()
 
-	switch key {
-	case "ctrl+c":
-		return tea.Quit
+	if key == "ctrl+c" {
+		return tea.Quit, true
 	}
 
 	if m.screen != screenDashboard {
 		return m.handleSubScreenKey(msg)
 	}
-	return m.handleDashboardKey(key)
+	// The dashboard has no text-input child to forward to, so every key it sees
+	// is an app-level action.
+	return m.handleDashboardKey(key), true
 }
 
 func (m *Model) handleDashboardKey(key string) tea.Cmd {
 	switch key {
 	case "q":
 		return tea.Quit
-	case "tab":
-		m.quad = (m.quad + 1) % 4
-	case "shift+tab":
-		m.quad = (m.quad + 3) % 4 // backwards
 
-	// Sidebar navigation (always active)
+	// Focus toggles between the two interactive panes: the Tasks sidebar
+	// (top-left) and the Tools menu (bottom-left). The right-hand panes are
+	// read-only info, so they are not focus stops.
+	case "tab", "shift+tab":
+		if m.quad == quadBotLeft {
+			m.quad = quadTopLeft
+		} else {
+			m.quad = quadBotLeft
+		}
+
+	// Navigation is routed to whichever pane has focus.
 	case "up", "k":
-		m.sidebar.Up()
-		m.updateDetail()
+		if m.quad == quadBotLeft {
+			m.menu.Up()
+		} else {
+			m.sidebar.Up()
+			m.updateDetail()
+		}
 	case "down", "j":
-		m.sidebar.Down()
-		m.updateDetail()
+		if m.quad == quadBotLeft {
+			m.menu.Down()
+		} else {
+			m.sidebar.Down()
+			m.updateDetail()
+		}
 	case "enter":
+		if m.quad == quadBotLeft {
+			// Launch the highlighted Tools-menu entry.
+			return m.openHotkey(m.menu.Selected().Key)
+		}
 		node := m.sidebar.Selected()
 		if node == nil {
 			return nil
@@ -393,13 +436,33 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 		case components.NodeConversation:
 			return openConversation(m.client, node.ID)
 		case components.NodeCodingSession:
-			m.activeSessionID = node.ID
-			m.session.SetSession(node.CodingSession)
-			m.pushScreen(screenSession)
-			return loadCodingOutput(m.client, node.ID)
+			return m.openSession(node.ID, node.CodingSession)
 		}
 
-	// Quick-nav hotkeys
+	// New/private conversation + delete + refresh work from either pane.
+	case "n":
+		return createConversation(m.client, "", "")
+	case "p":
+		return createPrivateConversation(m.client)
+	case "d":
+		node := m.sidebar.Selected()
+		if node != nil && node.Kind == components.NodeConversation {
+			return deleteConversation(m.client, node.ID)
+		}
+	case "r":
+		return fetchSnapshot(m.client)
+
+	// Single-letter screen launchers (also reachable via the Tools menu).
+	default:
+		return m.openHotkey(key)
+	}
+	return nil
+}
+
+// openHotkey launches a screen by its single-letter key. Shared by the bare
+// dashboard hotkeys and Enter on the Tools menu so the two never drift apart.
+func (m *Model) openHotkey(key string) tea.Cmd {
+	switch key {
 	case "c":
 		slug := ""
 		for _, a := range m.agents {
@@ -409,10 +472,6 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 			}
 		}
 		return createConversation(m.client, slug, "")
-	case "n":
-		return createConversation(m.client, "", "")
-	case "p":
-		return createPrivateConversation(m.client)
 	case "m":
 		m.pushScreen(screenMemory)
 		return loadMemories(m.client, "", 50)
@@ -437,112 +496,151 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 	case "s":
 		m.pushScreen(screenSearch)
 		return nil
-	case "d":
-		node := m.sidebar.Selected()
-		if node != nil && node.Kind == components.NodeConversation {
-			return deleteConversation(m.client, node.ID)
-		}
-	case "r":
-		return fetchSnapshot(m.client)
 	}
 	return nil
 }
 
-func (m *Model) handleSubScreenKey(msg tea.KeyMsg) tea.Cmd {
+// openSession attaches to a coding session and shows its full-screen view.
+func (m *Model) openSession(id string, cs *api.CodingSession) tea.Cmd {
+	m.activeSessionID = id
+	m.session.SetSession(cs)
+	m.pushScreen(screenSession)
+	return loadCodingOutput(m.client, id)
+}
+
+func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 	key := msg.String()
 
-	switch key {
-	case "esc":
+	// The DB filter editor is a focused text field: it swallows every key
+	// (including esc/enter) until dismissed, so handle it before the generic
+	// esc-to-back below.
+	if m.screen == screenDB && m.dbBrowser.IsEditing() {
+		switch key {
+		case "esc":
+			m.dbBrowser.ToggleEditing()
+		case "enter":
+			m.dbBrowser.ToggleEditing()
+			col := m.dbBrowser.CurrentCollection()
+			if col != "" {
+				m.dbBrowser.SetPage(0)
+				return queryCollection(m.client, col, 20, 0, m.dbBrowser.GetFilter()), true
+			}
+		default:
+			m.dbBrowser.HandleFilterKey(key)
+		}
+		return nil, true
+	}
+
+	if key == "esc" {
 		m.popScreen()
-		return nil
+		return nil, true
 	}
 
 	switch m.screen {
 	case screenChat:
 		if key == "enter" {
 			if m.chat.Streaming {
-				return nil
+				return nil, true
 			}
 			input := m.chat.GetInput()
 			if input == "" {
-				return nil
+				return nil, true
 			}
 			m.chat.Messages = append(m.chat.Messages, api.Message{Role: "user", Content: input})
 			m.chat.StreamBuffer = ""
 			m.chat.Streaming = true
 			m.chat.SetMessages(m.chat.Messages)
-			return sendMessage(m.client, m.activeConvID, input)
+			return sendMessage(m.client, m.activeConvID, input), true
 		}
 	case screenSession:
+		// The session's input box is a focused textarea, so session actions use
+		// ctrl-modified keys to avoid clobbering ordinary typing.
 		switch key {
 		case "enter":
 			input := m.session.GetInput()
 			if input != "" {
-				return sendCodingInput(m.client, m.activeSessionID, input)
+				return sendCodingInput(m.client, m.activeSessionID, input), true
 			}
-		case "s":
+			return nil, true
+		case "ctrl+s":
 			if m.activeSessionID != "" {
-				return stopCodingSession(m.client, m.activeSessionID)
+				return stopCodingSession(m.client, m.activeSessionID), true
 			}
-		case "r":
+			return nil, true
+		case "ctrl+l":
 			if m.activeSessionID != "" {
-				return loadCodingOutput(m.client, m.activeSessionID)
+				enable := true
+				if m.session.Session != nil {
+					enable = !m.session.Session.LoopEnabled
+				}
+				return toggleCodingLoop(m.client, m.activeSessionID, enable), true
 			}
+			return nil, true
+		case "ctrl+r":
+			if m.activeSessionID != "" {
+				return loadCodingOutput(m.client, m.activeSessionID), true
+			}
+			return nil, true
 		}
 	case screenMemory:
 		if key == "enter" {
 			query := m.memBrowser.GetQuery()
 			if query == "" {
-				return loadMemories(m.client, "", 50)
+				return loadMemories(m.client, "", 50), true
 			}
-			return loadMemories(m.client, query, 20)
+			return loadMemories(m.client, query, 20), true
 		}
-	case screenUsage, screenTools, screenObservations, screenFleet, screenHealth:
+	case screenFleet:
+		switch key {
+		case "enter":
+			if s := m.fleetView.SelectedSession(); s != nil {
+				return m.openSession(s.ID, s), true
+			}
+			return nil, true
+		case "r":
+			return loadFleet(m.client, m.snapshot), true
+		case "up", "k":
+			m.fleetView.MoveCursor(-1)
+			return nil, true
+		case "down", "j":
+			m.fleetView.MoveCursor(1)
+			return nil, true
+		case "l":
+			if s := m.fleetView.SelectedSession(); s != nil {
+				return toggleCodingLoop(m.client, s.ID, !s.LoopEnabled), true
+			}
+			return nil, true
+		}
+	case screenUsage, screenTools, screenObservations, screenHealth:
 		if key == "r" {
 			switch m.screen {
 			case screenUsage:
-				return loadUsageData(m.client)
+				return loadUsageData(m.client), true
 			case screenTools:
-				return loadTools(m.client)
+				return loadTools(m.client), true
 			case screenObservations:
-				return loadObservations(m.client, 50)
-			case screenFleet:
-				return loadFleet(m.client, m.snapshot)
+				return loadObservations(m.client, 50), true
 			case screenHealth:
-				return loadServicesHealth(m.client)
+				return loadServicesHealth(m.client), true
 			}
 		}
 	case screenSearch:
 		if key == "enter" {
 			query := m.searchView.GetQuery()
 			if query == "" {
-				return nil
+				return nil, true
 			}
 			m.searchView.SetSearching(true)
-			return runSearch(m.client, query)
+			return runSearch(m.client, query), true
 		}
 	case screenDB:
-		if m.dbBrowser.IsEditing() {
-			switch key {
-			case "esc":
-				m.dbBrowser.ToggleEditing()
-			case "enter":
-				m.dbBrowser.ToggleEditing()
-				col := m.dbBrowser.CurrentCollection()
-				if col != "" {
-					m.dbBrowser.SetPage(0)
-					return queryCollection(m.client, col, 20, 0, m.dbBrowser.GetFilter())
-				}
-			default:
-				m.dbBrowser.HandleFilterKey(key)
-			}
-			return nil
-		}
 		switch key {
 		case "up", "k":
 			m.dbBrowser.Up()
+			return nil, true
 		case "down", "j":
 			m.dbBrowser.Down()
+			return nil, true
 		case "enter":
 			switch m.dbBrowser.Mode() {
 			case 0: // collections
@@ -551,48 +649,55 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) tea.Cmd {
 					m.dbBrowser.SetCollection(col)
 					m.dbBrowser.SetPage(0)
 					m.dbBrowser.SetFilter("")
-					return queryCollection(m.client, col, 20, 0, "")
+					return queryCollection(m.client, col, 20, 0, ""), true
 				}
 			case 1: // documents
 				docID := m.dbBrowser.SelectedDocID()
 				col := m.dbBrowser.CurrentCollection()
 				if docID != "" && col != "" {
-					return loadDocument(m.client, col, docID)
+					return loadDocument(m.client, col, docID), true
 				}
 			}
+			return nil, true
 		case "backspace":
 			if !m.dbBrowser.GoBack() {
 				m.popScreen()
 			}
+			return nil, true
 		case "/":
 			if m.dbBrowser.Mode() == 1 { // documents mode
 				m.dbBrowser.ToggleEditing()
 			}
+			return nil, true
 		case "n":
 			if m.dbBrowser.Mode() == 1 { // next page
 				col := m.dbBrowser.CurrentCollection()
 				p := m.dbBrowser.Page() + 1
 				m.dbBrowser.SetPage(p)
-				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter())
+				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter()), true
 			}
+			return nil, true
 		case "p":
 			if m.dbBrowser.Mode() == 1 && m.dbBrowser.Page() > 0 { // prev page
 				col := m.dbBrowser.CurrentCollection()
 				p := m.dbBrowser.Page() - 1
 				m.dbBrowser.SetPage(p)
-				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter())
+				return queryCollection(m.client, col, 20, p*20, m.dbBrowser.GetFilter()), true
 			}
+			return nil, true
 		case "ctrl+u":
 			for i := 0; i < 10; i++ {
 				m.dbBrowser.ScrollUp()
 			}
+			return nil, true
 		case "ctrl+d":
 			for i := 0; i < 10; i++ {
 				m.dbBrowser.ScrollDown()
 			}
+			return nil, true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // ---- Screen Stack ----
@@ -809,15 +914,16 @@ func (m Model) renderFooter() string {
 			hk("f", "fleet") + " " + hk("h", "health") + " " +
 			hk("s", "search") + " " +
 			hk("n", "new") + " " + hk("p", "private") + " " +
-			hk("r", "refresh") + " " + hk("tab", "focus") + " " +
+			hk("r", "refresh") + " " + hk("tab", "tasks/tools") + " " +
 			hk("q", "quit")
 	} else if m.screen == screenSearch {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
 	} else if m.screen == screenChat {
 		hints = hk("⏎", "send") + " " + hk("esc", "back") + " " + hk("ctrl+c", "quit")
 	} else if m.screen == screenSession {
-		hints = hk("⏎", "input") + " " + hk("s", "stop") + " " +
-			hk("r", "refresh") + " " + hk("esc", "back")
+		hints = hk("⏎", "input") + " " + hk("^s", "stop") + " " +
+			hk("^l", "loop") + " " +
+			hk("^r", "refresh") + " " + hk("esc", "back")
 	} else if m.screen == screenMemory {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
 	} else if m.screen == screenDB {
@@ -845,11 +951,8 @@ func (m Model) renderDashboard() string {
 	topLeft := tlBorder.Width(m.leftW - 2).Height(m.topH - 2).MaxHeight(m.topH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, tlTitle, tlContent))
 
-	// ---- Top-Right: Session Detail ----
+	// ---- Top-Right: Session Detail (read-only mirror of the selection) ----
 	trBorder := styles.PanelTop
-	if m.quad == quadTopRight {
-		trBorder = styles.PanelTopActive
-	}
 	trTitle := styles.PanelTitle.Render(" Session Detail")
 	detailContent := m.detailText
 	if detailContent == "" {
@@ -864,15 +967,12 @@ func (m Model) renderDashboard() string {
 		blBorder = styles.PanelBottomActive
 	}
 	blTitle := styles.PanelTitle.Render(" Tools")
-	toolsContent := m.menu.RenderItems(m.botH - 4)
+	toolsContent := m.menu.RenderItems(m.botH-4, m.quad == quadBotLeft)
 	botLeft := blBorder.Width(m.leftW - 2).Height(m.botH - 2).MaxHeight(m.botH).Render(
 		lipgloss.JoinVertical(lipgloss.Left, blTitle, toolsContent))
 
-	// ---- Bottom-Right: System Vitals ----
+	// ---- Bottom-Right: System Vitals (read-only) ----
 	brBorder := styles.PanelBottom
-	if m.quad == quadBotRight {
-		brBorder = styles.PanelBottomActive
-	}
 	brTitle := styles.PanelTitle.Render(" System Vitals")
 	vitalsContent := m.vitals.RenderContent(m.rightW-6, m.botH-4)
 	botRight := brBorder.Width(m.rightW - 2).Height(m.botH - 2).MaxHeight(m.botH).Render(
@@ -1018,6 +1118,15 @@ func stopCodingSession(client *api.Client, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		_ = client.StopCodingSession(sessionID)
 		return dashboardTick{}
+	}
+}
+
+func toggleCodingLoop(client *api.Client, sessionID string, enabled bool) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.ToggleCodingLoop(sessionID, enabled); err != nil {
+			return errMsg{err}
+		}
+		return codingLoopToggled{sessionID: sessionID, enabled: enabled}
 	}
 }
 

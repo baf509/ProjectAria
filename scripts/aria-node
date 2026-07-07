@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# aria-node — run the ARIA node agent (joins this machine to the fleet).
+#
+# Talks outbound-only to the central ARIA API over the tailnet. Configure via
+# env (or pass flags through):
+#   ARIA_API_URL   e.g. http://corsair-ai:8200
+#   ARIA_API_KEY   the central API_KEY
+#   ARIA_NODE_ID   e.g. bens-macbook-air   (defaults to hostname)
+set -euo pipefail
+
+ARIA_API_DIR="${ARIA_API_DIR:-$HOME/Development/ProjectAria/api}"
+PY="${ARIA_PYTHON:-$ARIA_API_DIR/.venv/bin/python3}"
+[ -x "$PY" ] || PY="$(command -v python3)"
+
+cd "$ARIA_API_DIR"
+exec "$PY" -m aria.node "$@"

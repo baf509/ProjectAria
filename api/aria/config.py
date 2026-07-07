@@ -88,10 +88,32 @@ class Settings(BaseSettings):
     # shell — unified with the fleet, drivable via the same tools, and visible in
     # the TUI/MCP. The watchdog/checkpoint/review overlay still manages it. Set
     # false to fall back to the legacy raw-subprocess substrate.
+    # Multi-machine nodes (aria-node agents). The fleet can span this host plus
+    # remote nodes (e.g. a MacBook). local_node_id identifies THIS host; shells
+    # whose `host` differs are driven via the node command queue rather than
+    # local tmux. Empty local_node_id → resolved to socket.gethostname().
+    local_node_id: str = ""
+    node_heartbeat_timeout_seconds: int = 45   # missed heartbeats → node offline
+    node_command_ttl_seconds: int = 120        # queued command expiry (TTL)
+    node_command_timeout_seconds: int = 30     # how long a remote op awaits a result
+    node_command_poll_seconds: int = 20        # server-side long-poll hold for the node
+
     coding_use_shell_substrate: bool = True
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
     coding_auto_respond_prompts: bool = False
+    # Ralph loop: opt-in, per-session. When a coding session carries a
+    # loop_config, the watchdog nudges it forward whenever it goes idle at its
+    # prompt — re-checking the killswitch/e-stop each nudge — until it emits the
+    # done token, or the nudge/deadline caps trip. Absent loop_config = no loop.
+    coding_loop_idle_seconds: int = 45          # idle-at-prompt time before a nudge
+    coding_loop_max_nudges: int = 40            # hard cap on nudges per session
+    coding_loop_deadline_minutes: int = 180     # wall-clock cap on a looping session
+    coding_loop_done_regex: str = "RALPH_DONE"  # seen in output → loop is done
+    coding_loop_nudge_prompt: str = (
+        "Continue the next step of the task. When the entire task is complete AND "
+        "verified (tests pass), reply with exactly RALPH_DONE and stop."
+    )
     infrastructure_root: str = "/home/ben/Development/infrastructure"
 
     # Streaming
@@ -270,13 +292,6 @@ class Settings(BaseSettings):
     # OODA
     ooda_default_threshold: float = 0.7
     ooda_default_max_retries: int = 2
-
-    # Telegram
-    telegram_enabled: bool = False
-    telegram_bot_token: str = ""
-    telegram_allowed_users: list[str] = []
-    telegram_dm_policy: str = "allowlist"
-    telegram_poll_interval_seconds: int = 5
 
     # Watched Shells
     shells_enabled: bool = True

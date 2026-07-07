@@ -104,6 +104,15 @@ func (s *Sidebar) visibleCount() int {
 
 // SetData rebuilds the tree from API data.
 func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions []api.CodingSession, shells []api.Shell) {
+	// Remember what was selected so the 3s refresh doesn't yank the cursor onto
+	// a different row (which would make Enter open the wrong thing).
+	var prevID string
+	var prevKind TreeNodeKind
+	if s.Cursor >= 0 && s.Cursor < len(s.Nodes) {
+		prevID = s.Nodes[s.Cursor].ID
+		prevKind = s.Nodes[s.Cursor].Kind
+	}
+
 	s.Nodes = nil
 
 	// Build agent lookup
@@ -259,8 +268,39 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 		}
 	}
 
-	// Ensure cursor is on a selectable node
+	// Restore the previous selection by identity if it still exists; otherwise
+	// fall back to clamping onto a selectable node.
+	if prevID != "" {
+		for i := range s.Nodes {
+			if s.Nodes[i].ID == prevID && s.Nodes[i].Kind == prevKind {
+				s.Cursor = i
+				break
+			}
+		}
+	}
 	s.fixCursor()
+	s.ensureVisible()
+}
+
+// ensureVisible clamps Offset so the cursor stays on screen after the node list
+// is rebuilt (it can grow or shrink between refreshes).
+func (s *Sidebar) ensureVisible() {
+	visible := s.visibleCount()
+	if s.Cursor < s.Offset {
+		s.Offset = s.Cursor
+	} else if s.Cursor >= s.Offset+visible {
+		s.Offset = s.Cursor - visible + 1
+	}
+	maxOff := len(s.Nodes) - visible
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if s.Offset > maxOff {
+		s.Offset = maxOff
+	}
+	if s.Offset < 0 {
+		s.Offset = 0
+	}
 }
 
 // Legacy compat

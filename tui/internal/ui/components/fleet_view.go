@@ -22,6 +22,10 @@ type FleetView struct {
 	Sessions []api.CodingSession
 	Shells   []api.Shell
 	Usage    []api.SessionUsage
+
+	// Cursor selects a coding session (the only rows that can be looped). It
+	// indexes into Sessions; shells are not selectable.
+	Cursor int
 }
 
 func NewFleetView() *FleetView {
@@ -46,7 +50,45 @@ func (fv *FleetView) SetData(sessions []api.CodingSession, shells []api.Shell, u
 	fv.Sessions = sessions
 	fv.Shells = shells
 	fv.Usage = usage
+	fv.clampCursor()
 	fv.refreshContent()
+}
+
+func (fv *FleetView) clampCursor() {
+	if fv.Cursor < 0 {
+		fv.Cursor = 0
+	}
+	if fv.Cursor >= len(fv.Sessions) {
+		fv.Cursor = len(fv.Sessions) - 1 // -1 when there are no sessions
+	}
+}
+
+// MoveCursor moves the session selection by delta (clamped).
+func (fv *FleetView) MoveCursor(delta int) {
+	fv.Cursor += delta
+	fv.clampCursor()
+	fv.refreshContent()
+}
+
+// SelectedSession returns the currently selected coding session, or nil when
+// there are none.
+func (fv *FleetView) SelectedSession() *api.CodingSession {
+	if fv.Cursor < 0 || fv.Cursor >= len(fv.Sessions) {
+		return nil
+	}
+	return &fv.Sessions[fv.Cursor]
+}
+
+// SetLoopEnabled updates a session's loop flag in place (instant feedback after
+// a toggle) and re-renders. No-op if the session isn't in the current list.
+func (fv *FleetView) SetLoopEnabled(sessionID string, enabled bool) {
+	for i := range fv.Sessions {
+		if fv.Sessions[i].ID == sessionID {
+			fv.Sessions[i].LoopEnabled = enabled
+			fv.refreshContent()
+			return
+		}
+	}
 }
 
 func (fv *FleetView) Update(msg tea.Msg) (*FleetView, tea.Cmd) {
@@ -70,9 +112,9 @@ func (fv *FleetView) refreshContent() {
 	}
 
 	// Table header.
-	headerFmt := "  %-7s %-22s %-20s %-9s %8s %9s %9s\n"
+	headerFmt := "  %-7s %-10s %-18s %-16s %-9s %7s %8s %8s\n"
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render(
-		fmt.Sprintf(headerFmt, "TYPE", "NAME", "BACKEND/MODEL", "STATUS", "IDLE/AGE", "TOKENS", "COST $")))
+		fmt.Sprintf(headerFmt, "TYPE", "HOST", "NAME", "BACKEND/MODEL", "STATUS", "IDLE/AGE", "TOKENS", "COST $")))
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
 		"  " + strings.Repeat("─", cw-4) + "\n"))
 
@@ -80,7 +122,7 @@ func (fv *FleetView) refreshContent() {
 	var totalCost float64
 
 	// Coding sessions.
-	for _, s := range fv.Sessions {
+	for i, s := range fv.Sessions {
 		name := s.Workspace
 		if name == "" {
 			name = s.ID
@@ -110,7 +152,8 @@ func (fv *FleetView) refreshContent() {
 		}
 
 		age := relAge(s.CreatedAt)
-		fv.writeRow(&b, headerFmt, "session", name, backendModel, s.Status, age, tokens, cost)
+		fv.writeRow(&b, headerFmt, i == fv.Cursor, s.LoopEnabled,
+			"session", s.Host, name, backendModel, s.Status, age, tokens, cost)
 	}
 
 	// Watched shells.
@@ -124,7 +167,7 @@ func (fv *FleetView) refreshContent() {
 			status = "awaiting"
 		}
 		idle := fmt.Sprintf("%ds", sh.IdleSeconds)
-		fv.writeRow(&b, headerFmt, "shell", name, "tmux", status, idle, "", "")
+		fv.writeRow(&b, headerFmt, false, false, "shell", sh.Host, name, "tmux", status, idle, "", "")
 	}
 
 	if len(fv.Sessions) == 0 && len(fv.Shells) == 0 {
@@ -135,26 +178,38 @@ func (fv *FleetView) refreshContent() {
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
 		"  " + strings.Repeat("─", cw-4) + "\n"))
 	b.WriteString(fmt.Sprintf(headerFmt,
-		styles.VitalLabel.Render("TOTAL"), "", "", "", "",
+		styles.VitalLabel.Render("TOTAL"), "", "", "", "", "",
 		styles.VitalValue.Render(formatTokensLong(totalTokens)),
 		styles.VitalValue.Render(fmt.Sprintf("%.4f", totalCost))))
 
 	fv.Viewport.SetContent(b.String())
 }
 
-func (fv *FleetView) writeRow(b *strings.Builder, format, typ, name, backendModel, status, idle, tokens, cost string) {
+func (fv *FleetView) writeRow(b *strings.Builder, format string, selected, loop bool, typ, host, name, backendModel, status, idle, tokens, cost string) {
 	typeStyle := lipgloss.NewStyle().Foreground(styles.Info)
 	if typ == "shell" {
 		typeStyle = lipgloss.NewStyle().Foreground(styles.Accent)
 	}
-	b.WriteString(fmt.Sprintf(format,
+	// A looping session gets a ⟳ suffix on its status (color stays keyed on the
+	// base status).
+	statusText := status
+	if loop {
+		statusText = status + "⟳"
+	}
+	row := fmt.Sprintf(format,
 		typeStyle.Render(typ),
-		truncate(name, 22),
-		truncate(backendModel, 20),
-		statusColor(status).Render(truncate(status, 9)),
+		truncate(host, 10),
+		truncate(name, 18),
+		truncate(backendModel, 16),
+		statusColor(status).Render(truncate(statusText, 9)),
 		idle,
 		tokens,
-		cost))
+		cost)
+	if selected {
+		// The format begins with two literal spaces; swap the first for a caret.
+		row = lipgloss.NewStyle().Foreground(styles.Accent).Bold(true).Render("▸") + row[1:]
+	}
+	b.WriteString(row)
 }
 
 func relAge(t time.Time) string {
@@ -195,7 +250,7 @@ func (fv *FleetView) View() string {
 	header := styles.TitleStyle.Render(fmt.Sprintf("Fleet (%d sessions, %d shells)", len(fv.Sessions), len(fv.Shells)))
 	vpView := fv.Viewport.View()
 	footer := lipgloss.NewStyle().Foreground(styles.Muted).Render(
-		"  r: refresh │ Esc: back")
+		"  ↑↓: select │ ⏎: open │ l: loop │ r: refresh │ Esc: back")
 
 	content := lipgloss.JoinVertical(lipgloss.Left, header, "", vpView, footer)
 

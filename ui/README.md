@@ -42,7 +42,7 @@ The UI will be available at http://localhost:3000
 Create a `.env.local` file:
 
 ```bash
-NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_API_URL=http://localhost:8200
 ```
 
 ## Docker
@@ -56,7 +56,7 @@ docker build -t aria-ui .
 ### Run
 
 ```bash
-docker run -p 3000:3000 -e NEXT_PUBLIC_API_URL=http://localhost:8000 aria-ui
+docker run -p 3000:3000 -e NEXT_PUBLIC_API_URL=http://localhost:8200 aria-ui
 ```
 
 Or use docker-compose from the project root:

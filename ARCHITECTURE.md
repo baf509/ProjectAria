@@ -67,17 +67,17 @@ Sub-agents are specialized agents that ARIA can delegate to. They appear in the 
 
 ### Pi Coding Agent
 
-A local LLM coding assistant running on llama.cpp. Free, private, always available.
+ARIA's own agentic coding loop (`pi-code`), run through her orchestrator with a pinned model — no external CLI. The model is swappable per agent (local qwen-agentic/qwen-chat for free+private, or cloud).
 
 | Property | Value |
 |----------|-------|
 | **Slug** | `pi-coding` |
-| **Backend** | llama.cpp (local) |
+| **Backend** | `fireworks` / GLM 5.2 by default; swappable per agent (e.g. `agentic`, `llamacpp`) |
 | **Temperature** | 0.4 (focused) |
 | **Tools** | filesystem, shell, web |
 | **Memory** | Enabled, auto-extraction |
 
-**How it works:** ARIA creates a persistent conversation with the Pi Coding Agent and processes it through her own orchestrator using the local LLM. The conversation persists — you can jump into it from the TUI to see what happened or continue the work.
+**How it works:** ARIA creates a persistent conversation with the Pi Coding Agent and processes it through her own orchestrator using the pinned model. The conversation persists — you can jump into it from the TUI to see what happened or continue the work.
 
 **Invoked by:** ARIA's `pi_coding_agent` tool, or directly from the TUI sidebar.
 
@@ -97,11 +97,19 @@ Interactive coding sessions using the Claude Code CLI. These run as autonomous s
 
 **Invoked by:** ARIA's `start_coding_session` tool (backend: `claude_code`), or via the API.
 
+**Ralph loop (keep it going):** a session can opt into a per-session loop — the watchdog re-feeds it whenever it idles at its prompt (re-checking killswitch/e-stop each nudge) until it emits `RALPH_DONE` or hits a nudge/deadline cap. Toggle from the TUI (`l`), `POST /coding/sessions/{id}/loop`, or the MCP `set_coding_loop` tool. Off by default — absent a `loop_config`, sessions are one-shot as before.
+
 ### Codex Sessions
 
 Same session infrastructure as Claude Code but using the Codex CLI with `--sandbox workspace-write --ask-for-approval never`.
 
 **Invoked by:** ARIA's `start_coding_session` tool (backend: `codex`).
+
+---
+
+## Watched Shells & Fleet
+
+Beyond the sub-agents ARIA spawns, she **watches** the `claude-*` tmux sessions you run yourself: any such session is auto-adopted, captured line-by-line into MongoDB, and mined for memories, a project registry, and idle alerts. ARIA-spawned coding sessions run on this *same* substrate (each is a `claude-coding-*` watched shell), so the whole fleet — yours and hers — is observable and drivable through one set of tools (`fleet_overview`, `current_screen`, `send_input`) and appears in the TUI Fleet screen and the MCP bridge to Hermes. See CLAUDE.md "Watched Shells & Fleet" for the full subsystem.
 
 ---
 
@@ -171,7 +179,7 @@ Periodic check-in that reviews a checklist and alerts the user if anything needs
 
 **What ARIA receives:** The `HEARTBEAT.md` checklist, current time, relevant memories.
 
-**What ARIA returns:** Either exactly `HEARTBEAT_OK` (nothing to report) or a concise alert delivered via Signal/Telegram notification.
+**What ARIA returns:** Either exactly `HEARTBEAT_OK` (nothing to report) or a concise alert, enqueued via `NotificationService` for the Hermes agent to relay to Signal.
 
 ### OODA Loop (Self-Correction)
 
@@ -298,7 +306,7 @@ Memories have: content, content_type (fact/preference/experience/relationship), 
 | Interface | Technology | Description |
 |-----------|-----------|-------------|
 | **Web UI** | Next.js | Chat interface at localhost:3000 |
-| **TUI** | Go (Bubble Tea) | Terminal dashboard with sidebar, chat, sessions, memory browser, usage monitor, tools browser, observations |
+| **TUI** | Go (Bubble Tea) | Terminal dashboard with sidebar, chat, sessions, memory browser, usage monitor, tools browser, observations. Pure-HTTP client → runs as a **remote cockpit** (`aria tui --host <name>`); see `tui/README.md` |
 | **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey |
 | **CLI** | Python | `aria chat "message"`, `aria conversations list`, etc. |
 | **REST API** | FastAPI | Full API with SSE streaming at localhost:8200 |

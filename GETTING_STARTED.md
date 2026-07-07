@@ -1,20 +1,15 @@
 # Getting Started with ARIA
 
-Complete guide to setting up and running ARIA on your machine.
+Operator setup + troubleshooting guide. For the project overview, capability
+tour, and architecture, see **[README.md](README.md)**. For the TUI / remote
+cockpit, see **[tui/README.md](tui/README.md)**.
 
----
-
-## What You'll Set Up
-
-| Service | Purpose | Port |
-|---------|---------|------|
-| **Shared Infrastructure** | MongoDB, llama.cpp, embeddings (shared with ABP) | 27017, 8080, 8001 |
-| **ARIA API** | FastAPI backend — chat, memory, tools | 8200 |
-| **TTS** (optional) | Qwen3-TTS text-to-speech (CPU) | 8002 |
-| **STT** (optional) | Whisper speech-to-text (CPU) | 8003 |
-| **Web UI** | Next.js chat interface | 3000 |
-
-ARIA depends on shared infrastructure services (MongoDB, llama.cpp, embeddings) that live in a separate project at `../infrastructure/`. These are shared with AgentBenchPlatform.
+ARIA is the single always-on service on this host. The **API runs as a native
+systemd user service** (not a Docker container) so it has filesystem/process
+access; only the UI, TTS, and STT run in Docker. It depends on **shared
+infrastructure** (MongoDB, mongot, local LLMs, embeddings) that lives in a
+separate project at `../infrastructure/` and is shared with AgentBenchPlatform —
+**start it first.**
 
 ---
 
@@ -22,56 +17,47 @@ ARIA depends on shared infrastructure services (MongoDB, llama.cpp, embeddings) 
 
 - **Docker** and **Docker Compose** — [Install Docker](https://docs.docker.com/get-docker/)
 - **Git** — [Install Git](https://git-scm.com/downloads)
-- **Node.js 18+** — For the desktop widget (optional)
-- **Rust** — For building the desktop widget (optional)
-- **Python 3.12+** — For the CLI client (optional)
+- **systemd (user services)** — the API runs as `aria-api` under `systemctl --user`
+- **Python 3.12+** — for the CLI client (optional)
+- **Node.js 18+** and **Rust** — for building the desktop widget (optional)
 
-**For llama.cpp with ROCm (AMD GPU/APU users):**
+**For the local LLMs with ROCm (AMD GPU/APU):**
 - AMD GPU or APU with ROCm support (gfx1151, gfx1150, gfx120X, gfx110X)
 - `/dev/kfd` and `/dev/dri` device access
-- User in `video` and `render` groups
+- User in the `video` and `render` groups
 
 ---
 
 ## Step 1: Start Shared Infrastructure
 
-The shared infrastructure project provides MongoDB, llama.cpp, and the embedding service. Set it up first.
+Provides MongoDB (`rs0` replica set), mongot, the three local LLMs, and the
+embedding service. Set it up first.
 
 ```bash
-cd ../infrastructure
+cd /home/ben/Development/infrastructure
 
 # Create the Docker network (one-time)
 docker network create shared-infra
 
 # Configure environment
 cp .env.example .env
-# Edit .env — set LLAMACPP_MODELS_DIR to the directory containing your GGUF model
+# Edit .env as needed (e.g. LLAMACPP_GPU_TARGET to match your hardware)
 
-# Start shared services
+# Start core shared services (mongod, mongot, embeddings)
 docker compose up -d
-```
 
-Wait for services to be healthy:
-
-```bash
-docker compose ps
-```
-
-Expected output:
-```
-NAME                STATUS
-shared-mongod       running (healthy)
-shared-mongot       running
-shared-llamacpp     running
-shared-embeddings   running
-shared-mongo-init   exited (0)     # one-time setup, expected to exit
+# Start the local LLMs (qwen-chat, qwen-agentic, context-1)
+cd qwen-rocmfp4 && docker compose up -d && cd ..
 ```
 
 Verify services are responding:
 
 ```bash
-curl http://localhost:8080/health   # llama.cpp
+docker compose ps
 curl http://localhost:8001/health   # embeddings
+curl http://localhost:8092/health   # qwen-chat  (35B-A3B)
+curl http://localhost:8093/health   # qwen-agentic (27B)
+curl http://localhost:8081/health   # context-1 (Search Agent backend)
 ```
 
 See `../infrastructure/README.md` for full configuration details.
@@ -84,163 +70,117 @@ See `../infrastructure/README.md` for full configuration details.
 git clone https://github.com/baf509/ProjectAria.git
 cd ProjectAria
 
-# Create your environment file
 cp .env.example .env
 ```
 
-Edit `.env` with your settings:
+Edit `.env`. Defaults for MongoDB, embeddings, and the local LLM URLs point at
+the shared infra by container name and need no changes:
 
 ```bash
-# === Required ===
-
-# MongoDB (via shared infrastructure — defaults work, no changes needed)
+# === MongoDB (shared infra — defaults work) ===
 MONGODB_URI=mongodb://mongod:27017/?directConnection=true&replicaSet=rs0
 MONGODB_DATABASE=aria
 
-# Embeddings (via shared infrastructure — defaults work)
+# === Embeddings (shared infra — defaults work) ===
 EMBEDDING_URL=http://embeddings:8001/v1
 EMBEDDING_MODEL=voyageai/voyage-4-nano
 EMBEDDING_DIMENSION=1024
 
-# llama.cpp (via shared infrastructure — defaults work)
-LLAMACPP_URL=http://llamacpp:8080/v1
+# === Default agent backend (GLM 5.2 via Fireworks) ===
+FIREWORKS_API_KEY=
 
-# === Optional: Cloud LLM API Keys ===
-
+# === Optional: other cloud LLM keys ===
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 OPENROUTER_API_KEY=
 ```
+
+The default agents (ARIA orchestrator + Pi Coding Agent) run on **GLM 5.2 via
+Fireworks**, so `FIREWORKS_API_KEY` is required for out-of-the-box chat. Backend
++ model are chosen **per agent** (config rows in `db.agents`) — see the LLM
+Backends table in the README — so you can point an agent at a local qwen backend
+instead if you prefer.
 
 ---
 
 ## Step 3: Start ARIA Services
 
 ```bash
-# Start ARIA services (api, tts, stt, ui)
-docker compose up -d
+# 1. Start the API (native systemd user service, binds :8200)
+systemctl --user start aria-api
+systemctl --user status aria-api
+journalctl --user -u aria-api -f      # follow logs (Ctrl+C to stop)
 
-# Watch the logs to confirm everything starts
-docker compose logs -f
-# (Ctrl+C to stop following logs)
-```
-
-**First run will take a few minutes** — Docker needs to:
-- Build the API image
-- Build the TTS service image (downloads Qwen3-TTS 0.6B model, if enabled)
-- Build the STT service image (downloads whisper-large-v3-turbo, if enabled)
-
-Check that services are healthy:
-
-```bash
+# 2. Start the Docker services (ui, tts, stt)
+cd /home/ben/Development/ProjectAria && docker compose up -d
 docker compose ps
 ```
 
-Expected output:
-```
-NAME              STATUS
-aria-api          running
-aria-tts          running        # only if using TTS
-aria-stt          running        # only if using STT
-aria-ui           running
-```
+**First `docker compose up` will take a few minutes** — it builds the UI image
+and (if enabled) downloads the TTS (Qwen3-TTS 0.6B) and STT
+(whisper-large-v3-turbo) models.
 
 ---
 
 ## Step 4: Verify the Installation
 
 ```bash
-# Check API health
+# API health
 curl http://localhost:8200/api/v1/health
+# Concurrent probe of every backing service (mongod, mongot, the three
+# local LLMs, embeddings, tts, stt, fireworks):
+curl http://localhost:8200/api/v1/health/services
 
-# Expected:
-# {"status":"healthy","version":"0.2.0","database":"connected",...}
-
-# Check LLM backends
-curl http://localhost:8200/api/v1/health/llm
-
-# Check embedding service (via shared infra)
-curl http://localhost:8001/health
-
-# Check TTS service (if using)
-curl http://localhost:8002/health
-
-# Check STT service (if using)
-curl http://localhost:8003/health
-
-# Check llama.cpp is serving (via shared infra)
-curl http://localhost:8080/health
+# Backing services directly
+curl http://localhost:8001/health   # embeddings
+curl http://localhost:8092/health   # qwen-chat
+curl http://localhost:8002/health   # tts (if enabled)
+curl http://localhost:8003/health   # stt (if enabled)
 ```
 
-Open the Web UI: **http://localhost:3000**
-
-Open the API docs: **http://localhost:8200/docs**
+- Web UI: **http://localhost:3000**
+- API docs (Swagger): **http://localhost:8200/docs**
 
 ---
 
-## Step 5: Configure Your Agent
-
-ARIA creates a default agent on first run. To switch it to use llama.cpp:
-
-```bash
-# List agents to get the agent ID
-curl -s http://localhost:8200/api/v1/agents | python3 -m json.tool
-
-# Update agent to use llama.cpp
-curl -X PUT http://localhost:8200/api/v1/agents/YOUR_AGENT_ID \
-  -H "Content-Type: application/json" \
-  -d '{
-    "llm": {
-      "backend": "llamacpp",
-      "model": "default",
-      "temperature": 0.7,
-      "max_tokens": 4096
-    },
-    "fallback_chain": [{
-      "backend": "openrouter",
-      "model": "anthropic/claude-3.5-sonnet",
-      "conditions": {"on_error": true}
-    }]
-  }'
-```
-
----
-
-## Step 6: Start Chatting
+## Step 5: Start Using ARIA
 
 ### Web UI
-
 Open **http://localhost:3000** — create a conversation and start chatting.
 
 ### CLI (optional)
-
 ```bash
 cd cli
-pip install -r requirements.txt
 pip install -e .
 
-# Chat
 aria chat "Hello, ARIA!"
-
-# Continue a conversation
 aria conversations list
 aria chat -c CONVERSATION_ID "Tell me more"
 
-# Memory commands
-aria memories list
 aria memories search "query"
 aria memories add "Important fact to remember"
+
+aria tui                              # launch the TUI cockpit
 ```
 
-### API directly
-
+### TUI (the cockpit)
 ```bash
-# Create a conversation
+cd tui
+make install                          # → ~/.local/bin/aria-tui  (or: aria tui)
+aria-tui
+```
+
+Run it on another machine (e.g. a MacBook) against this host over the tailnet
+instead of SSHing in — build with `make build-darwin`, add a
+`~/.config/aria/hosts` profile, then `aria-tui --host corsair`. Full recipe in
+**[tui/README.md](tui/README.md)**.
+
+### API directly
+```bash
 CONV_ID=$(curl -s -X POST http://localhost:8200/api/v1/conversations \
   -H "Content-Type: application/json" \
   -d '{"title":"My Chat"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 
-# Send a message (streaming)
 curl -N -X POST "http://localhost:8200/api/v1/conversations/$CONV_ID/messages" \
   -H "Content-Type: application/json" \
   -d '{"content":"Hello ARIA!","stream":true}'
@@ -248,182 +188,77 @@ curl -N -X POST "http://localhost:8200/api/v1/conversations/$CONV_ID/messages" \
 
 ---
 
-## Step 7: Desktop Widget (Optional)
+## Desktop Widget (Optional)
 
-The desktop widget is a Tauri app that lives in your system tray and opens with `Ctrl+Space`.
+Tauri v2 app that lives in the system tray and opens with `Ctrl+Space`. Once
+running, open its settings panel and set the API URL to your ARIA server
+(default `http://localhost:8200`).
 
 ### Linux
-
 ```bash
 # Install Tauri system dependencies
 sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-# Install dependencies and run
 cd widget
 npm install
-
-# Run in development mode
-npm run tauri:dev
-
-# Build for production
-npm run tauri:build
-# Output: widget/src-tauri/target/release/bundle/
+npm run tauri:dev                     # dev mode
+npm run tauri:build                   # → widget/src-tauri/target/release/bundle/
 ```
 
 ### Windows
-
-**Prerequisites:**
-1. **Node.js 18+** — [nodejs.org](https://nodejs.org)
-2. **Rust toolchain** — Install via [rustup.rs](https://rustup.rs)
-3. **Visual Studio C++ Build Tools** — Install from [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-studio-build-tools/), select **"Desktop development with C++"** workload
+**Prerequisites:** Node.js 18+ ([nodejs.org](https://nodejs.org)), the Rust
+toolchain ([rustup.rs](https://rustup.rs)), and **Visual Studio C++ Build
+Tools** with the "Desktop development with C++" workload.
 
 ```powershell
 cd widget
-
-# Install dependencies
 npm install
-
-# Run in development mode (with hot-reload)
-npm run tauri:dev
-
-# Build for production (.exe / .msi installer)
+npm run tauri:dev                     # dev mode (hot-reload)
 npm run tauri:build
-# Output: widget\src-tauri\target\release\bundle\msi\  (MSI installer)
-# Output: widget\src-tauri\target\release\bundle\nsis\ (NSIS installer)
+# → widget\src-tauri\target\release\bundle\msi\   (MSI installer)
+# → widget\src-tauri\target\release\bundle\nsis\  (NSIS installer)
 ```
-
-### Configuration
-
-Once running, open the settings panel in the widget and set the API URL to your ARIA server (e.g., `http://your-server:8200`). The default is `http://localhost:8200`.
-
-**Widget features:**
-- `Ctrl+Space` — Toggle the chat window
-- `Escape` — Hide the window
-- System tray icon with menu (Show, New Chat, Quit)
-- Streaming responses from the ARIA API
-- Settings panel for API URL configuration
 
 ---
 
 ## Services Reference
 
+| Service | Port | How it runs | Description |
+|---------|------|-------------|-------------|
+| API | 8200 | systemd user service (`aria-api`) | FastAPI backend (native) |
+| Web UI | 3000 | Docker (this repo) | Next.js chat interface |
+| TTS | 8002 | Docker (this repo) | Qwen3-TTS 0.6B (CPU) |
+| STT | 8003 | Docker (this repo) | whisper-large-v3-turbo (CPU) |
+| mongod | 27017 | Docker (infrastructure) | MongoDB 8.2, replica set `rs0` |
+| mongot | 27028 | Docker (infrastructure) | Vector + text search |
+| embeddings | 8001 | Docker (infrastructure) | voyage-4-nano (1024-dim, CPU) |
+| qwen-chat | 8092 | Docker (infrastructure/qwen-rocmfp4) | Qwen3.6 35B-A3B (ROCm) |
+| qwen-agentic | 8093 | Docker (infrastructure/qwen-rocmfp4) | Qwen3.6 27B (ROCm) |
+| context-1 | 8081 | Docker (infrastructure/qwen-rocmfp4) | context-1 20B, Search Agent backend |
+
+> The default chat/coding model (GLM 5.2) is **cloud via Fireworks**, not on the
+> GPU box. The old single `llama.cpp` on `:8080` is retired.
+
 ### Starting and Stopping
 
 ```bash
-# Start shared infrastructure (must be running first)
-cd ../infrastructure && docker compose up -d
+# Start (order matters — infra first)
+cd /home/ben/Development/infrastructure && docker compose up -d
+cd qwen-rocmfp4 && docker compose up -d && cd ..
+systemctl --user start aria-api
+cd /home/ben/Development/ProjectAria && docker compose up -d
 
-# Start ARIA services
-cd ../ProjectAria && docker compose up -d
+# Stop / restart the API
+systemctl --user stop aria-api
+systemctl --user restart aria-api
 
-# Stop ARIA services (data preserved — lives in shared infra volumes)
+# Stop ARIA Docker services (data lives in shared infra volumes)
 docker compose down
 
-# Stop shared infrastructure (also affects AgentBenchPlatform!)
-cd ../infrastructure && docker compose down
-
-# Stop shared infrastructure AND delete all data
-cd ../infrastructure && docker compose down -v
-
-# Restart an ARIA service
-docker compose restart api
-
-# View logs
-docker compose logs -f api          # API logs
-docker compose logs -f tts          # TTS service logs
-docker compose logs -f stt          # STT service logs
-
-# View shared infra logs
-cd ../infrastructure
-docker compose logs -f llamacpp     # llama.cpp logs
-docker compose logs -f embeddings   # Embedding service logs
-docker compose logs -f mongod       # MongoDB logs
-```
-
-### Service URLs
-
-| Service | URL | Description |
-|---------|-----|-------------|
-| Web UI | http://localhost:3000 | Chat interface |
-| API | http://localhost:8200 | REST API |
-| API Docs | http://localhost:8200/docs | Swagger/OpenAPI |
-| Embeddings | http://localhost:8001 | OpenAI-compatible embedding API (shared infra) |
-| TTS | http://localhost:8002 | Qwen3-TTS speech synthesis |
-| STT | http://localhost:8003 | Whisper transcription |
-| llama.cpp | http://localhost:8080 | OpenAI-compatible API (shared infra) |
-
-### Useful API Endpoints
-
-```bash
-# Health
-curl http://localhost:8200/api/v1/health
-curl http://localhost:8200/api/v1/health/llm
-
-# Conversations
-curl http://localhost:8200/api/v1/conversations
-curl http://localhost:8200/api/v1/conversations/ID
-
-# Memories
-curl http://localhost:8200/api/v1/memories
-curl -X POST http://localhost:8200/api/v1/memories/search \
-  -H "Content-Type: application/json" \
-  -d '{"query":"search term","limit":10}'
-
-# Agents
-curl http://localhost:8200/api/v1/agents
-
-# Tools
-curl http://localhost:8200/api/v1/tools
-
-# TTS - synthesize speech
-curl -X POST http://localhost:8200/api/v1/tts/synthesize \
-  -H "Content-Type: application/json" \
-  -d '{"text":"Hello from ARIA","speaker":"Vivian"}' \
-  --output hello.wav
-
-# TTS - list speakers
-curl http://localhost:8200/api/v1/tts/speakers
-
-# STT - transcribe audio
-curl -X POST http://localhost:8200/api/v1/stt/transcribe \
-  -F "file=@recording.wav"
-```
-
----
-
-## llama.cpp ROCm Configuration
-
-The llama.cpp service is part of the shared infrastructure (`../infrastructure/`). It uses pre-built ROCm binaries from [lemonade-sdk/llamacpp-rocm](https://github.com/lemonade-sdk/llamacpp-rocm).
-
-### Supported GPU Targets
-
-| Target | Hardware |
-|--------|----------|
-| `gfx1151` | Ryzen AI MAX+ Pro 395 (STX Halo APU) |
-| `gfx1150` | Ryzen AI 300 (STX Point APU) |
-| `gfx120X` | Radeon RX 9070/9060 (RDNA4) |
-| `gfx110X` | Radeon RX 7900/7800/7700/7600 (RDNA3) |
-
-Change the target in `../infrastructure/.env`:
-```bash
-LLAMACPP_GPU_TARGET=gfx1151   # Change to match your hardware
-```
-
-### Environment Variables (in infrastructure/.env)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLAMACPP_GPU_TARGET` | `gfx1151` | ROCm GPU architecture target |
-| `LLAMACPP_MODEL` | `/models/step3p5_flash_Q4_K_S-00001-of-00012.gguf` | Path to GGUF model inside container |
-| `LLAMACPP_MODELS_DIR` | `./models` | Host directory mounted to `/models` |
-| `LLAMACPP_GPU_LAYERS` | `99` | Number of layers to offload to GPU |
-| `LLAMACPP_CTX_SIZE` | `16384` | Context window size |
-
-### Linux APU Note
-
-For gfx1150/gfx1151 APUs, if you see out-of-memory errors despite available VRAM, add this to your kernel command line parameters and reboot:
-```
-ttm.pages_limit=12582912
+# Stop shared infra (also affects AgentBenchPlatform!)
+cd /home/ben/Development/infrastructure && docker compose down
+# ...and delete all data:
+docker compose down -v
 ```
 
 ---
@@ -431,133 +266,82 @@ ttm.pages_limit=12582912
 ## Troubleshooting
 
 ### Shared infrastructure not running
-
-ARIA requires the shared infrastructure to be running first. If API health checks fail with connection errors:
-
+ARIA requires the shared infra first. If API health checks fail with connection
+errors:
 ```bash
-# Check shared infra status
-cd ../infrastructure && docker compose ps
-
-# Start if not running
-docker compose up -d
-
-# Wait for MongoDB to be healthy, then start ARIA
-cd ../ProjectAria && docker compose up -d
+cd /home/ben/Development/infrastructure && docker compose ps
+docker compose up -d              # start if not running
+# wait for mongod to be healthy, then:
+systemctl --user restart aria-api
 ```
 
 ### API won't start
-
 ```bash
-docker compose logs api
-# Check for Python import errors or missing dependencies
-docker compose restart api
+systemctl --user status aria-api
+journalctl --user -u aria-api -n 100 --no-pager
+# check for Python import errors / missing dependencies / bad .env, then:
+systemctl --user restart aria-api
 ```
 
 ### MongoDB replica set issues
-
 ```bash
-# Check mongod health (in infrastructure directory)
-cd ../infrastructure
+cd /home/ben/Development/infrastructure
 docker compose logs mongod
 
-# Manually initialize replica set
-docker exec -it shared-mongod mongosh --eval "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongod:27017'}]})"
+# Manually initialize the replica set
+docker exec -it shared-mongod mongosh --eval \
+  "rs.initiate({_id:'rs0',members:[{_id:0,host:'mongod:27017'}]})"
 
 # Re-run index creation
 docker compose run --rm mongo-init
 ```
 
-### llama.cpp won't start
-
+### Local LLMs won't start
 ```bash
-# Check logs (in infrastructure directory)
-cd ../infrastructure
-docker compose logs llamacpp
+cd /home/ben/Development/infrastructure/qwen-rocmfp4
+docker compose logs qwen-chat
 
-# Verify model file exists
-ls -la $LLAMACPP_MODELS_DIR/*.gguf
-
-# Check GPU access
+# Check GPU access and group membership
 ls -la /dev/kfd /dev/dri
-
-# Verify user is in video/render groups
-groups
-# Should include: video render
+groups                            # should include: video render
 ```
+For gfx1150/gfx1151 APUs, if you see out-of-memory errors despite available
+VRAM, add `ttm.pages_limit=12582912` to the kernel command line and reboot.
 
 ### Embedding service issues
-
 ```bash
-# Check embedding service health
 curl http://localhost:8001/health
+cd /home/ben/Development/infrastructure && docker compose logs embeddings
 
-# Check logs (in infrastructure directory)
-cd ../infrastructure
-docker compose logs embeddings
-
-# Test embedding generation
 curl http://localhost:8001/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{"input":"test","model":"voyageai/voyage-4-nano"}'
 ```
 
 ### Memory search returns nothing
-
 ```bash
-# Check search indexes exist
 docker exec -it shared-mongod mongosh --eval "
   use aria;
   db.memories.getSearchIndexes();
 "
-
-# If empty, re-run initialization (from infrastructure directory)
-cd ../infrastructure
-docker compose run --rm mongo-init
-# Wait 30 seconds for indexes to activate
+# If empty, re-run initialization and wait ~30s for indexes to activate:
+cd /home/ben/Development/infrastructure && docker compose run --rm mongo-init
 ```
 
 ### Widget build fails (Linux)
-
 ```bash
-# Install system dependencies (Ubuntu/Debian)
 sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-
-# Verify Rust is installed
-rustc --version  # Need 1.70+
-
-# Clean and rebuild
+rustc --version                   # need 1.70+
 cd widget
 rm -rf node_modules src-tauri/target
-npm install
-npm run tauri:dev
+npm install && npm run tauri:dev
 ```
 
 ### Widget build fails (Windows)
-
 ```powershell
-# Verify Rust is installed
-rustc --version  # Need 1.70+
-
-# Verify Visual Studio Build Tools are installed
-# Open "Visual Studio Installer" and ensure "Desktop development with C++" is checked
-
-# Clean and rebuild
+rustc --version                   # need 1.70+
+# Ensure "Desktop development with C++" is checked in the Visual Studio Installer
 cd widget
 Remove-Item -Recurse -Force node_modules, src-tauri\target
-npm install
-npm run tauri:dev
+npm install; npm run tauri:dev
 ```
-
----
-
-## What's Next
-
-After setup, try:
-
-1. **Chat** — Send messages via Web UI or CLI
-2. **Test memory** — Tell ARIA a fact ("My favorite language is Rust"), then ask about it in a new conversation
-3. **Add tools** — Enable tools in agent config for filesystem/shell access
-4. **Add MCP servers** — Connect external tool servers
-
-Future plans:
-- Computer use (screen control)

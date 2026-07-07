@@ -60,6 +60,55 @@ class ShellService:
         self.events = db.shell_events
         self.snapshots = db.shell_snapshots
 
+    # ------------------------------------------------------- host awareness
+    # A shell whose `host` names another machine is driven via the node command
+    # queue rather than local tmux. The read path (scrollback, overview) is
+    # host-agnostic; only the live ops (send_input/current_screen/liveness) and
+    # kill dispatch by host.
+
+    @staticmethod
+    def _shell_is_remote(shell) -> bool:
+        from aria.nodes import is_remote_host
+        return is_remote_host(getattr(shell, "host", None))
+
+    async def _node_online(self, node_id: str) -> bool:
+        doc = await self.db.nodes.find_one({"_id": node_id})
+        if not doc:
+            return False
+        hb = doc.get("last_heartbeat_at")
+        if not hb:
+            return False
+        if hb.tzinfo is None:
+            hb = hb.replace(tzinfo=timezone.utc)
+        return (_utcnow() - hb).total_seconds() < settings.node_heartbeat_timeout_seconds
+
+    async def _remote_command(
+        self, node_id: str, kind: str, args: dict, *, timeout: Optional[int] = None
+    ) -> Optional[dict]:
+        """Enqueue a command to a remote node and await its result. Returns the
+        result dict, or None if the node is offline / the command times out."""
+        from aria.nodes import commands
+        if not await self._node_online(node_id):
+            return None
+        cmd_id = await commands.enqueue_command(self.db, node_id, kind, args)
+        doc = await commands.await_result(self.db, cmd_id, timeout_seconds=timeout)
+        if not doc or doc.get("status") != "done":
+            return None
+        return doc.get("result") or {}
+
+    async def session_alive(self, name: str) -> bool:
+        """Host-aware liveness: local → tmux has_session; remote → node online
+        and the shell not marked stopped."""
+        shell = await self.get_shell(name)
+        if not shell:
+            return False
+        if self._shell_is_remote(shell):
+            return shell.status != "stopped" and await self._node_online(shell.host)
+        try:
+            return await self.tmux.has_session(name)
+        except Exception:  # pragma: no cover - defensive
+            return False
+
     # ------------------------------------------------------------------ reads
 
     async def list_shells(
@@ -142,15 +191,18 @@ class ShellService:
         *,
         project_dir: str = "",
         pane_id: str = "",
+        host: Optional[str] = None,
     ) -> Shell:
         """Create or refresh a shells doc for a tmux session.
 
-        Idempotent — called on session-created and client-attached hooks.
+        Idempotent — called on session-created and client-attached hooks. `host`
+        defaults to this machine; the node-ingest path passes the remote node id
+        so a remote shell is attributed to the machine it actually runs on.
         """
         now = _utcnow()
         prefix = settings.shells_tmux_session_prefix
         short = _strip_prefix(name, prefix)
-        host = socket.gethostname()
+        host = host or socket.gethostname()
 
         update = {
             "$setOnInsert": {
@@ -269,8 +321,14 @@ class ShellService:
         """Kill a tmux session and mark its shell row stopped.
 
         Idempotent — a missing tmux session is not an error, the shell
-        row is still marked stopped.
+        row is still marked stopped. For a remote shell, dispatches a stop
+        command to the owning node.
         """
+        shell = await self.get_shell(name)
+        if shell and self._shell_is_remote(shell):
+            await self._remote_command(shell.host, "stop", {"name": name}, timeout=15)
+            await self.mark_stopped(name)
+            return
         await self.tmux.kill_session(name)
         await self.mark_stopped(name)
 
@@ -301,6 +359,7 @@ class ShellService:
         events: list[dict],
         *,
         update_shell_timestamps: bool = True,
+        host: Optional[str] = None,
     ) -> int:
         """Append a batch of events to shell_events.
 
@@ -323,7 +382,7 @@ class ShellService:
             "$setOnInsert": {
                 "short_name": _strip_prefix(name, settings.shells_tmux_session_prefix),
                 "project_dir": "",
-                "host": socket.gethostname(),
+                "host": host or socket.gethostname(),
                 "created_at": now,
                 "status": "active",
                 "tags": [],
@@ -414,7 +473,14 @@ class ShellService:
         does not persist. Returns None if the tmux session is gone (and marks
         the shell stopped). Intended for "what's on screen right now" reads by
         agents after sending input.
+
+        For a remote shell, returns the latest snapshot the node pushed (it
+        captures locally and streams snapshots) rather than a live pane.
         """
+        shell = await self.get_shell(name)
+        if shell and self._shell_is_remote(shell):
+            snap = await self.get_last_snapshot(name)
+            return snap.content if snap else None
         try:
             raw = await self.tmux.capture_pane(name, lines=lines)
         except TmuxSessionNotFoundError:
@@ -478,6 +544,7 @@ class ShellService:
                     "name": shell.name,
                     "short_name": shell.short_name,
                     "status": shell.status,
+                    "host": shell.host,
                     "project_dir": shell.project_dir,
                     "line_count": shell.line_count,
                     "last_activity_at": la,
@@ -500,6 +567,8 @@ class ShellService:
         """Mark shells as stopped if their tmux session no longer exists."""
         known = await self.list_shells(status=["active", "idle", "unknown"])
         for shell in known:
+            if self._shell_is_remote(shell):
+                continue  # a remote node owns its own shells' liveness
             try:
                 alive = await self.tmux.has_session(shell.name)
             except Exception as exc:  # pragma: no cover - defensive
@@ -640,6 +709,28 @@ class ShellService:
             raise ShellNotFoundError(name)
         if shell.status == "stopped":
             raise ShellStoppedError(name)
+
+        # Remote shell: dispatch to the owning node and await its result. The
+        # node runs send-keys locally, then (if wait_ms) captures and returns
+        # the screen. line>0 signals success; the node echoes the input line
+        # back through its normal event stream.
+        if self._shell_is_remote(shell):
+            result = await self._remote_command(
+                shell.host,
+                "send_input",
+                {
+                    "name": name,
+                    "text": text,
+                    "append_enter": append_enter,
+                    "literal": literal,
+                    "wait_ms": wait_ms,
+                },
+                timeout=max(settings.node_command_timeout_seconds, wait_ms // 1000 + 5),
+            )
+            if result is None:
+                return (0, None)  # node offline / timed out — not sent
+            return (int(result.get("line") or 1), result.get("screen"))
+
         try:
             await self.tmux.send_keys(
                 name, text, append_enter=append_enter, literal=literal

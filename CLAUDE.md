@@ -69,6 +69,7 @@ Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter
 - **Tool router**: Central registration, execution with 30s default timeout
 - Orchestrator handles tool calls during LLM streaming, may trigger multiple rounds
 - **Coding-session backends**: `start_coding_session(backend=...)` supports `claude_code`, `codex`, and `pi-code` (ARIA's own agentic loop with a pinned `llm`/`model`, supervised by the watchdog + e-stop/killswitch). `browse_page` fetches a URL as readable text; full computer-use is available via the Playwright MCP `browser_*` family (gated by `tool_allowed_prefixes`).
+- **Ralph loop (opt-in, per-session)**: a coding session carrying a `loop_config` is *nudged forward* by the watchdog whenever it idles at its prompt — re-checking killswitch/e-stop **every nudge** — until it emits the done token (`coding_loop_done_regex`, default `RALPH_DONE`) or hits `max_nudges`/`deadline_minutes`. Toggle via `POST /api/v1/coding/sessions/{id}/loop`, the MCP `set_coding_loop` tool (or `create_coding_session(loop=true)`), the `start_coding_session` `loop` param, or the TUI (`l` on the session or fleet screen). Absent `loop_config` = one-shot (unchanged). Settings live under `coding_loop_*` in `config.py`.
 
 ### Watched Shells & Fleet (`api/aria/shells/`, absorbed from aria-shells)
 
@@ -124,11 +125,15 @@ shell via `ShellService` (interactive, not `-p` batch), so a sub-agent **is** a
 watched shell — auto-captured, in the fleet/TUI, and drivable via the same
 tools. `get_output`/`send_input`/`stop` route to the shell; the
 watchdog/checkpoint/review overlay still manages it through the manager
-interface. Subprocess + visible-tmux substrates remain as fallbacks.
+interface. Subprocess + visible-tmux substrates remain as fallbacks. A session
+can be kept running via the **Ralph loop** (see *Coding-session backends* above):
+the watchdog (`agents/watchdog.py` `_maybe_nudge`) re-feeds an idle session until
+it signals done or trips a cap — driven through the same `send_input`, so it works
+for any substrate and inherits the safety gates.
 
 ### Notifications, Alerts & Self-Healing (`api/aria/notifications/`)
 
-ProjectAria does **not** send Signal/Telegram itself. `NotificationService.notify()`
+ProjectAria does **not** push notifications itself (no Signal/Telegram send path; Telegram was removed entirely). `NotificationService.notify()`
 enqueues cooldown-gated, **actionable** alerts into the `alerts` collection (it
 **drops** `coding:*` / `task` lifecycle events — those aren't alerts, and
 enqueuing them would loop the triage below). `selfcheck` alerts **once per state
@@ -225,7 +230,37 @@ aria conversations list
 aria memories search "query"
 aria tools list
 aria mcp list
+aria tui                       # launch the Go TUI (the cockpit)
+aria tui --host corsair        # remote cockpit: point at another host (see below)
 ```
+
+### Cross-machine cockpit (TUI)
+
+The Go TUI (`tui/`) is a thin **pure-HTTP** client with no machine-local
+assumptions, so it doubles as a **remote cockpit**: run it on another machine
+(e.g. the MacBook) and point it at corsair over the tailnet — no SSH.
+`aria tui --host <name|host:port|url>` (or `aria-tui --host …` for the raw binary)
+resolves profiles from `~/.config/aria/hosts`; resolution precedence is flag →
+`ARIA_API_URL`/`.env` → `default` profile → `http://localhost:8200`. Build the
+Apple-Silicon binary with `cd tui && make build-darwin` (see **`tui/README.md`**
+for the Taildrop/scp transfer + one-time ad-hoc `codesign` recipe). See *Multi-machine fleet* below for making the *fleet itself* span machines
+(designed in **`MULTI_MACHINE_FLEET_DESIGN.md`**).
+
+### Multi-machine fleet (`api/aria/nodes/`, `api/aria/node/`)
+
+The watched-shell fleet can span this host plus remote **nodes** (e.g. a MacBook).
+A remote `aria-node` agent (`python -m aria.node` / `scripts/aria-node`, outbound-
+only, httpx + tmux, no Mongo) registers via `/api/v1/nodes/*`, captures its local
+`claude-*` shells (pushing events/snapshots), and long-polls a `shell_commands`
+queue to be driven back. `ShellService` is **host-aware**: `send_input` /
+`current_screen` / `session_alive` / `kill_shell` dispatch by the shell's `host`
+— local → tmux (unchanged); remote → the node queue (`_remote_command`). Reads
+(`fleet_overview`, scrollback) are host-agnostic. `start_coding_session(host=<node>)`
+runs a coding session on that node; the watchdog + **Ralph loop drive it over the
+wire for free**. `local_node_id` (config, default hostname) identifies this host;
+corsair's own shells keep the direct-local fast path (zero regression). Both
+layers are **implemented**; live end-to-end needs an `aria-api` restart. See
+`MCP: list_nodes` + `create_coding_session(host=…)` and the TUI fleet HOST column.
 
 ### Docker Compose
 

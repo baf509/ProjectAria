@@ -289,6 +289,21 @@ class ResearchResponse(BaseModel):
 # Coding Session Models
 # =============================================================================
 
+class CodingLoopConfig(BaseModel):
+    """Ralph-loop config: nudge an idle session forward until it signals done.
+
+    All fields are optional; unset fields fall back to the coding_loop_*
+    defaults in settings when the loop is (re)enabled.
+    """
+    nudge_prompt: Optional[str] = None       # text sent on each nudge
+    nudge_prompt_file: Optional[str] = None  # re-read fresh each nudge (steer live)
+    idle_seconds: Optional[int] = None       # idle-at-prompt time before a nudge
+    done_regex: Optional[str] = None         # match in output → loop is done
+    max_nudges: Optional[int] = None         # hard cap on nudges
+    deadline_minutes: Optional[int] = None   # wall-clock cap
+    notify_every: Optional[int] = None       # notify every N nudges (0 = silent)
+
+
 class CodingSessionCreate(BaseModel):
     """Request to start a coding session."""
     workspace: str
@@ -297,6 +312,8 @@ class CodingSessionCreate(BaseModel):
     llm: Optional[str] = None
     model: Optional[str] = None
     branch: Optional[str] = None
+    loop: Optional[CodingLoopConfig] = None  # opt-in Ralph loop; absent = one-shot
+    host: Optional[str] = None  # run on a remote node (aria-node id); None = this host
 
 
 class CodingSessionInput(BaseModel):
@@ -317,6 +334,8 @@ class CodingSessionResponse(BaseModel):
     tmux_pane_id: Optional[str] = None
     shell_name: Optional[str] = None
     status: str
+    host: Optional[str] = None   # remote node id, or None for this host
+    loop_enabled: bool = False  # true while a Ralph loop is nudging this session
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

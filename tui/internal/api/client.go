@@ -197,6 +197,8 @@ type CodingSession struct {
 	Branch      string     `json:"branch,omitempty"`
 	PID         *int       `json:"pid,omitempty"`
 	Status      string     `json:"status"`
+	Host        string     `json:"host,omitempty"`
+	LoopEnabled bool       `json:"loop_enabled"`
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
@@ -222,6 +224,7 @@ type Shell struct {
 	Name          string `json:"name"`
 	ShortName     string `json:"short_name"`
 	Status        string `json:"status"`
+	Host          string `json:"host"`
 	ProjectDir    string `json:"project_dir"`
 	IdleSeconds   int    `json:"idle_seconds"`
 	AwaitingInput bool   `json:"awaiting_input"`
@@ -284,6 +287,21 @@ func (c *Client) StopCodingSession(sessionID string) error {
 	resp, err := c.post(
 		fmt.Sprintf("%s/api/v1/coding/sessions/%s/stop", c.Base, sessionID),
 		"application/json", nil)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ToggleCodingLoop enables or disables the Ralph loop on a session (server
+// defaults fill in the loop config when enabling).
+func (c *Client) ToggleCodingLoop(sessionID string, enabled bool) error {
+	body := map[string]bool{"enabled": enabled}
+	b, _ := json.Marshal(body)
+	resp, err := c.post(
+		fmt.Sprintf("%s/api/v1/coding/sessions/%s/loop", c.Base, sessionID),
+		"application/json", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
