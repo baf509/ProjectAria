@@ -707,13 +707,14 @@ class ShellService:
         shell = await self.get_shell(name)
         if not shell:
             raise ShellNotFoundError(name)
-        if shell.status == "stopped":
-            raise ShellStoppedError(name)
 
         # Remote shell: dispatch to the owning node and await its result. The
         # node runs send-keys locally, then (if wait_ms) captures and returns
         # the screen. line>0 signals success; the node echoes the input line
-        # back through its normal event stream.
+        # back through its normal event stream. We DON'T gate on the cached
+        # status here — the node is authoritative on liveness, and the captured
+        # status can transiently flap to 'stopped'; the node returns a failure
+        # if the session is really gone.
         if self._shell_is_remote(shell):
             result = await self._remote_command(
                 shell.host,
@@ -731,6 +732,9 @@ class ShellService:
                 return (0, None)  # node offline / timed out — not sent
             return (int(result.get("line") or 1), result.get("screen"))
 
+        # Local shell: tmux is authoritative right here, so honor a stopped row.
+        if shell.status == "stopped":
+            raise ShellStoppedError(name)
         try:
             await self.tmux.send_keys(
                 name, text, append_enter=append_enter, literal=literal
