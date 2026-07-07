@@ -22,6 +22,16 @@ Format:
 - Important notes for future work
 ```
 
+## [2026-07-07] - Multi-machine fleet: deployed live + robustness fixes
+
+### Added
+- **Deployed the fleet across machines.** `aria-node` runs as a persistent launchd agent on the MacBook Pro (`bens-macbook-pro`), registered with corsair over the tailnet. Verified live: capture + drive of Mac tmux shells, and a **Claude Code session in a Mac project driven end-to-end from corsair** (send instruction → the Mac's claude submits + responds → screen returns). This is the "talk to the MCP → drive a Claude Code instance on the Mac" workflow.
+
+### Fixed
+- **Reliable TUI submit** (`shells/tmux.py`): send the text and the submit `Enter` as separate `send-keys` calls — combined, TUIs using bracketed paste (Claude Code) absorb the Enter, so the text lands in the input box but never submits.
+- **Node keepalive** (`aria/node/agent.py`): re-assert a live-but-idle shell as active each cycle (throttled) so an idle session never gets stuck `stopped` centrally and refuses input; plus **register-with-retry** so the node never crash-loops if the API is momentarily unreachable.
+- **Remote `send_input` tolerates status flap** (`shells/service.py`): the owning node is authoritative on liveness, so remote input dispatches regardless of the cached (occasionally-flapping) `stopped` status; only local shells honor the stopped row.
+
 ## [2026-07-06] - Multi-machine fleet: Layer B2 (`aria-node` agent)
 
 ### Added
