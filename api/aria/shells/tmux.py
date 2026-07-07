@@ -86,15 +86,25 @@ class TmuxClient:
         """
         if not await self.has_session(name):
             raise TmuxSessionNotFoundError(name)
-        args: list[str] = ["send-keys", "-t", name]
-        if literal:
-            args.append("-l")
-        args.append(text)
+        # Send the text and the submit Enter as SEPARATE send-keys calls. If they
+        # go in one call, TUIs that use bracketed paste (e.g. Claude Code) absorb
+        # the trailing Enter into the paste block — the text lands in the input
+        # box but never submits. A distinct Enter reliably submits; plain shells
+        # are unaffected. `text=""` (Enter-only) just submits.
+        if text:
+            args: list[str] = ["send-keys", "-t", name]
+            if literal:
+                args.append("-l")
+            args.append(text)
+            rc, _out, err = await self._run(*args)
+            if rc != 0:
+                raise TmuxError(f"tmux send-keys failed: {err.strip()}")
         if append_enter and not literal:
-            args.append("Enter")
-        rc, _out, err = await self._run(*args)
-        if rc != 0:
-            raise TmuxError(f"tmux send-keys failed: {err.strip()}")
+            if text:
+                await asyncio.sleep(0.2)  # let the paste settle before submitting
+            rc, _out, err = await self._run("send-keys", "-t", name, "Enter")
+            if rc != 0:
+                raise TmuxError(f"tmux send-keys (enter) failed: {err.strip()}")
 
     async def capture_pane(self, name: str, *, lines: int = 10000) -> str:
         """Capture the current pane contents for a session.

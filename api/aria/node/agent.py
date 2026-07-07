@@ -21,6 +21,7 @@ import logging
 import os
 import platform
 import socket
+import time
 from typing import Any, Optional
 
 import httpx
@@ -60,6 +61,8 @@ class NodeAgent:
         self._last_tail: dict[str, str] = {}   # name -> last line pushed
         self._snap_hash: dict[str, str] = {}   # name -> last snapshot hash
         self._known: set[str] = set()          # shells we've seen this run
+        self._last_post: dict[str, float] = {} # name -> monotonic time of last ingest
+        self._keepalive_seconds = 8.0          # re-assert a live idle shell this often
 
     # ---------------------------------------------------------------- http
     async def _post(self, path: str, json: dict, *, timeout: Optional[float] = None) -> dict:
@@ -132,6 +135,7 @@ class NodeAgent:
                 logger.debug("capture_pane %s failed: %s", name, e)
                 continue
             clean = strip_ansi(raw).rstrip()
+            posted = False
 
             # Snapshot (what remote current_screen/get_output reads) if changed.
             h = hashlib.sha256(clean.encode("utf-8", "replace")).hexdigest()
@@ -141,6 +145,7 @@ class NodeAgent:
                     {"shell_name": name, "content": clean},
                 )
                 self._snap_hash[name] = h
+                posted = True
 
             # Events: newly-appended tail lines (first-cut heuristic — panes are
             # rewriting screens, not logs, so this captures the growing bottom
@@ -158,6 +163,20 @@ class NodeAgent:
                         ],
                     },
                 )
+                posted = True
+
+            # Keepalive: re-assert a live-but-idle shell as active even when its
+            # pane hasn't changed, so it never gets stuck 'stopped' centrally
+            # (an ingest re-registers the shell active). Throttled.
+            if not posted and (time.monotonic() - self._last_post.get(name, 0.0)) > self._keepalive_seconds:
+                await self._safe_post(
+                    f"/api/v1/nodes/{self.node_id}/events",
+                    {"shell_name": name, "events": []},
+                )
+                posted = True
+
+            if posted:
+                self._last_post[name] = time.monotonic()
             self._known.add(name)
 
     def _delta_lines(self, name: str, clean: str) -> list[str]:
@@ -245,7 +264,16 @@ class NodeAgent:
 
     # ----------------------------------------------------------------- run
     async def run(self) -> None:
-        await self.register()
+        # Register with retry — never crash the process if the API is momentarily
+        # unreachable (e.g. corsair restarting); launchd would just respawn us
+        # into the same failure. Heartbeats re-register on the fly too.
+        while True:
+            try:
+                await self.register()
+                break
+            except Exception as e:
+                logger.warning("register failed (%s); retrying in 5s", e)
+                await asyncio.sleep(5)
         await asyncio.gather(
             self.heartbeat_loop(), self.capture_loop(), self.command_loop()
         )
