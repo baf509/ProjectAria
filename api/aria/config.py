@@ -226,7 +226,7 @@ class Settings(BaseSettings):
     screenshot_vision_model: str = "claude-sonnet-4-20250514"
 
     # Document generation
-    docgen_output_dir: str = "~/aria-documents"
+    docgen_output_dir: str = "~/Development/ProjectAria/aria-documents"
 
     # Skills
     skills_dir: str = "~/.aria/skills/"
@@ -386,6 +386,12 @@ class Settings(BaseSettings):
     # repos + Claude/pi sessions + live shells. Never hand-maintained.
     projects_harvest_enabled: bool = True
     projects_harvest_interval_minutes: int = 30
+
+    # Shared Services (SHARED_SERVICES_DESIGN.md) — S2 scan/reconcile worker.
+    # Default OFF; enable once verified. Consumers register emitters (coherence
+    # C2 machine-scan → memory; ontology entity attributes).
+    shared_scan_enabled: bool = False
+    shared_scan_interval_seconds: int = 300
 
     # Self-monitoring: periodically verify DB / LLM / embeddings / extraction
     # and raise an alert (with cooldown) when something silently broke.

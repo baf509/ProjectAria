@@ -331,6 +331,12 @@ SSE via `sse-starlette`. The orchestrator yields `StreamChunk` objects that are 
 
 Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB vector index, embedding service, and all stored memories must use exactly 1024 dimensions. Changing requires full re-embedding of all memories.
 
+**Storage format (as of 2026-07-18, Shared Services S5):** embeddings are stored as MongoDB's **native BSON vector type (Binary subtype 9, float32)** via `Binary.from_vector` — *not* the old `struct.pack` subtype-0 blobs. `binary_to_embedding` still decodes legacy subtype-0 docs for safety. Re-encoding format is fine; changing *dimensions/model* is what's forbidden.
+
+### Memory HTTP API (cross-machine, Shared Services S1)
+
+`POST /api/v1/memory/recall {query,k}` and `POST /api/v1/memory/store {content,type,...}` wrap `LongTermMemory` and embed server-side, so thin clients on other machines can recall/store without a local venv. Both require the global `X-API-Key`. Machine-state scanning (S2, `shared_scan_enabled`) and the review surface (`/api/v1/shared/review`, S3) live under `api/aria/shared/`.
+
 ### Shared Infrastructure
 
 - **Start infra first** — ARIA services depend on it

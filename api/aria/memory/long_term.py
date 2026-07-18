@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 from bson import Binary, ObjectId
+from bson.binary import BinaryVectorDtype, VECTOR_SUBTYPE
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
@@ -82,36 +83,38 @@ class Memory:
 
 def embedding_to_binary(embedding: list[float]) -> Binary:
     """
-    Convert embedding list to BSON Binary for efficient storage.
-
-    Per MongoDB Atlas documentation, this provides compression and
-    efficient storage of vector embeddings.
+    Encode an embedding as MongoDB's **native BSON vector** — Binary subtype 9
+    (float32). This is the representation `$vectorSearch` / mongot expects; the
+    old subtype-0 `struct.pack` format is why vector recall was brittle.
+    See SHARED_SERVICES_DESIGN.md · S5.
 
     Args:
         embedding: List of float values
 
     Returns:
-        BSON Binary object with packed float data
+        BSON Binary (subtype 9) native float32 vector
     """
-    # Pack the floats into binary format
-    embedding_bytes = struct.pack(f'{len(embedding)}f', *embedding)
-    # Return as BSON Binary with subtype 0 (generic binary)
-    return Binary(embedding_bytes, subtype=0)
+    return Binary.from_vector([float(x) for x in embedding], BinaryVectorDtype.FLOAT32)
 
 
 def binary_to_embedding(binary_data: Binary) -> list[float]:
     """
-    Convert BSON Binary back to embedding list.
+    Decode a stored embedding to a list of floats.
+
+    Handles both encodings so reads work during/after the S5 migration:
+    - native BSON vector (subtype 9)  -> `as_vector().data`
+    - legacy struct-packed float32 (subtype 0) -> `struct.unpack`
 
     Args:
-        binary_data: BSON Binary object containing packed floats
+        binary_data: BSON Binary object
 
     Returns:
         List of float values
     """
-    # Calculate number of floats (each float is 4 bytes)
+    if getattr(binary_data, "subtype", 0) == VECTOR_SUBTYPE:
+        return list(binary_data.as_vector().data)
+    # Legacy subtype-0: raw little-endian float32 (pre-S5 docs)
     num_floats = len(binary_data) // 4
-    # Unpack the binary data back to floats
     return list(struct.unpack(f'{num_floats}f', binary_data))
 
 
@@ -275,8 +278,13 @@ class LongTermMemory:
             )
             return [(Memory.from_doc(r), r["score"]) for r in results]
         except Exception as e:
-            logger.warning("Vector search error: %s", e)
-            # Return empty results if vector search fails
+            # S5: surface this loudly — a failing vector branch silently degrades
+            # recall to lexical-only. Post native-vector migration this should not
+            # happen; if it does it's a real regression, not a warning to ignore.
+            logger.error(
+                "VECTOR SEARCH FAILED — recall degraded to lexical-only "
+                "(check memory_vector_index / embedding encoding): %s", e,
+            )
             return []
 
     async def _lexical_search(

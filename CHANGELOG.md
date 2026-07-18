@@ -2,6 +2,20 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-18] - Shared Services (S1–S5) - Foundation for the Coherence & Ontology plans
+
+### Added
+- **S1 — Memory HTTP API** (`api/aria/api/routes/memory_api.py`): `POST /api/v1/memory/recall` and `POST /api/v1/memory/store` — a minimal cross-machine surface wrapping `LongTermMemory` (embeds server-side). Inherits the global X-API-Key auth.
+- **S2 — Scan/Reconcile worker substrate** (`api/aria/shared/scan.py`): one periodic worker (`ScanReconcileWorker`) observes live machine state (`docker ps`, `systemctl`, `ss`) and feeds pluggable emitters. Ships with `MachineScanMemoryEmitter` (Coherence C2: machine-change → memory). Flag-gated OFF by default (`shared_scan_enabled`).
+- **S3 — Freshness/ownership convention** (`api/aria/shared/ownership.py` `merge_owned`) + **review surface** (`api/aria/shared/review.py`, `GET/POST /api/v1/shared/review`): worker writes only worker-owned fields; human-curated conflicts are flagged for review, never clobbered.
+- **S5 — Native vector storage**: embeddings now stored as MongoDB's native BSON vector (Binary **subtype 9**, float32) via `Binary.from_vector`. Backfill script `aria/scripts/migrate_embeddings_vector_subtype9.py` (idempotent; migrated 1245 existing docs, no re-embedding). Vector-search failures now log loudly instead of silently degrading recall to lexical-only.
+- Tests: `tests/test_shared_services.py` (9 tests).
+
+### Changed
+- `memory/long_term.py`: `embedding_to_binary`/`binary_to_embedding` use subtype 9, with backward-compatible decode of legacy subtype-0 docs.
+- **S4 — Auth:** confirmed the existing global `api_key_middleware` already protects all non-health endpoints; the new memory/store + shared routes inherit it (no separate write-auth needed).
+- Design docs (`SHARED_SERVICES_DESIGN.md`, `ONTOLOGY_MEMORY_DESIGN.md`, `COHERENCE_DESIGN.md`) now live in the Obsidian vault under `ProjectAria/Design/`.
+
 Format:
 ```
 ## [Date] - Phase X - [Summary]

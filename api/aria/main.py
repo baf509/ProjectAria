@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes
+from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -278,6 +278,19 @@ async def lifespan(app: FastAPI):
             await project_harvester.start()
             app.state.project_harvester = project_harvester
 
+        if settings.shared_scan_enabled:
+            import socket
+            from aria.shared.scan import ScanReconcileWorker, MachineScanMemoryEmitter
+            node_id = settings.local_node_id or socket.gethostname()
+            scan_worker = ScanReconcileWorker(
+                db,
+                emitters=[MachineScanMemoryEmitter(node_id)],
+                interval_seconds=settings.shared_scan_interval_seconds,
+                node_id=node_id,
+            )
+            await scan_worker.start()
+            app.state.scan_worker = scan_worker
+
         if settings.shells_adopt_enabled:
             from aria.shells.adopt import ShellAdoptWorker
             shell_adopter = ShellAdoptWorker(shell_service)
@@ -346,7 +359,7 @@ async def lifespan(app: FastAPI):
     # 3a. Stop watched shells workers
     for attr in (
         "shell_notifier", "shell_extractor", "shell_pruner",
-        "project_harvester", "selfcheck", "report_worker",
+        "project_harvester", "scan_worker", "selfcheck", "report_worker",
         "shell_adopter", "shell_worker",
     ):
         worker = getattr(app.state, attr, None)
@@ -495,6 +508,8 @@ app.include_router(health.router, prefix="/api/v1", tags=["health"])
 app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"])
 app.include_router(agents.router, prefix="/api/v1", tags=["agents"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
+app.include_router(memory_api.router, prefix="/api/v1", tags=["memory"])
+app.include_router(shared.router, prefix="/api/v1", tags=["shared"])
 app.include_router(usage.router, prefix="/api/v1", tags=["usage"])
 app.include_router(signal.router, prefix="/api/v1", tags=["signal"])
 app.include_router(notifications.router, prefix="/api/v1", tags=["notifications"])
