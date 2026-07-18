@@ -7,7 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Always start by reading these files in order:**
 1. `PROJECT_STATUS.md` - Current phase and checklist
 2. `CHANGELOG.md` (last 50 lines) - Recent changes
-3. `SPECIFICATION.md` - Detailed architecture and requirements
+3. `SPECIFICATION.md` - Detailed architecture and requirements (now in Obsidian: `/home/ben/Obsidian/vault/ProjectAria/Specs/SPECIFICATION.md`)
+
+> **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault at `/home/ben/Obsidian/vault/ProjectAria/` (synced to all devices). Agent-operational docs (this file, `PROJECT_STATUS.md`, `BACKLOG.md`, handoffs, READMEs) stay in the repo. See the `project-docs` skill.
 
 ## Architecture Overview
 
