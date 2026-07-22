@@ -368,6 +368,17 @@ class Settings(BaseSettings):
     shells_event_token_budget: int = 150000  # ~600KB of recent scrollback/shell
     shells_prune_interval_hours: int = 6
 
+    # Idle-session reaper (COHERENCE_DESIGN.md C9): capture-then-reap ARIA
+    # coding sessions idle > N days — the agent is first asked to save its
+    # learnings (reply with the done token), then the shell is killed. Default
+    # OFF (destructive); tag a shell `keep` to protect it.
+    shells_reap_enabled: bool = False
+    shells_reap_idle_days: int = 7
+    shells_reap_interval_hours: int = 6
+    shells_reap_save_timeout_minutes: int = 30
+    shells_reap_done_token: str = "REAP_SAVED"
+    shells_reap_protected_tag: str = "keep"
+
     # Pre-seed Claude Code's folder-trust flag before launching a shell so the
     # blocking "Do you trust the files in this folder?" dialog never appears.
     shells_claude_autotrust: bool = True

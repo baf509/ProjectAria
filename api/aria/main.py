@@ -248,6 +248,12 @@ async def lifespan(app: FastAPI):
             await shell_pruner.start()
             app.state.shell_pruner = shell_pruner
 
+        if settings.shells_reap_enabled:
+            from aria.shells.reaper import ShellReaperWorker
+            shell_reaper = ShellReaperWorker(shell_service)
+            await shell_reaper.start()
+            app.state.shell_reaper = shell_reaper
+
         if settings.selfcheck_enabled:
             from aria.shells.selfcheck import SelfCheckWorker
             selfcheck = SelfCheckWorker(
@@ -358,7 +364,7 @@ async def lifespan(app: FastAPI):
 
     # 3a. Stop watched shells workers
     for attr in (
-        "shell_notifier", "shell_extractor", "shell_pruner",
+        "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",
         "project_harvester", "scan_worker", "selfcheck", "report_worker",
         "shell_adopter", "shell_worker",
     ):
