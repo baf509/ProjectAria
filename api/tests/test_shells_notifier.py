@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from aria.notifications.service import NotificationService
 from aria.shells.models import Shell, ShellEvent
 from aria.shells.notifier import IdleNotifier
 
@@ -98,3 +99,33 @@ async def test_skips_input_event_last():
     n = IdleNotifier(svc, notif)
     await n._tick()
     notif.notify.assert_not_called()
+
+
+class TestAgentLifecycleIsNotAnAlert:
+    """The watchdog re-publishes orchestrator mail as source="agents"
+    (agents/watchdog.py _drain_orchestrator_mail). That bypassed the
+    coding:*/task informational drop, so every finished sub-agent enqueued an
+    alert -> Hermes triage spawned a fixer -> the fixer finished -> another
+    alert. A closed feedback loop; 31 of these accumulated in prod.
+    """
+
+    @staticmethod
+    def _svc():
+        svc = NotificationService.__new__(NotificationService)
+        svc._cooldowns = {}
+        return svc
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", ["agent_task_done", "agent_mail"])
+    async def test_lifecycle_mail_is_dropped(self, event_type):
+        res = await self._svc().notify(source="agents", event_type=event_type, detail="x")
+        assert res == {"queued": False, "reason": "informational"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("event_type", ["agent_error", "agent_handoff"])
+    async def test_real_agent_problems_still_alert(self, event_type):
+        # Must NOT be dropped as informational — these want triage. The enqueue
+        # itself fails here (no DB in unit tests); the point is it got past the guard.
+        with patch("aria.db.mongodb.get_database", new=AsyncMock(side_effect=RuntimeError("no db"))):
+            res = await self._svc().notify(source="agents", event_type=event_type, detail="x")
+        assert res.get("reason") != "informational"

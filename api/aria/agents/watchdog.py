@@ -265,6 +265,14 @@ class CodingWatchdog:
                 else:
                     if reason == StuckReason.RATE_LIMITED:
                         detail = "Agent hit API rate limits — pausing may help"
+                        # ARIA can't query the Claude subscription quota — there
+                        # is no API for it. Pane output is the only signal, so
+                        # record a cooldown here and let the complexity router
+                        # demote new sessions to the fallback tier until it
+                        # expires. Only for Claude-backed sessions: a rate limit
+                        # on Fireworks says nothing about the subscription.
+                        if session.get("backend") == "claude_code":
+                            await self._record_quota_cooldown(session_id, output)
                     elif reason == StuckReason.RETRY_LOOP:
                         detail = "Agent stuck in retry loop"
                     elif reason == StuckReason.WAITING_INPUT:
@@ -359,6 +367,20 @@ class CodingWatchdog:
                     await self.review_service.review_session(session_id)
                 except Exception as e:
                     logger.debug("Auto-review failed for %s: %s", session_id, e)
+
+    async def _record_quota_cooldown(self, session_id: str, output: str) -> None:
+        """Mark the Claude subscription as cooling down so the complexity router
+        routes new sessions to the fallback tier. Advisory — never fatal."""
+        try:
+            from aria.agents.routing import record_quota_exhaustion
+
+            preview = "\n".join(output.splitlines()[-3:])[:200]
+            await record_quota_exhaustion(
+                self.session_manager.db,
+                reason=f"coding:{session_id} rate-limited — {preview}",
+            )
+        except Exception as exc:
+            logger.debug("quota cooldown record failed for %s: %s", session_id, exc)
 
     async def _auto_respond(self, session_id: str, output: str) -> None:
         for pattern in SAFE_PROMPTS:

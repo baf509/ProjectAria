@@ -242,6 +242,8 @@ class LLMManager:
                 return False, "openai package not installed (required for llama.cpp)"
 
         elif backend == "context1":
+            if not settings.context1_enabled:
+                return False, "context-1 is disabled (context1_enabled=false)"
             try:
                 import openai
                 return True, "context-1 is available (local)"

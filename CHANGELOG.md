@@ -2,6 +2,70 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-23] - Complexity routing actually reaches its callers
+
+### Fixed
+- **`backend="claude_code"` silently disabled routing.** `start_session()` only routed when *both* `backend` and `model` were unset, so any caller naming the backend — which Hermes does as belt-and-suspenders, and the `route-coding-to-aria.py` hook text encourages — got the default model instead of the tier's. Since Hermes is the main non-desk spawner, this was most of the traffic. Routing now treats an explicit `model` as the only unconditional pin; an explicit backend suppresses it only when the router wouldn't have chosen that backend itself (`routing.is_routable_backend`: `codex`/`pi-code` = a real pin, `claude_code` = agreement). Verified live: `backend=claude_code` + a design prompt → `claude-opus-4-8`; `backend=codex` → unrouted, as before.
+
+### Added
+- **The desk wrapper is live on corsair.** `scripts/aria-claude.sh` was complete but had never been sourced, so `claude "<task>"` still launched on the default model. `~/.bashrc` already defined its own `claude()` (attach/spawn the persisted per-directory shell), so rather than clobber it, that function is renamed `_aria_claude_dir_session` and the routing wrapper — sourced after it — delegates the no-task case back via the new `ARIA_CLAUDE_BARE_COMMAND` hook. Net: `claude` alone behaves exactly as before, `claude "<task>"` routes, and `claude --no-aria …` (the old escape hatch, now also honoured by the routing wrapper) skips both. Backup at `~/.bashrc.bak-20260723-aria-routing`.
+  - **`scripts/aria-desk-install-mac`**: emits a self-contained installer (both scripts + the API key embedded as heredocs) to be piped into `sh` from the Mac — `ssh ben@corsair-ai 'bash Development/ProjectAria/scripts/aria-desk-install-mac' | sh`. No scp, no repo checkout, and no long command line on the Mac side, because a long line pasted into a terminal can be split mid-command — and a split `scp remote:a remote:b` is a silent remote-to-remote overwrite (it clobbered `scripts/aria-route-task` once; recovered from the session transcript). Idempotent, and refuses to touch `~/.zshrc` if it already defines its own `claude()`.
+
+## [2026-07-23] - Backend cleanup: context-1 off, Fireworks key removed
+
+### Changed
+- **context-1 is now explicitly disabled** via `context1_enabled` (`CONTEXT1_ENABLED=false` in `.env`). The container isn't part of the normal stack, so probing it produced a permanent DEGRADED. With the flag off, `is_backend_available("context1")` reports "disabled", the Search Agent tool isn't registered, and `/health/services` skips `:8081` entirely.
+- **`FIREWORKS_API_KEY` removed from `.env`** — it had started returning 401 on every call. No agent was on Fireworks any more (`db.agents` has ARIA on `llamacpp` and Pi Coding Agent on `agentic`, both pointed at the local `laguna` server on `:8095`), so nothing regressed. The adapter and the `fireworks`/`glm` aliases stay; re-add a key to reactivate.
+- **Routing's quota fallback now points at the local open-weights server** (`coding_routing_fallback_llm` `fireworks` → `agentic`, model → `default`) instead of Fireworks GLM 5.2, so the fallback still works with no key and no spend.
+
+### Fixed
+- **`/health/services` counted a rejected credential as healthy.** The probe used `ok = status_code < 500`, so Fireworks' `401` reported green while every call was failing. `401`/`403` are now unhealthy, and disabled/unconfigured backends are omitted from the result rather than counted against `healthy` (so the ratio reflects only what is meant to be up).
+
+### Notes
+- Cleared two zombie coding sessions (`1ad4d84d…` from 07-07, `c0d521dd…` from 07-22) left in `status: running` with no surviving pane. The watchdog had been logging `stuck: idle` for both every ~6s ever since — that was the entire content of the journal. There is still **no reaper for coding sessions whose substrate has vanished** (the C9 reaper covers idle *shells*).
+- Complexity routing verified end-to-end for the first time: an unpinned `POST /api/v1/coding/sessions` with a design prompt spawned a real Claude Code session on `claude-opus-4-8` with the verdict persisted on the session doc.
+
+## [2026-07-23] - Fix: restarting aria-api destroyed every watched shell
+
+### Fixed
+- **The tmux server lived inside `aria-api.service`'s cgroup**, so systemd's default `KillMode=control-group` killed it — and every watched `claude-*` session with it — on each `systemctl --user restart aria-api`. A tmux server inherits the cgroup of the client that first spawns it, so whenever ARIA's adopt/spawn path beat a login shell to it, the server was owned by the API. Symptom: you never got dropped back into an existing thread, because there was no session left to reattach to; the `claude()` wrapper correctly found nothing live and spawned a fresh one.
+  - Confirmed against the journal: the stop at `2026-07-21 23:10:15` froze ~10 sessions' `last_activity_at` at `23:10:17` (`claude-emu_fleet_monitor`, `claude-strategy-tenets`, `claude-macbook-pro`, `claude-scenarios`, `claude-sm8550`, `claude-lieutenant-lab`, `claude-campaigns`, `claude-Emulation`, `claude-emuDeviceConfig`); the stop at `21:52:51` on 07-23 took `claude-coding-{699f58fc,645c3e45,0e43dfc0}` and `claude-Development` at `:51`–`:54`.
+
+### Added
+- **`aria-tmux.service`** (`scripts/systemd/aria-tmux.service` + `scripts/aria-tmux-server`): a dedicated unit that owns the tmux server, ordered `Before=aria-api.service`. `Type=oneshot` + `RemainAfterExit=yes` — the server daemonises out of `ExecStart`, and RemainAfterExit is what stops systemd tearing the cgroup down behind it. aria-api now only ever connects as a *client*.
+  - `exit-empty off` is load-bearing: at the tmux default (`on`) the server exits when its last session is destroyed, and the next caller would rebuild it in *their* cgroup — straight back into the bug.
+- **`scripts/aria-claude-launch`**: resume-aware launch shim, now the default `shells_claude_launch_command`. When the workdir already has Claude Code history (`~/.claude/projects/<munged cwd>/*.jsonl`) it launches `claude --continue`, so a respawned session picks up its thread instead of coming back empty. Falls back to a fresh thread if `--continue` fails within 5s (corrupt history) rather than leaving a dead pane. Coding sub-agents are unaffected — they pass an explicit `launch_command`, which takes precedence.
+- **`scripts/aria-tmux-cutover`**: one-time takeover (tmux can't migrate sessions between servers, so the old server must die once). Refuses to run inside tmux, since `tmux kill-server` would kill the pane running it partway through and leave aria-api stopped.
+
+### Notes
+- **Requires the one-time cutover** to take effect; it costs every currently-live session one last time. Run it detached:
+  `systemd-run --user --collect --unit=aria-tmux-cutover /home/ben/Development/ProjectAria/scripts/aria-tmux-cutover`
+- Pane processes were never the problem — tmux 3.4 already puts each pane in its own transient `tmux-spawn-*.scope`. Only the *server* was captured.
+- Unrelated bug noticed while cleaning up: `DELETE /api/v1/shells/{name}` 500s when the tmux session is already gone (`tmux kill-session failed: can't find session`) instead of just marking the row stopped. `?purge=true` works. Not fixed here.
+
+## [2026-07-23] - Complexity routing: coding tasks pick their own model
+
+### Added
+- **`ComplexityRouter`** (`api/aria/agents/routing.py`): classifies a coding task into a tier and picks the backend/model. Three stages, cheap-first — (1) a heuristic prefilter for unambiguous phrasing, (2) a Sonnet-class judge returning strict JSON, (3) an availability filter that demotes while the Claude quota is cooling down. Never raises: any failure degrades to the standard tier.
+  - `deep` (planning / design / strategy / trade-offs) → `claude-opus-4-8`
+  - `standard` (scoped implementation, bug fixes, tests) → `claude-sonnet-5`
+  - `light` (research / information gathering) → `claude-sonnet-5`, and on the desk path the judge may **answer inline** so trivial lookups never spawn a session at all.
+  - Sonnet is the floor for normal routing. The sub-Sonnet fallback (`pi-code` / Fireworks GLM 5.2) is reachable *only* via the quota cooldown.
+- **`POST /api/v1/routing/classify`** (`api/aria/api/routes/routing.py`) plus `GET/POST/DELETE /api/v1/routing/availability[/cooldown]` — a thin cross-machine surface so a client on any host can ask "what model does this need?" without a local venv. Inherits the global X-API-Key auth.
+- **Desk-path wrapper** (`scripts/aria-claude.sh` + `scripts/aria-route-task`): source the `.sh` from `~/.bashrc` (corsair) or `~/.zshrc` (MacBook) and typing `claude "<task>"` routes the task, then launches Claude Code on the chosen model inside a `claude-*` tmux session — which both hosts already auto-adopt into the fleet (tmux hook on corsair, `aria-node`'s capture loop on the MacBook). Identical on both; only the resolved API URL differs (same `~/.config/aria/hosts` convention as the TUI). `aria-route-task` is pure stdlib Python 3, no venv needed.
+- **Quota cooldown state** (`model_availability` collection): ARIA can't query the Claude subscription quota — there's no API for it — so the watchdog records a cooldown when it sees rate-limit/quota text in a `claude_code` session's pane output, and the router demotes new sessions until it expires. Detect-then-degrade, not prediction.
+- Tests: `tests/test_complexity_routing.py` (52 tests).
+
+### Changed
+- `CodingSessionManager.start_session()` routes when **both** `backend` and `model` are unset; an explicit pin always wins. Every existing caller — Hermes MCP `create_coding_session`, `/code`, the TUI, the coding-mode autostart — inherits routing for free, including sessions on remote nodes (the chosen `--model` is already part of the launch string shipped to `aria-node`).
+- Coding session docs and `GET /api/v1/coding/sessions` now carry `routing: {tier, why, confidence, source, judge_model, decided_at}` — so every surface can show *why* a session is on the model it's on. `None` means the caller pinned it.
+- Coding backends now set `ARIA_MANAGED=1` in `CommandSpec.env` (`agents/backends/claude_code.py`, `codex.py`). The shell substrate launches agents under `bash -lc`, which sources the user's rc files — where the desk wrapper defines a `claude` function. Without the flag an ARIA-spawned session would re-enter the wrapper and recursively spawn more sessions.
+
+### Notes
+- The judge transport is configurable (`coding_routing_judge_transport`): `api` (one small Anthropic call, sub-second, fractions of a cent — right for the interactive desk path) or `cli` (`claude -p` via `ClaudeRunner`, burns the subscription instead of API tokens but costs several seconds of CLI startup — right for background/Hermes-initiated routing). Default `api`.
+- **Requires an `aria-api` restart** for the new routes to serve.
+- A shell you started by hand *outside* the wrapper still can't be routed — ARIA sees it only after `claude` is already running. Adoption and fleet visibility work as before; only the model choice is missed.
+
 ## [2026-07-18] - Shared Services (S1–S5) - Foundation for the Coherence & Ontology plans
 
 ### Added

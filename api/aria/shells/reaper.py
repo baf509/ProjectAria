@@ -73,7 +73,7 @@ class ShellReaperWorker:
         """False (skip reaping) if the killswitch or e-stop is engaged."""
         from aria.api.deps import get_killswitch, resolve_estop_manager
         try:
-            if get_killswitch().is_active():
+            if get_killswitch().is_active:  # property, not a method
                 return False
             estop = await resolve_estop_manager(self.db)
             if await estop.is_active():

@@ -24,7 +24,7 @@ make build-linux      # → ./aria-tui-linux-amd64
 ```
 
 > `go` may not be on PATH (SDK-managed toolchain). Override per-invocation:
-> `make build GO=/home/ben/go-sdk/go/bin/go`.
+> `make build GO=/home/ben/sdks/go-sdk/go/bin/go`.
 
 ## Pointing it at a host
 
@@ -72,7 +72,7 @@ and Apple Silicon refuses to run unsigned binaries, so there's a **one-time
 
 **1. On corsair — build it and grab the key:**
 ```bash
-cd ~/Development/ProjectAria/tui && make build-darwin GO=/home/ben/go-sdk/go/bin/go
+cd ~/Development/ProjectAria/tui && make build-darwin GO=/home/ben/sdks/go-sdk/go/bin/go
 grep '^API_KEY' ~/Development/ProjectAria/.env      # paste into the Mac hosts file
 ```
 

@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     agentic_url: str = "http://localhost:8093/v1"
     agentic_api_key: str = ""
 
-    # Chroma context-1 (local agentic search model served by a second llama.cpp)
+    # Chroma context-1 (local agentic search model served by a second llama.cpp).
+    # Off by default: the container is not part of the normal stack. With this
+    # false the backend is unavailable, the Search Agent tool is not registered,
+    # and health stops probing :8081 (no permanent DEGRADED).
+    context1_enabled: bool = False
     context1_url: str = "http://localhost:8081/v1"
     context1_api_key: str = ""
     context1_model: str = "default"
@@ -114,6 +118,39 @@ class Settings(BaseSettings):
         "Continue the next step of the task. When the entire task is complete AND "
         "verified (tests pass), reply with exactly RALPH_DONE and stop."
     )
+    # Complexity routing: when a coding session is started with NO explicit
+    # backend/model, a Sonnet-class judge classifies the task into a tier and
+    # picks the model. An explicit pin always wins — routing only fills the gap.
+    # Sonnet is the floor for normal routing; the sub-Sonnet fallback below is
+    # reached only when the Claude subscription quota is exhausted.
+    coding_routing_enabled: bool = True
+    coding_routing_judge_backend: str = "anthropic"
+    coding_routing_judge_model: str = "claude-sonnet-5"
+    # "api"  — one small Anthropic API call, sub-second, costs a fraction of a
+    #          cent. Right for the interactive desk path. Needs ANTHROPIC_API_KEY.
+    # "cli"   — `claude -p` via ClaudeRunner: burns the Claude subscription
+    #          instead of API tokens, but several seconds of CLI startup.
+    # "auto"  — api when an Anthropic key is configured, else cli. Default, so
+    #          routing works out of the box on a subscription-only box.
+    coding_routing_judge_transport: str = "auto"
+    coding_routing_judge_timeout_seconds: int = 20
+    coding_routing_cache_ttl_seconds: int = 900   # dedupe repeat classifications
+    # Tier → model. deep = planning/design/strategy; standard = scoped
+    # implementation; light = research/info-gathering (often answered inline
+    # by the judge with no session spawned at all).
+    coding_routing_model_deep: str = "claude-opus-4-8"
+    coding_routing_model_standard: str = "claude-sonnet-5"
+    coding_routing_model_light: str = "claude-sonnet-5"
+    # Quota-exhausted fallback — the ONLY path that goes below Sonnet. Engaged
+    # when the watchdog sees quota/rate-limit text in a session's output and
+    # records a cooldown in `model_availability`.
+    # Points at the local open-weights server (:8095) rather than a cloud
+    # provider, so the fallback keeps working with no key and no spend.
+    coding_routing_fallback_backend: str = "pi-code"
+    coding_routing_fallback_llm: str = "agentic"
+    coding_routing_fallback_model: str = "default"
+    coding_routing_quota_cooldown_minutes: int = 60
+
     infrastructure_root: str = "/home/ben/Development/infrastructure"
 
     # Streaming
@@ -338,8 +375,13 @@ class Settings(BaseSettings):
     # PATH and the spawned tmux pane exits with status 127 ("command not
     # found") the instant it starts, killing the session before any client
     # can attach.
+    #
+    # The shim (scripts/aria-claude-launch) resumes the directory's most recent
+    # thread with --continue when Claude Code history exists, so a session that
+    # had to be respawned picks up where it left off instead of coming back
+    # empty. Referenced by absolute path for the same PATH reason as above.
     shells_claude_launch_command: str = (
-        "bash -lc 'claude --dangerously-skip-permissions'"
+        "bash -lc '~/.local/bin/aria-claude-launch'"
     )
 
     # Planning subsystem (tasks + projects)

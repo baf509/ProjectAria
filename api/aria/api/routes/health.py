@@ -142,9 +142,11 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
                 resp = await client.get(url, headers=headers or {})
+            # 4xx auth failures mean the credential is wrong — that is *not*
+            # healthy, even though the server answered.
             return {
                 "name": name,
-                "ok": resp.status_code < 500,
+                "ok": resp.status_code < 500 and resp.status_code not in (401, 403),
                 "latency_ms": round((time.monotonic() - t0) * 1000),
                 "detail": f"http {resp.status_code}",
             }
@@ -175,16 +177,20 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
         except Exception as e:
             return {"name": "mongot", "ok": False, "latency_ms": round((time.monotonic() - t0) * 1000), "detail": str(e)[:80]}
 
+    # Only services that are actually meant to be up are probed. A disabled or
+    # unconfigured backend is not a degraded one, so it is left out entirely
+    # rather than counted against `healthy`.
     tasks = [
         mongo_ping(),
         mongot_ping(),
         http_ping("qwen-chat", f"{settings.llamacpp_url.rstrip('/')}/models"),
         http_ping("qwen-agentic", f"{settings.agentic_url.rstrip('/')}/models"),
-        http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"),
         http_ping("embeddings", f"{_base(settings.embedding_url)}/health"),
         http_ping("tts", f"{_base(settings.tts_url)}/health"),
         http_ping("stt", f"{_base(settings.stt_url)}/health"),
     ]
+    if settings.context1_enabled:
+        tasks.append(http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"))
     if settings.fireworks_api_key:
         tasks.append(http_ping(
             "fireworks",
@@ -192,8 +198,6 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
             headers={"Authorization": f"Bearer {settings.fireworks_api_key}"},
         ))
     results = list(await asyncio.gather(*tasks))
-    if not settings.fireworks_api_key:
-        results.append({"name": "fireworks", "ok": False, "latency_ms": 0, "detail": "not configured"})
 
     healthy = sum(1 for r in results if r["ok"])
     return {"services": results, "healthy": healthy, "total": len(results)}

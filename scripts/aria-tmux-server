@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ARIA - own the tmux server from a dedicated systemd unit
+#
+# The tmux server belongs to whichever process first invokes tmux: the client
+# forks the server, and the server inherits the client's cgroup. When aria-api
+# won that race the server landed in `aria-api.service`, so every
+# `systemctl --user restart aria-api` SIGTERMed the whole cgroup and destroyed
+# every watched `claude-*` session along with it.
+#
+# aria-tmux.service runs this before aria-api starts, so the server is always
+# already up and aria-api's tmux calls only ever connect as a client.
+#
+# `exit-empty off` is load-bearing: with the tmux default (on) the server exits
+# as soon as its last session is destroyed, and the next tmux call would rebuild
+# it in *that* caller's cgroup — putting us straight back into the bug.
+#
+# Args are passed through to tmux (used as `aria-tmux-server -L <socket>` when
+# testing against a throwaway socket).
+set -euo pipefail
+
+exec tmux "$@" start-server \; set-option -g exit-empty off

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# ARIA - one-time cutover: hand the tmux server to aria-tmux.service
+#
+# tmux cannot migrate sessions between servers, so the old aria-api-owned server
+# has to die once for the new one to take over. Every live `claude-*` session
+# goes with it — this is the last time that happens.
+#
+# Run it detached, so it does not kill the shell it is running in:
+#
+#     systemd-run --user --collect --unit=aria-tmux-cutover \
+#         /home/ben/Development/ProjectAria/scripts/aria-tmux-cutover
+#     journalctl --user -u aria-tmux-cutover -f
+#
+# Running it directly from inside a tmux pane would kill that pane partway
+# through and leave aria-api stopped.
+set -uo pipefail
+
+if [ -n "${TMUX:-}" ]; then
+    echo "refusing to run inside tmux — this kills the tmux server partway through." >&2
+    echo "re-run it detached with systemd-run (see the header of this script)." >&2
+    exit 1
+fi
+
+echo "==> stopping aria-api"
+systemctl --user stop aria-api.service
+
+# Stopping aria-api tears down its cgroup, which is where the old server lived;
+# this is the belt-and-braces for a server owned by some other cgroup.
+echo "==> killing any surviving tmux server"
+tmux kill-server 2>/dev/null || true
+sleep 1
+
+echo "==> starting aria-tmux (takes ownership of the new server)"
+systemctl --user restart aria-tmux.service
+
+echo "==> starting aria-api"
+systemctl --user start aria-api.service
+sleep 3
+
+echo
+echo "==> verification"
+# Ask the cgroups directly rather than hunting for the process: the tmux server
+# renames itself to `tmux: server`, so `pgrep -x tmux` never matches it and
+# `pgrep -f tmux` happily matches the grep doing the looking.
+uid=$(id -u)
+app_slice="/sys/fs/cgroup/user.slice/user-${uid}.slice/user@${uid}.service/app.slice"
+
+tmux_pids_in() {  # $1 = unit name -> pids whose comm looks like a tmux server
+    local procs="$app_slice/$1/cgroup.procs" p
+    [ -r "$procs" ] || return 0
+    while read -r p; do
+        case "$(cat "/proc/$p/comm" 2>/dev/null)" in tmux*) echo "$p" ;; esac
+    done < "$procs"
+}
+
+owned=$(tmux_pids_in aria-tmux.service)
+stray=$(tmux_pids_in aria-api.service)
+
+echo "tmux in aria-tmux.service: ${owned:-<none>}"
+echo "tmux in aria-api.service : ${stray:-<none>}"
+echo "exit-empty               : $(tmux show-options -g exit-empty 2>/dev/null || echo '<no server>')"
+echo "sessions                 : $(tmux ls 2>/dev/null | wc -l)"
+
+if [ -n "$stray" ]; then
+    echo "RESULT: FAIL — a tmux server is still inside aria-api.service"
+    exit 1
+fi
+if [ -z "$owned" ]; then
+    echo "RESULT: FAIL — no tmux server is owned by aria-tmux.service"
+    exit 1
+fi
+echo "RESULT: OK — the server is owned by aria-tmux.service"

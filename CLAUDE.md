@@ -25,8 +25,8 @@ remote **Hermes** agent. The `aria-shells` repo is retained only as reference.
 - **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, and the REST API, plus the MCP server for the Hermes agent.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
 - **Single-user design** — Personal agent, no multi-tenancy or auth.
-- **LLM agnostic** — Adapter pattern for local llama.cpp (qwen models), context-1, Anthropic, OpenAI, OpenRouter, and Fireworks (GLM 5.2). Backend + model are selected **per agent**.
-- **Local-capable** — local qwen + context-1 models run on the GPU box; default agents currently run on GLM 5.2 via Fireworks. Backends are swappable per agent.
+- **LLM agnostic** — Adapter pattern for local llama.cpp servers, context-1, Anthropic, OpenAI, OpenRouter, and Fireworks. Backend + model are selected **per agent**.
+- **Local-capable** — the default agents run on a **local** open-weights model on the GPU box; cloud backends are opt-in per agent.
 - **MongoDB 8.2 + mongot** — Self-hosted vector search without Atlas subscription.
 
 ### Core Flow
@@ -54,15 +54,16 @@ All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
 
 Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter.py`, `fireworks.py`. The OpenRouter and Fireworks adapters use the OpenAI SDK internally (OpenAI-compatible); `fireworks.py` subclasses `OpenRouterAdapter` to reuse its GLM reasoning-mode handling. Manager (`manager.py`) handles backend selection and fallback chain.
 
-**Current model topology** (the agents are config rows in `db.agents`):
-- **ARIA** (default orchestrator) and **Pi Coding Agent** → `fireworks` / `accounts/fireworks/models/glm-5p2` (GLM 5.2), hard-pinned (no fallback). Key in `.env` as `FIREWORKS_API_KEY`.
-- **Search Agent** → `context1` (the chromadb/context-1 agentic model) on `:8081`.
-- Local llama.cpp endpoints on the GPU box (the `qwen-rocmfp4` compose project under `infrastructure/`): **qwen-chat** 35B-A3B `:8092` (`llamacpp_url`), **qwen-agentic** 27B `:8093` (`agentic_url`, addressable as backend `agentic` / `qwen-agentic`), **context-1** `:8081` (`context1_url`). These are also exposed to Hermes.
+**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; as of 2026-07-23):
+- **ARIA** (default orchestrator) → backend `llamacpp`, and **Pi Coding Agent** → backend `agentic`. Both `*_URL` settings currently point at the **same** local server, `http://localhost:8095/v1` — the `laguna` container (`laguna-rocm:latest`, `laguna-s-2.1` Q4_K_M, ROCm), started from `infrastructure/`. Neither has a fallback chain.
+- **Search Agent** → `context1` on `:8081`. **Disabled** (`CONTEXT1_ENABLED=false`): the container is not part of the normal stack, so the backend reports unavailable, the Search Agent tool isn't registered, and health doesn't probe it. Set `CONTEXT1_ENABLED=true` (and start the container) to bring it back.
+- **Fireworks / GLM 5.2 is not in use.** `FIREWORKS_API_KEY` was removed from `.env` on 2026-07-23 after it began returning 401. The adapter and the `fireworks`/`glm` aliases remain — re-add a key to reactivate.
+- The `qwen-rocmfp4` compose project under `infrastructure/` still defines **qwen-chat** `:8092` and **qwen-agentic** `:8093`; those containers are **not running**, and `LLAMACPP_URL`/`AGENTIC_URL` in `.env` are pointed at laguna instead. Repoint them in `.env` to switch back.
 
 **Model pinning, cost & health:**
 - A conversation can be pinned to a specific backend/model via `/model <backend> [<model-id>]` (strict — no fallback); `/model auto` unpins; `/route <task>` applies an advisory heuristic pin. Backend aliases include `agentic`/`qwen-agentic` and `fireworks`/`glm`.
 - Cost accounting lives in `llm/pricing.py` (local backends = $0; cloud priced; unknown cloud → conservative default). Usage records carry `backend` + `session_id`; query via `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`, `/usage/by-model`. A spend circuit-breaker (`spend_cap_usd_per_hour`, 0=off) trips the global e-stop when hourly priced spend exceeds the cap.
-- `GET /health/services` concurrently probes all backing services (mongod, mongot, qwen-chat, qwen-agentic, context-1, embeddings, tts, stt, fireworks).
+- `GET /health/services` concurrently probes the backing services that are *meant* to be up (mongod, mongot, qwen-chat, qwen-agentic, embeddings, tts, stt; context-1 and fireworks only when enabled/keyed). Disabled or unconfigured backends are omitted rather than counted as unhealthy; a `401`/`403` counts as **unhealthy** (a rejected credential is a real failure).
 
 ### Tool System
 
@@ -133,6 +134,47 @@ the watchdog (`agents/watchdog.py` `_maybe_nudge`) re-feeds an idle session unti
 it signals done or trips a cap — driven through the same `send_input`, so it works
 for any substrate and inherits the safety gates.
 
+### Complexity Routing (`api/aria/agents/routing.py`)
+
+A coding task started with **no explicit backend/model** is classified into a
+tier and run on that tier's model — `deep` (planning/design/strategy) → Opus 4.8,
+`standard` (scoped implementation) → Sonnet 5, `light` (research) → Sonnet 5.
+Sonnet is the floor; the sub-Sonnet fallback (`pi-code` on the local
+open-weights server) is reachable only when the Claude quota is cooling down. Three stages, cheap-first: a
+heuristic prefilter, then a Sonnet-class judge (`coding_routing_judge_transport`:
+`api` for the interactive path, `cli` to burn the subscription instead of API
+tokens), then an availability check. Any failure degrades to `standard` — routing
+never blocks a spawn. The verdict is persisted on the session doc as `routing`.
+
+**What counts as a pin:** an explicit `model` always wins and skips routing. An
+explicit *backend* only skips routing when it's one the router wouldn't have
+picked itself (`codex`, `pi-code`) — `backend="claude_code"` is agreement, not an
+override, so routing still runs (`routing.is_routable_backend`). This matters
+because Hermes passes `backend=claude_code` as belt-and-suspenders, which used to
+silently disable routing for every Hermes-originated task.
+
+Because routing happens inside `start_session()`, every caller inherits it —
+including remote-node sessions, since `--model` is already part of the launch
+string shipped to `aria-node`. `POST /api/v1/routing/classify` exposes the same
+decision to thin clients.
+
+**Desk path:** `scripts/aria-claude.sh` (sourced from `~/.bashrc` on corsair or
+`~/.zshrc` on the MacBook) wraps `claude` so typing `claude "<task>"` routes it,
+then launches Claude Code on the chosen model inside a `claude-*` tmux session —
+auto-adopted on both hosts. Backends set `ARIA_MANAGED=1` so ARIA-spawned
+sessions don't re-enter the wrapper. A shell started by hand outside the wrapper
+is still adopted, but its model can't be chosen after the fact.
+**Live on corsair since 2026-07-23.** It is sourced *after* the older
+`_aria_claude_dir_session` wrapper (bare `claude` → attach/spawn the persisted
+per-directory shell), and hands the no-task case back to it via
+`ARIA_CLAUDE_BARE_COMMAND`, so both behaviours coexist: `claude` alone = the old
+per-directory shell, `claude "<task>"` = routed. `claude --no-aria …` escapes
+both. **The MacBook still needs the same two lines in `~/.zshrc`.**
+
+**Quota:** ARIA cannot see the Claude subscription quota (no API exists). The
+watchdog records a cooldown in `model_availability` when it sees rate-limit text
+in a `claude_code` session's output; the router demotes until it expires.
+
 ### Notifications, Alerts & Self-Healing (`api/aria/notifications/`)
 
 ProjectAria does **not** push notifications itself (no Signal/Telegram send path; Telegram was removed entirely). `NotificationService.notify()`
@@ -155,17 +197,20 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 |---------|------|---------|
 | mongod | 27017 | MongoDB 8.2 data (replica set `rs0`) |
 | mongot | 27028 | MongoDB search (vector + text) |
-| qwen-chat | 8092 | local LLM — Qwen3.6 **35B-A3B** (ROCm); `llamacpp_url` |
-| qwen-agentic | 8093 | local LLM — Qwen3.6 **27B** (ROCm) |
-| context-1 | 8081 | local LLM — chromadb/context-1 20B (Search Agent backend) |
+| laguna | 8095 | local LLM — `laguna-s-2.1` Q4_K_M (ROCm). **Currently serves both `llamacpp_url` and `agentic_url`** |
 | embeddings | 8001 | voyage-4-nano via sentence-transformers (CPU) |
+| qwen-chat | 8092 | local LLM — Qwen3.6 **35B-A3B** (ROCm). Defined but *not running* |
+| qwen-agentic | 8093 | local LLM — Qwen3.6 **27B** (ROCm). Defined but *not running* |
+| context-1 | 8081 | local LLM — chromadb/context-1 20B (Search Agent backend). *Not running; disabled via `CONTEXT1_ENABLED=false`* |
 
-> The three local LLMs run as Docker containers in `infrastructure/qwen-rocmfp4/`
-> (image `qwen-rocmfp4:latest`, services `qwen-chat` / `qwen-agentic` / `context1`).
-> The old single `llamacpp` on `:8080` is **retired** (behind the compose `legacy`
-> profile). To add/restart a model: edit `qwen-rocmfp4/docker-compose.yml` and
-> `docker compose up -d <service>`. GLM 5.2 (default chat/coding model) is cloud
-> via Fireworks, not on the GPU box.
+> The local LLM containers live under `infrastructure/`: `laguna`
+> (`laguna-rocm:latest`) is the one actually serving traffic; the
+> `qwen-rocmfp4/` compose project (`qwen-chat` / `qwen-agentic` / `context1`,
+> image `qwen-rocmfp4:latest`) is defined but down. The old single `llamacpp` on
+> `:8080` is **retired** (behind the compose `legacy` profile). To swap which
+> model backs a backend, change `LLAMACPP_URL` / `AGENTIC_URL` in `.env` and
+> restart `aria-api`; to add/restart a qwen model, edit
+> `qwen-rocmfp4/docker-compose.yml` and `docker compose up -d <service>`.
 
 ```bash
 # Start shared infra first
@@ -292,6 +337,7 @@ mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
 | tts | 8002 | Docker (docker-compose.yml) | Qwen3-TTS 0.6B speech synthesis (CPU) |
 | stt | 8003 | Docker (docker-compose.yml) | whisper-large-v3-turbo transcription (CPU, int8) |
 | mcp | stdio | launched by Hermes | `mcp/server.py` — MCP bridge over `/api/v1` for the Hermes agent |
+| tmux | — | systemd user service (`aria-tmux`) | Owns the tmux server that hosts every watched `claude-*` session. Ordered before `aria-api`. See the gotcha below — **never** let aria-api spawn the server. |
 
 ## Code Patterns
 
@@ -326,6 +372,26 @@ SSE via `sse-starlette`. The orchestrator yields `StreamChunk` objects that are 
 `httpx`, `motor`, `pydantic`, `fastapi`, `anthropic`, `openai`, `sse-starlette`, `sentence-transformers`
 
 ## Critical Gotchas
+
+### The tmux server must be owned by `aria-tmux.service` (DO NOT let aria-api spawn it)
+
+A tmux server inherits the cgroup of the **client that first invokes tmux**. If
+`aria-api` wins that race (its adopt/spawn path calls tmux constantly), the
+server lands in `aria-api.service` — and systemd's default
+`KillMode=control-group` then destroys the server, and **every watched
+`claude-*` session with it**, on each `systemctl --user restart aria-api`. This
+silently ate whole days of live sessions before it was found.
+
+`aria-tmux.service` (`scripts/aria-tmux-server`) exists solely to own that
+server, and `aria-api.service.d/tmux-ordering.conf` makes aria-api `Want`/`After`
+it, so a server always pre-exists and aria-api only connects as a client.
+
+- `exit-empty off` is **load-bearing** — at the tmux default (`on`) the server
+  exits with its last session and the next caller rebuilds it in *their* cgroup.
+- Verify ownership at any time:
+  `systemd-cgls --user-unit aria-tmux.service` — the `tmux` process must appear there.
+- Pane processes were never at risk: tmux 3.4 already puts each pane in its own
+  transient `tmux-spawn-*.scope`. Only the *server* was captured.
 
 ### Embedding Dimensions (DO NOT CHANGE)
 

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# ARIA - resume-aware Claude Code launch for watched shells
+#
+# The default launch command for `launch_claude` shells. When the working
+# directory already has Claude Code history, resume the most recent thread
+# rather than starting a fresh one: a session that had to be respawned (reboot,
+# crash, a killed tmux server) otherwise silently drops you into an empty
+# conversation with no way back.
+#
+# Claude Code keys its history on the working directory, storing it under
+# ~/.claude/projects/<cwd with every non-alphanumeric character replaced by a
+# dash>. tmux starts us in the session's workdir, so $PWD is the right key.
+#
+# Coding sub-agents are unaffected: the coding-session manager passes an
+# explicit `launch_command`, which takes precedence over this.
+set -uo pipefail
+
+CLAUDE_ARGS=(--dangerously-skip-permissions)
+
+history_dir="$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
+
+if compgen -G "$history_dir/*.jsonl" >/dev/null 2>&1; then
+    started=$SECONDS
+    claude "${CLAUDE_ARGS[@]}" --continue
+    rc=$?
+    # A non-zero exit within a few seconds means --continue could not start
+    # (corrupt or unreadable history) rather than a thread you used and quit,
+    # so fall back to a fresh one instead of leaving a dead pane behind.
+    if [ "$rc" -ne 0 ] && [ $((SECONDS - started)) -lt 5 ]; then
+        echo "aria: --continue failed (exit $rc) — starting a fresh thread" >&2
+        exec claude "${CLAUDE_ARGS[@]}"
+    fi
+    exit "$rc"
+fi
+
+exec claude "${CLAUDE_ARGS[@]}"

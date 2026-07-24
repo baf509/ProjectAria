@@ -64,7 +64,17 @@ class NotificationService:
         # spam the queue AND make the Hermes triage loop spawn a fixer agent for
         # every finished session — whose own 'stopped' event becomes another
         # alert → an endless loop. Drop them here.
-        if source.startswith("coding:") or source == "task":
+        #
+        # The watchdog re-publishes orchestrator mail under source="agents"
+        # (see agents/watchdog.py _drain_orchestrator_mail), which sidestepped
+        # the coding:*/task test above and reopened exactly that loop. TASK_DONE
+        # and generic mail are lifecycle notices, so drop them too; agent_error
+        # and agent_handoff stay alertable because those do want triage.
+        if (
+            source.startswith("coding:")
+            or source == "task"
+            or (source == "agents" and event_type in ("agent_task_done", "agent_mail"))
+        ):
             logger.debug("notify: dropping informational %s/%s (not an alert)", source, event_type)
             return {"queued": False, "reason": "informational"}
         if not self._can_send(source, event_type, cooldown_seconds):

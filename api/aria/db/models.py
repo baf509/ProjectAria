@@ -336,6 +336,9 @@ class CodingSessionResponse(BaseModel):
     status: str
     host: Optional[str] = None   # remote node id, or None for this host
     loop_enabled: bool = False  # true while a Ralph loop is nudging this session
+    # How the model was chosen: {tier, why, confidence, source, judge_model,
+    # decided_at}. None when the caller pinned the model explicitly.
+    routing: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

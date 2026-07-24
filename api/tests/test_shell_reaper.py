@@ -1,5 +1,10 @@
 """Tests for the idle-session reaper (COHERENCE_DESIGN.md C9)."""
-from aria.shells.reaper import _save_done, SAVE_PROMPT
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from aria.core.killswitch import Killswitch
+from aria.shells.reaper import _save_done, SAVE_PROMPT, ShellReaperWorker
 
 
 class TestSaveDoneDetection:
@@ -32,3 +37,41 @@ class TestSaveDoneDetection:
 
     def test_prompt_contains_the_token_placeholder_filled(self):
         assert "REAP_SAVED" in SAVE_PROMPT.format(token="REAP_SAVED")
+
+
+class TestSafetyGate:
+    """`is_active` is a @property on Killswitch — calling it raised
+    `'bool' object is not callable`, which `_safety_ok`'s fail-closed except
+    swallowed into "skip this tick". The reaper never reaped anything.
+    """
+
+    @pytest.mark.asyncio
+    async def test_inactive_safety_lets_the_reaper_run(self):
+        ks = Killswitch()
+        estop = MagicMock(is_active=AsyncMock(return_value=False))
+        worker = ShellReaperWorker.__new__(ShellReaperWorker)
+        worker.db = MagicMock()
+        with patch("aria.api.deps.get_killswitch", return_value=ks), patch(
+            "aria.api.deps.resolve_estop_manager", new=AsyncMock(return_value=estop)
+        ):
+            assert await worker._safety_ok() is True
+
+    @pytest.mark.asyncio
+    async def test_engaged_killswitch_or_estop_skips_the_tick(self):
+        estop = MagicMock(is_active=AsyncMock(return_value=False))
+        worker = ShellReaperWorker.__new__(ShellReaperWorker)
+        worker.db = MagicMock()
+
+        ks = Killswitch()
+        ks._active = True
+        with patch("aria.api.deps.get_killswitch", return_value=ks), patch(
+            "aria.api.deps.resolve_estop_manager", new=AsyncMock(return_value=estop)
+        ):
+            assert await worker._safety_ok() is False
+
+        ks._active = False
+        estop.is_active = AsyncMock(return_value=True)
+        with patch("aria.api.deps.get_killswitch", return_value=ks), patch(
+            "aria.api.deps.resolve_estop_manager", new=AsyncMock(return_value=estop)
+        ):
+            assert await worker._safety_ok() is False

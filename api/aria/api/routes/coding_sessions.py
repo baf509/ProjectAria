@@ -67,6 +67,7 @@ def serialize_session(doc: dict) -> dict:
         "status": doc["status"],
         "host": doc.get("host"),
         "loop_enabled": bool(doc.get("loop_config")),
+        "routing": doc.get("routing"),
         "created_at": doc["created_at"],
         "updated_at": doc["updated_at"],
         "completed_at": doc.get("completed_at"),

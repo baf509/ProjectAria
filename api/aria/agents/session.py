@@ -116,6 +116,31 @@ class CodingSessionManager:
                 f"Emergency stop active — coding session start blocked. Reason: {state.reason}"
             )
 
+        # Complexity routing: with no model pinned, classify the task and run it
+        # on the tier's model — planning/design on Opus, scoped work on Sonnet.
+        # An explicit `model` always wins, as does an explicit backend the router
+        # wouldn't have picked itself (see `is_routable_backend`). Routing only
+        # fills the gap, and a failure falls through to the configured defaults.
+        routing_meta = None
+        if model is None and settings.coding_routing_enabled:
+            try:
+                from aria.agents.routing import ComplexityRouter, is_routable_backend
+
+                if is_routable_backend(backend):
+                    verdict = await ComplexityRouter(self.db).classify(
+                        prompt, workspace=workspace
+                    )
+                    backend = verdict.backend
+                    model = verdict.model
+                    llm = verdict.llm or llm
+                    routing_meta = verdict.to_meta()
+                    logger.info(
+                        "routed coding task -> %s/%s (tier=%s, %s)",
+                        verdict.backend, verdict.model, verdict.tier, verdict.why,
+                    )
+            except Exception as exc:
+                logger.warning("complexity routing failed (%s); using defaults", exc)
+
         backend_name = backend or settings.coding_default_backend
         selected_backend = self.registry.get(backend_name)
         workspace_path = os.path.abspath(workspace)
@@ -132,6 +157,7 @@ class CodingSessionManager:
                 model=model,
                 branch=branch,
                 conversation_id=conversation_id,
+                routing=routing_meta,
             )
 
         params = StartParams(workspace=workspace_path, prompt=prompt, model=model, branch=branch)
@@ -163,6 +189,8 @@ class CodingSessionManager:
             "loop_nudges": 0,
             "last_nudge_at": None,
             "loop_started_at": now if loop_config else None,
+            # How the model was chosen (None = explicitly pinned by the caller).
+            "routing": routing_meta,
             "created_at": now,
             "updated_at": now,
             "completed_at": None,
@@ -334,6 +362,7 @@ class CodingSessionManager:
         model: Optional[str],
         branch: Optional[str],
         conversation_id: Optional[str],
+        routing: Optional[dict] = None,
     ) -> dict:
         """Spawn an in-process pi-code session: a working conversation pinned to
         the chosen LLM, driven by ARIA's orchestrator in a background task."""
@@ -386,6 +415,7 @@ class CodingSessionManager:
             "branch": branch,
             "conversation_id": conversation_id,        # the spawning conversation (may be None)
             "agent_conversation_id": agent_conv_id,    # the loop's own conversation
+            "routing": routing,                        # how the model was chosen
             "visible": False,
             "status": "running",
             "pid": None,

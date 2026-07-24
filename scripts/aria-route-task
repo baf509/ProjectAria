@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+ARIA - Desk-path task router (thin client)
+
+Asks the ARIA API which model a task should run on. Pure stdlib + HTTP, so it
+works identically on corsair and on the MacBook with no venv and no local ARIA
+install — it only needs to be able to reach the API.
+
+Resolution matches the TUI cockpit (tui/main.go): flag → $ARIA_API_URL →
+~/.config/aria/hosts `default` profile → http://localhost:8200.
+
+Exit codes are the interface, so the shell wrapper needs no JSON parsing:
+   0  routed    — stdout: model\ntier\nwhy
+  10  answered  — stdout: the answer (light task, no session needed)
+   1  unavailable — stderr: reason; caller should fall back to its default
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+DEFAULT_URL = "http://localhost:8200"
+
+
+def load_kv(path: Path | None) -> dict[str, str]:
+    """Parse a `key = value` file, skipping blanks and # comments."""
+    out: dict[str, str] = {}
+    if path is None or not path.is_file():
+        return out
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def first_existing(*paths: str | None) -> Path | None:
+    for p in paths:
+        if p and Path(p).is_file():
+            return Path(p)
+    return None
+
+
+def resolve_target(host: str | None) -> tuple[str, str]:
+    """Return (base_url, api_key) using the same precedence as the TUI."""
+    home = Path.home()
+    cfg = home / ".config" / "aria"
+    hosts = load_kv(first_existing(os.getenv("ARIA_HOSTS"), str(cfg / "hosts")))
+    dotenv = load_kv(
+        first_existing(
+            os.getenv("ARIA_ENV"),
+            str(cfg / "env"),
+            str(home / "Development" / "ProjectAria" / ".env"),
+        )
+    )
+
+    def key(*extra: str) -> str:
+        for candidate in (
+            os.getenv("ARIA_API_KEY"),
+            os.getenv("API_KEY"),
+            *extra,
+            dotenv.get("ARIA_API_KEY"),
+            dotenv.get("API_KEY"),
+        ):
+            if candidate:
+                return candidate
+        return ""
+
+    if host:
+        if host.startswith(("http://", "https://")):
+            return host, key()
+        if hosts.get(f"{host}.url"):
+            return hosts[f"{host}.url"], key(hosts.get(f"{host}.key", ""))
+        if "." in host or ":" in host:
+            return f"http://{host}", key()
+
+    if url := os.getenv("ARIA_API_URL"):
+        return url, key()
+    default = hosts.get("default")
+    if default and hosts.get(f"{default}.url"):
+        return hosts[f"{default}.url"], key(hosts.get(f"{default}.key", ""))
+    return DEFAULT_URL, key()
+
+
+def classify(base_url: str, api_key: str, prompt: str, workspace: str, timeout: float) -> dict:
+    payload = json.dumps(
+        {"prompt": prompt, "workspace": workspace, "allow_inline_answer": True}
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        base_url.rstrip("/") + "/api/v1/routing/classify",
+        data=payload,
+        headers={"Content-Type": "application/json", "X-API-Key": api_key},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Ask ARIA which model a task needs.")
+    ap.add_argument("prompt", nargs="+", help="the task")
+    ap.add_argument("--host", default=None, help="host profile, host[:port], or URL")
+    ap.add_argument("--workspace", default=None, help="defaults to $PWD")
+    ap.add_argument("--timeout", type=float, default=8.0)
+    ap.add_argument("--no-answer", action="store_true",
+                    help="always route to a session, never answer inline")
+    args = ap.parse_args()
+
+    prompt = " ".join(args.prompt).strip()
+    if not prompt:
+        print("aria-route-task: empty prompt", file=sys.stderr)
+        return 1
+
+    base_url, api_key = resolve_target(args.host)
+    try:
+        verdict = classify(
+            base_url, api_key, prompt, args.workspace or os.getcwd(), args.timeout
+        )
+    except urllib.error.HTTPError as exc:
+        print(f"aria-route-task: {base_url} returned HTTP {exc.code}", file=sys.stderr)
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"aria-route-task: {base_url} unreachable ({exc})", file=sys.stderr)
+        return 1
+    except json.JSONDecodeError:
+        print("aria-route-task: bad response from API", file=sys.stderr)
+        return 1
+
+    answer = verdict.get("answer")
+    if answer and not args.no_answer:
+        print(answer)
+        return 10
+
+    model = verdict.get("model")
+    if not model:
+        print("aria-route-task: verdict carried no model", file=sys.stderr)
+        return 1
+    print(model)
+    print(verdict.get("tier", "standard"))
+    print(verdict.get("why", ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

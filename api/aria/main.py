@@ -22,7 +22,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared
+from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -522,6 +522,7 @@ app.include_router(notifications.router, prefix="/api/v1", tags=["notifications"
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
 app.include_router(research.router, prefix="/api/v1", tags=["research"])
 app.include_router(coding_sessions.router, prefix="/api/v1", tags=["coding"])
+app.include_router(routing.router, prefix="/api/v1", tags=["routing"])
 app.include_router(infrastructure.router, prefix="/api/v1", tags=["infrastructure"])
 app.include_router(workflows.router, prefix="/api/v1", tags=["workflows"])
 app.include_router(schedules.router, prefix="/api/v1", tags=["schedules"])

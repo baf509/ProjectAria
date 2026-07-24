@@ -1,6 +1,6 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-07-04
+**Last Updated:** 2026-07-23
 **Updated By:** Claude Code
 
 This is a living "current state" page. For the full shipped history (what shipped, when), see `CHANGELOG.md`.
@@ -11,11 +11,13 @@ This is a living "current state" page. For the full shipped history (what shippe
 
 Active branch: `feature/multi-runtime-fleet`.
 
-0. **Shared Services (S1–S5) — implemented & partially live (2026-07-18).** Foundation for the Coherence + Ontology Memory plans (see `vault/ProjectAria/Design/SHARED_SERVICES_DESIGN.md`). **Live now:** S1 memory HTTP API (`/api/v1/memory/{recall,store}`), S5 native BSON vector storage (subtype 9; all 1245 memories migrated, recall verified over native vectors), S4 auth (existing global key), S3 review surface (`/api/v1/shared/review`), Phase 0 ground-truth correction. **Implemented, flag-gated OFF:** S2 scan/reconcile worker (`shared_scan_enabled=false` — set true to activate machine-scan → memory). Code in `api/aria/shared/`, `api/aria/api/routes/memory_api.py`, `api/aria/scripts/`; tests in `test_shared_services.py`. **Next (optional):** enable `shared_scan_enabled`; build the Ontology emitter on the S2 worker.
+0. **Complexity routing — LIVE and verified end-to-end (2026-07-23).** Unpinned coding tasks are classified into a tier and run on that tier's model (planning/design → Opus 4.8, scoped work → Sonnet 5, research → Sonnet 5; Sonnet is the floor, and the quota fallback now points at the local open-weights server rather than Fireworks). Code in `api/aria/agents/routing.py`, `api/aria/api/routes/routing.py`; desk-path wrapper in `scripts/aria-claude.sh` + `scripts/aria-route-task`; 61 tests in `test_complexity_routing.py`. Verified against the live service: an unpinned design prompt spawned a real Claude Code session on `claude-opus-4-8` with the verdict persisted, and `backend=codex` correctly stayed unrouted. The desk wrapper is sourced on corsair. **Next:** run `scripts/aria-desk-install-mac` from the MacBook (the only host still unwired).
 
-1. **Layer B2 — `aria-node` agent (implemented; live verification pending).** The fleet now spans machines: a remote node registers via `/api/v1/nodes/*`, captures its `claude-*` shells, and is driven back through the `shell_commands` queue via a host-aware `ShellService`; `start_coding_session(host=…)` + the watchdog/Ralph loop work over the wire. Code + unit tests are in (`api/aria/nodes/`, `api/aria/node/`, `test_nodes.py`); **next: restart `aria-api`, run `aria-node` on the MacBook, and verify end-to-end** (Mac shells in the fleet with `host=bens-macbook-air`, drive + a remote Ralph loop). See `MULTI_MACHINE_FLEET_DESIGN.md`.
-2. **Integration testing with live services** — Signal, Research, and Workflow systems; Scheduler end-to-end against live MongoDB.
-3. **Run the ABP migration** when ready to fully retire AgentBenchPlatform (utilities + cutover validation endpoint already exist).
+1. **Shared Services (S1–S5) — implemented & partially live (2026-07-18).** Foundation for the Coherence + Ontology Memory plans (see `vault/ProjectAria/Design/SHARED_SERVICES_DESIGN.md`). **Live now:** S1 memory HTTP API (`/api/v1/memory/{recall,store}`), S5 native BSON vector storage (subtype 9; all 1245 memories migrated, recall verified over native vectors), S4 auth (existing global key), S3 review surface (`/api/v1/shared/review`), Phase 0 ground-truth correction. **Implemented, flag-gated OFF:** S2 scan/reconcile worker (`shared_scan_enabled=false` — set true to activate machine-scan → memory). Code in `api/aria/shared/`, `api/aria/api/routes/memory_api.py`, `api/aria/scripts/`; tests in `test_shared_services.py`. **Next (optional):** enable `shared_scan_enabled`; build the Ontology emitter on the S2 worker.
+
+2. **Layer B2 — `aria-node` agent (implemented; live verification pending).** The fleet now spans machines: a remote node registers via `/api/v1/nodes/*`, captures its `claude-*` shells, and is driven back through the `shell_commands` queue via a host-aware `ShellService`; `start_coding_session(host=…)` + the watchdog/Ralph loop work over the wire. Code + unit tests are in (`api/aria/nodes/`, `api/aria/node/`, `test_nodes.py`); **next: restart `aria-api`, run `aria-node` on the MacBook, and verify end-to-end** (Mac shells in the fleet with `host=bens-macbook-air`, drive + a remote Ralph loop). See `MULTI_MACHINE_FLEET_DESIGN.md`.
+3. **Integration testing with live services** — Signal, Research, and Workflow systems; Scheduler end-to-end against live MongoDB.
+4. **Run the ABP migration** when ready to fully retire AgentBenchPlatform (utilities + cutover validation endpoint already exist).
 
 See `BACKLOG.md` for the uncommitted product/research backlog, and `docs/archive/IMPLEMENTATION_PLAN.md` for the historical phase breakdown.
 
@@ -59,6 +61,9 @@ Everything shipped through 2026-07-04 is COMPLETE; Layer B2 is the single in-pro
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-07-23 | Sonnet 5 is the floor for routing; sub-Sonnet only on quota exhaustion | Cheap models cost more in rework than they save; the fallback exists to keep working when the subscription is out, not to save money |
+| 2026-07-23 | Route inside `start_session()`, not per-caller | One chokepoint means Hermes, `/code`, the TUI, autostart and remote-node sessions all inherit routing with no per-surface work |
+| 2026-07-23 | Detect-then-degrade for quota, not prediction | There is no API for Claude subscription quota; pane output is the only available signal |
 | 2026-07-04 | One brain, many hands (Layer B2 is API-mediated + pull-based) | Keep memory/watchdog/Ralph loop centralized on corsair; remote hands register in rather than run a second brain |
 | 2026-07-04 | Ship Layer A (remote cockpit) first | The TUI is already a thin pure-HTTP client, so a cross-machine cockpit is near-free ahead of the deeper node work |
 | 2025-12-06 | Use official Anthropic and OpenAI SDKs | Better reliability and maintenance than a custom implementation |

@@ -1,7 +1,7 @@
 # ARIA TUI — build targets
 #
 # `go` may not be on PATH (e.g. an SDK-managed toolchain); override with:
-#   make build GO=/home/ben/go-sdk/go/bin/go
+#   make build GO=/home/ben/sdks/go-sdk/go/bin/go
 GO      ?= go
 BIN     ?= aria-tui
 PREFIX  ?= $(HOME)/.local/bin

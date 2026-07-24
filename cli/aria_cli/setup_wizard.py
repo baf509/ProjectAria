@@ -304,7 +304,7 @@ def _section_features(existing: dict[str, str], env: dict[str, str]) -> None:
     console.print("\n[dim]Document generation:[/dim]")
     env["DOCGEN_OUTPUT_DIR"] = _prompt(
         "Document output directory",
-        default=existing.get("DOCGEN_OUTPUT_DIR", "~/aria-documents"),
+        default=existing.get("DOCGEN_OUTPUT_DIR", "~/Development/ProjectAria/aria-documents"),
     )
 
     console.print("\n[dim]Skill packages:[/dim]")
@@ -472,7 +472,7 @@ def setup(non_interactive: bool) -> None:
             "SCREENSHOT_COMMAND": existing.get("SCREENSHOT_COMMAND", "scrot"),
             "SCREENSHOT_VISION_BACKEND": existing.get("SCREENSHOT_VISION_BACKEND", "anthropic"),
             "SCREENSHOT_VISION_MODEL": existing.get("SCREENSHOT_VISION_MODEL", "claude-sonnet-4-20250514"),
-            "DOCGEN_OUTPUT_DIR": existing.get("DOCGEN_OUTPUT_DIR", "~/aria-documents"),
+            "DOCGEN_OUTPUT_DIR": existing.get("DOCGEN_OUTPUT_DIR", "~/Development/ProjectAria/aria-documents"),
             "SKILLS_DIR": existing.get("SKILLS_DIR", "~/.aria/skills/"),
             "AUTOPILOT_MAX_STEPS": existing.get("AUTOPILOT_MAX_STEPS", "20"),
             "AUTOPILOT_STEP_TIMEOUT_SECONDS": existing.get("AUTOPILOT_STEP_TIMEOUT_SECONDS", "300"),
