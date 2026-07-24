@@ -158,18 +158,22 @@ including remote-node sessions, since `--model` is already part of the launch
 string shipped to `aria-node`. `POST /api/v1/routing/classify` exposes the same
 decision to thin clients.
 
-**Desk path:** `scripts/aria-claude.sh` (sourced from `~/.bashrc` on corsair or
-`~/.zshrc` on the MacBook) wraps `claude` so typing `claude "<task>"` routes it,
-then launches Claude Code on the chosen model inside a `claude-*` tmux session —
-auto-adopted on both hosts. Backends set `ARIA_MANAGED=1` so ARIA-spawned
-sessions don't re-enter the wrapper. A shell started by hand outside the wrapper
-is still adopted, but its model can't be chosen after the fact.
-**Live on corsair since 2026-07-23.** It is sourced *after* the older
-`_aria_claude_dir_session` wrapper (bare `claude` → attach/spawn the persisted
-per-directory shell), and hands the no-task case back to it via
-`ARIA_CLAUDE_BARE_COMMAND`, so both behaviours coexist: `claude` alone = the old
-per-directory shell, `claude "<task>"` = routed. `claude --no-aria …` escapes
-both. **The MacBook still needs the same two lines in `~/.zshrc`.**
+**Desk path — routing deliberately NOT wired in (decided 2026-07-24).** Claude
+Code is one-model-per-session (you pick at launch or `/model` inside; no hook can
+swap the model per prompt), so an interactive REPL — the sit-down `claude`
+workflow — has no single task to classify and can't be dynamically re-routed
+mid-session. Auto-routing the desk path was tried and reverted: it fit awkwardly,
+and the primary habit (`claude --dangerously-skip-permissions`) bypassed it
+anyway. So bare `claude` on corsair is just the saved-state per-directory shell
+attach (`claude()` in `~/.bashrc`); you choose the model. Routing lives **only on
+the automated spawn path** (`start_session()` — Hermes/MCP/TUI create), where one
+task genuinely is one session.
+
+The desk-path scripts (`scripts/aria-claude.sh`, `scripts/aria-route-task`,
+`scripts/aria-desk-install-mac`) are **retained but not sourced** — `aria-route-task`
+is still a useful manual "what would this route to?" client against
+`POST /api/v1/routing/classify`. Re-source `aria-claude.sh` to bring back
+`claude "<task>"` auto-routing if the trade-off ever looks different.
 
 **Quota:** ARIA cannot see the Claude subscription quota (no API exists). The
 watchdog records a cooldown in `model_availability` when it sees rate-limit text

@@ -2,6 +2,15 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-24] - Desk-path auto-routing reverted; routing is spawn-path only
+
+### Changed
+- **Complexity routing no longer intercepts the desk `claude` command.** Claude Code is one-model-per-session — you pick the model at launch or with `/model`, and no hook can swap it per prompt — so the sit-down interactive REPL has no single task to classify and can't be dynamically re-routed. The desk wrapper also fit the primary habit poorly: `claude --dangerously-skip-permissions` starts with a flag, which the wrapper bailed on, so routing never ran for it. Reverted `~/.bashrc` on corsair: `claude()` is once again just the saved-state per-directory shell attach (the aria-shells workflow that was working well). **Routing is unchanged on the automated spawn path** (`start_session()` — Hermes/MCP/TUI), where one task really is one session.
+- The desk-path scripts (`scripts/aria-claude.sh`, `aria-route-task`, `aria-desk-install-mac`) are kept in the repo but no longer sourced. `aria-route-task` remains a useful manual client for `POST /api/v1/routing/classify`.
+
+### Notes
+- **MacBook still needs one manual edit:** the installer had added the wrapper to `~/.zshrc`. Remove the `. ~/.config/aria/aria-claude.sh` line there so bare `claude` is the real binary again (the export line is harmless to keep).
+
 ## [2026-07-23] - Complexity routing actually reaches its callers
 
 ### Fixed
