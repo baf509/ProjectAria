@@ -45,6 +45,7 @@ class StartCodingSessionTool(_CodingBaseTool):
             ToolParameter(name="branch", type="string", description="Branch hint", required=False),
             ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (Ralph loop). Default false.", required=False, default=False),
             ToolParameter(name="host", type="string", description="Run on a remote node (its aria-node id, e.g. a MacBook). Omit to run on this host.", required=False),
+            ToolParameter(name="subagent_profile", type="string", description="Named specialist profile (a db.agents slug/name): applies its backend/model and prepends its system_prompt as the role. An explicit backend/model still wins.", required=False),
         ]
 
     async def execute(self, arguments: dict) -> ToolResult:

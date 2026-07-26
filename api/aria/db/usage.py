@@ -27,6 +27,8 @@ class UsageRepo:
         source: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
         agent_slug: Optional[str] = None,
         conversation_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -44,6 +46,10 @@ class UsageRepo:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
+            # Prompt-cache accounting (0 for backends without caching). The
+            # cache-hit rate is cache_read / (cache_read + input) — see summary().
+            "cache_read_tokens": cache_read_tokens or 0,
+            "cache_write_tokens": cache_write_tokens or 0,
             "agent_slug": agent_slug,
             "conversation_id": conversation_id,
             "session_id": session_id,
@@ -52,6 +58,13 @@ class UsageRepo:
         }
         result = await self.db.usage.insert_one(doc)
         return str(result.inserted_id)
+
+    @staticmethod
+    def _hit_rate(cache_read: int, input_tokens: int) -> float:
+        """Weighted cache-hit rate: cached prompt tokens as a share of all prompt
+        tokens (cache_read + fresh input). Matches Pi-Flow's cacheHitRate."""
+        denom = (cache_read or 0) + (input_tokens or 0)
+        return round((cache_read or 0) / denom, 4) if denom else 0.0
 
     @staticmethod
     def _price_rows(rows: list[dict]) -> list[dict]:
@@ -76,11 +89,17 @@ class UsageRepo:
                 "input_tokens": {"$sum": "$input_tokens"},
                 "output_tokens": {"$sum": "$output_tokens"},
                 "total_tokens": {"$sum": "$total_tokens"},
+                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                 "requests": {"$sum": 1},
             }},
             {"$sort": {"total_tokens": -1}},
         ]
         rows = await self.db.usage.aggregate(pipeline).to_list(length=500)
+        for r in rows:
+            r["cache_hit_rate"] = self._hit_rate(
+                r.get("cache_read_tokens", 0), r.get("input_tokens", 0)
+            )
         return self._price_rows(rows)
 
     async def cost_summary(self, days: int = 7) -> dict:
@@ -135,14 +154,27 @@ class UsageRepo:
                     "input_tokens": {"$sum": "$input_tokens"},
                     "output_tokens": {"$sum": "$output_tokens"},
                     "total_tokens": {"$sum": "$total_tokens"},
+                    "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                    "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                     "requests": {"$sum": 1},
                 }
             },
         ]
         result = await self.db.usage.aggregate(pipeline).to_list(length=1)
-        return result[0] if result else {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "total_tokens": 0,
-            "requests": 0,
-        }
+        if not result:
+            return {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "cache_hit_rate": 0.0,
+                "requests": 0,
+            }
+        row = result[0]
+        row["cache_read_tokens"] = row.get("cache_read_tokens", 0)
+        row["cache_write_tokens"] = row.get("cache_write_tokens", 0)
+        row["cache_hit_rate"] = self._hit_rate(
+            row["cache_read_tokens"], row.get("input_tokens", 0)
+        )
+        return row

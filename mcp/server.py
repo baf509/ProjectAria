@@ -93,7 +93,24 @@ async def fleet_status(awaiting_only: bool = False) -> dict:
     get just the shells blocked on input.
     """
     params = {"awaiting": "true"} if awaiting_only else None
-    return await _request("GET", "/api/v1/shells/overview", params=params)
+    overview = await _request("GET", "/api/v1/shells/overview", params=params)
+    # Enrich with the coding sub-agent concurrency gauge (active/queued/limit)
+    # and the rolling cache-hit rate. Best-effort — a failure never breaks the
+    # fleet digest.
+    if isinstance(overview, dict):
+        try:
+            overview["coding_concurrency"] = await _request(
+                "GET", "/api/v1/coding/sessions/concurrency"
+            )
+        except Exception:
+            pass
+        try:
+            summary = await _request("GET", "/api/v1/usage/summary", params={"days": 1})
+            if isinstance(summary, dict):
+                overview["cache_hit_rate"] = summary.get("cache_hit_rate", 0.0)
+        except Exception:
+            pass
+    return overview
 
 
 @mcp.tool()
@@ -440,6 +457,7 @@ async def create_coding_session(
     backend: Optional[str] = None,
     loop: bool = False,
     host: Optional[str] = None,
+    subagent_profile: Optional[str] = None,
 ) -> dict:
     """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
     backend: 'claude_code' (default), 'codex', or 'pi'.
@@ -447,7 +465,9 @@ async def create_coding_session(
     it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (a Ralph
     loop). Use set_coding_loop to toggle this on an already-running session.
     host: run the session on a remote node (its aria-node id, e.g. a MacBook from
-    list_nodes) instead of this host; omit to run locally."""
+    list_nodes) instead of this host; omit to run locally.
+    subagent_profile: a named specialist (a db.agents slug/name) whose backend,
+    model, and system_prompt (role) are applied; an explicit backend still wins."""
     body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
     if backend:
         body["backend"] = backend
@@ -455,6 +475,8 @@ async def create_coding_session(
         body["loop"] = {}  # server defaults fill in the loop config
     if host:
         body["host"] = host
+    if subagent_profile:
+        body["subagent_profile"] = subagent_profile
     return await _request("POST", "/api/v1/coding/sessions", json=body)
 
 
@@ -522,6 +544,54 @@ async def set_coding_loop(
         if val is not None:
             body[key] = val
     return await _request("POST", f"/api/v1/coding/sessions/{session_id}/loop", json=body)
+
+
+# ───────────────────────────────────────────────────────────── workflows ──
+# Multi-step / fan-out orchestration: a linear DAG of steps plus `parallel`,
+# `map`, `code_session` (await:true to join), and `synthesize` actions.
+
+@mcp.tool()
+async def list_workflows() -> Any:
+    """List saved workflow definitions."""
+    return await _request("GET", "/api/v1/workflows")
+
+
+@mcp.tool()
+async def create_workflow(
+    name: str,
+    steps: list,
+    description: str = "",
+    tags: Optional[list] = None,
+) -> dict:
+    """Create a workflow. `steps` is a list of {action, params, depends_on?}.
+    Fan-out actions: `parallel` (params.steps = sub-steps, params.max_concurrent),
+    `map` (params.over = list/interpolation, params.template = one sub-step, with
+    {{item}}/{{index}} in the template), `code_session` (params.await=true joins
+    the spawned sub-agent and captures result_summary), and `synthesize`
+    (params.inputs or params.from_steps + params.instruction, optional
+    backend/model) to reduce prior results into one answer. Reference earlier
+    results with {{steps.N.path}} and nested fan-out results with
+    {{steps.N.results.M.path}}."""
+    body: dict[str, Any] = {"name": name, "description": description, "steps": steps}
+    if tags:
+        body["tags"] = tags
+    return await _request("POST", "/api/v1/workflows", json=body)
+
+
+@mcp.tool()
+async def run_workflow(workflow_id: str, dry_run: bool = False) -> dict:
+    """Run a saved workflow. Returns {run_id, task_id}; poll get_workflow_status
+    for step results. dry_run=True validates + renders params without executing
+    the actions."""
+    return await _request(
+        "POST", f"/api/v1/workflows/{workflow_id}/run", json={"dry_run": dry_run}
+    )
+
+
+@mcp.tool()
+async def get_workflow_status(workflow_id: str) -> dict:
+    """Get a workflow definition plus its recent runs (status + step_results)."""
+    return await _request("GET", f"/api/v1/workflows/{workflow_id}/status")
 
 
 if __name__ == "__main__":

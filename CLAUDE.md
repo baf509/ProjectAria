@@ -134,6 +134,38 @@ the watchdog (`agents/watchdog.py` `_maybe_nudge`) re-feeds an idle session unti
 it signals done or trips a cap — driven through the same `send_input`, so it works
 for any substrate and inherits the safety gates.
 
+**Concurrency limiter (Pi-Flow parity).** A session holds a "slot" while it is
+actively running; spawns beyond `coding_max_concurrent_sessions` (default 4;
+0 = unbounded) sit in a `queued` state and launch as slots free.
+`coding_queue_max` (default 64) hard-caps the wait queue. The gate is CV-guarded
+with idempotent, set-based slot release across every finalize path; a free slot
+launches inline (unchanged fast path). Applies to all substrates including
+pi-code. A slot is held for a session's whole active life, so long-lived Ralph
+sessions occupy one — size the cap accordingly. Gauge:
+`GET /api/v1/coding/sessions/concurrency` (also merged into MCP `fleet_status`).
+**Join primitive:** `CodingSessionManager.wait_for_session(id, timeout)` polls a
+session to a terminal state (restart-safe) and returns its `result_summary` —
+the building block workflow fan-out consumes.
+
+**Specialist profiles.** `start_coding_session(subagent_profile=<slug>)` resolves
+a `db.agents` row and applies its backend/model + `system_prompt` (role
+preamble); an explicit backend/model still wins.
+
+### Workflows: fan-out orchestration (`api/aria/workflows/engine.py`)
+
+`WorkflowEngine` runs a top-level **linear DAG** (conditions, `depends_on`,
+`{{steps.N.path}}` interpolation) plus **fan-out** actions: `parallel` (concurrent
+explicit sub-steps, bounded by `max_concurrent`), `map` (one `template` over a
+list, with `{{item}}`/`{{index}}` scope), `code_session` with `await:true` (join a
+spawned sub-agent via `wait_for_session`, capturing `result_summary`), and
+`synthesize` (reduce prior results into one answer via an agent turn — optional
+`backend`/`model`, e.g. merge on Opus). Sub-step results nest under the group as
+`results`/`records`, addressable via `{{steps.N.results.M.path}}` (dotted paths
+walk lists too). Routes under `/api/v1/workflows`; exposed to Hermes as MCP
+`list_workflows`/`create_workflow`/`run_workflow`/`get_workflow_status`. Together
+these give Pi-Flow-style parallel research, multi-model review, staged pipelines,
+and synthesized results on ARIA's existing session + mailbox primitives.
+
 ### Complexity Routing (`api/aria/agents/routing.py`)
 
 A coding task started with **no explicit backend/model** is classified into a
@@ -431,6 +463,6 @@ python3 -m pytest tests/ -v        # Run all tests
 python3 -m pytest tests/ -k "tool"  # Run tests matching keyword
 ```
 
-Test suite covers: tokenizer, resilience (retry/circuit breaker), tool router (registration, policy, execution, audit), LLM base classes, memory RRF fusion, orchestrator command parsing (mode/research/memory/coding), research service (JSON parsing, deduplication, HTML stripping), and workflow engine (conditions, dependencies, parameter interpolation).
+Test suite covers: tokenizer, resilience (retry/circuit breaker), tool router (registration, policy, execution, audit), LLM base classes, memory RRF fusion, orchestrator command parsing (mode/research/memory/coding), research service (JSON parsing, deduplication, HTML stripping), workflow engine (conditions, dependencies, parameter interpolation, and fan-out: parallel/map/synthesize + code_session await), and the coding-session concurrency limiter + `wait_for_session` join primitive.
 
 Additional manual testing via CLI, API docs (`/docs`), and Docker Compose integration.

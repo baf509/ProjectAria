@@ -314,6 +314,7 @@ class CodingSessionCreate(BaseModel):
     branch: Optional[str] = None
     loop: Optional[CodingLoopConfig] = None  # opt-in Ralph loop; absent = one-shot
     host: Optional[str] = None  # run on a remote node (aria-node id); None = this host
+    subagent_profile: Optional[str] = None  # named db.agents specialist (backend/model + role)
 
 
 class CodingSessionInput(BaseModel):

@@ -67,6 +67,8 @@ async def usage_by_model(
                 "input_tokens": {"$sum": "$input_tokens"},
                 "output_tokens": {"$sum": "$output_tokens"},
                 "total_tokens": {"$sum": "$total_tokens"},
+                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                 "requests": {"$sum": 1},
             }
         },
@@ -78,6 +80,9 @@ async def usage_by_model(
             cost_for(r["_id"], r.get("input_tokens", 0), r.get("output_tokens", 0), r.get("backend")),
             6,
         )
+        cache_read = r.get("cache_read_tokens", 0) or 0
+        denom = cache_read + (r.get("input_tokens", 0) or 0)
+        r["cache_hit_rate"] = round(cache_read / denom, 4) if denom else 0.0
     return rows
 
 

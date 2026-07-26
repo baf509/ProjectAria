@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
     coding_auto_respond_prompts: bool = False
+    # Global concurrency limiter for coding sub-agents (Pi-Flow
+    # --max-concurrent-subagents parity). A session holds a "slot" while it is
+    # actively running; spawns beyond the cap sit in a `queued` state and launch
+    # as slots free. 0 = unbounded. Size it with looping (Ralph) sessions in
+    # mind — they hold a slot for their whole life.
+    coding_max_concurrent_sessions: int = 4
+    # Hard cap on how many sessions may sit queued waiting for a slot. 0 = no
+    # cap. Beyond it a spawn is refused (fail loud) rather than silently queued.
+    coding_queue_max: int = 64
     # Ralph loop: opt-in, per-session. When a coding session carries a
     # loop_config, the watchdog nudges it forward whenever it goes idle at its
     # prompt — re-checking the killswitch/e-stop each nudge — until it emits the

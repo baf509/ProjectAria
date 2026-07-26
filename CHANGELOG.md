@@ -2,6 +2,48 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-25] - Pi-Flow parity: fan-out workflows, concurrency limiter, cache metrics
+
+Closes the gaps between ARIA and [pi-flow](https://github.com/kky42/pi-flow) (multi-agent
+orchestration). Plan: `vault/ProjectAria/Planning/PiFlow_Parity_Plan.md`.
+
+### Added
+- **Global concurrency limiter + queue for coding sub-agents** (`agents/session.py`).
+  A session holds a "slot" while running; spawns beyond `coding_max_concurrent_sessions`
+  (default 4; 0 = unbounded) sit in a new `queued` state and launch as slots free.
+  `coding_queue_max` (default 64) hard-caps the wait queue (fail loud beyond it).
+  CV-guarded, idempotent set-based slot release across every finalize path; the fast
+  path (free slot → inline launch) is unchanged. Gauge at `GET /coding/sessions/concurrency`
+  and merged into MCP `fleet_status`. Applies to CLI/shell/subprocess/remote **and**
+  pi-code substrates.
+- **`wait_for_session(session_id, timeout)`** — the join primitive: polls a session to a
+  terminal state (restart-safe) and attaches the `TASK_DONE` result summary from the mailbox.
+- **Fan-out workflow orchestration** (`workflows/engine.py`). New actions on top of the
+  linear DAG: `parallel` (concurrent explicit sub-steps, bounded by `max_concurrent`),
+  `map` (one `template` over a list, with `{{item}}`/`{{index}}` scope), `code_session`
+  with `await:true` (join a spawned sub-agent and capture its result_summary), and
+  `synthesize` (reduce prior results into one answer via an agent turn, optional
+  backend/model — e.g. merge on Opus). Sub-step results nest under the group as
+  `results`/`records`, addressable via `{{steps.N.results.M.path}}` (dotted paths now walk
+  lists too). Exposed to Hermes as MCP `list_workflows`/`create_workflow`/`run_workflow`/
+  `get_workflow_status`.
+- **Prompt-cache metrics.** Anthropic adapter now captures `cache_read`/`cache_write`
+  tokens; persisted by `UsageRepo.record` and aggregated into a weighted
+  `cache_hit_rate` on `/usage/summary` and `/usage/by-model` (Pi-Flow `cacheHitRate` parity).
+- **Declarative specialist profiles.** `start_coding_session(subagent_profile=<slug>)`
+  resolves a `db.agents` row and applies its backend/model + `system_prompt` (role
+  preamble); an explicit backend/model still wins. Threaded through the REST model + MCP
+  `create_coding_session`.
+
+### Notes
+- Slot semantics: a slot is held while a session is actively running (has a live watch
+  task), so long-lived Ralph-loop sessions occupy a slot for their whole life — size the
+  cap accordingly. Visible-tmux sessions (which have no completion watcher) hold a slot
+  until stopped. Queued sessions are lost on an `aria-api` restart (rare edge).
+- 873 tests pass; new coverage in `test_coding_concurrency.py`, extended
+  `test_workflow_engine.py`, `test_usage_repo.py`. After deploying, restart
+  `aria-api` (limiter + engine) and `hermes-gateway.service` (new MCP tools).
+
 ## [2026-07-24] - Desk-path auto-routing reverted; routing is spawn-path only
 
 ### Changed

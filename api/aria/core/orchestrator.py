@@ -486,6 +486,8 @@ class Orchestrator:
                         source="conversation",
                         input_tokens=u.get("input_tokens", 0),
                         output_tokens=u.get("output_tokens", 0),
+                        cache_read_tokens=u.get("cache_read_tokens", 0),
+                        cache_write_tokens=u.get("cache_write_tokens", 0),
                         agent_slug=agent.get("slug"),
                         conversation_id=conversation_id,
                         metadata={

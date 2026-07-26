@@ -88,6 +88,7 @@ async def start_coding_session(
         llm=body.llm,
         loop=body.loop.model_dump(exclude_none=True) if body.loop else None,
         host=body.host,
+        subagent_profile=body.subagent_profile,
     )
     return CodingSessionResponse(**serialize_session(session))
 
@@ -99,6 +100,15 @@ async def list_coding_sessions(
 ):
     sessions = await manager.list_sessions(status=status)
     return [CodingSessionResponse(**serialize_session(session)) for session in sessions]
+
+
+@router.get("/concurrency")
+async def coding_concurrency(
+    manager: CodingSessionManager = Depends(get_coding_session_manager),
+):
+    """Live concurrency-limiter gauge: running (slot-holding) sessions, how many
+    are queued waiting for a slot, and the configured cap (0 = unbounded)."""
+    return await manager.concurrency_stats()
 
 
 @router.get("/{session_id}", response_model=CodingSessionResponse)

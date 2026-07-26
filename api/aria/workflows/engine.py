@@ -1,7 +1,13 @@
 """
 ARIA - Workflow Engine
 
-Purpose: Execute simple multi-step workflows.
+Purpose: Execute multi-step workflows. A top-level linear DAG (conditions,
+depends_on, {{steps.N.path}} interpolation) plus fan-out orchestration:
+`parallel` (concurrent explicit sub-steps), `map` (one template over a list),
+`code_session` with await:true (join a spawned sub-agent), and `synthesize`
+(reduce prior results into one answer via an agent turn). Sub-step results nest
+under the group as `results`/`records`, addressable as
+{{steps.N.results.M.path}}.
 """
 
 from __future__ import annotations
@@ -158,6 +164,7 @@ class WorkflowEngine:
         step: dict,
         results: list[dict[str, Any]],
         dry_run: bool,
+        scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         action = step["action"]
         depends_on = step.get("depends_on", [])
@@ -173,21 +180,43 @@ class WorkflowEngine:
                 "result": None,
             }
 
+        # Fan-out actions orchestrate sub-steps and manage their own per-sub-step
+        # param rendering (a `map` template's {{item}} isn't known at group
+        # level), so they run BEFORE the wholesale _render_params below.
+        if action in ("parallel", "map"):
+            try:
+                group_result = await self._execute_group(
+                    workflow, action, step, results, dry_run
+                )
+                return {
+                    "index": index,
+                    "action": action,
+                    "depends_on": depends_on,
+                    "status": "completed",
+                    "result": group_result,
+                }
+            except Exception as exc:
+                return {
+                    "index": index,
+                    "action": action,
+                    "depends_on": depends_on,
+                    "status": "failed",
+                    "error": str(exc),
+                    "result": None,
+                }
+
         params = self._render_params(
             step.get("params", {}),
             results,
-            {
-                "run_id": workflow.get("_active_run_id"),
-                "workflow_id": workflow.get("_id"),
-                "workflow_name": workflow.get("name"),
-            },
+            self._ctx(workflow),
+            scope=scope,
         )
 
         try:
             if dry_run:
                 result = {"dry_run": True, "action": action, "params": params}
             else:
-                result = await self._perform_action(workflow, action, params)
+                result = await self._perform_action(workflow, action, params, results)
             return {
                 "index": index,
                 "action": action,
@@ -205,7 +234,79 @@ class WorkflowEngine:
                 "result": None,
             }
 
-    async def _perform_action(self, workflow: dict, action: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _ctx(self, workflow: dict) -> dict[str, Any]:
+        return {
+            "run_id": workflow.get("_active_run_id"),
+            "workflow_id": workflow.get("_id"),
+            "workflow_name": workflow.get("name"),
+        }
+
+    async def _execute_group(
+        self,
+        workflow: dict,
+        action: str,
+        step: dict,
+        results: list[dict[str, Any]],
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        """Run a `parallel` (explicit sub-steps) or `map` (one template over a
+        list) fan-out. Sub-steps run concurrently under a bounded semaphore and
+        see the SAME top-level `results` for {{steps.N}} interpolation. The group
+        result exposes `results` (each sub-step's result value, positional) plus
+        `records` (full sub-step records with status)."""
+        params = step.get("params", {})
+        # substeps: list of (substep_dict, scope_or_None)
+        if action == "parallel":
+            substeps = [(s, None) for s in (params.get("steps") or [])]
+        else:  # map
+            over_raw = params.get("over")
+            over = (
+                self._render_params(over_raw, results, self._ctx(workflow))
+                if isinstance(over_raw, str)
+                else over_raw
+            )
+            items = self._coerce_list(over)
+            template = params.get("template") or {}
+            substeps = [
+                (template, {"item": item, "index": i}) for i, item in enumerate(items)
+            ]
+
+        if not substeps:
+            return {"results": [], "records": [], "count": 0, "failed": 0}
+
+        max_conc = int(params.get("max_concurrent") or 0) or len(substeps)
+        sem = asyncio.Semaphore(max(1, max_conc))
+
+        async def run_one(i: int, sub: dict, sc: dict | None) -> dict:
+            async with sem:
+                return await self._execute_step(
+                    workflow=workflow,
+                    index=i,
+                    step=sub,
+                    results=results,
+                    dry_run=dry_run,
+                    scope=sc,
+                )
+
+        subrecords = await asyncio.gather(
+            *[run_one(i, s, sc) for i, (s, sc) in enumerate(substeps)]
+        )
+        failed = sum(1 for r in subrecords if r.get("status") == "failed")
+        return {
+            "results": [r.get("result") for r in subrecords],
+            "records": subrecords,
+            "count": len(subrecords),
+            "failed": failed,
+        }
+
+    async def _perform_action(
+        self,
+        workflow: dict,
+        action: str,
+        params: dict[str, Any],
+        results: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        results = results or []
         if action == "wait":
             seconds = float(params.get("seconds", 1))
             await asyncio.sleep(seconds)
@@ -240,10 +341,58 @@ class WorkflowEngine:
                 branch=params.get("branch"),
                 conversation_id=params.get("conversation_id"),
             )
-            return {"session_id": session["_id"], "workspace": session["workspace"], "backend": session["backend"]}
+            out = {
+                "session_id": session["_id"],
+                "workspace": session["workspace"],
+                "backend": session["backend"],
+                "status": session.get("status"),
+            }
+            # await:true blocks until the session finishes and captures its
+            # result summary, so a fan-out of code_sessions can be synthesized.
+            if params.get("await"):
+                timeout = params.get("timeout")
+                final = await self.coding_manager.wait_for_session(
+                    session["_id"], timeout=float(timeout) if timeout else None
+                )
+                if final:
+                    out["status"] = final.get("status")
+                    out["result_summary"] = final.get("result_summary")
+                    out["timed_out"] = bool(final.get("timed_out", False))
+            return out
+        if action == "synthesize":
+            return await self._run_synthesize(workflow, params, results)
         if action == "prompt":
             return await self._run_prompt_action(workflow, params)
         raise ValueError(f"Unsupported workflow action: {action}")
+
+    async def _run_synthesize(
+        self, workflow: dict, params: dict[str, Any], results: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Reduce prior results into a single answer with one agent turn — the
+        synthesis stage of a fan-out (multi-model review / parallel research →
+        one merged result). `inputs` is a list of (already-interpolated) strings;
+        `from_steps` is a convenience that pulls whole step results by index."""
+        inputs = params.get("inputs")
+        if inputs is None and params.get("from_steps") is not None:
+            inputs = []
+            for idx in params["from_steps"]:
+                res = results[idx].get("result") if 0 <= idx < len(results) else None
+                inputs.append(self._stringify(res))
+        inputs = inputs or []
+        instruction = params.get("instruction") or (
+            "Synthesize the following results into a single coherent answer."
+        )
+        parts = [f"### Input {i + 1}\n{self._stringify(x)}" for i, x in enumerate(inputs)]
+        message = instruction + "\n\n" + "\n\n".join(parts)
+        return await self._run_prompt_action(
+            workflow,
+            {
+                "message": message,
+                "title": params.get("title"),
+                "backend": params.get("backend"),
+                "model": params.get("model"),
+            },
+        )
 
     async def _run_prompt_action(self, workflow: dict, params: dict[str, Any]) -> dict[str, Any]:
         orchestrator = Orchestrator(self.db, self.tool_router, task_runner=self.task_runner, coding_manager=self.coding_manager)
@@ -253,6 +402,11 @@ class WorkflowEngine:
         if not agent:
             raise RuntimeError("No agent available for workflow prompt action")
         now = datetime.now(timezone.utc)
+        # Optional per-action backend/model override (e.g. synthesize on Opus).
+        # When set, pin it fallback-free via llm_config_override so the merge runs
+        # on the model the caller chose rather than the default agent's.
+        backend = params.get("backend") or agent["llm"]["backend"]
+        model = params.get("model") or agent["llm"]["model"]
         convo = {
             "agent_id": agent["_id"],
             "active_agent_id": None,
@@ -262,8 +416,8 @@ class WorkflowEngine:
             "created_at": now,
             "updated_at": now,
             "llm_config": {
-                "backend": agent["llm"]["backend"],
-                "model": agent["llm"]["model"],
+                "backend": backend,
+                "model": model,
                 "temperature": agent["llm"]["temperature"],
             },
             "messages": [],
@@ -271,6 +425,8 @@ class WorkflowEngine:
             "pinned": False,
             "stats": {"message_count": 0, "total_tokens": 0, "tool_calls": 0},
         }
+        if params.get("backend") or params.get("model"):
+            convo["llm_config_override"] = {"backend": backend, "model": model}
         insert = await self.db.conversations.insert_one(convo)
         content_parts: list[str] = []
         async for chunk in orchestrator.process_message(str(insert.inserted_id), params["message"], stream=False):
@@ -331,34 +487,105 @@ class WorkflowEngine:
         if task_id and task_id != "pending":
             await self.task_runner.update_task(task_id, progress=progress)
 
-    def _render_params(self, value: Any, results: list[dict[str, Any]], context: dict[str, Any]) -> Any:
+    def _render_params(
+        self,
+        value: Any,
+        results: list[dict[str, Any]],
+        context: dict[str, Any],
+        scope: dict[str, Any] | None = None,
+    ) -> Any:
         if isinstance(value, dict):
-            return {key: self._render_params(inner, results, context) for key, inner in value.items()}
+            return {key: self._render_params(inner, results, context, scope) for key, inner in value.items()}
         if isinstance(value, list):
-            return [self._render_params(item, results, context) for item in value]
+            return [self._render_params(item, results, context, scope) for item in value]
         if isinstance(value, str):
             rendered = re.sub(
                 r"\{\{steps\.(\d+)(?:\.([a-zA-Z0-9_.-]+))?\}\}",
                 lambda match: str(self._lookup_result(results, int(match.group(1)), match.group(2)) or ""),
                 value,
             )
-            return re.sub(
+            rendered = re.sub(
                 r"\{\{workflow\.([a-zA-Z0-9_.-]+)\}\}",
                 lambda match: str(context.get(match.group(1), "")),
                 rendered,
             )
+            # Per-item scope inside a `map` fan-out: {{item}}, {{item.path}}, {{index}}.
+            if scope:
+                rendered = re.sub(
+                    r"\{\{index\}\}",
+                    lambda _m: str(scope.get("index", "")),
+                    rendered,
+                )
+                rendered = re.sub(
+                    r"\{\{item(?:\.([a-zA-Z0-9_.-]+))?\}\}",
+                    lambda match: str(
+                        self._lookup_scope(scope.get("item"), match.group(1)) or ""
+                    ),
+                    rendered,
+                )
+            return rendered
         return value
 
     def _lookup_result(self, results: list[dict[str, Any]], index: int, path: str | None) -> Any:
         if index < 0 or index >= len(results):
             return ""
         result = results[index].get("result")
+        return self._walk(result, path)
+
+    @staticmethod
+    def _walk(current: Any, path: str | None) -> Any:
+        """Walk a dotted path over nested dicts AND lists (numeric parts index a
+        list), so {{steps.2.results.0.result_summary}} resolves into a fan-out."""
         if not path:
-            return result
-        current: Any = result
+            return current
         for part in path.split("."):
             if isinstance(current, dict):
                 current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    return None
             else:
                 return None
         return current
+
+    def _lookup_scope(self, item: Any, path: str | None) -> Any:
+        return self._walk(item, path)
+
+    @staticmethod
+    def _coerce_list(value: Any) -> list:
+        """Normalize a `map` `over` value to a list. Accepts an actual list, a
+        JSON-array string, or a newline/comma-separated string (interpolation
+        renders results to strings)."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return []
+            try:
+                import json as _json
+                parsed = _json.loads(s)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+            if "\n" in s:
+                return [ln.strip() for ln in s.splitlines() if ln.strip()]
+            return [x.strip() for x in s.split(",") if x.strip()]
+        return [value]
+
+    @staticmethod
+    def _stringify(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        try:
+            import json as _json
+            return _json.dumps(value, default=str, indent=2)
+        except Exception:
+            return str(value)

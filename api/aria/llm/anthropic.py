@@ -217,12 +217,19 @@ class AnthropicAdapter(LLMAdapter):
                         ),
                     )
 
-                # Yield usage stats
+                # Yield usage stats. Cache tokens (prompt-caching) power the
+                # cache-hit-rate metric; absent on older API shapes -> 0.
                 yield StreamChunk(
                     type="done",
                     usage={
                         "input_tokens": final_message.usage.input_tokens,
                         "output_tokens": final_message.usage.output_tokens,
+                        "cache_read_tokens": getattr(
+                            final_message.usage, "cache_read_input_tokens", 0
+                        ) or 0,
+                        "cache_write_tokens": getattr(
+                            final_message.usage, "cache_creation_input_tokens", 0
+                        ) or 0,
                     },
                 )
 

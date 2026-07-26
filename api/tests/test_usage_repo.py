@@ -37,6 +37,25 @@ class TestUsageRepo:
         assert result_id == "mock-id"
 
     @pytest.mark.asyncio
+    async def test_record_stores_cache_tokens(self):
+        db = make_mock_db()
+        repo = UsageRepo(db)
+        await repo.record(
+            model="claude-sonnet-5", source="chat",
+            input_tokens=100, output_tokens=50,
+            cache_read_tokens=900, cache_write_tokens=40,
+        )
+        doc = db.usage.insert_one.call_args[0][0]
+        assert doc["cache_read_tokens"] == 900
+        assert doc["cache_write_tokens"] == 40
+
+    def test_hit_rate_math(self):
+        # 900 cached of 1000 total prompt tokens -> 0.9
+        assert UsageRepo._hit_rate(900, 100) == 0.9
+        assert UsageRepo._hit_rate(0, 0) == 0.0
+        assert UsageRepo._hit_rate(0, 100) == 0.0
+
+    @pytest.mark.asyncio
     async def test_record_total_tokens_computed(self):
         db = make_mock_db()
         repo = UsageRepo(db)
