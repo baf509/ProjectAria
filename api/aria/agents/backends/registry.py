@@ -32,6 +32,19 @@ class BackendRegistry:
         "claude-code": "claude_code",
     }
 
+    def canonicalize(self, name: str | None) -> str | None:
+        """Map an alias to its canonical backend key, leaving others untouched.
+
+        Call this BEFORE any logic that compares a backend against a canonical
+        name. `routing.is_routable_backend` checks membership in
+        `{"claude_code"}`, so an un-normalized "claude-code" silently skipped
+        complexity routing entirely — the same class of regression CLAUDE.md
+        already documents for Hermes, reachable again through the alias.
+        """
+        if name is None:
+            return None
+        return self._ALIASES.get(name, name)
+
     def get(self, name: str):
         key = self._ALIASES.get(name, name)
         backend = self._backends.get(key)

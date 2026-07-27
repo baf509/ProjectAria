@@ -91,6 +91,14 @@ async def start_coding_session(
             host=body.host,
             subagent_profile=body.subagent_profile,
         )
+    except RuntimeError as exc:
+        # start_session also raises RuntimeError for caller-visible refusals:
+        # an unknown subagent_profile, the manual killswitch, and the e-stop.
+        # Those were reaching the client as a bare 500 with no body, so an
+        # agent that mistyped a profile — or hit a live e-stop — got nothing
+        # it could act on. 409 Conflict: request is well-formed, the service
+        # is refusing in its current state.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         # A bad request argument (unknown backend, unusable workspace) is the
         # CALLER's error, so return 400 with the reason rather than a bare 500.

@@ -192,6 +192,13 @@ class CodingSessionManager:
         # An explicit `model` always wins, as does an explicit backend the router
         # wouldn't have picked itself (see `is_routable_backend`). Routing only
         # fills the gap, and a failure falls through to the configured defaults.
+        # Normalise aliases BEFORE anything compares `backend` to a canonical
+        # name. is_routable_backend() tests membership in {"claude_code"}, so a
+        # caller passing the "claude-code" alias used to skip complexity routing
+        # silently — no error, just the CLI default model instead of the routed
+        # tier. Canonicalising here fixes it for every downstream check at once.
+        backend = self.registry.canonicalize(backend)
+
         routing_meta = None
         if model is None and settings.coding_routing_enabled:
             try:
