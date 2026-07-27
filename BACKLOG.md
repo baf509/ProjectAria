@@ -426,6 +426,51 @@ entity, not a collection of disconnected chatbots.
 
 ---
 
+## Type the API boundary (Literal/Enum on enum-like fields)
+
+**Why this is here:** on 2026-07-27 a one-word typo — `backend="pi"` instead of
+`"pi-code"` — cost a debugging round-trip and silently gave the user a Claude
+agent when they asked for a pi agent. An audit for that *shape* then found the
+same defect in seven more places. Every one is a consequence of a single
+structural gap.
+
+**The gap.** `api/aria/db/models.py` has **zero** `Literal`/`Enum` types for any
+`backend`, `status`, `type`, or `kind` field — all bare `str`. Same for
+`MemoryCreate.content_type` and the shells `status`/`kinds` query params. With
+no boundary type, **the docstring becomes the only schema**, and nothing forces
+it to match the dispatch site. `api/aria/planning/models.py` is the one module
+that uses Literals — and the one module the audit found no defects in.
+
+**The work:**
+- Add `Literal` types to the enum-like fields in `db/models.py`, mirroring the
+  dispatch sites (`agents/backends/registry.py`, `llm/manager.py`,
+  `shells/models.py`, session status writes in `agents/session.py`).
+- Validate the shells `status` / `kinds` query params — today an unknown value
+  returns `[]` with **200**, which reads as "no results" rather than "bad input".
+- Give `MemoryCreate.content_type` a real type: it is a *comment*, not a
+  Literal, so `content_type="note"` is stored with 201 and no documented filter
+  ever retrieves it — silently, forever.
+- Then make the MCP docstrings generate from (or be tested against) those types,
+  so the two cannot drift again. A test asserting
+  "every value named in an MCP docstring is accepted by its dispatch" would have
+  caught all eight findings.
+
+**Already fixed piecemeal** (2026-07-27, commits `0484bbb`, `60056f5`,
+`3a8fc1f`): backend aliases + a 400 naming valid values; `RuntimeError` → 409;
+`error`/`result_summary` exposed on coding sessions; `WorkflowStepRequest.action`
+typed as a Literal of all ten actions; memory-search dependency failures → 503;
+two wrong MCP docstring values. Those are the symptoms. This item is the cause.
+
+**Known remaining instances** (from the audit, not yet fixed): two different
+`backend` vocabularies documented in one `create_workflow` docstring with
+neither stated; `coding.py` advertising an `llm` value with no key configured
+and never validating `llm` at spawn (so the API returns 201 and the session dies
+asynchronously); `/shells` status/kinds accepting anything; several silent
+fallbacks in `agents/session.py` and `core/orchestrator.py` that substitute a
+different backend/model without telling the caller.
+
+---
+
 ## Recently shipped (moved out of the backlog)
 
 These were on the vision/investigation lists and are now implemented — see
