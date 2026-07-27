@@ -7,6 +7,8 @@ Purpose: CRUD and execution APIs for workflows.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from aria.api.deps import get_workflow_engine
@@ -15,8 +17,19 @@ from aria.workflows.engine import WorkflowEngine
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
+# Kept in sync with WorkflowEngine._run_step's dispatch (workflows/engine.py).
+# Previously `action` was a bare `str`, so an invented action was accepted with
+# 201 CREATED and only failed later, inside a step record, as
+# "Unsupported workflow action" — a silent failure an agent could not see. The
+# MCP docstring also advertised only 4 of these, so agents guessed.
+WORKFLOW_ACTIONS = Literal[
+    "code_session", "condition", "map", "notify", "parallel",
+    "prompt", "research", "synthesize", "tool", "wait",
+]
+
+
 class WorkflowStepRequest(BaseModel):
-    action: str
+    action: WORKFLOW_ACTIONS
     params: dict = Field(default_factory=dict)
     depends_on: list[int] = Field(default_factory=list)
 

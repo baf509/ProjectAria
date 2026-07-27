@@ -364,7 +364,7 @@ async def chat(
 
     Omit conversation_id to start a new conversation (uses the default ARIA
     orchestrator agent unless you pass agent_slug, e.g. 'search-agent' or
-    'pi-coding-agent'). Returns {content, conversation_id, tool_calls, usage} —
+    'pi-coding'). Returns {content, conversation_id, tool_calls, usage} —
     pass the returned conversation_id back to continue the thread."""
     if not conversation_id:
         body: dict[str, Any] = {}
@@ -445,7 +445,10 @@ async def add_memory(
 @mcp.tool()
 async def list_coding_sessions(status: Optional[str] = None) -> Any:
     """List ARIA-spawned coding sessions (sub-agents). status optionally filters
-    (e.g. 'running')."""
+    (queued|running|completed|failed|stopped). NOTE 'queued' is real: a spawn
+    past coding_max_concurrent_sessions waits for a free slot, so polling only
+    for 'running' makes a queued session look like it failed. Failed sessions
+    now carry an `error` field with the reason."""
     params = {"status": status} if status else None
     return await _request("GET", "/api/v1/coding/sessions", params=params)
 

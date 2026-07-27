@@ -340,6 +340,15 @@ class CodingSessionResponse(BaseModel):
     # How the model was chosen: {tier, why, confidence, source, judge_model,
     # decided_at}. None when the caller pinned the model explicitly.
     routing: Optional[dict] = None
+    # Why a session failed. session.py writes `error` on every failure path,
+    # but it was never surfaced — so an MCP agent saw only status="failed" with
+    # no reason and could not tell a bad workspace from a dead backend from an
+    # e-stop. That opacity is what turned a one-line backend typo into a silent
+    # wrong-agent fallback.
+    error: Optional[str] = None
+    # Set by pi-code / awaited sessions on completion; the payload workflow
+    # fan-out consumes via wait_for_session().
+    result_summary: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

@@ -227,9 +227,18 @@ async def search_memories(
         filters["categories"] = {"$in": body.categories}
 
     # Search
-    memories = await long_term.search(
-        query=body.query, limit=body.limit, filters=filters if filters else None
-    )
+    try:
+        memories = await long_term.search(
+            query=body.query, limit=body.limit, filters=filters if filters else None
+        )
+    except (RuntimeError, ValueError) as exc:
+        # The embeddings service is a hard dependency here: a bare `raise`
+        # in embeddings.py, an open circuit breaker (RuntimeError:
+        # 'Circuit is open'), or a dimension mismatch all propagated as an
+        # opaque 500. After 5 consecutive embedding failures the breaker
+        # stays open for 30s, so EVERY memory search was an unexplained 500
+        # for that window. 503 with the reason says 'dependency down, retry'.
+        raise HTTPException(status_code=503, detail=f"memory search unavailable: {exc}") from exc
 
     # Convert to response format
     results = []
