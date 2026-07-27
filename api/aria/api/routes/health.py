@@ -183,8 +183,14 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
     tasks = [
         mongo_ping(),
         mongot_ping(),
-        http_ping("qwen-chat", f"{settings.llamacpp_url.rstrip('/')}/models"),
-        http_ping("qwen-agentic", f"{settings.agentic_url.rstrip('/')}/models"),
+        # Labels describe the ROLE, not a specific model. These probe whatever
+        # llamacpp_url / agentic_url currently point at — since 2026-07-23 that
+        # is laguna on :8095 (via the slot proxy for the orchestrator), NOT the
+        # retired qwen containers. They were previously labelled "qwen-chat" /
+        # "qwen-agentic", which made the TUI health screen and every consumer of
+        # this endpoint report a model that has not run here in months.
+        http_ping("local-llm (orchestrator)", f"{settings.llamacpp_url.rstrip('/')}/models"),
+        http_ping("local-llm (coding)", f"{settings.agentic_url.rstrip('/')}/models"),
         http_ping("embeddings", f"{_base(settings.embedding_url)}/health"),
         http_ping("tts", f"{_base(settings.tts_url)}/health"),
         http_ping("stt", f"{_base(settings.stt_url)}/health"),

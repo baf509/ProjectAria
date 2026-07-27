@@ -56,9 +56,11 @@ Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter
 
 **Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; as of 2026-07-23):
 - **ARIA** (default orchestrator) → backend `llamacpp`, and **Pi Coding Agent** → backend `agentic`. Both `*_URL` settings currently point at the **same** local server, `http://localhost:8095/v1` — the `laguna` container (`laguna-rocm:latest`, `laguna-s-2.1` Q4_K_M, ROCm), started from `infrastructure/`. Neither has a fallback chain.
-- **Search Agent** → `context1` on `:8081`. **Disabled** (`CONTEXT1_ENABLED=false`): the container is not part of the normal stack, so the backend reports unavailable, the Search Agent tool isn't registered, and health doesn't probe it. Set `CONTEXT1_ENABLED=true` (and start the container) to bring it back.
+- **Search Agent** → **repointed to `llamacpp` on 2026-07-26.** It was `context1` on `:8081`, which is retired (`CONTEXT1_ENABLED=false`, container not in the stack), so the agent was dead. It now runs on laguna like the others.
+- **This host is LOCAL-ONLY as of 2026-07-26.** `OPENROUTER_API_KEY` is commented out in `.env` (credits exhausted, HTTP 402) and Fireworks is gone, so `GET /health` reports `available (llamacpp, agentic)`. **There is no cloud fallback anywhere** — budget new work against laguna's ~204 t/s prefill / ~18–23 t/s decode. Two settings that had been silently failing against the dead account are now local: `PLANNING_AMBIENT_BACKEND` (ambient task capture, fires on **every conversation turn**) and `HEARTBEAT_BACKEND`.
+- **Consumers must use the right slot-proxy port, not `:8095` directly.** `LLAMACPP_URL` → `:8097` (ARIA's pinned slot); `AGENTIC_URL` stays `:8095` so pi-code sessions spread over the free slots. See `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md`.
 - **Fireworks / GLM 5.2 is not in use.** `FIREWORKS_API_KEY` was removed from `.env` on 2026-07-23 after it began returning 401. The adapter and the `fireworks`/`glm` aliases remain — re-add a key to reactivate.
-- The `qwen-rocmfp4` compose project under `infrastructure/` still defines **qwen-chat** `:8092` and **qwen-agentic** `:8093`; those containers are **not running**, and `LLAMACPP_URL`/`AGENTIC_URL` in `.env` are pointed at laguna instead. Repoint them in `.env` to switch back.
+- The `qwen-rocmfp4` compose project under `infrastructure/` still defines **qwen-chat** `:8092` and **qwen-agentic** `:8093`; those containers are **RETIRED** (not deleted — profile-gated, and mutually exclusive with laguna on RAM). ⚠️ `:8092` is bound by `ridge-llama-proxy` on the **tailnet IP only**, so `localhost:8092` is connection-refused even though `ss` shows a listener — this has caused misdiagnosis repeatedly.
 
 **Model pinning, cost & health:**
 - A conversation can be pinned to a specific backend/model via `/model <backend> [<model-id>]` (strict — no fallback); `/model auto` unpins; `/route <task>` applies an advisory heuristic pin. Backend aliases include `agentic`/`qwen-agentic` and `fireworks`/`glm`.
@@ -406,6 +408,18 @@ SSE via `sse-starlette`. The orchestrator yields `StreamChunk` objects that are 
 ## Approved Libraries
 
 `httpx`, `motor`, `pydantic`, `fastapi`, `anthropic`, `openai`, `sse-starlette`, `sentence-transformers`
+
+## Ops runbooks (repo-local)
+
+- **`docs/ops/LOCAL_INFERENCE_TOPOLOGY.md`** — which port each ARIA consumer must
+  use, the laguna slot map, which background workers actually cost tokens, and
+  the retired-endpoint hazards (`:8092` is bound on the tailnet IP only, so
+  `localhost:8092` is refused even though a listener exists). **Read before
+  changing any `*_URL` or adding a worker that calls an LLM.**
+- Companions outside this repo: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
+  (server benchmarks, flash-attention crash, slot semantics) and
+  `Development/Hermes/HERMES_TUNING_20260726.md` (Hermes config, prompt-cache
+  root cause, tool trimming).
 
 ## Critical Gotchas
 

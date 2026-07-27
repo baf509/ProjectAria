@@ -87,6 +87,13 @@ node_modules/
 .playwright-mcp/
 
 # TUI cross-compiled build outputs (native aria-tui is committed; these build on-demand)
+# Go build artifacts — rebuild with `cd tui && make build` (or make build-darwin).
+# tui/aria-tui was previously TRACKED, an 11 MB binary re-committed on every
+# rebuild while its darwin sibling was already ignored. Untracked 2026-07-26 for
+# consistency; `aria tui` falls through to PATH when the repo copy is absent,
+# and `make install` puts it in ~/.local/bin.
+tui/aria-tui
+tui/aria-tui-linux-amd64
 tui/aria-tui-darwin-arm64
 tui/aria-tui-linux-amd64
 
