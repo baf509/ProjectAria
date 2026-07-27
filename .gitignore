@@ -106,3 +106,7 @@ aria-documents/
 # scratch screenshots dropped in from phone/desktop
 inbox/
 inbox.png
+
+# Screenshots dropped in via rsync/Taildrop for triage — not source.
+Screenshot*.png
+inbox.png

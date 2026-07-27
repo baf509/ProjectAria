@@ -460,7 +460,8 @@ async def create_coding_session(
     subagent_profile: Optional[str] = None,
 ) -> dict:
     """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
-    backend: 'claude_code' (default), 'codex', or 'pi'.
+    backend: 'claude_code' (default), 'codex', or 'pi-code' (ARIA's own
+        agentic loop on the local model; 'pi' is accepted as an alias).
     loop=True keeps the session going — the watchdog nudges it forward whenever
     it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (a Ralph
     loop). Use set_coding_loop to toggle this on an already-running session.

@@ -79,17 +79,27 @@ async def start_coding_session(
     body: CodingSessionCreate,
     manager: CodingSessionManager = Depends(get_coding_session_manager),
 ):
-    session = await manager.start_session(
-        workspace=body.workspace,
-        backend=body.backend,
-        prompt=body.prompt,
-        branch=body.branch,
-        model=body.model,
-        llm=body.llm,
-        loop=body.loop.model_dump(exclude_none=True) if body.loop else None,
-        host=body.host,
-        subagent_profile=body.subagent_profile,
-    )
+    try:
+        session = await manager.start_session(
+            workspace=body.workspace,
+            backend=body.backend,
+            prompt=body.prompt,
+            branch=body.branch,
+            model=body.model,
+            llm=body.llm,
+            loop=body.loop.model_dump(exclude_none=True) if body.loop else None,
+            host=body.host,
+            subagent_profile=body.subagent_profile,
+        )
+    except ValueError as exc:
+        # A bad request argument (unknown backend, unusable workspace) is the
+        # CALLER's error, so return 400 with the reason rather than a bare 500.
+        # This is not cosmetic: an agent that sent backend="pi" got only
+        # "500 Internal Server Error", could not tell what was wrong, retried
+        # the same call, then silently fell back to a different backend than
+        # the one the user asked for. A 400 carrying "Unknown coding backend:
+        # pi. Valid: claude_code, codex, pi-code" is self-correcting.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return CodingSessionResponse(**serialize_session(session))
 
 
