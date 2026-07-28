@@ -9,6 +9,7 @@ Related Spec Sections:
 - Section 7: Project Structure
 """
 
+import hmac
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -488,7 +489,7 @@ async def api_key_middleware(request: Request, call_next):
         return await call_next(request)
 
     provided = request.headers.get("X-API-Key")
-    if not settings.api_key or provided != settings.api_key:
+    if not settings.api_key or not hmac.compare_digest(provided or "", settings.api_key):
         # Best-effort audit — a DB failure must NOT turn the intended 401 into a 500.
         try:
             db = await get_database()
