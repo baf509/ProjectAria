@@ -93,3 +93,13 @@ class PoolBackend:
         # Deliberately narrow: a bare "pool" substring matches "poolside",
         # "connection_pool", and any path containing it.
         return "pool exec" in cmdline
+
+    def is_expected_failure_exit_code(self, exit_code: int) -> bool:
+        """True for an exit code that is a real (non-crash) result.
+
+        Checked by the subprocess-substrate finalize path before it writes a
+        crash-recovery checkpoint -- see the EXIT CODES note in this module's
+        docstring. Only this one code is a known non-crash outcome; anything
+        else falls through to the normal crash handling.
+        """
+        return exit_code == TASK_FAILURE_EXIT_CODE

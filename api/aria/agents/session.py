@@ -900,6 +900,23 @@ class CodingSessionManager:
             conv_id = session.get("agent_conversation_id")
             if not conv_id:
                 return False
+            # A follow-up message spins up a new orchestrator turn, same as a
+            # fresh spawn — it must honour the same fail-closed killswitch/
+            # e-stop gate start_session and the deferred-launch re-check use,
+            # not just the initial spawn. Return False (this method's existing
+            # not-possible signal) rather than raising, so callers that check
+            # the bool see the same "couldn't do it" outcome as any other
+            # send_input failure instead of an unhandled 500.
+            from aria.api.deps import get_killswitch, resolve_estop_manager
+            try:
+                get_killswitch().check_or_raise("coding session send_input")
+                estop = await resolve_estop_manager(self.db)
+                if await estop.is_active():
+                    state = await estop.get_state()
+                    raise RuntimeError(f"Emergency stop active — {state.reason}")
+            except Exception as exc:
+                logger.warning("send_input blocked for %s by safety gate: %s", session_id, exc)
+                return False
             existing = self._watch_tasks.get(session_id)
             if existing is not None and not existing.done():
                 return False  # a turn is already running
@@ -1010,8 +1027,22 @@ class CodingSessionManager:
             if session and session.get("status") == "stopped":
                 return
 
-            # Write checkpoint before marking final status (crash recovery)
+            # Some backends have exit codes that are a real result, not a
+            # crash (e.g. pool's exit 4 -- "task ran but couldn't complete
+            # it", see backends/pool.py). Skip the crash-recovery checkpoint
+            # for those; it exists for actual process crashes.
+            expected_failure = False
             if session and exit_code != 0:
+                try:
+                    backend = self.registry.get(session.get("backend"))
+                    is_expected = getattr(backend, "is_expected_failure_exit_code", None)
+                    if is_expected:
+                        expected_failure = bool(is_expected(exit_code))
+                except Exception:
+                    expected_failure = False
+
+            # Write checkpoint before marking final status (crash recovery)
+            if session and exit_code != 0 and not expected_failure:
                 try:
                     await write_checkpoint(
                         self.db,

@@ -36,3 +36,10 @@ class AgentBackend(Protocol):
 
     def matches_process(self, cmdline: str) -> bool:
         ...
+
+    def is_expected_failure_exit_code(self, exit_code: int) -> bool:
+        """True if this exit code is a real (non-crash) result for this
+        backend. Optional: callers must use getattr() with a False default,
+        since most backends don't define one and Protocol provides no runtime
+        default here."""
+        ...

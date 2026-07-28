@@ -288,3 +288,120 @@ async def test_resume_session_found():
     mock_build.assert_called_once_with(mock_checkpoint, "implement auth")
     # Process should have been spawned for the new session
     mgr.process_manager.spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# _watch_session — pool's exit code 4 is a real result, not a crash
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_watch_session_pool_expected_failure_skips_checkpoint():
+    """Exit code 4 from the pool backend is a completed-but-unsuccessful task,
+    not a crash -- _watch_session must not write a crash-recovery checkpoint
+    for it (see backends/pool.py's is_expected_failure_exit_code)."""
+    db = make_mock_db()
+    db.coding_sessions.find_one = AsyncMock(return_value={
+        "_id": "sess-pool",
+        "status": "running",
+        "workspace": "/tmp/w",
+        "backend": "pool",
+        "conversation_id": None,
+    })
+    mgr = _make_manager(db=db)
+    mgr.process_manager.wait = AsyncMock(return_value=4)
+
+    pool_backend = MagicMock()
+    pool_backend.is_expected_failure_exit_code = MagicMock(return_value=True)
+    mgr.registry.get.return_value = pool_backend
+
+    with patch("aria.agents.session.write_checkpoint", new_callable=AsyncMock) as mock_checkpoint:
+        await mgr._watch_session("sess-pool")
+
+    mock_checkpoint.assert_not_awaited()
+    update_call = db.coding_sessions.update_one.call_args_list[-1]
+    assert update_call[0][1]["$set"]["status"] == "failed"
+    assert update_call[0][1]["$set"]["exit_code"] == 4
+
+
+@pytest.mark.asyncio
+async def test_watch_session_real_crash_still_writes_checkpoint():
+    """A genuine crash (exit code the backend doesn't recognize as expected)
+    must still get a crash-recovery checkpoint -- no regression from the
+    pool-specific carve-out above."""
+    db = make_mock_db()
+    db.coding_sessions.find_one = AsyncMock(return_value={
+        "_id": "sess-crash",
+        "status": "running",
+        "workspace": "/tmp/w",
+        "backend": "claude_code",
+        "conversation_id": None,
+    })
+    mgr = _make_manager(db=db)
+    mgr.process_manager.wait = AsyncMock(return_value=1)
+
+    crash_backend = MagicMock()
+    crash_backend.is_expected_failure_exit_code = MagicMock(return_value=False)
+    mgr.registry.get.return_value = crash_backend
+
+    with patch("aria.agents.session.write_checkpoint", new_callable=AsyncMock) as mock_checkpoint:
+        await mgr._watch_session("sess-crash")
+
+    mock_checkpoint.assert_awaited_once()
+    update_call = db.coding_sessions.update_one.call_args_list[-1]
+    assert update_call[0][1]["$set"]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# send_input on a pi-code session must honor the same fail-closed safety
+# gate as start_session / the deferred-launch re-check
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_input_pi_code_blocked_by_estop():
+    """An active emergency stop must block a pi-code follow-up turn, not just
+    the initial spawn."""
+    db = make_mock_db()
+    db.coding_sessions.find_one = AsyncMock(return_value={
+        "_id": "sess-pi",
+        "status": "running",
+        "backend": "pi-code",
+        "agent_conversation_id": "conv-1",
+    })
+    mgr = _make_manager(db=db)
+
+    mock_estop = MagicMock()
+    mock_estop.is_active = AsyncMock(return_value=True)
+    mock_estop.get_state = AsyncMock(return_value=MagicMock(reason="rate limit cooldown"))
+
+    with patch("aria.api.deps.get_killswitch") as mock_get_ks, \
+         patch("aria.api.deps.resolve_estop_manager", new_callable=AsyncMock) as mock_resolve_estop:
+        mock_get_ks.return_value.check_or_raise = MagicMock()  # killswitch: not engaged
+        mock_resolve_estop.return_value = mock_estop
+
+        result = await mgr.send_input("sess-pi", "keep going")
+
+    assert result is False
+    assert "sess-pi" not in mgr._watch_tasks
+
+
+@pytest.mark.asyncio
+async def test_send_input_pi_code_blocked_by_killswitch():
+    """An engaged manual killswitch must block a pi-code follow-up turn."""
+    db = make_mock_db()
+    db.coding_sessions.find_one = AsyncMock(return_value={
+        "_id": "sess-pi",
+        "status": "running",
+        "backend": "pi-code",
+        "agent_conversation_id": "conv-1",
+    })
+    mgr = _make_manager(db=db)
+
+    with patch("aria.api.deps.get_killswitch") as mock_get_ks:
+        mock_get_ks.return_value.check_or_raise = MagicMock(
+            side_effect=RuntimeError("killswitch engaged")
+        )
+
+        result = await mgr.send_input("sess-pi", "keep going")
+
+    assert result is False
+    assert "sess-pi" not in mgr._watch_tasks
