@@ -47,7 +47,15 @@ class PoolBackend:
 
     def _env(self, params: StartParams) -> dict[str, str]:
         env = dict(MANAGED_ENV)
-        env["POOLSIDE_API_KEY"] = settings.pool_api_key
+        # Only inject POOLSIDE_API_KEY when a *real* key is configured. The env
+        # var overrides ~/.config/poolside/credentials.json in pool's credential
+        # hierarchy, so forcing the "EMPTY" placeholder would clobber a real
+        # `pool login` credential -- and with it the account entitlement that
+        # `--unsafe-auto-allow` verifies (auto-approve-commands). Left unset,
+        # pool falls back to credentials.json written by `pool login`.
+        key = settings.pool_api_key
+        if key and key != "EMPTY":
+            env["POOLSIDE_API_KEY"] = key
         model = params.model or settings.pool_model
         if model:
             env["POOLSIDE_STANDALONE_MODEL"] = model
