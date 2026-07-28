@@ -533,7 +533,14 @@ async def create_coding_session(
     host: run the session on a remote node (its aria-node id, e.g. a MacBook from
     list_nodes) instead of this host; omit to run locally.
     subagent_profile: a named specialist (a db.agents slug/name) whose backend,
-    model, and system_prompt (role) are applied; an explicit backend still wins."""
+    model, and system_prompt (role) are applied; an explicit backend still wins.
+
+    Returns immediately with status='queued'/'running' — this does not wait for
+    the work to finish. For a short task, prefer calling
+    wait_for_coding_session right after this to block for the result instead of
+    telling the human to poll a session id themselves. For a long-running or
+    looped session, check back later with get_coding_session (or list_coding_sessions)
+    rather than waiting inline."""
     body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
     if backend:
         body["backend"] = backend
@@ -552,6 +559,44 @@ async def list_nodes() -> Any:
     status. Use a node's id as the `host` for create_coding_session to run work
     on that machine (e.g. a MacBook for iOS builds)."""
     return await _request("GET", "/api/v1/nodes")
+
+
+@mcp.tool()
+async def get_coding_session(session_id: str) -> dict:
+    """Get one coding sub-agent's structured status: status, backend/model,
+    workspace, routing decision, `error` (why it failed, if it did), and
+    `result_summary` (set once it reaches a terminal state). Prefer this over
+    list_coding_sessions + client-side filtering when you already have the id,
+    and over get_coding_output when you want a verdict rather than raw
+    terminal text."""
+    return await _request("GET", f"/api/v1/coding/sessions/{session_id}")
+
+
+@mcp.tool()
+async def wait_for_coding_session(session_id: str, timeout_seconds: float = 60.0) -> dict:
+    """Block until a coding sub-agent reaches a terminal state (completed/
+    failed/stopped) or timeout_seconds elapses (clamped server-side to
+    [1, 300]), then return it with `result_summary` attached — the same join
+    primitive workflow fan-out uses internally, exposed directly. Use this
+    right after create_coding_session for a task expected to finish quickly,
+    instead of handing the human a session id to poll themselves. If it comes
+    back with timed_out=true, the session is still running — check back later
+    with get_coding_session rather than waiting inline again (a Ralph-looped
+    or long task will keep timing out here)."""
+    return await _request(
+        "GET",
+        f"/api/v1/coding/sessions/{session_id}/wait",
+        params={"timeout": timeout_seconds},
+        timeout=timeout_seconds + 15,
+    )
+
+
+@mcp.tool()
+async def get_coding_diff(session_id: str) -> dict:
+    """Get the working-tree diff a coding sub-agent has produced so far in its
+    workspace. Use this to summarize what a session actually changed instead
+    of paraphrasing raw terminal scrollback from get_coding_output."""
+    return await _request("GET", f"/api/v1/coding/sessions/{session_id}/diff")
 
 
 @mcp.tool()

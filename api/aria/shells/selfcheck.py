@@ -29,6 +29,34 @@ async def _check_http(url: str, timeout: float = 4.0) -> tuple[bool, str]:
         return (False, type(exc).__name__)
 
 
+_GTT_ALERT_PCT = 90
+_GTT_TOTAL_PATH = "/sys/class/drm/card0/device/mem_info_gtt_total"
+_GTT_USED_PATH = "/sys/class/drm/card0/device/mem_info_gtt_used"
+
+
+def _check_gtt() -> tuple[bool, str]:
+    """AMD APU unified-memory (GTT) pressure — the actual resource that ran
+    out and crashed qwen on 2026-07-28. Docker/cgroup memory limits do NOT see
+    this: GPU-offloaded allocations (chadrock, qwen, both -ngl 999) are
+    accounted to the DRM/GTT pool, not to the container's cgroup — confirmed
+    live that day (docker stats showed ~5 GiB combined for those two
+    containers while mem_info_gtt_used showed ~97 GiB). This sysfs read is the
+    only ground-truth signal for real pressure on this hardware."""
+    try:
+        with open(_GTT_TOTAL_PATH) as f:
+            total = int(f.read())
+        with open(_GTT_USED_PATH) as f:
+            used = int(f.read())
+        pct = used / total * 100
+        gib = 1024**3
+        return (
+            pct < _GTT_ALERT_PCT,
+            f"{pct:.0f}% GTT used ({used // gib}/{total // gib} GiB)",
+        )
+    except Exception as exc:
+        return (False, f"unreadable: {str(exc)[:100]}")
+
+
 async def run_checks(db) -> list[dict]:
     """Return a list of {name, ok, detail} for each monitored dependency."""
     checks: list[dict] = []
@@ -43,6 +71,18 @@ async def run_checks(db) -> list[dict]:
     # Local LLM (OpenAI-compatible /models) — the endpoint that was dead before
     ok, detail = await _check_http(settings.llamacpp_url.rstrip("/") + "/models")
     checks.append({"name": "llm", "ok": ok, "detail": detail})
+
+    # Chadrock (pool_api_url) — the pool-cli coding backend. Added 2026-07-28:
+    # this ran completely unmonitored until then, even though it shares the
+    # exact same GPU-wedge crash risk as llamacpp_url's server (both are
+    # deliberately restart:"no" for that reason) and was the OTHER party in
+    # that day's qwen crash. Without this, a chadrock crash pages no one.
+    ok, detail = await _check_http(settings.pool_api_url.rstrip("/") + "/models")
+    checks.append({"name": "chadrock", "ok": ok, "detail": detail})
+
+    # GPU unified-memory (GTT) pressure — see _check_gtt docstring.
+    ok, detail = _check_gtt()
+    checks.append({"name": "gpu_memory", "ok": ok, "detail": detail})
 
     # Embeddings (/health on the non-/v1 root)
     emb = settings.embedding_url.rstrip("/").replace("/v1", "") + "/health"

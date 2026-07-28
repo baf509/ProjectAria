@@ -1,4 +1,4 @@
-# Local inference topology (updated 2026-07-28 — two-server split, then corrected same day)
+# Local inference topology (updated 2026-07-28 — two-server split, corrected same day, then a crash + a third server that evening)
 
 Operational runbook for how ARIA reaches a model, after the day this host became
 **local-only**. Companion docs: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
@@ -31,19 +31,27 @@ cache, which is the entire point.
 
 | endpoint | model | consumer | measured |
 |---|---|---|---|
-| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB |
-| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan) | **Hermes** main + auxiliary + cron, **and** ARIA's default chat agent + Search Agent (`backend=llamacpp`) | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable) |
+| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan), `-c 131072` (unchanged, kept at max — see §10) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB; **unmonitored until §10** |
+| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan), `-c` trimmed **131072 → 100000** same evening (§10) | **Hermes main chat only** as of §10 — ARIA's default chat agent (`aria`) and Search Agent are both **disabled** (`enabled=false`), so despite `LLAMACPP_URL`/`AGENTIC_URL` still pointing here, neither sends real traffic today; Hermes's auxiliary tasks + 2 cron jobs moved off to `gemma-aux` (below) the same evening | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable). **Crashed once, §10** |
+| `:8104` **gemma-aux** (new, 2026-07-28 evening) | Gemma 4 E4B, Q4_0 GGUF, **CPU-only** (`-ngl 0`) | Hermes's ~16 "auxiliary" side-tasks (title generation, compression, curator, approval, triage_specifier, mcp, etc.) + both cron jobs (alert triage, stock scanner) | see §10 for why CPU, the reasoning-mode gotcha, and real KV-cache sizing |
 | `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
 | `:8092` qwen-chat / `:8093` qwen-agentic | — | — | retired, down for days |
 
-Both models resident in ~89.4 GiB, ~30 GB free. `qwen3.6-35b-a3b` now has two
-kinds of consumer sharing its `--parallel 2 --kv-unified` slots — Hermes's
-~30K stable tool-schema prefix and ARIA/Search Agent's chat turns. This is a
-smaller-scale version of the "asymmetric consumers" problem the split was
-built to prevent; accepted deliberately for now since there's no fourth local
-server to give ARIA's own chat agent, not an oversight. Revisit if it causes
-the same eviction symptoms Hermes and the coding agents used to cause each
-other on the old shared `laguna`.
+`qwen3.6-35b-a3b` is now genuinely **single-consumer** (Hermes main chat) as of
+this evening — the auxiliary-task sharing this table used to describe was
+itself a smaller-scale repeat of the "asymmetric consumers on one server"
+problem the two-server split was built to prevent (different prompt shapes:
+Hermes's ~30K stable tool-schema prefix vs. 16 short, varied side-task
+prompts), and got fixed the same way: split it onto its own server rather
+than keep tuning the shared pool. See §10 for the full incident and why
+"single consumer per model" turned out not to be the whole story on this
+hardware.
+
+**"~89.4 GiB, ~30 GB free" (the original split-day estimate above) does not
+hold as a static number — do not treat it as a budget.** Real usage is
+whatever the two GPU-offloaded models' *combined current context* costs, and
+that's read from `/sys/class/drm/card0/device/mem_info_gtt_used` /
+`_gtt_total`, not from a fixed baseline. See §10.
 
 **Why split.** Every hard problem measured on 2026-07-27/28 came from one cause:
 asymmetric consumers sharing a single unified KV pool. Hermes holds a ~30K stable
@@ -88,11 +96,14 @@ without a consumer that needs one.
 ## 3. Which agent uses which server
 
 > Updated 2026-07-28 (same-day correction, supersedes the first split): `pool`
-> is the ONLY consumer of `:8102` chadrock. `aria` and `search-agent` share
-> `:8103` qwen3.6-35b-a3b with Hermes. Both pi-coding-family agents
-> (`pi-coding` chat tool and `pi-coding-ridge` coding session) run on Ridge —
-> laguna no longer backs anything named "pi-coding". The `:8097`/`:8095` slot
-> references below are historical (pre-split, laguna-slot-proxy era).
+> is the ONLY consumer of `:8102` chadrock. `aria` and `search-agent` are
+> **both disabled** (`enabled=false`) as of later the same day — their
+> `db.agents` rows still resolve to `:8103` qwen3.6-35b-a3b, but neither sends
+> real traffic today, so qwen's only active consumer is Hermes. Both
+> pi-coding-family agents (`pi-coding` chat tool and `pi-coding-ridge` coding
+> session) run on Ridge — laguna no longer backs anything named "pi-coding".
+> The `:8097`/`:8095` slot references below are historical (pre-split,
+> laguna-slot-proxy era).
 
 `db.agents`:
 
@@ -190,6 +201,10 @@ only place background load is visible.
   long-term memory gets built); the fix was routing, not frequency.
 - **ambient task capture** — every conversation turn.
 - weekly report.
+- **Hermes's ~16 auxiliary side-tasks + 2 cron jobs** — as of 2026-07-28 evening
+  these run on `gemma-aux` (`:8104`, CPU-only), **not** qwen. Moving them off
+  qwen doesn't change that they cost tokens, just which server pays for them —
+  noted here so "what's calling qwen" audits aren't fooled by their absence.
 
 **Costs nothing — verified, leave alone:** `selfcheck` (10 min, HTTP probes
 only), `projects harvest` (30 min, deterministic), `shells snapshot`/`adopt`/
@@ -261,12 +276,99 @@ instructions to agents and drift silently.
 
 ```bash
 curl -s localhost:8102/health                          # chadrock (pool CLI only)
-curl -s localhost:8103/health                           # qwen3.6-35b-a3b (Hermes + aria + search-agent)
+curl -s localhost:8103/health                           # qwen3.6-35b-a3b (Hermes main chat only)
+curl -s localhost:8104/health                           # gemma-aux (Hermes auxiliary + cron)
 curl -s localhost:8200/api/v1/health                     # expect available (llamacpp, agentic, ridge)
 systemctl --user is-active aria-api hermes-gateway
 docker logs qwen3.6-35b-a3b 2>&1 | grep 'selected slot by id' | tail -4   # pinning working
 bash infrastructure/scripts/health                       # no dead-qwen probe
+cat /sys/class/drm/card0/device/mem_info_gtt_used /sys/class/drm/card0/device/mem_info_gtt_total
+                                                          # real GPU memory pressure — see §10, NOT docker stats
 ```
 
 Backups: `ProjectAria/.env.bak-openrouter-20260726`, and the `~/.hermes/*.bak-*`
 set listed in the Hermes doc.
+
+---
+
+## 10. The 2026-07-28 evening crash: GPU command-submission contention, docker's blind spot, and a third server
+
+**What happened.** `:8103` (then `qwen-hermes`) crashed — `vk::DeviceLostError`,
+`radv/amdgpu: Not enough memory for command submission` — mid-prompt-processing
+on a long-context turn, at the same moment chadrock was deep in its own
+87K–95K token coding session. Crash backtrace: inside a checkpoint-restore copy
+(`llama_io_write_device` / `state_seq_get_data`). `restart: "no"` (deliberate,
+see §1's `-fit off` warning) meant it just stayed down until Hermes's next
+real request failed after 3 retries.
+
+**Root cause — a different resource than the one already ruled out.**
+`COHERENCE_DESIGN.md` §5 #19 already measured that `--cache-ram`/`-ctxcp` don't
+move *total* GTT memory growth — that finding stands, this isn't a
+contradiction of it. What actually ran out is a **separate, tiny (~1 GiB)
+dedicated VRAM aperture** used for GPU command submission
+(`/sys/class/drm/card0/device/mem_info_vis_vram_{total,used}` — NOT the ~124 GiB
+GTT pool). It sits at **~78–96% used essentially all the time regardless of
+load** (structural, not a spike) — any simultaneous command submission from
+two GPU-offloaded processes is a latent risk on this hardware, independent of
+how much of the large GTT pool is free.
+
+**Mitigation applied (qwen only, unverified by repeat-crash testing — a
+hypothesis about this narrower resource, not a proven fix):**
+```diff
+-ctxcp 32 → 10
+--cache-ram 8192 → 2560
+```
+Chadrock's own checkpoint config was **not** touched — it needs max context,
+by explicit decision.
+
+**⚠️ The bigger finding: docker/cgroup memory limits do not see GPU-offloaded
+memory on this hardware.** Confirmed empirically the night of the crash:
+`docker stats` showed **~5 GiB combined** for chadrock+qwen while
+`mem_info_gtt_used` showed **~97 GiB**. `-ngl 999` GPU-offloaded allocations on
+this unified-memory Strix Halo APU are accounted to the kernel's DRM/GTT
+memory manager, not to the container's cgroup. **`docker run --memory` /
+compose `mem_limit` is a no-op safeguard for chadrock or qwen** — it only
+works for a genuinely CPU-only service (confirmed on gemma-aux, which does
+carry a real `mem_limit: 6g`). **The only ground truth for real memory
+pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total`** — not
+`docker stats`, not `free -h`'s "used" column.
+
+**Fixes landed:**
+1. **qwen's `-ctxcp`/`--cache-ram` shrunk** (above).
+2. **qwen's `-c` trimmed 131072 → 100000** — ~24% cut to its own KV-cache
+   ceiling (~10.25 → ~7.8 GiB max), freeing real headroom for chadrock. Modest,
+   honestly sized — not a structural fix by itself.
+3. **Hermes's ~16 auxiliary tasks + 2 cron jobs moved to a new third server**,
+   `gemma-aux` (`:8104`, Gemma 4 E4B Q4_0, CPU-only) — the same
+   asymmetric-consumers pattern the two-server split fixed, recurring at
+   smaller scale *inside* Hermes's own qwen usage. CPU-only doesn't buy
+   separate memory headroom here (same GTT pool either way) but does keep it
+   out of the ~1 GiB VRAM command-submission aperture above — it can never be
+   a third contender for *that* specific resource. Two things worth knowing if
+   you add another small model to this box:
+   - Gemma 4 has a real hybrid local/global attention pattern (its GGUF
+     metadata carries a per-layer `sliding_window_pattern` — 35 of 42 layers
+     window-capped at 512 tokens) that makes its KV cache far cheaper than a
+     dense model at the same context (~0.26 GiB at 8192 ctx, computed). Check
+     any future model's GGUF metadata for this before assuming its KV cache
+     scales like chadrock/qwen's (dense, no such pattern).
+   - Gemma 4 has a **stochastic reasoning mode** that can silently consume an
+     entire `max_tokens` budget (`reasoning_content` preamble, empty `content`,
+     `finish_reason: length`) — disabled with `--reasoning off
+     --reasoning-budget 0`, same as chadrock already carries.
+4. **Chadrock had zero automated health monitoring until this incident**,
+   despite the identical crash risk and identical `restart: "no"` policy as
+   qwen. `api/aria/shells/selfcheck.py` (the code that actually pages via
+   Signal) only ever probed `llamacpp_url`. Added a `pool_api_url` check.
+5. **New `gpu_memory` selfcheck check** — reads the real GTT figures above,
+   alerts >90%. First automated signal this box has had for either model
+   server's crash risk before a human notices via a failed reply.
+6. **A third, unrelated stale-config bug found in the same pass:** Hermes's
+   two cron jobs (hourly alert triage, daily stock scanner) were hardcoded to
+   `:8100` — the slot-proxy port retired in §2 — silently failing on every run
+   since. Fixed alongside the auxiliary-task repoint. Same lesson as §6/§8:
+   a topology change isn't done until every consumer's config is audited —
+   `.env`, cron jobs, skills, docs, and compose are five independently-stale
+   places the same endpoint can live in.
+
+**Design-level writeup:** `COHERENCE_DESIGN.md` §5 #24–28.

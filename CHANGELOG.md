@@ -2,6 +2,61 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-28] - Coding-session inspection tools for Hermes; qwen crash root-caused and mitigated; chadrock/GPU-memory monitoring closed
+
+### Added
+- **MCP coding-session inspection tools** (`mcp/server.py`): `get_coding_session`
+  (structured single-session status/error/result_summary), `wait_for_coding_session`
+  (blocks up to a timeout for a terminal state — the `wait_for_session` join
+  primitive, previously only reachable from inside workflow fan-out, now callable
+  directly), `get_coding_diff` (working-tree diff). New `GET
+  /coding/sessions/{id}/wait` route (`routes/coding_sessions.py`) backs the second.
+  Lets Hermes join/inspect a spawned coding sub-agent by id instead of polling raw
+  terminal output or telling the human to run a CLI command themselves.
+- **`gemma-aux`** (`infrastructure/gemma-aux/`, `:8104`) — a third local model
+  server, Gemma 4 E4B (Q4_0 GGUF), CPU-only. Takes Hermes's ~16 "auxiliary"
+  side-tasks (title generation, compression, curator, approval, triage_specifier,
+  mcp, etc.) and both cron jobs (alert triage, stock scanner) off qwen entirely.
+  Ships with `--reasoning off --reasoning-budget 0` (Gemma 4's reasoning mode
+  fires stochastically and can silently consume an entire `max_tokens` budget —
+  confirmed live, fixed before rollout) and `--kv-unified` (without it, `-c 8192`
+  with `--parallel 2` silently halves to 4096 usable tokens per request).
+- **`gpu_memory` and `chadrock` checks in `selfcheck.py`.** Chadrock had zero
+  automated health monitoring despite carrying the same crash risk as qwen (both
+  `restart: "no"` by design); added a `pool_api_url` probe. `gpu_memory` reads
+  `/sys/class/drm/card0/device/mem_info_gtt_{used,total}` and alerts >90% — the
+  real ground-truth signal for GPU memory pressure on this hardware (see Fixed).
+
+### Fixed
+- **qwen (`:8103`) crashed** (`vk::DeviceLostError`, "Not enough memory for
+  command submission") under GPU command-submission contention with chadrock
+  during simultaneous long-context checkpoint activity. Root cause: a tiny
+  (~1 GiB) dedicated VRAM aperture used for GPU command submission — not the
+  large GTT/system-RAM pool — sits near-permanently full on this hardware.
+  Mitigated (unverified by repeat-crash testing): qwen's `-ctxcp` 32→10,
+  `--cache-ram` 8192→2560; chadrock's own config untouched (kept at max context
+  by design). qwen's `-c` also trimmed 131072→100000 to free real GTT headroom.
+- **Docker/cgroup memory limits do not see GPU-offloaded memory on this
+  unified-memory (Strix Halo) box** — confirmed empirically: `docker stats`
+  showed ~5 GiB combined for chadrock+qwen while real GTT usage was ~97 GiB.
+  `mem_limit` is a no-op safeguard for any GPU-offloaded (`-ngl 999`) server here;
+  it only works for a genuinely CPU-only one (gemma-aux). Documented so it isn't
+  rediscovered the hard way.
+- **Hermes's two cron jobs** (`~/.hermes/cron/jobs.json`) were hardcoded to a
+  slot-proxy port retired the same day as the two-server split — silently
+  failing to connect on every run since. Repointed alongside the auxiliary-task
+  move to gemma-aux.
+
+### Notes
+- Full incident writeup: `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` §10.
+- Design-level consequences: `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5
+  entries 24–28.
+- `PROJECT_STATUS.md` item 000 tracks the one open follow-up: the checkpoint
+  mitigation is a plausible hypothesis about the VRAM-aperture mechanism, not a
+  proven fix — watch for a recurrence.
+
+---
+
 ## [2026-07-25] - Pi-Flow parity: fan-out workflows, concurrency limiter, cache metrics
 
 Closes the gaps between ARIA and [pi-flow](https://github.com/kky42/pi-flow) (multi-agent

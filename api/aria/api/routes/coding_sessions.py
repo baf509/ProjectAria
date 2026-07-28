@@ -142,6 +142,29 @@ async def get_coding_session(
     return CodingSessionResponse(**serialize_session(session))
 
 
+@router.get("/{session_id}/wait")
+async def wait_for_coding_session(
+    session_id: str,
+    timeout: float = 60.0,
+    manager: CodingSessionManager = Depends(get_coding_session_manager),
+):
+    """Block until the session reaches a terminal state (completed/failed/
+    stopped) or `timeout` elapses, then return it with `result_summary`
+    attached. Thin wrap of CodingSessionManager.wait_for_session, the same
+    join primitive workflow fan-out (`code_session await:true`) already uses
+    internally — this just makes it reachable directly, for a caller that
+    spawned a session outside a workflow and wants to check in on it without
+    manually polling output/status in a loop. Clamped to [1, 300]s so a
+    caller can't hold the connection open indefinitely."""
+    timeout = min(max(timeout, 1.0), 300.0)
+    session = await manager.wait_for_session(session_id, timeout=timeout)
+    if not session:
+        raise HTTPException(status_code=404, detail="Coding session not found")
+    result = serialize_session(session)
+    result["timed_out"] = bool(session.get("timed_out", False))
+    return result
+
+
 @router.get("/{session_id}/output")
 async def get_coding_output(
     session_id: str,
