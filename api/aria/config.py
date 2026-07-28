@@ -125,6 +125,28 @@ class Settings(BaseSettings):
     # as slots free. 0 = unbounded. Size it with looping (Ralph) sessions in
     # mind — they hold a slot for their whole life.
     coding_max_concurrent_sessions: int = 4
+    # laguna hosts ONE coding slot; a second concurrent laguna session evicts
+    # the first's prefix. Cloud backends are not affected by this cap.
+    coding_max_concurrent_laguna_sessions: int = 1
+
+    # Poolside `pool` CLI, run in standalone mode against the local laguna
+    # endpoint. pool_api_url should point at the slot-proxy port for the coding
+    # slot (not :8095 directly) so requests carry id_slot and keep this agent's
+    # prefix pinned. The model is passed via POOLSIDE_STANDALONE_MODEL, not a
+    # CLI flag -- `pool exec` has no --model.
+    pool_binary: str = "/home/ben/.local/bin/pool"
+    # :8097 is laguna-slot-proxy mapped to id_slot=1 (the coding slot).
+    # :8096 is slot 0 and belongs to Hermes -- pointing pool there would
+    # evict Hermes' tool-schema prefix on every coding turn.
+    # :8102 is Chadrock (Laguna ROCmFP4, Vulkan) running --parallel 1 as its
+    # only consumer. No slot proxy needed: Hermes lives on its own server
+    # (:8103, Qwen3.6-35B-A3B), so nothing else can evict this cache.
+    pool_api_url: str = "http://127.0.0.1:8102"
+    # Must match the alias Chadrock reports at /v1/models. llama-server ignores
+    # the request model field in single-model mode, so a mismatch is silent --
+    # which is exactly why it is worth pinning correctly.
+    pool_model: str = "laguna-s21-rocmfp4-strixkvspine-v4"
+    pool_api_key: str = "EMPTY"
     # Hard cap on how many sessions may sit queued waiting for a slot. 0 = no
     # cap. Beyond it a spawn is refused (fail loud) rather than silently queued.
     coding_queue_max: int = 64
@@ -166,11 +188,16 @@ class Settings(BaseSettings):
     # Quota-exhausted fallback — the ONLY path that goes below Sonnet. Engaged
     # when the watchdog sees quota/rate-limit text in a session's output and
     # records a cooldown in `model_availability`.
-    # Points at the local open-weights server (:8095) rather than a cloud
-    # provider, so the fallback keeps working with no key and no spend.
-    coding_routing_fallback_backend: str = "pi-code"
-    coding_routing_fallback_llm: str = "agentic"
-    coding_routing_fallback_model: str = "default"
+    # Quota fallback runs on the LOCAL model, so it keeps working with no key
+    # and no spend. Repointed 2026-07-27: this used to be pi-code + llm
+    # "agentic", but agentic is :8093 (qwen-agentic) which has been down for
+    # days -- the comment claiming it pointed at :8095 was simply wrong, so the
+    # fallback would itself have failed. `pool` reaches laguna directly via
+    # pool_api_url. Note it consumes the single laguna coding slot, so if a
+    # coding session already holds it the fallback queues rather than evicting.
+    coding_routing_fallback_backend: str = "pool"
+    coding_routing_fallback_llm: str = ""          # unused by the pool backend
+    coding_routing_fallback_model: str = "laguna-s-2.1"
     coding_routing_quota_cooldown_minutes: int = 60
 
     infrastructure_root: str = "/home/ben/Development/infrastructure"
