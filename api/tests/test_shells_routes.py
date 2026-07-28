@@ -160,6 +160,27 @@ async def test_list_shells_returns_shells(client):
 
 
 @pytest.mark.asyncio
+async def test_list_shells_valid_status_filter(client):
+    client.fake_service.shells["claude-proj"] = _make_shell(status="active")
+    client.fake_service.shells["claude-other"] = _make_shell(name="claude-other", status="stopped")
+    resp = await client.get("/api/v1/shells?status=active")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["shells"]) == 1
+    assert data["shells"][0]["name"] == "claude-proj"
+
+
+@pytest.mark.asyncio
+async def test_list_shells_invalid_status_is_400(client):
+    """A typo'd status used to silently match nothing via $in; now it's a 400
+    naming the valid values instead of a confusingly-empty list."""
+    resp = await client.get("/api/v1/shells?status=actve")
+    assert resp.status_code == 400
+    assert "actve" in resp.json()["detail"]
+    assert "active" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_get_shell_not_found(client):
     resp = await client.get("/api/v1/shells/claude-missing")
     assert resp.status_code == 404
@@ -182,6 +203,14 @@ async def test_list_events(client):
     data = resp.json()
     assert len(data["events"]) == 2
     assert data["events"][1]["text_clean"] == "bye"
+
+
+@pytest.mark.asyncio
+async def test_list_events_invalid_kind_is_400(client):
+    client.fake_service.shells["claude-proj"] = _make_shell()
+    resp = await client.get("/api/v1/shells/claude-proj/events?kinds=output,bogus")
+    assert resp.status_code == 400
+    assert "bogus" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

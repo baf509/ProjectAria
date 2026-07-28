@@ -19,6 +19,11 @@ def _bare_manager(limit: int) -> CodingSessionManager:
     mgr._slot_cv = asyncio.Condition()
     mgr._active = 0
     mgr._slotted = set()
+    # laguna-scoped sub-limit (added alongside the `pool` backend): __new__
+    # bypasses __init__, so these need the same manual seeding as the fields
+    # above or _release_slot's self._laguna_slotted.discard(...) AttributeErrors.
+    mgr._laguna_limit = 0
+    mgr._laguna_slotted = set()
     return mgr
 
 

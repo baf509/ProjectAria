@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 
 from tests.conftest import make_mock_db
+from aria.agents.backends.registry import BackendRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +383,56 @@ async def test_send_input_pi_code_blocked_by_estop():
 
     assert result is False
     assert "sess-pi" not in mgr._watch_tasks
+
+
+@pytest.mark.asyncio
+async def test_start_session_subagent_profile_llm_backend_not_confused_with_session_backend():
+    """A specialist profile's llm.backend is an LLM-adapter name (llamacpp,
+    agentic, ridge, ...) — a different vocabulary from the coding-session
+    substrate (claude_code/codex/pi-code/pool). It must be routed through
+    pi-code with that name pinned as `llm`, not adopted as the session
+    `backend` itself.
+
+    Regression test for subagent_profile="pi-coding-ridge" (llm.backend=
+    "ridge"): before the fix this set backend="ridge" and start_session raised
+    "Unknown coding backend: ridge" before ever reaching pi-code dispatch.
+    """
+    db = make_mock_db()
+
+    async def fake_agents_find_one(query):
+        if query.get("slug") == "pi-coding-ridge":
+            return {
+                "slug": "pi-coding-ridge",
+                "llm": {"backend": "ridge", "model": "qwen3.6-35b-a3b"},
+                "system_prompt": "You are the Ridge-backed coding agent.",
+            }
+        return None
+
+    db.agents.find_one = AsyncMock(side_effect=fake_agents_find_one)
+
+    mgr = _make_manager(db=db)
+    mgr.registry = BackendRegistry()  # real registry: only it can tell "ridge" apart from "pi-code"
+
+    with patch("aria.api.deps.get_killswitch") as mock_get_ks, \
+         patch("aria.api.deps.resolve_estop_manager", new_callable=AsyncMock) as mock_resolve_estop, \
+         patch.object(mgr, "_start_pi_code_session", new_callable=AsyncMock) as mock_start_pi:
+        mock_get_ks.return_value.check_or_raise = MagicMock()
+        mock_estop = MagicMock()
+        mock_estop.is_active = AsyncMock(return_value=False)
+        mock_resolve_estop.return_value = mock_estop
+        mock_start_pi.return_value = {"_id": "sess-ridge", "status": "queued"}
+
+        await mgr.start_session(
+            workspace="/tmp/ws",
+            backend=None,
+            prompt="fix the bug",
+            subagent_profile="pi-coding-ridge",
+        )
+
+    mock_start_pi.assert_awaited_once()
+    kwargs = mock_start_pi.call_args.kwargs
+    assert kwargs["llm"] == "ridge"
+    assert kwargs["model"] == "qwen3.6-35b-a3b"
 
 
 @pytest.mark.asyncio

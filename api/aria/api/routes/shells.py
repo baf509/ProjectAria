@@ -11,7 +11,7 @@ import json
 import re
 import time
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated, Optional, get_args
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sse_starlette.sse import EventSourceResponse
@@ -22,12 +22,14 @@ from aria.shells.models import (
     Shell,
     ShellCreateRequest,
     ShellEvent,
+    ShellEventKind,
     ShellEventsResponse,
     ShellInput,
     ShellInputResponse,
     ShellListResponse,
     ShellOverviewResponse,
     ShellResizeRequest,
+    ShellStatus,
     ShellSnapshot,
     ShellTagsUpdate,
 )
@@ -68,6 +70,31 @@ def _allow_input(name: str) -> bool:
 
 # ------------------------------------------------------------------- routes
 
+_VALID_SHELL_STATUSES = set(get_args(ShellStatus))
+_VALID_EVENT_KINDS = set(get_args(ShellEventKind))
+
+
+def _parse_filter_csv(raw: str, valid: set[str], field_name: str) -> list[str]:
+    """Split a comma-separated query param and reject unknown values.
+
+    Without this, a typo (or a stale client sending a since-renamed value)
+    silently matched nothing via Mongo's $in rather than erroring — an empty
+    result list looks identical to "no shells/events happen to be in that
+    state" instead of "you asked for something that doesn't exist".
+    """
+    values = [v.strip() for v in raw.split(",") if v.strip()]
+    unknown = [v for v in values if v not in valid]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid {field_name}: {', '.join(unknown)}. "
+                f"Valid: {', '.join(sorted(valid))}"
+            ),
+        )
+    return values
+
+
 @router.get("/shells", response_model=ShellListResponse)
 async def list_shells(
     status: Optional[str] = Query(default=None, description="Comma-separated status filter"),
@@ -75,7 +102,7 @@ async def list_shells(
 ):
     status_filter = None
     if status:
-        status_filter = [s.strip() for s in status.split(",") if s.strip()]
+        status_filter = _parse_filter_csv(status, _VALID_SHELL_STATUSES, "status")
     shells = await service.list_shells(status=status_filter)
     return ShellListResponse(shells=shells)
 
@@ -256,7 +283,7 @@ async def list_shell_events(
 ):
     kind_list = None
     if kinds:
-        kind_list = [k.strip() for k in kinds.split(",") if k.strip()]
+        kind_list = _parse_filter_csv(kinds, _VALID_EVENT_KINDS, "kind")
     events = await service.list_events(
         name,
         since=since,

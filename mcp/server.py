@@ -578,7 +578,17 @@ async def create_workflow(
     (params.inputs or params.from_steps + params.instruction, optional
     backend/model) to reduce prior results into one answer. Reference earlier
     results with {{steps.N.path}} and nested fan-out results with
-    {{steps.N.results.M.path}}."""
+    {{steps.N.results.M.path}}.
+
+    NOTE: `code_session`'s params.backend and `synthesize`'s params.backend are
+    TWO DIFFERENT VOCABULARIES, despite the shared field name:
+    - `code_session` (goes to coding_manager.start_session): a coding-session
+      SUBSTRATE — 'claude_code' (default), 'codex', 'pi-code', or 'pool'. See
+      create_coding_session's docstring for the full list + aliases.
+    - `synthesize` (runs one orchestrator agent turn): an LLM ADAPTER — e.g.
+      'llamacpp', 'agentic', 'ridge', 'anthropic', 'openai', 'openrouter',
+      'fireworks'. Passing a coding-session name here (e.g. 'claude_code') is
+      invalid and vice versa."""
     body: dict[str, Any] = {"name": name, "description": description, "steps": steps}
     if tags:
         body["tags"] = tags

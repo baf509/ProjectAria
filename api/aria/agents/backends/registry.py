@@ -63,3 +63,15 @@ class BackendRegistry:
 
     def list(self) -> list[str]:
         return sorted(self._backends.keys())
+
+    def is_registered(self, name: str | None) -> bool:
+        """True if `name` (or its alias) is an actual coding-session backend.
+
+        Used to tell a coding-session substrate (claude_code/codex/pi-code/pool)
+        apart from an LLM-adapter name (llamacpp/agentic/ridge/anthropic/...) —
+        the two vocabularies look interchangeable but are not; see the
+        subagent_profile resolution in agents/session.py.
+        """
+        if name is None:
+            return False
+        return self._ALIASES.get(name, name) in self._backends

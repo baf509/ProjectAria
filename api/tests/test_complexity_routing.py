@@ -329,7 +329,12 @@ class TestAvailability:
         assert verdict.tier == TIER_FALLBACK
         assert verdict.source == "fallback"
         assert verdict.backend != "claude_code"
-        assert verdict.llm  # fallback carries an LLM backend for pi-code
+        # 2026-07-28: the fallback backend moved from pi-code to `pool` (a
+        # subprocess CLI backend run against laguna directly), so it carries a
+        # model but no `llm` pin — `llm` is meaningless for a non-pi-code
+        # backend and is documented as such in config.py.
+        assert verdict.backend == "pool"
+        assert verdict.model
         assert "quota" in verdict.why
 
     @pytest.mark.asyncio
@@ -458,6 +463,11 @@ def _routing_manager():
     backend.start_command.return_value = MagicMock(argv=["claude"], cwd="/tmp/ws", env={})
     mgr.registry = MagicMock()
     mgr.registry.get.return_value = backend
+    # canonicalize() must behave like the real thing (identity for non-alias
+    # names) — start_session() now normalizes `backend` through it before the
+    # routing decision, so an unstubbed MagicMock return value there breaks
+    # is_routable_backend()'s string comparison and routing never fires.
+    mgr.registry.canonicalize.side_effect = lambda name: name
     mgr.shell_service = None
     mgr.process_manager = MagicMock()
     running = MagicMock()

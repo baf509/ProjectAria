@@ -216,7 +216,22 @@ class CodingSessionManager:
             if not profile:
                 raise RuntimeError(f"subagent profile '{subagent_profile}' not found")
             pllm = profile.get("llm", {}) or {}
-            backend = backend or pllm.get("backend")
+            profile_backend = pllm.get("backend")
+            if backend is None:
+                # profile_backend is an LLM-adapter name (llamacpp, agentic,
+                # ridge, anthropic, ...) — a DIFFERENT vocabulary from the
+                # coding-session substrate (claude_code/codex/pi-code/pool).
+                # Only adopt it as the session `backend` if it happens to also
+                # be a registered substrate; otherwise it's an LLM pin for the
+                # in-process pi-code substrate. Without this check, a profile
+                # like pi-coding-ridge (llm.backend="ridge") set backend="ridge"
+                # and start_session raised "Unknown coding backend: ridge"
+                # before ever reaching the pi-code dispatch.
+                if self.registry.is_registered(profile_backend):
+                    backend = profile_backend
+                else:
+                    backend = "pi-code"
+                    llm = llm or profile_backend
             if model is None:
                 model = pllm.get("model")
             role = profile.get("system_prompt")
