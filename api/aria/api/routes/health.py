@@ -48,6 +48,7 @@ async def health_check(
             llm="not checked",
         )
 
+    import asyncio
     import httpx
 
     # 1. Database
@@ -72,9 +73,36 @@ async def health_check(
         embeddings_status = "unreachable"
 
     # 3. LLM availability
+    #
+    # is_backend_available() only checks that config/credentials/the SDK
+    # package are present -- it never touches the network, so a backend whose
+    # base_url points at a dead server (e.g. after a model-server migration
+    # that forgot to update .env) was reported "available" forever. For the
+    # two local backends that actually live on this box (llamacpp, agentic)
+    # also require a real reachability probe, mirroring the one /health/services
+    # already does. Cloud backends and context1/ridge are left as config-only
+    # checks: ridge sleeps by design (see /health/services), and probing cloud
+    # providers on every health check would add latency/cost for no benefit.
+    _probe_urls = {"llamacpp": settings.llamacpp_url, "agentic": settings.agentic_url}
+
+    async def _reachable(url: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                resp = await client.get(f"{url.rstrip('/')}/models")
+                return resp.status_code < 500
+        except Exception:
+            return False
+
+    reachability = dict(zip(
+        _probe_urls.keys(),
+        await asyncio.gather(*(_reachable(u) for u in _probe_urls.values())),
+    )) if _probe_urls else {}
+
     available_backends = []
     for b in ("llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter", "fireworks"):
         avail, _ = llm_manager.is_backend_available(b)
+        if avail and b in reachability and not reachability[b]:
+            avail = False
         if avail:
             available_backends.append(b)
 
