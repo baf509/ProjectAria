@@ -520,9 +520,15 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_category": "coding",
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
+        # 2026-07-28: pi-coding no longer runs on this host's local model at
+        # all (was backend=agentic -> chadrock/laguna, sharing chadrock's
+        # single --parallel 1 slot with the pool CLI it was never meant to
+        # share with). Ridge is now the ONLY backend a pi-coding-family agent
+        # runs on -- this repoints the chat-only agent to match
+        # pi-coding-ridge rather than leaving two divergent local backends.
         "llm": {
-            "backend": "llamacpp",
-            "model": "default",
+            "backend": "ridge",
+            "model": "qwen3.6-35b-a3b",
             "temperature": 0.4,
             "max_tokens": 4096,
             "max_context_tokens": None,

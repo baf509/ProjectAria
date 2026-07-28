@@ -1,9 +1,21 @@
-# Local inference topology (updated 2026-07-28 — two-server split)
+# Local inference topology (updated 2026-07-28 — two-server split, then corrected same day)
 
 Operational runbook for how ARIA reaches a model, after the day this host became
 **local-only**. Companion docs: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
 (server tuning + benchmarks) and `Development/Hermes/HERMES_TUNING_20260726.md`
 (Hermes client side).
+
+> **Same-day correction:** the split below originally repointed BOTH
+> `LLAMACPP_URL` and `AGENTIC_URL` at `chadrock` (:8102) as a quick fix for the
+> dead-laguna-port bug in §4 — but chadrock is the `pool` CLI's dedicated
+> `--parallel 1` server, so that silently put ARIA's own chat agent and Search
+> Agent back into the exact "asymmetric consumers on one server" problem this
+> split exists to prevent. Corrected: `LLAMACPP_URL`/`AGENTIC_URL` now point at
+> `qwen3.6-35b-a3b` (renamed from `qwen-hermes` — it's no longer Hermes-only
+> either), and `pi-coding` moved off the local box entirely onto
+> `backend=ridge` — **Ridge is now the only backend any pi-coding-family agent
+> runs on.** Sections below are updated to match; where a section still
+> narrates the original same-day incident as history, it says so.
 
 > This is an **agent-operational** doc, so it lives in the repo per the
 > `project-docs` routing rule. Design-level consequences were written into
@@ -19,12 +31,19 @@ cache, which is the entire point.
 
 | endpoint | model | consumer | measured |
 |---|---|---|---|
-| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan) | **pool CLI → ProjectAria** only | decode 36.03 t/s, 66.8 GiB |
-| `:8103` **qwen-hermes** | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan) | **Hermes** main + auxiliary + cron | decode 70.61 t/s, prefill 140.1 |
+| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB |
+| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan) | **Hermes** main + auxiliary + cron, **and** ARIA's default chat agent + Search Agent (`backend=llamacpp`) | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable) |
 | `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
 | `:8092` qwen-chat / `:8093` qwen-agentic | — | — | retired, down for days |
 
-Both models resident in ~89.4 GiB, ~30 GB free.
+Both models resident in ~89.4 GiB, ~30 GB free. `qwen3.6-35b-a3b` now has two
+kinds of consumer sharing its `--parallel 2 --kv-unified` slots — Hermes's
+~30K stable tool-schema prefix and ARIA/Search Agent's chat turns. This is a
+smaller-scale version of the "asymmetric consumers" problem the split was
+built to prevent; accepted deliberately for now since there's no fourth local
+server to give ARIA's own chat agent, not an oversight. Revisit if it causes
+the same eviction symptoms Hermes and the coding agents used to cause each
+other on the old shared `laguna`.
 
 **Why split.** Every hard problem measured on 2026-07-27/28 came from one cause:
 asymmetric consumers sharing a single unified KV pool. Hermes holds a ~30K stable
@@ -59,7 +78,7 @@ Slot counts now:
 | server | slots | why |
 |---|---|---|
 | `:8102` chadrock | `--parallel 1` | single consumer; the vendor-validated profile |
-| `:8103` qwen-hermes | `--parallel 2 --kv-unified` | Hermes main + auxiliary tools, which previously used a *separate* laguna slot so they would not evict Hermes's prefix |
+| `:8103` qwen3.6-35b-a3b (renamed from qwen-hermes) | `--parallel 2 --kv-unified` | Hermes main + auxiliary tools, which previously used a *separate* laguna slot so they would not evict Hermes's prefix. Since the same-day correction above, ARIA's own chat agent + Search Agent also share these 2 slots. |
 
 Measured: slots cost ~2% decode each and ~0.15 GiB for 4→8. Do not add them
 without a consumer that needs one.
@@ -68,17 +87,21 @@ without a consumer that needs one.
 
 ## 3. Which agent uses which server
 
-> Updated 2026-07-28: `pi-coding`/`pool` now use `:8102` (chadrock); Hermes uses
-> `:8103` (qwen-hermes). The laguna rows below are historical.
+> Updated 2026-07-28 (same-day correction, supersedes the first split): `pool`
+> is the ONLY consumer of `:8102` chadrock. `aria` and `search-agent` share
+> `:8103` qwen3.6-35b-a3b with Hermes. Both pi-coding-family agents
+> (`pi-coding` chat tool and `pi-coding-ridge` coding session) run on Ridge —
+> laguna no longer backs anything named "pi-coding". The `:8097`/`:8095` slot
+> references below are historical (pre-split, laguna-slot-proxy era).
 
 `db.agents`:
 
 | slug | backend | resolves to |
 |---|---|---|
-| `aria` | `llamacpp` | `:8097` (slot 1) |
-| `pi-coding` | `agentic` | `:8095` (slots 4–7) |
+| `aria` | `llamacpp` | `:8103` qwen3.6-35b-a3b (was chadrock `:8102` for part of 2026-07-28; corrected same day) |
+| `pi-coding` | `ridge` | Ridge's RTX 3090 (was `agentic` → chadrock/laguna; corrected 2026-07-28 — see §3.1) |
 | `pi-coding-ridge` | `ridge` | `:8092` → **Ridge's RTX 3090** (see §3.1) |
-| `search-agent` | `llamacpp` | `:8097` — **was `context1`**, which is retired and down; repointed 2026-07-26 so it is functional again |
+| `search-agent` | `llamacpp` | `:8103` qwen3.6-35b-a3b — **was `context1`**, retired and down; repointed 2026-07-26, then moved off chadrock same-day as `aria` above |
 
 ### 3.1 `ridge` — the one backend that is NOT on this box (2026-07-27)
 
@@ -111,15 +134,19 @@ Things that bite:
   `infrastructure/endpoints.env`.
 
 `_start_pi_code_session()` resolves `db.agents` slug `pi-code` **or**
-`pi-coding` — we have `pi-coding`, on `agentic` → laguna. So pi-code sessions run
-on laguna today with no further wiring.
+`pi-coding` — we have `pi-coding`, on `ridge` (corrected 2026-07-28; was
+`agentic` → chadrock/laguna). So a bare `backend="pi-code"` session with no
+`subagent_profile` now runs on Ridge, same as `pi-coding-ridge` explicitly —
+they resolve to the same backend/model, differing only in that
+`pi-coding-ridge`'s system prompt documents the filesystem/shell tools and the
+wake-on-demand behavior explicitly.
 
 ### Hermes must spin pi-coding through ARIA
 `~/.hermes/config.yaml` `agent.environment_hint` now distinguishes:
 - `backend="claude_code"` — default for anything non-trivial.
 - `backend="pi"` — **only** on explicit request for the local model. Runs ARIA's
-  own agentic loop on laguna and still inherits the watchdog, e-stop and
-  concurrency limiter.
+  own agentic loop on Ridge (corrected 2026-07-28; was laguna) and still
+  inherits the watchdog, e-stop and concurrency limiter.
 
 "Use the local model" means `backend="pi"` **through `create_coding_session`** —
 never a coding loop inside Hermes.
@@ -233,12 +260,12 @@ instructions to agents and drift silently.
 ## 9. Quick verification
 
 ```bash
-curl -s localhost:8095/health                       # laguna
-docker logs laguna 2>&1 | grep n_slots | head -1    # expect n_slots = 8, kv_unified = true
-curl -s localhost:8200/api/v1/health                # expect available (llamacpp, agentic)
-systemctl --user is-active laguna-slot-proxy aria-api hermes-gateway
-docker logs laguna 2>&1 | grep 'selected slot by id' | tail -4   # pinning working
-bash infrastructure/scripts/health                  # no dead-qwen probe
+curl -s localhost:8102/health                          # chadrock (pool CLI only)
+curl -s localhost:8103/health                           # qwen3.6-35b-a3b (Hermes + aria + search-agent)
+curl -s localhost:8200/api/v1/health                     # expect available (llamacpp, agentic, ridge)
+systemctl --user is-active aria-api hermes-gateway
+docker logs qwen3.6-35b-a3b 2>&1 | grep 'selected slot by id' | tail -4   # pinning working
+bash infrastructure/scripts/health                       # no dead-qwen probe
 ```
 
 Backups: `ProjectAria/.env.bak-openrouter-20260726`, and the `~/.hermes/*.bak-*`

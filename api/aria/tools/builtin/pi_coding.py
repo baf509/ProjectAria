@@ -1,9 +1,10 @@
 """
 ARIA - Pi Coding Agent Tool
 
-Purpose: Delegate coding tasks to the Pi Coding Agent which uses
-the local LLM (llamacpp). Creates a persistent conversation that
-the user can jump into and continue interacting with.
+Purpose: Delegate coding tasks to the Pi Coding Agent, which runs on
+Ridge's RTX 3090 (backend=ridge; see db.agents slug="pi-coding"). Creates
+a persistent conversation that the user can jump into and continue
+interacting with.
 
 Inspired by pi-mono's coding assistant approach: structured thinking,
 file-aware, progressive tool use, and iterative refinement.
@@ -26,14 +27,18 @@ PI_AGENT_SLUG = "pi-coding"
 
 class PiCodingAgentTool(BaseTool):
     """
-    Delegate a coding task to the Pi Coding Agent (local LLM).
+    Delegate a coding task to the Pi Coding Agent (Ridge-backed local LLM).
 
     Creates a conversation with the Pi agent, sends the task through
     the orchestrator using the local LLM backend, and returns the
     response along with a conversation ID the user can jump into.
 
     Unlike the Claude Agent tool (single-shot subprocess), this creates
-    a persistent conversation that supports follow-up interaction.
+    a persistent conversation that supports follow-up interaction. And
+    unlike the pi-coding-ridge CODING SESSION (a distinct thing, started via
+    start_coding_session(subagent_profile="pi-coding-ridge")), this tool has
+    no filesystem/shell tools — it's chat-only, same as before the model
+    backing it moved from laguna to Ridge.
     """
 
     def __init__(self, db: AsyncIOMotorDatabase):
@@ -47,13 +52,14 @@ class PiCodingAgentTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Delegate a coding task to the Pi Coding Agent (local LLM, laguna). "
-            "Creates a persistent conversation the user can continue later. "
-            "Use for brainstorming, architecture discussion, code review chat, "
-            "or when the user wants a private local conversation. "
-            "For a local-model agent that should actually make and verify changes, "
-            "prefer the Ridge-backed coding agent (slug 'pi-coding-ridge', which "
-            "runs on Ridge's RTX 3090); prefer claude_agent for the hardest tasks."
+            "Delegate a coding task to the Pi Coding Agent (local LLM, on Ridge's "
+            "RTX 3090). Creates a persistent conversation the user can continue "
+            "later. Use for brainstorming, architecture discussion, code review "
+            "chat, or when the user wants a private local conversation — this is "
+            "chat-only, it cannot write files or run commands. "
+            "For a local-model agent that should actually make and verify "
+            "changes, start a coding session with subagent_profile="
+            "'pi-coding-ridge' instead; prefer claude_agent for the hardest tasks."
         )
 
     @property
