@@ -197,7 +197,7 @@ class Settings(BaseSettings):
     # coding session already holds it the fallback queues rather than evicting.
     coding_routing_fallback_backend: str = "pool"
     coding_routing_fallback_llm: str = ""          # unused by the pool backend
-    coding_routing_fallback_model: str = "laguna-s-2.1"
+    coding_routing_fallback_model: str = "laguna-s21-rocmfp4-strixkvspine-v4"
     coding_routing_quota_cooldown_minutes: int = 60
 
     infrastructure_root: str = "/home/ben/Development/infrastructure"
