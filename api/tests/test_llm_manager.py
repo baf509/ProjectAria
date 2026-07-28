@@ -194,6 +194,51 @@ def test_get_adapter_openrouter(mock_settings, manager):
     )
 
 
+@patch("aria.llm.manager.settings")
+def test_get_adapter_agentic(mock_settings, manager):
+    mock_settings.agentic_url = "http://localhost:8102/v1"
+    mock_settings.agentic_api_key = ""
+
+    fake_adapter = MagicMock()
+    fake_module = MagicMock()
+    fake_module.LlamaCppAdapter.return_value = fake_adapter
+
+    with patch.dict("sys.modules", {"aria.llm.llamacpp": fake_module}):
+        adapter = manager.get_adapter("agentic", "laguna-s-2.1")
+
+    assert adapter is fake_adapter
+    fake_module.LlamaCppAdapter.assert_called_once_with(
+        base_url="http://localhost:8102/v1",
+        model="laguna-s-2.1",
+        api_key="",
+    )
+
+
+@patch("aria.llm.manager.settings")
+def test_get_adapter_ridge(mock_settings, manager):
+    """ridge reuses the llama.cpp adapter but with its own (much longer)
+    timeout, since a cold Wake-on-LAN start is ~90s and must not be mistaken
+    for a hung connection."""
+    mock_settings.ridge_url = "http://100.123.245.84:8092/v1"
+    mock_settings.ridge_api_key = ""
+    mock_settings.ridge_timeout_seconds = 420
+
+    fake_adapter = MagicMock()
+    fake_module = MagicMock()
+    fake_module.LlamaCppAdapter.return_value = fake_adapter
+
+    with patch.dict("sys.modules", {"aria.llm.llamacpp": fake_module}):
+        adapter = manager.get_adapter("ridge", "qwen3.6-35b-a3b")
+
+    assert adapter is fake_adapter
+    fake_module.LlamaCppAdapter.assert_called_once_with(
+        base_url="http://100.123.245.84:8092/v1",
+        model="qwen3.6-35b-a3b",
+        api_key="",
+        timeout_seconds=420,
+    )
+
+
 # ---------------------------------------------------------------------------
 # is_backend_available tests
 # ---------------------------------------------------------------------------
@@ -204,6 +249,22 @@ def test_is_backend_available_llamacpp(manager):
         available, reason = manager.is_backend_available("llamacpp")
     assert available is True
     assert "available" in reason.lower()
+
+
+def test_is_backend_available_agentic(manager):
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        available, reason = manager.is_backend_available("agentic")
+    assert available is True
+
+
+def test_is_backend_available_ridge_not_probed(manager):
+    """ridge is reported available purely on config (openai SDK present) —
+    it is deliberately NOT network-probed, since it sleeps by design and a
+    probe would either wake it every tick or misreport it as down."""
+    with patch.dict("sys.modules", {"openai": MagicMock()}):
+        available, reason = manager.is_backend_available("ridge")
+    assert available is True
+    assert "wake" in reason.lower()
 
 
 @patch("aria.llm.manager.settings")
