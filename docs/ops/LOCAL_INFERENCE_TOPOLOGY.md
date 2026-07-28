@@ -1,4 +1,4 @@
-# Local inference topology (2026-07-26)
+# Local inference topology (updated 2026-07-28 — two-server split)
 
 Operational runbook for how ARIA reaches a model, after the day this host became
 **local-only**. Companion docs: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
@@ -7,71 +7,69 @@ Operational runbook for how ARIA reaches a model, after the day this host became
 
 > This is an **agent-operational** doc, so it lives in the repo per the
 > `project-docs` routing rule. Design-level consequences were written into
-> `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 (entries 11–13) and §6.
+> `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 — entries 11–13 (2026-07-26,
+> now partly superseded) and entries 14–23 (2026-07-28, the two-server split).
 
 ---
 
-## 1. There is exactly one model server
+## 1. There are TWO model servers (split 2026-07-28)
 
-**laguna** (Laguna S 2.1 Q4_K_M) on `:8095` is the only local model. Everything
-else you may remember is retired:
+Hermes and the coding agents no longer share a model. They never share a KV
+cache, which is the entire point.
 
-| endpoint | status |
-|---|---|
-| `:8095` laguna | **live, resident, 8 slots** |
-| `:8092` qwen-chat | **retired** — profile-gated, mutually exclusive with laguna |
-| `:8093` qwen-agentic | **retired** — same |
-| `:8081` context-1 | **retired** — `CONTEXT1_ENABLED=false` |
-| openrouter / fireworks | **removed** — credits exhausted / key retired |
+| endpoint | model | consumer | measured |
+|---|---|---|---|
+| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan) | **pool CLI → ProjectAria** only | decode 36.03 t/s, 66.8 GiB |
+| `:8103` **qwen-hermes** | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan) | **Hermes** main + auxiliary + cron | decode 70.61 t/s, prefill 140.1 |
+| `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
+| `:8092` qwen-chat / `:8093` qwen-agentic | — | — | retired, down for days |
 
-> ⚠️ **`:8092` lies.** `ridge-llama-proxy` binds it on the **tailnet IP only**
-> (`100.123.245.84:8092`), so `curl localhost:8092` is connection-refused even
-> though `ss -ltnp` shows a listener. This has caused misdiagnosis more than
-> once. `:8093` has nothing at all.
+Both models resident in ~89.4 GiB, ~30 GB free.
 
-qwen is **retired, not deleted** — `docker compose --profile qwen up -d` brings
-it back, but you must `systemctl --user stop ridge-llama-proxy` first (it holds
-`:8092`) and stop laguna (they cannot both be resident: ~85 GiB + ~61 GiB on a
-124 GiB box).
+**Why split.** Every hard problem measured on 2026-07-27/28 came from one cause:
+asymmetric consumers sharing a single unified KV pool. Hermes holds a ~30K stable
+tool-schema prefix and is latency-sensitive; coding agents grow past 100K. They
+evicted each other, and no amount of slot pinning, `--cache-ram` or checkpoint
+tuning fixed it. Two servers retire the whole class.
+
+> ⚠️ **`-fit off` is mandatory on every llama-server on this box.** Without it the
+> process deadlocks in "fitting params to device memory" on Vulkan (which reports
+> the full 128 GB as free) and becomes an **unkillable D-state process holding the
+> GPU** — SIGKILL does nothing, and recovery is a hard reboot.
+
+Restore the incumbent if you need it:
+```
+cd ~/Development/infrastructure/laguna && \
+  LAGUNA_SLOTS="-np 3 --kv-unified" docker compose up -d laguna
+```
 
 ---
 
-## 2. Slot topology — which port ARIA should use
+## 2. Slot topology — RETIRED
 
-laguna runs `-np 8 -kvu` (8 slots, each addressing the full 262144, one **shared**
-KV pool). `laguna-slot-proxy` (systemd user unit,
-`infrastructure/wake-proxies/laguna-slot-proxy.py`) injects llama.cpp's `id_slot`
-**by listen port**, bypassing the server's LCP/LRU heuristic:
+`laguna-slot-proxy` is **stopped and disabled**. Ports 8096–8100 no longer listen.
 
-| port | slot | consumer |
+It existed to stop consumers evicting each other inside one shared pool. With one
+consumer per server there is nothing to pin against, so the proxy is dead weight.
+All 20 references to it in `~/.hermes/config.yaml` were repointed to `:8103`;
+their upstream (`:8095`) is stopped, so every one of them was broken.
+
+Slot counts now:
+
+| server | slots | why |
 |---|---|---|
-| 8096 | 0 | Hermes main |
-| **8097** | **1** | **ARIA orchestrator** ← `LLAMACPP_URL` |
-| 8098 | 2 | Hermes auxiliary |
-| 8100 | 3 | Hermes cron |
-| `:8095` | 4–7 | **pi-code sessions** ← `AGENTIC_URL` (unpinned, deliberate) |
+| `:8102` chadrock | `--parallel 1` | single consumer; the vendor-validated profile |
+| `:8103` qwen-hermes | `--parallel 2 --kv-unified` | Hermes main + auxiliary tools, which previously used a *separate* laguna slot so they would not evict Hermes's prefix |
 
-**Why ARIA is pinned:** `LLAMACPP_URL` used to be `:8095` direct, so ARIA's
-background workers — memory extraction (every 10 min per watched shell) and
-ambient task capture (**every conversation turn**) — were placed by the heuristic
-and could land on slot 0, **evicting Hermes's warm tool-schema prefix** and
-forcing a ~150 s cold re-prefill on the next Signal message.
-
-**Why pi-code is deliberately NOT pinned:** four concurrent sessions
-(`coding_max_concurrent_sessions=4`) can't share one pinned port, and llama.cpp's
-selector prefers an **unused** slot (`t_last = -1`) over one holding a prefix — so
-fresh sessions land on 4–7 by themselves and cannot displace a pinned consumer.
-Pinning them properly would need per-session port assignment in the session
-manager; the current arrangement gets the same outcome for free.
-
-**Rule for any new ARIA worker:** if its prompt shape differs from an existing
-consumer's, give it its own slot. Extra slots are **memory-neutral** (8 slots cost
-the same 85.3 GiB as 4), so this is cheap. Sharing a slot with a different prompt
-shape thrashes both.
+Measured: slots cost ~2% decode each and ~0.15 GiB for 4→8. Do not add them
+without a consumer that needs one.
 
 ---
 
-## 3. Every agent that uses a local model uses laguna
+## 3. Which agent uses which server
+
+> Updated 2026-07-28: `pi-coding`/`pool` now use `:8102` (chadrock); Hermes uses
+> `:8103` (qwen-hermes). The laguna rows below are historical.
 
 `db.agents`:
 
