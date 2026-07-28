@@ -10,6 +10,7 @@ Related Spec Sections:
 
 from datetime import datetime, timezone
 from aria.api.deps import valid_object_id
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -23,6 +24,17 @@ def serialize_agent(doc: dict) -> dict:
     """Convert MongoDB document to API response."""
     doc["id"] = str(doc.pop("_id"))
     return doc
+
+
+async def _find_agent(db: AsyncIOMotorDatabase, agent_id_or_slug: str) -> dict | None:
+    """Look up an agent by ObjectId or by its stable slug (mirrors the
+    id-or-slug pattern already used by GET /projects/{project_id}), so MCP
+    tools can address an agent by slug without a separate id-lookup round trip."""
+    if ObjectId.is_valid(agent_id_or_slug):
+        agent = await db.agents.find_one({"_id": ObjectId(agent_id_or_slug)})
+        if agent:
+            return agent
+    return await db.agents.find_one({"slug": agent_id_or_slug})
 
 
 @router.get("/agents", response_model=list[AgentResponse])
@@ -66,8 +78,8 @@ async def create_agent(
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)):
-    """Get an agent by ID."""
-    agent = await db.agents.find_one({"_id": valid_object_id(agent_id)})
+    """Get an agent by ID or by its slug."""
+    agent = await _find_agent(db, agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -78,21 +90,19 @@ async def get_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)):
 async def update_agent(
     agent_id: str, body: AgentUpdate, db: AsyncIOMotorDatabase = Depends(get_db)
 ):
-    """Update an agent."""
+    """Update an agent, addressed by ID or by its slug."""
     update_data = body.model_dump(exclude_unset=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    update_data["updated_at"] = datetime.now(timezone.utc)
-
-    result = await db.agents.update_one(
-        {"_id": valid_object_id(agent_id)}, {"$set": update_data}
-    )
-
-    if result.matched_count == 0:
+    existing = await _find_agent(db, agent_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    agent = await db.agents.find_one({"_id": valid_object_id(agent_id)})
+    update_data["updated_at"] = datetime.now(timezone.utc)
+    await db.agents.update_one({"_id": existing["_id"]}, {"$set": update_data})
+
+    agent = await db.agents.find_one({"_id": existing["_id"]})
     return AgentResponse(**serialize_agent(agent))
 
 

@@ -581,6 +581,74 @@ class TestGetAgent:
         resp = await client.get(f"/api/v1/agents/{VALID_OID}")
         assert resp.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_get_by_slug(self, client, mock_db):
+        """A non-ObjectId path segment is looked up as a slug (MCP tools
+        address agents by their stable slug, not the Mongo id)."""
+        doc = _make_agent_doc(oid=VALID_OID, slug="pi-coding")
+
+        async def fake_find_one(query):
+            if query.get("slug") == "pi-coding":
+                return doc
+            return None
+
+        mock_db.agents.find_one = AsyncMock(side_effect=fake_find_one)
+        resp = await client.get("/api/v1/agents/pi-coding")
+        assert resp.status_code == 200
+        assert resp.json()["slug"] == "pi-coding"
+
+    @pytest.mark.asyncio
+    async def test_get_by_slug_not_found(self, client, mock_db):
+        mock_db.agents.find_one = AsyncMock(return_value=None)
+        resp = await client.get("/api/v1/agents/no-such-agent")
+        assert resp.status_code == 404
+
+
+class TestUpdateAgent:
+    @pytest.mark.asyncio
+    async def test_update_by_id(self, client, mock_db):
+        doc = _make_agent_doc(oid=VALID_OID)
+        mock_db.agents.find_one = AsyncMock(return_value=doc)
+        mock_db.agents.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+
+        resp = await client.put(f"/api/v1/agents/{VALID_OID}", json={"enabled": False})
+        assert resp.status_code == 200
+        mock_db.agents.update_one.assert_awaited_once()
+        set_fields = mock_db.agents.update_one.call_args[0][1]["$set"]
+        assert set_fields["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_update_by_slug(self, client, mock_db):
+        doc = _make_agent_doc(oid=VALID_OID, slug="search-agent")
+        doc_id = doc["_id"]  # serialize_agent() pops "_id" from `doc` in place
+
+        async def fake_find_one(query):
+            if query.get("slug") == "search-agent" or query.get("_id") == doc_id:
+                return doc
+            return None
+
+        mock_db.agents.find_one = AsyncMock(side_effect=fake_find_one)
+        mock_db.agents.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+
+        resp = await client.put(
+            "/api/v1/agents/search-agent", json={"enabled": True}
+        )
+        assert resp.status_code == 200
+        # Looked up by slug, but the actual $set targeted the resolved _id.
+        filter_arg = mock_db.agents.update_one.call_args[0][0]
+        assert filter_arg == {"_id": doc_id}
+
+    @pytest.mark.asyncio
+    async def test_update_not_found(self, client, mock_db):
+        mock_db.agents.find_one = AsyncMock(return_value=None)
+        resp = await client.put(f"/api/v1/agents/{VALID_OID}", json={"enabled": False})
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_update_empty_body(self, client, mock_db):
+        resp = await client.put(f"/api/v1/agents/{VALID_OID}", json={})
+        assert resp.status_code == 400
+
 
 class TestDeleteAgent:
     @pytest.mark.asyncio

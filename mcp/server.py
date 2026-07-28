@@ -129,8 +129,22 @@ async def get_shell(name: str) -> dict:
 
 @mcp.tool()
 async def aria_health() -> dict:
-    """Health of the ProjectAria stack: database, embeddings, and LLM backends."""
+    """Quick health of the ProjectAria stack: database, embeddings, and LLM
+    backend AVAILABILITY (config/SDK presence, not real reachability — a
+    backend can report available here and still be down). Use this for a
+    fast up/down check; use health_services for real per-backend reachability."""
     return await _request("GET", "/api/v1/health")
+
+
+@mcp.tool()
+async def health_services() -> dict:
+    """Real reachability probe of every backing service (mongod, mongot, the
+    local LLM servers, embeddings, tts, stt) — actual HTTP pings with latency,
+    not just config/SDK presence like aria_health. A 401/403 counts as
+    unhealthy (a rejected credential is a real failure). Ridge is deliberately
+    NOT probed here since it sleeps by design; a probe would either report it
+    falsely down or wake it every check. Returns {services: [...], healthy, total}."""
+    return await _request("GET", "/api/v1/health/services")
 
 
 # ────────────────────────────────────────────────────────── reading ──
@@ -394,6 +408,16 @@ async def list_conversations(status: str = "active", limit: int = 20) -> Any:
 
 
 @mcp.tool()
+async def get_usage_cost(days: int = 7) -> Any:
+    """Total $ cost over the last N days, broken down by (model, backend).
+    Local backends cost $0; this is mainly for spotting unexpected cloud
+    spend (e.g. an unpinned coding session routing to Opus more than
+    expected). See /usage/by-session or /usage/by-conversation in the REST
+    API directly if you need finer granularity than this exposes."""
+    return await _request("GET", "/api/v1/usage/cost", params={"days": days})
+
+
+@mcp.tool()
 async def read_conversation(conversation_id: str, message_limit: int = 20) -> dict:
     """Read one conversation including its recent messages."""
     return await _request(
@@ -407,6 +431,39 @@ async def list_agents() -> Any:
     """List ARIA's agent personas (orchestrator + delegated agents) with their
     configured model/backend and tools."""
     return await _request("GET", "/api/v1/agents")
+
+
+@mcp.tool()
+async def update_agent(
+    agent_slug: str,
+    enabled: Optional[bool] = None,
+    backend: Optional[str] = None,
+    model: Optional[str] = None,
+    temperature: Optional[float] = None,
+) -> dict:
+    """Enable/disable an agent, or repoint its backend/model. `agent_slug`
+    takes a stable slug (e.g. 'search-agent', 'pi-coding') or a raw agent id.
+
+    backend/model are the LLM-ADAPTER vocabulary (llamacpp, agentic, ridge,
+    anthropic, ...) — a DIFFERENT vocabulary from create_coding_session's
+    backend (claude_code/codex/pi-code/pool). Only the fields you pass are
+    changed; anything you omit (system_prompt, the rest of llm, etc.) is left
+    exactly as it was. Use this instead of asking a human to hand-edit the
+    database — it's the whole point of exposing agent management over MCP."""
+    body: dict[str, Any] = {}
+    if enabled is not None:
+        body["enabled"] = enabled
+    if backend is not None or model is not None or temperature is not None:
+        current = await _request("GET", f"/api/v1/agents/{agent_slug}")
+        llm = dict(current.get("llm") or {})
+        if backend is not None:
+            llm["backend"] = backend
+        if model is not None:
+            llm["model"] = model
+        if temperature is not None:
+            llm["temperature"] = temperature
+        body["llm"] = llm
+    return await _request("PUT", f"/api/v1/agents/{agent_slug}", json=body)
 
 
 # ──────────────────────────────────────────────────────────────────── memory ──

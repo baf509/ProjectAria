@@ -13,16 +13,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture Overview
 
-ARIA is a local-first AI agent platform — a personal AI assistant with long-term memory, tool use, and multiple interfaces.
+ARIA is a local-first agent **substrate/cockpit**, not a conversational front door. It owns
+long-term memory, tool execution, the watched-shell fleet, and coding-session
+orchestration — capabilities a human or agent *drives*, not something a human
+chats with directly.
+
+**Two ways to reach those capabilities (2026-07-28, clarified same day the
+default chat agent was disabled):**
+- **Hermes** (a separate agent, its own service) is the sole conversational/
+  orchestrating agent between a human and ARIA. It reaches ARIA entirely
+  through the **MCP server** (`mcp/server.py`) — ~35 tools wrapping `/api/v1`.
+  When ARIA needs a new capability exposed to Hermes, add the MCP tool here
+  and restart `hermes-gateway.service`; the `aria` MCP connection in Hermes's
+  config has no per-tool whitelist, so a new tool becomes available on that
+  restart alone — no separate Hermes-side registration needed (only Hermes's
+  own *native* toolsets are explicitly whitelisted, for token-budget reasons).
+- **The TUI is a direct operator cockpit** — a human drives ARIA's primitives
+  (shells, coding sessions, fleet status) by hand, with no agent in the loop.
+  This is manual control, not chat; it doesn't need and isn't meant to have an
+  orchestrator persona.
+- **ARIA's own default chat agent (`slug=aria`) is deliberately disabled**
+  (`enabled=false` — see the `enabled` flag in `db/models.py`/`conversations.py`)
+  — it was a third, redundant path that duplicated what Hermes already does,
+  and its presence made it easy to accidentally reintroduce a human-facing
+  ARIA chat surface. The Web UI and CLI chat commands still exist as code but
+  hit the same disabled agent and are refused. Non-default agents used for
+  actual work (`pi-coding` → Ridge, coding sessions) remain enabled — only the
+  general-purpose default persona is off.
 
 ARIA is the **single always-on service** on this host (`corsair-ai`). It listens on
 **:8200** and has absorbed the former standalone `aria-shells` service — the
 watched-shells / fleet subsystem now lives here (see *Watched Shells & Fleet*
-below). It also exposes an **MCP server** (`mcp/server.py`) consumed by the
-remote **Hermes** agent. The `aria-shells` repo is retained only as reference.
+below). The `aria-shells` repo is retained only as reference.
 
 **Key principles:**
-- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; access is via the Web UI, TUI, CLI, desktop widget, and the REST API, plus the MCP server for the Hermes agent.
+- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; the TUI/CLI/Web UI are operator/admin surfaces, not the primary way to interact with ARIA — that's Hermes, via the MCP server.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
 - **Single-user design** — Personal agent, no multi-tenancy or auth.
 - **LLM agnostic** — Adapter pattern for local llama.cpp servers, context-1, Anthropic, OpenAI, OpenRouter, and Fireworks. Backend + model are selected **per agent**.
@@ -111,15 +136,19 @@ One `projects` collection fed by **two** extractors: the ambient LLM
 
 ProjectAria exposes an MCP server (FastMCP, run via `~/.local/share/aria-mcp/`,
 launched by Hermes from `~/.hermes/config.yaml`). It surfaces **all of ARIA** to
-Hermes — ~31 tools wrapping `/api/v1`:
+Hermes — this is Hermes's *only* path to ARIA's capabilities (see *Architecture
+Overview*) — ~35 tools wrapping `/api/v1`:
 - **Fleet** — fleet_status, get_shell_screen, send_shell_input, create/delete/tag/resize, search.
-- **Chat / agents** — chat (drive the ARIA orchestrator agent), list/read conversations, list_agents.
+- **Chat / agents** — chat (drive a non-default ARIA agent, e.g. pi-coding; the default `aria` agent is disabled), list/read conversations, list_agents, **update_agent** (enable/disable, repoint backend/model — addressed by slug).
 - **Memory** — search_memory, add_memory.
 - **Coding sub-agents** — list/create/get_output/send_to/stop coding sessions.
 - **Projects / tasks** — native `/todos` + `/projects/{id|slug}`.
 - **Alerts** — list_alerts, ack_alert.
+- **Health / cost** — aria_health (quick, config-presence only), **health_services** (real per-backend reachability probes), **get_usage_cost** (spend by model/backend).
 
-After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset.
+After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset —
+the `aria` MCP connection has no per-tool whitelist on Hermes's side, so this
+restart alone is sufficient; no config.yaml edit is needed to "register" a new tool.
 
 ### Coding Sub-agents on the Shell Substrate (`api/aria/agents/`)
 
