@@ -108,18 +108,37 @@ class WorkflowEngine:
         workflow = await self.get_workflow(metadata["workflow_id"])
         if not run or not workflow:
             raise RuntimeError("Workflow run or definition missing")
-        return await self._execute_run(run["_id"], workflow, run.get("dry_run", False))
+        return await self._execute_run(
+            run["_id"],
+            workflow,
+            run.get("dry_run", False),
+            resume_results=run.get("step_results"),
+        )
 
-    async def _execute_run(self, run_id: str, workflow: dict, dry_run: bool) -> dict:
+    async def _execute_run(
+        self,
+        run_id: str,
+        workflow: dict,
+        dry_run: bool,
+        resume_results: list[dict[str, Any]] | None = None,
+    ) -> dict:
         workflow = {**workflow, "_active_run_id": run_id}
         total_steps = len(workflow.get("steps", []))
         await self.db.workflow_runs.update_one(
             {"_id": run_id},
             {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
         )
-        results: list[dict[str, Any]] = []
+        # Recovery (e.g. after an aria-api restart mid-run) resumes from the
+        # persisted step_results instead of replaying from step 0 -- otherwise
+        # already-launched code_sessions get re-spawned and notify actions
+        # re-fire. _persist_run_progress only ever records fully-completed
+        # steps, so everything in resume_results is safe to skip outright.
+        results: list[dict[str, Any]] = list(resume_results or [])
+        start_index = len(results)
         try:
             for index, step in enumerate(workflow.get("steps", [])):
+                if index < start_index:
+                    continue
                 action = step["action"]
                 depends_on = step.get("depends_on", [])
                 self._validate_dependencies(index, depends_on)
@@ -188,6 +207,17 @@ class WorkflowEngine:
                 group_result = await self._execute_group(
                     workflow, action, step, results, dry_run
                 )
+                count = group_result.get("count", 0)
+                failed = group_result.get("failed", 0)
+                if count and failed == count:
+                    return {
+                        "index": index,
+                        "action": action,
+                        "depends_on": depends_on,
+                        "status": "failed",
+                        "error": f"All {count} {action} sub-step(s) failed",
+                        "result": group_result,
+                    }
                 return {
                     "index": index,
                     "action": action,

@@ -334,6 +334,32 @@ class TestFanOut:
         )
         assert record["result"]["count"] == 0
 
+    @pytest.mark.asyncio
+    async def test_all_substeps_failed_marks_group_failed(self, engine):
+        # Every sub-step uses an unsupported action, so every one fails.
+        step = {"action": "parallel", "params": {"steps": [
+            {"action": "bogus"},
+            {"action": "bogus"},
+        ]}}
+        record = await engine._execute_step(
+            workflow=_WF, index=0, step=step, results=[], dry_run=False
+        )
+        assert record["status"] == "failed"
+        assert record["result"]["failed"] == 2
+
+    @pytest.mark.asyncio
+    async def test_partial_substep_failure_still_completed(self, engine):
+        # Only some sub-steps fail — existing best-effort semantics unchanged.
+        step = {"action": "parallel", "params": {"steps": [
+            {"action": "condition", "params": {"value": "a", "equals": "a"}},
+            {"action": "bogus"},
+        ]}}
+        record = await engine._execute_step(
+            workflow=_WF, index=0, step=step, results=[], dry_run=False
+        )
+        assert record["status"] == "completed"
+        assert record["result"]["failed"] == 1
+
 
 # ---------------------------------------------------------------------------
 # code_session await + synthesize
@@ -399,3 +425,45 @@ class TestPerformActionExtras:
     async def test_unknown_action_raises(self, engine):
         with pytest.raises(ValueError, match="Unsupported workflow action"):
             await engine._perform_action(_WF, "bogus", {}, [])
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery — must resume, not replay, already-completed steps
+# ---------------------------------------------------------------------------
+
+class TestRecoverRun:
+    @pytest.mark.asyncio
+    async def test_recover_resumes_without_replaying_completed_steps(self, engine):
+        workflow = {"name": "t", "_id": "w", "steps": [
+            {"action": "tool"},
+            {"action": "tool"},
+        ]}
+        run_doc = {
+            "_id": "r1",
+            "workflow_id": "w",
+            "dry_run": False,
+            "task_id": "pending",
+            "step_results": [
+                {"index": 0, "action": "tool", "depends_on": [], "status": "completed", "result": {"done": True}},
+            ],
+        }
+        engine.db = AsyncMock()
+        engine.db.workflow_runs.find_one = AsyncMock(return_value=run_doc)
+        engine.db.workflow_runs.update_one = AsyncMock()
+        engine.db.workflows.find_one = AsyncMock(return_value=workflow)
+
+        perform_calls = []
+
+        async def fake_perform(wf, action, params, results):
+            perform_calls.append(action)
+            return {"ok": True}
+
+        engine._perform_action = fake_perform
+
+        out = await engine._recover_run({"workflow_run_id": "r1", "workflow_id": "w"})
+
+        # Only the not-yet-completed step (index 1) is re-run.
+        assert perform_calls == ["tool"]
+        assert len(out["step_results"]) == 2
+        assert out["step_results"][0]["result"] == {"done": True}
+        assert out["step_results"][1]["result"] == {"ok": True}
