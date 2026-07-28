@@ -7,6 +7,14 @@ services:
 
   # =============================================================================
   # Text-to-Speech Service (Qwen3-TTS, CPU)
+  #
+  # Profile-gated: `shared-tts` (infrastructure/docker-compose.yml) already
+  # owns :8002 and is the server ARIA's TTS_URL actually points at. Bringing
+  # this one up alongside it fails on "port already allocated" -- it sat in
+  # `docker ps` as permanently `Created` (never Up) since 2026-06-24 until
+  # this was noticed. Only start it explicitly (`docker compose --profile
+  # standalone-tts up -d tts`) if shared-tts is ever retired or you want
+  # ARIA's own TTS build instead.
   # =============================================================================
   tts:
     build:
@@ -14,6 +22,8 @@ services:
       dockerfile: Dockerfile
     container_name: aria-tts
     restart: unless-stopped
+    profiles:
+      - standalone-tts
     ports:
       - "8002:8002"
     networks:
