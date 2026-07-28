@@ -47,13 +47,13 @@ class PiCodingAgentTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Delegate a coding task to the Pi Coding Agent (local LLM). "
+            "Delegate a coding task to the Pi Coding Agent (local LLM, laguna). "
             "Creates a persistent conversation the user can continue later. "
-            "This is a chat-only agent — it gives advice and suggestions but "
-            "CANNOT execute code, write files, or run commands. "
             "Use for brainstorming, architecture discussion, code review chat, "
             "or when the user wants a private local conversation. "
-            "Prefer claude_agent when the task requires actual file changes or execution."
+            "For a local-model agent that should actually make and verify changes, "
+            "prefer the Ridge-backed coding agent (slug 'pi-coding-ridge', which "
+            "runs on Ridge's RTX 3090); prefer claude_agent for the hardest tasks."
         )
 
     @property

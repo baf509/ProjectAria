@@ -79,7 +79,38 @@ shape thrashes both.
 |---|---|---|
 | `aria` | `llamacpp` | `:8097` (slot 1) |
 | `pi-coding` | `agentic` | `:8095` (slots 4–7) |
+| `pi-coding-ridge` | `ridge` | `:8092` → **Ridge's RTX 3090** (see §3.1) |
 | `search-agent` | `llamacpp` | `:8097` — **was `context1`**, which is retired and down; repointed 2026-07-26 so it is functional again |
+
+### 3.1 `ridge` — the one backend that is NOT on this box (2026-07-27)
+
+`RIDGE_URL=http://100.123.245.84:8092/v1` is corsair's `ridge-llama-proxy`, which
+Wake-on-LANs the Ridge PC and holds the request while it boots. Behind it, Ridge
+runs **NInfer** (not llama.cpp) serving Qwen3.6-35B-A3B at ~259 tok/s with a
+**147456-token context**. That context came from disabling CUDA graphs, measured
+at ~2% throughput cost for +57% context; disabling MTP as well would reach 172032
+but at 141 tok/s (-46%), so it was rejected. `D:\ninfer\run-ninfer.bat` carries
+the full measurement table — read it before retuning.
+
+Agent `pi-coding-ridge` **thinks on Ridge but acts on corsair** — every
+filesystem/shell tool call executes locally here. Ridge holds no repositories.
+
+Things that bite:
+
+- **Cold path ~90s.** Ridge sleeps after 30 min idle. The orchestrator therefore
+  gives the **first** chunk its own budget (`ridge_timeout_seconds`, 420s); the
+  normal 60s `stream_chunk_timeout_seconds` applies to every chunk after it.
+  Without that split the turn died at 60s with "LLM stream stalled" and persisted
+  **nothing** — no assistant message at all.
+- **One request at a time.** NInfer has no continuous batching, so concurrent
+  ridge callers queue. Do not point background workers at it.
+- **Thinking is verbose** (~1k tokens before content). `max_tokens` below ~2000
+  returns EMPTY content with `finish_reason=length`.
+- **Not health-probed.** A probe would either report DOWN while it is merely
+  asleep, or wake a gaming PC every tick. See the comment in `health.py`.
+- **NInfer vs Chatterbox TTS is exclusive** — 20.82 GiB of weights must be
+  GPU-resident, so Ridge's TTS (`:8890`) is disabled. See
+  `infrastructure/endpoints.env`.
 
 `_start_pi_code_session()` resolves `db.agents` slug `pi-code` **or**
 `pi-coding` — we have `pi-coding`, on `agentic` → laguna. So pi-code sessions run

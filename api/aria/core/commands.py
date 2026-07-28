@@ -228,6 +228,7 @@ class CommandRouter:
     _BACKEND_DEFAULTS: dict[str, str] = {
         "llamacpp": "default",
         "agentic": "default",
+        "ridge": "qwen3.6-35b-a3b",
         "fireworks": "accounts/fireworks/models/glm-5p2",
         "openrouter": "deepseek/deepseek-v4-pro",
         "anthropic": "claude-sonnet-4-20250514",
@@ -246,6 +247,7 @@ class CommandRouter:
         backends = []
         backends.append(f"  local (llamacpp/qwen-chat) — {self._BACKEND_DEFAULTS['llamacpp']}")
         backends.append(f"  agentic (qwen-agentic) — {self._BACKEND_DEFAULTS['agentic']}")
+        backends.append(f"  ridge (Qwen3.6-35B-A3B on the 3090, wakes on demand) — {self._BACKEND_DEFAULTS['ridge']}")
         if settings.fireworks_api_key:
             backends.append(f"  fireworks (GLM 5.2) — {self._BACKEND_DEFAULTS['fireworks']}")
         if settings.openrouter_api_key:
@@ -274,6 +276,9 @@ class CommandRouter:
         "qwen-chat": "llamacpp",
         "agentic": "agentic",
         "qwen-agentic": "agentic",
+        "ridge": "ridge",
+        "3090": "ridge",
+        "ninfer": "ridge",
         "fireworks": "fireworks",
         "glm": "fireworks",
         "openrouter": "openrouter",

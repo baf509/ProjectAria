@@ -326,6 +326,15 @@ class Orchestrator:
 
                     use_streaming = stream and not candidate_llm_config.get("force_non_streaming", False)
                     chunk_timeout = settings.stream_chunk_timeout_seconds
+                    # The FIRST chunk gets its own budget. A backend that wakes a
+                    # sleeping machine (ridge: Wake-on-LAN + ~20.8 GiB model load,
+                    # with the proxy holding the connection) is legitimately
+                    # silent for ~90s before its first byte — far past the 60s
+                    # stall guard, which would abort the turn and persist nothing.
+                    # Once tokens start flowing the normal guard applies again.
+                    first_chunk_timeout = chunk_timeout
+                    if candidate_llm_config.get("backend") == "ridge":
+                        first_chunk_timeout = max(chunk_timeout, settings.ridge_timeout_seconds)
                     stream_iter = adapter.stream(
                         messages,
                         tools=tools if tools else None,
@@ -333,13 +342,16 @@ class Orchestrator:
                         max_tokens=candidate_llm_config.get("max_tokens", 4096),
                         stream=use_streaming,
                     ).__aiter__()
+                    received_first_chunk = False
                     while True:
+                        this_timeout = chunk_timeout if received_first_chunk else first_chunk_timeout
                         try:
-                            chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=chunk_timeout)
+                            chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=this_timeout)
+                            received_first_chunk = True
                         except StopAsyncIteration:
                             break
                         except asyncio.TimeoutError:
-                            raise RuntimeError(f"LLM stream stalled: no chunk received in {chunk_timeout}s")
+                            raise RuntimeError(f"LLM stream stalled: no chunk received in {this_timeout}s")
                         if chunk.type == "text":
                             emitted_output = True
                             text = think_buffer + chunk.content
