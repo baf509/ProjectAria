@@ -133,6 +133,25 @@ class LLMManager:
                         "openai package not installed. Install with: pip install openai"
                     )
 
+            elif backend == "ridge":
+                # NInfer on Ridge's RTX 3090 (Qwen3.6-35B-A3B), reached through
+                # corsair's ridge-llama-proxy. OpenAI-compatible, so reuse the
+                # llama.cpp adapter — but with its own, much longer timeout so a
+                # Wake-on-LAN cold start isn't mistaken for a hang.
+                try:
+                    from aria.llm.llamacpp import LlamaCppAdapter
+                    self.adapters[key] = LlamaCppAdapter(
+                        base_url=settings.ridge_url,
+                        model=model,
+                        api_key=settings.ridge_api_key,
+                        timeout_seconds=settings.ridge_timeout_seconds,
+                    )
+                    logger.info(f"Created Ridge (NInfer) adapter for model: {model}")
+                except ImportError:
+                    raise ImportError(
+                        "openai package not installed. Install with: pip install openai"
+                    )
+
             elif backend == "anthropic":
                 if not settings.anthropic_api_key:
                     raise ValueError(
@@ -210,7 +229,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: llamacpp, agentic, context1, anthropic, openai, openrouter, fireworks"
+                    f"Supported: llamacpp, agentic, context1, ridge, anthropic, openai, openrouter, fireworks"
                 )
 
         return self.adapters[key]
@@ -249,6 +268,17 @@ class LLMManager:
                 return True, "context-1 is available (local)"
             except ImportError:
                 return False, "openai package not installed (required for context-1)"
+
+        elif backend == "ridge":
+            try:
+                import openai
+                # Deliberately not probed here: Ridge is asleep most of the time
+                # and a reachability check would report it DOWN when it is merely
+                # idle. The proxy wakes it on demand; availability is a property
+                # of the proxy, not of the box being awake right now.
+                return True, "ridge/NInfer is available (wake-on-demand via proxy)"
+            except ImportError:
+                return False, "openai package not installed (required for ridge)"
 
         elif backend == "agentic":
             try:

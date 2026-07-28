@@ -73,7 +73,7 @@ async def health_check(
 
     # 3. LLM availability
     available_backends = []
-    for b in ("llamacpp", "agentic", "context1", "anthropic", "openai", "openrouter", "fireworks"):
+    for b in ("llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter", "fireworks"):
         avail, _ = llm_manager.is_backend_available(b)
         if avail:
             available_backends.append(b)
@@ -107,7 +107,7 @@ async def health_check(
 @router.get("/health/llm", response_model=list[LLMStatusResponse])
 async def llm_health_check():
     """Check status of all LLM backends."""
-    backends = ["llamacpp", "agentic", "context1", "anthropic", "openai", "openrouter", "fireworks"]
+    backends = ["llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter", "fireworks"]
     statuses = []
 
     for backend in backends:
@@ -191,6 +191,10 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
         # this endpoint report a model that has not run here in months.
         http_ping("local-llm (orchestrator)", f"{settings.llamacpp_url.rstrip('/')}/models"),
         http_ping("local-llm (coding)", f"{settings.agentic_url.rstrip('/')}/models"),
+        # NOTE: ridge (:8092 -> Ridge's RTX 3090) is deliberately NOT probed here.
+        # Ridge sleeps when idle, so a probe would either report it DOWN when it
+        # is merely asleep, or send a Wake-on-LAN on every health tick and keep a
+        # gaming PC awake 24/7. Its liveness is the proxy's job, not this list's.
         http_ping("embeddings", f"{_base(settings.embedding_url)}/health"),
         http_ping("tts", f"{_base(settings.tts_url)}/health"),
         http_ping("stt", f"{_base(settings.stt_url)}/health"),

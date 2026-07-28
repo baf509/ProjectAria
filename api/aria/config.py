@@ -34,6 +34,19 @@ class Settings(BaseSettings):
     agentic_url: str = "http://localhost:8093/v1"
     agentic_api_key: str = ""
 
+    # Ridge (RTX 3090) — NInfer serving Qwen3.6-35B-A3B, reached over the tailnet
+    # via corsair's ridge-llama-proxy (:8092). The proxy sends Wake-on-LAN and
+    # HOLDS the request while the box boots and loads 20.8 GiB of weights, so a
+    # cold call legitimately takes ~90s before the first byte — hence a timeout
+    # far larger than llamacpp's. Inference is remote; the agent's tools still
+    # run locally on corsair.
+    #
+    # NOTE: NInfer serves ONE request at a time (no continuous batching), so
+    # concurrent callers queue. Keep the number of ridge-backed workers small.
+    ridge_url: str = "http://100.123.245.84:8092/v1"
+    ridge_api_key: str = ""
+    ridge_timeout_seconds: int = 420
+
     # Chroma context-1 (local agentic search model served by a second llama.cpp).
     # Off by default: the container is not part of the normal stack. With this
     # false the backend is unavailable, the Search Agent tool is not registered,
@@ -112,6 +125,28 @@ class Settings(BaseSettings):
     # as slots free. 0 = unbounded. Size it with looping (Ralph) sessions in
     # mind — they hold a slot for their whole life.
     coding_max_concurrent_sessions: int = 4
+    # laguna hosts ONE coding slot; a second concurrent laguna session evicts
+    # the first's prefix. Cloud backends are not affected by this cap.
+    coding_max_concurrent_laguna_sessions: int = 1
+
+    # Poolside `pool` CLI, run in standalone mode against the local laguna
+    # endpoint. pool_api_url should point at the slot-proxy port for the coding
+    # slot (not :8095 directly) so requests carry id_slot and keep this agent's
+    # prefix pinned. The model is passed via POOLSIDE_STANDALONE_MODEL, not a
+    # CLI flag -- `pool exec` has no --model.
+    pool_binary: str = "/home/ben/.local/bin/pool"
+    # :8097 is laguna-slot-proxy mapped to id_slot=1 (the coding slot).
+    # :8096 is slot 0 and belongs to Hermes -- pointing pool there would
+    # evict Hermes' tool-schema prefix on every coding turn.
+    # :8102 is Chadrock (Laguna ROCmFP4, Vulkan) running --parallel 1 as its
+    # only consumer. No slot proxy needed: Hermes lives on its own server
+    # (:8103, Qwen3.6-35B-A3B), so nothing else can evict this cache.
+    pool_api_url: str = "http://127.0.0.1:8102"
+    # Must match the alias Chadrock reports at /v1/models. llama-server ignores
+    # the request model field in single-model mode, so a mismatch is silent --
+    # which is exactly why it is worth pinning correctly.
+    pool_model: str = "laguna-s21-rocmfp4-strixkvspine-v4"
+    pool_api_key: str = "EMPTY"
     # Hard cap on how many sessions may sit queued waiting for a slot. 0 = no
     # cap. Beyond it a spawn is refused (fail loud) rather than silently queued.
     coding_queue_max: int = 64
@@ -153,11 +188,16 @@ class Settings(BaseSettings):
     # Quota-exhausted fallback — the ONLY path that goes below Sonnet. Engaged
     # when the watchdog sees quota/rate-limit text in a session's output and
     # records a cooldown in `model_availability`.
-    # Points at the local open-weights server (:8095) rather than a cloud
-    # provider, so the fallback keeps working with no key and no spend.
-    coding_routing_fallback_backend: str = "pi-code"
-    coding_routing_fallback_llm: str = "agentic"
-    coding_routing_fallback_model: str = "default"
+    # Quota fallback runs on the LOCAL model, so it keeps working with no key
+    # and no spend. Repointed 2026-07-27: this used to be pi-code + llm
+    # "agentic", but agentic is :8093 (qwen-agentic) which has been down for
+    # days -- the comment claiming it pointed at :8095 was simply wrong, so the
+    # fallback would itself have failed. `pool` reaches laguna directly via
+    # pool_api_url. Note it consumes the single laguna coding slot, so if a
+    # coding session already holds it the fallback queues rather than evicting.
+    coding_routing_fallback_backend: str = "pool"
+    coding_routing_fallback_llm: str = ""          # unused by the pool backend
+    coding_routing_fallback_model: str = "laguna-s-2.1"
     coding_routing_quota_cooldown_minutes: int = 60
 
     infrastructure_root: str = "/home/ben/Development/infrastructure"
@@ -197,7 +237,19 @@ class Settings(BaseSettings):
     rate_limit_requests_per_window: int = 120
     audit_logging_enabled: bool = True
     tool_execution_policy: str = "allowlist"
+    # 2026-07-27: "filesystem" and "shell" added GLOBALLY so the Ridge-backed
+    # coding agent (slug=pi-coding-ridge) can actually write code on this box.
+    # This is a system-wide loosening, chosen deliberately over a per-agent
+    # grant: EVERY agent can now write files and run shell commands, including
+    # background workers. Both remain in tool_sensitive_names, so any call path
+    # that passes allow_sensitive=False still refuses them.
+    # Residual guardrails: shell_allowed_commands is read-only (no rm/sudo/sed —
+    # see shell_denied_commands) and filesystem_denied_paths still protects
+    # ~/.ssh, ~/.aws, ~/.gnupg, ~/.netrc, ~/.pgpass.
+    # To revert: delete the two entries below.
     tool_allowed_names: list[str] = [
+        "filesystem",
+        "shell",
         "web",
         "browse_page",
         "list_coding_sessions",
@@ -229,6 +281,36 @@ class Settings(BaseSettings):
         "git status",
         "git diff",
         "git log",
+        # 2026-07-27: test runners + verifiers, so a coding agent can actually
+        # CHECK its work instead of asserting success. Everything above this
+        # line is read-only; these genuinely execute project code.
+        #
+        # These are PREFIXES. Bare interpreters ("python", "python3", "node",
+        # "sh") are deliberately absent — "python3" would permit
+        # `python3 -c "<anything>"`, arbitrary code execution wearing a test
+        # runner's coat. `python3 -m pytest` is safe because the prefix pins the
+        # module. Add the specific runner, never the interpreter.
+        #
+        # ONLY LIST WHAT IS INSTALLED. The shell tool execs directly (no shell),
+        # so an entry that is not on the aria-api unit's PATH fails with
+        # [Errno 2] and merely burns agent turns — that PATH is set in
+        # ~/.config/systemd/user/aria-api.service.d/toolpath.conf, which adds
+        # ~/.local/bin (pytest) and ~/.cargo/bin (cargo).
+        # Not listed because NOT INSTALLED here as of 2026-07-27: ruff, mypy,
+        # eslint, tsc, go, yarn, pnpm. Install one, then add it here.
+        #
+        # Running a project's tests inherently executes that project's code
+        # (conftest.py, build.rs, package.json scripts). That is the point, and
+        # is bounded by the shell tool's injection guard: no chaining, piping,
+        # substitution or redirection, so each call is exactly one command.
+        "pytest",
+        "python3 -m pytest",
+        "npm test",
+        "npm run test",
+        "make test",
+        "cargo test",
+        "cargo check",
+        "cargo clippy",
     ]
     shell_denied_commands: list[str] = [
         "rm",

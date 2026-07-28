@@ -13,7 +13,9 @@ from __future__ import annotations
 from typing import Optional
 
 # Backends whose inference runs on local hardware — always $0.
-LOCAL_BACKENDS = {"llamacpp", "agentic", "context1"}
+# "ridge" is remote from corsair but still Ben's own hardware (Ridge's RTX 3090),
+# so it costs nothing and must not be priced as cloud.
+LOCAL_BACKENDS = {"llamacpp", "agentic", "context1", "ridge"}
 
 # Conservative default for a cloud model we don't have an explicit price for.
 UNKNOWN_CLOUD = (1.0, 3.0)

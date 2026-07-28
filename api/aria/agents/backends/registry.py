@@ -7,6 +7,7 @@ from __future__ import annotations
 from aria.agents.backends.claude_code import ClaudeCodeBackend
 from aria.agents.backends.codex import CodexBackend
 from aria.agents.backends.pi_code import PiCodeBackend
+from aria.agents.backends.pool import PoolBackend
 
 
 class BackendRegistry:
@@ -17,6 +18,7 @@ class BackendRegistry:
             "codex": CodexBackend(),
             "claude_code": ClaudeCodeBackend(),
             "pi-code": PiCodeBackend(),
+            "pool": PoolBackend(),
         }
 
     # Accepted spellings that are not the canonical key. `pi` is here because
@@ -30,6 +32,9 @@ class BackendRegistry:
         "picode": "pi-code",
         "pi_code": "pi-code",
         "claude-code": "claude_code",
+        # Spellings the tool docstrings and Hermes hints may use.
+        "pool-cli": "pool",
+        "poolside": "pool",
     }
 
     def canonicalize(self, name: str | None) -> str | None:

@@ -58,6 +58,14 @@ class CodingSessionManager:
         self._slot_cv = asyncio.Condition()
         self._active: int = 0
         self._slotted: set[str] = set()
+        # Second, narrower limit: sessions that occupy a laguna KV slot. laguna
+        # holds ONE coding slot in the unified KV pool, so two concurrent laguna
+        # sessions would evict each other's prefix and force full re-prefills
+        # (measured 2026-07-27: ~220 s for a 30k prefix). Cloud backends
+        # (claude_code, codex) are unaffected and still bounded only by the
+        # global cap above.
+        self._laguna_limit: int = int(settings.coding_max_concurrent_laguna_sessions or 0)
+        self._laguna_slotted: set[str] = set()
 
     def _use_shell_substrate(self) -> bool:
         return bool(settings.coding_use_shell_substrate and self.shell_service)
@@ -65,39 +73,67 @@ class CodingSessionManager:
     # ------------------------------------------------------------------
     # Concurrency slots
     # ------------------------------------------------------------------
-    def _slot_free(self) -> bool:
-        return self._slot_limit <= 0 or self._active < self._slot_limit
+    def _is_laguna_session(self, backend: str | None) -> bool:
+        """Does this session consume the single laguna coding slot?
 
-    async def _try_acquire_slot_nowait(self, session_id: str) -> bool:
+        `pool` always runs standalone against the local laguna endpoint
+        (settings.pool_api_url), so it always counts. pi-code would count too if
+        its llm targeted laguna, but no ARIA llm backend does today -- llamacpp
+        is :8092 (qwen-chat) and agentic is :8093 (qwen-agentic), both down --
+        so this is pool-only until a laguna llm backend is added.
+        """
+        try:
+            return self.registry.canonicalize(backend) == "pool"
+        except Exception:
+            return False
+
+    def _slot_free(self, laguna: bool = False) -> bool:
+        if self._slot_limit > 0 and self._active >= self._slot_limit:
+            return False
+        if laguna and self._laguna_limit > 0 and len(self._laguna_slotted) >= self._laguna_limit:
+            return False
+        return True
+
+    async def _try_acquire_slot_nowait(self, session_id: str, backend: str | None = None) -> bool:
         """Reserve a concurrency slot iff one is free right now. Atomic w.r.t.
         other slot ops (single event loop + Condition lock). Returns False at
         capacity — the caller should queue instead."""
         async with self._slot_cv:
             if session_id in self._slotted:
                 return True
-            if self._slot_free():
+            laguna = self._is_laguna_session(backend)
+            if self._slot_free(laguna):
                 self._active += 1
                 self._slotted.add(session_id)
+                if laguna:
+                    self._laguna_slotted.add(session_id)
                 return True
             return False
 
-    async def _acquire_slot(self, session_id: str) -> None:
+    async def _acquire_slot(self, session_id: str, backend: str | None = None) -> None:
         """Block until a concurrency slot is free, then hold it (idempotent)."""
         async with self._slot_cv:
             if session_id in self._slotted:
                 return
-            while not self._slot_free():
+            laguna = self._is_laguna_session(backend)
+            while not self._slot_free(laguna):
                 await self._slot_cv.wait()
             self._active += 1
             self._slotted.add(session_id)
+            if laguna:
+                self._laguna_slotted.add(session_id)
 
     async def _release_slot(self, session_id: str) -> None:
         """Release a held slot (idempotent) and wake one waiter."""
         async with self._slot_cv:
             if session_id in self._slotted:
                 self._slotted.discard(session_id)
+                self._laguna_slotted.discard(session_id)
                 self._active = max(0, self._active - 1)
-                self._slot_cv.notify(1)
+                # notify_all, not notify(1): with two independent limits a single
+                # woken waiter may still be blocked on the other one and would
+                # otherwise consume the wakeup, stalling an eligible waiter.
+                self._slot_cv.notify_all()
 
     async def concurrency_stats(self) -> dict:
         """Live limiter gauge: currently-running (slot-holding) sessions, how
@@ -541,6 +577,17 @@ class CodingSessionManager:
             )
         llm_backend = llm or agent["llm"]["backend"]
         llm_model = model or agent["llm"]["model"]
+
+        # Validate the LLM backend HERE, at spawn, rather than letting the first
+        # generation inside the background task discover it. `llm` was written
+        # straight into llm_config, so an unusable value (unknown backend, or a
+        # cloud backend whose key isn't configured) returned 201 "running" and
+        # then the session died asynchronously — the caller saw a healthy spawn
+        # followed by status="failed". get_adapter raises ValueError, which the
+        # route now turns into a 400 naming the problem.
+        from aria.llm.manager import llm_manager
+        llm_manager.get_adapter(llm_backend, llm_model)
+
         session_id = str(uuid4())
         now = datetime.now(timezone.utc)
 

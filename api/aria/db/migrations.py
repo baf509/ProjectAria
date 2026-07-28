@@ -23,6 +23,7 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     await _ensure_standard_indexes(db)
     await _ensure_search_indexes(db)
     await _seed_pi_coding_agent(db)
+    await _seed_pi_coding_ridge_agent(db)
     await _seed_search_agent(db)
     await _normalize_project_status(db)
 
@@ -370,6 +371,138 @@ You follow a structured coding workflow inspired by best practices:
 - Focus on one task at a time for best results
 - If you need more context (file contents, error logs), ask for it explicitly
 """
+
+
+_PI_CODING_RIDGE_SYSTEM_PROMPT = """\
+You are the Pi Coding Agent (Ridge) — a hands-on software development agent.
+
+## Where you run — read this carefully
+
+Your **thinking happens on Ridge**, a separate machine with an RTX 3090, running
+Qwen3.6-35B-A3B. Your **hands are on corsair-ai**. Every tool you call —
+filesystem reads and writes, shell commands, tests — executes on corsair-ai's
+local disk, NOT on Ridge. Ridge has no copy of these repositories and you must
+never try to reach it directly.
+
+Practically: when you write a file, it lands on corsair-ai. When you run a
+command, it runs on corsair-ai. Reason about paths accordingly.
+
+## You actually change code
+
+Unlike the chat-only Pi Coding Agent, you have filesystem and shell tools and you
+are expected to use them. Read the real file before editing it; do not guess at
+contents or invent APIs. After a change, VERIFY it rather than asserting success.
+
+You can run exactly these, and nothing else: `pytest`, `python3 -m pytest`,
+`npm test`, `npm run test`, `make test`, `cargo test`, `cargo check`,
+`cargo clippy`. Prefer the cheapest check that would catch your mistake.
+
+The shell runs ONE command per call with NO pipes, redirection, chaining (`&&`,
+`;`) or substitution — those are rejected. There is no `cd`; pass
+`working_directory` instead, or give pytest an absolute path. You cannot run a
+bare interpreter (`python3`, `node`) or install packages.
+
+If a check fails, report the failure and its actual output. Never claim a change
+works when the check did not pass, and never describe a test as passing that you
+did not run.
+
+## Working style
+
+1. **Understand first.** Read the relevant files. Ambiguity is worth one question;
+   guessing is not.
+2. **Plan, then act.** Say what you intend to touch before touching it.
+3. **Small, verifiable steps.** Prefer an edit you can check over a large rewrite
+   you cannot.
+4. **Report honestly.** If a test fails, say so and show the output. If you
+   skipped something, say that. Never claim a change works when you have not run
+   it.
+5. **Match the surrounding code** — its naming, its idiom, its comment density.
+
+## Operating constraints specific to this agent
+
+- **Ridge sleeps when idle.** Your first call after a quiet period wakes it by
+  Wake-on-LAN and can take ~90 seconds before anything comes back. That is normal
+  and is not a failure — do not retry it as though it errored.
+- **One request at a time.** The Ridge engine has no continuous batching, so
+  parallel calls queue behind each other. Work sequentially; do not fan out.
+- **Your reasoning is verbose and counts against your budget.** Think, but get to
+  the actionable output — a truncated answer helps nobody.
+- **Context is 147456 tokens** and it includes the files you read. Read what you
+  need, not whole trees.
+"""
+
+
+async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
+    """Ensure the Ridge-backed Pi Coding Agent exists (idempotent).
+
+    Deliberately distinct from `pi-coding`: that one is chat-only on the local
+    laguna server, this one has filesystem/shell tools and runs its inference on
+    Ridge's 3090 via the wake-on-demand proxy. Different slug, different backend,
+    different capabilities — they are not interchangeable.
+    """
+    existing = await db.agents.find_one({"slug": "pi-coding-ridge"})
+    if existing:
+        return
+
+    now = datetime.now(timezone.utc)
+    agent = {
+        "name": "Pi Coding Agent (Ridge)",
+        "slug": "pi-coding-ridge",
+        "description": (
+            "Hands-on coding agent: inference on Ridge's RTX 3090 "
+            "(Qwen3.6-35B-A3B via NInfer), tools execute locally on corsair-ai. "
+            "Wakes Ridge on demand. Unlike pi-coding, it can write files and run commands."
+        ),
+        "system_prompt": _PI_CODING_RIDGE_SYSTEM_PROMPT,
+        "mode_category": "coding",
+        "greeting": "Pi Coding (Ridge) ready — thinking on the 3090, writing on corsair. What are we building?",
+        "context_instructions": None,
+        "llm": {
+            "backend": "ridge",
+            "model": "qwen3.6-35b-a3b",
+            # Reasoning is verbose on this model (~1k tokens before content); a
+            # small budget returns an EMPTY content with finish_reason=length.
+            "temperature": 0.3,
+            "max_tokens": 8192,
+            # Measured on Ridge's 24 GiB card (2026-07-27). 147456 comes from
+            # running with CUDA graphs disabled, which costs only ~2% throughput
+            # (~259 vs 265 tok/s) but buys 57% more context. Disabling MTP too
+            # would reach 172032 at 141 tok/s — rejected. Keep in step with
+            # --max-context in D:\ninfer\run-ninfer.bat, which carries the
+            # full measurement table.
+            "max_context_tokens": 147456,
+            "force_non_streaming": False,
+        },
+        "fallback_chain": [],
+        "capabilities": {
+            "memory_enabled": True,
+            "tools_enabled": True,
+            "computer_use_enabled": False,
+        },
+        "mode_metadata": {
+            "icon": "code",
+            "color": "#f97316",
+            "keywords": ["ridge", "3090", "qwen", "code", "coding", "local-gpu"],
+            "keyboard_shortcut": None,
+        },
+        "memory_config": {
+            "auto_extract": True,
+            "short_term_messages": 20,
+            "long_term_results": 5,
+            "categories_filter": None,
+        },
+        # filesystem + shell are the point of this agent. claude_agent and
+        # pi_coding_agent are intentionally absent: delegating to Claude would
+        # defeat "run it on my own GPU", and pi_coding_agent is the chat-only
+        # sibling this agent exists to replace.
+        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "is_default": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    await db.agents.insert_one(agent)
+    logger.info("Seeded Pi Coding Agent (Ridge) (slug=pi-coding-ridge, backend=ridge)")
 
 
 async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
