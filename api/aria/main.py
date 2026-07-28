@@ -129,6 +129,7 @@ async def lifespan(app: FastAPI):
             allowed_commands=settings.shell_allowed_commands,
             denied_commands=settings.shell_denied_commands,
             working_directory=settings.coding_default_workspace,
+            sandbox_enabled=settings.shell_sandbox_enabled,
         )
     )
     tool_router.register_tool(StartCodingSessionTool(coding_manager))

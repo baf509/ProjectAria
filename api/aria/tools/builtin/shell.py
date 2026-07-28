@@ -15,9 +15,12 @@ Safety:
 """
 
 import asyncio
+import pathlib
 import shlex
+import shutil
 from typing import Optional
 from ..base import BaseTool, ToolParameter, ToolResult, ToolStatus, ToolType
+from aria.config import settings
 import logging
 
 logger = logging.getLogger(__name__)
@@ -40,6 +43,7 @@ class ShellTool(BaseTool):
         allowed_commands: Optional[list[str]] = None,
         denied_commands: Optional[list[str]] = None,
         working_directory: Optional[str] = None,
+        sandbox_enabled: Optional[bool] = None,
     ):
         """
         Initialize shell tool.
@@ -49,6 +53,9 @@ class ShellTool(BaseTool):
             allowed_commands: List of allowed command prefixes (None = all allowed)
             denied_commands: List of denied command prefixes
             working_directory: Default working directory for commands
+            sandbox_enabled: Wrap execution in bwrap (see settings.shell_sandbox_enabled).
+                None = use the setting; explicit True/False overrides it (tests
+                pass False to run real commands without requiring bwrap).
         """
         super().__init__()
         self.timeout_seconds = timeout_seconds
@@ -56,9 +63,22 @@ class ShellTool(BaseTool):
         self.denied_commands = denied_commands or []
         self.working_directory = working_directory
 
+        self.sandbox_enabled = (
+            settings.shell_sandbox_enabled if sandbox_enabled is None else sandbox_enabled
+        )
+        self._sandbox_binary_path = shutil.which(settings.shell_sandbox_binary)
+        if self.sandbox_enabled and not self._sandbox_binary_path:
+            logger.error(
+                "shell_sandbox_enabled is True but '%s' was not found on PATH -- "
+                "every shell tool call will be refused until it's installed or "
+                "shell_sandbox_enabled is set to false.",
+                settings.shell_sandbox_binary,
+            )
+
         logger.info(
             f"Initialized ShellTool with timeout={timeout_seconds}s, "
-            f"allowed_commands={allowed_commands}, denied_commands={denied_commands}"
+            f"allowed_commands={allowed_commands}, denied_commands={denied_commands}, "
+            f"sandbox_enabled={self.sandbox_enabled}"
         )
 
     @property
@@ -184,6 +204,45 @@ class ShellTool(BaseTool):
 
         return True, None
 
+    def _build_sandbox_prefix(self, cwd: Optional[str]) -> list[str]:
+        """Bubblewrap argv prefix that confines the real command.
+
+        Keeps current effective capability intact (home + /tmp stay
+        read-write, matching FilesystemTool's default `allowed_paths`) rather
+        than narrowing to a single project, since the shell tool has no
+        concept of a session-scoped workspace today. What it adds on top of
+        the string allowlist:
+          - no network (--unshare-net) -- none of the allowed commands
+            (read-only inspection + test runners) need it, so this is free
+          - credential dirs masked with an empty tmpfs, so e.g.
+            `cat ~/.ssh/id_ed25519` fails at the kernel layer even though
+            "cat" is itself allowed -- the string blocklist only covers the
+            filesystem tool, not this one
+          - fresh PID/IPC/UTS namespaces and --die-with-parent, so nothing
+            outlives the call or can see/signal unrelated host processes
+        """
+        home = str(pathlib.Path.home())
+        prefix = [
+            self._sandbox_binary_path,
+            "--ro-bind", "/", "/",
+            "--bind", home, home,
+            "--bind", "/tmp", "/tmp",
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--unshare-net", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--die-with-parent", "--new-session",
+        ]
+        for raw in settings.filesystem_denied_paths:
+            resolved = pathlib.Path(raw).expanduser()
+            path = str(resolved)
+            if resolved.is_dir():
+                prefix += ["--tmpfs", path]  # empty directory
+            elif resolved.is_file():
+                prefix += ["--ro-bind", "/dev/null", path]  # empty, unreadable file
+        if cwd:
+            prefix += ["--chdir", cwd]
+        return prefix
+
     async def execute(self, arguments: dict) -> ToolResult:
         """Execute the shell command."""
         command = arguments.get("command", "")
@@ -197,6 +256,19 @@ class ShellTool(BaseTool):
                 tool_name=self.name,
                 status=ToolStatus.ERROR,
                 error=error_msg,
+            )
+
+        # Fail closed: sandboxing is a safety control, not an optimization, so
+        # a missing bwrap binary must refuse the call rather than silently run
+        # unsandboxed.
+        if self.sandbox_enabled and not self._sandbox_binary_path:
+            return ToolResult(
+                tool_name=self.name,
+                status=ToolStatus.ERROR,
+                error=(
+                    f"shell_sandbox_enabled is true but '{settings.shell_sandbox_binary}' "
+                    "is not installed; refusing to run unsandboxed."
+                ),
             )
 
         try:
@@ -221,12 +293,23 @@ class ShellTool(BaseTool):
                     error=argv_err,
                 )
 
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-            )
+            if self.sandbox_enabled:
+                # --chdir inside the sandbox replaces the cwd= kwarg below --
+                # the two aren't equivalent once the child is re-executed
+                # under bwrap, so cwd is only passed for the unsandboxed path.
+                argv = self._build_sandbox_prefix(working_dir) + args
+                process = await asyncio.create_subprocess_exec(
+                    *argv,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=working_dir,
+                )
 
             # Wait for completion with timeout
             try:

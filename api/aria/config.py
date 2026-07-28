@@ -348,6 +348,26 @@ class Settings(BaseSettings):
         "~/.password-store",
         "~/.git-credentials",
     ]
+    # OS-level containment for the shell tool, on top of the allowlist above.
+    # The allowlist is a Python string check on the command text; this wraps
+    # the actual subprocess in `bwrap` (bubblewrap) so a bypass of the
+    # allowlist (or a project's own build script — pytest/npm test/cargo test
+    # legitimately run project-controlled code, e.g. conftest.py/package.json
+    # scripts/build.rs) still can't reach the network or read credential
+    # files, and can't be turned off by the model itself since the wrapping
+    # happens here, not inside anything a tool call can see.
+    #
+    # Kept close to the current effective capability (whole $HOME + /tmp stay
+    # read-write, matching FilesystemTool's default `allowed_paths`) rather
+    # than narrowing to a single workspace — that would need session-scoped
+    # tool construction, which ARIA doesn't have yet (tools are one process-
+    # wide singleton registered in main.py, shared by every agent/session).
+    shell_sandbox_enabled: bool = True
+    shell_sandbox_binary: str = "bwrap"
+    # Reuses filesystem_denied_paths: same credential stores, but enforced by
+    # masking them with an empty tmpfs (kernel-level) instead of a string
+    # prefix check, so e.g. `cat ~/.ssh/id_ed25519` fails at the OS layer even
+    # though "cat" is itself an allowed command.
     # Screenshot
     screenshot_command: str = "scrot"
     screenshot_vision_backend: str = "anthropic"

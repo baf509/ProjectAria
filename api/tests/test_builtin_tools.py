@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
@@ -223,6 +224,11 @@ class TestShellTool:
 
     def _make_tool(self, **kwargs):
         from aria.tools.builtin.shell import ShellTool
+        # Sandboxing off by default here: these tests exercise the tool's own
+        # validation/execution logic, not the bwrap wrapper (covered by
+        # TestShellToolSandbox below), and shouldn't require bwrap on the box
+        # running the suite.
+        kwargs.setdefault("sandbox_enabled", False)
         return ShellTool(**kwargs)
 
     # -- Properties --
@@ -335,6 +341,94 @@ class TestShellTool:
         })
         assert result.status == ToolStatus.SUCCESS
         assert str(tmp_path) in result.output["stdout"]
+
+
+# ============================================================================
+# ShellTool sandboxing (bwrap)
+# ============================================================================
+
+_BWRAP_AVAILABLE = shutil.which("bwrap") is not None
+
+
+class TestShellToolSandbox:
+    """Tests for the bwrap wrapper added on top of the string allowlist."""
+
+    def _make_tool(self, **kwargs):
+        from aria.tools.builtin.shell import ShellTool
+        kwargs.setdefault("sandbox_enabled", True)
+        return ShellTool(**kwargs)
+
+    def test_fails_closed_when_binary_missing(self):
+        tool = self._make_tool()
+        tool._sandbox_binary_path = None  # simulate bwrap not installed
+        assert tool.sandbox_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_execute_refuses_when_binary_missing(self):
+        tool = self._make_tool()
+        tool._sandbox_binary_path = None
+        result = await tool.execute({"command": "echo hi"})
+        assert result.status == ToolStatus.ERROR
+        assert "bwrap" in result.error
+        assert "not installed" in result.error
+
+    def test_sandbox_prefix_unshares_network(self):
+        tool = self._make_tool()
+        prefix = tool._build_sandbox_prefix(cwd=None)
+        assert "--unshare-net" in prefix
+
+    def test_sandbox_prefix_masks_denied_paths(self):
+        tool = self._make_tool()
+        prefix = tool._build_sandbox_prefix(cwd=None)
+        # ~/.ssh exists on a normal dev box; if so it must be tmpfs-masked.
+        ssh = str(Path("~/.ssh").expanduser())
+        if Path(ssh).exists():
+            idx = prefix.index(ssh)
+            assert prefix[idx - 1] == "--tmpfs"
+
+    def test_sandbox_prefix_includes_chdir(self):
+        tool = self._make_tool()
+        prefix = tool._build_sandbox_prefix(cwd="/tmp/some-workspace")
+        assert prefix[-2:] == ["--chdir", "/tmp/some-workspace"]
+
+    @pytest.mark.skipif(not _BWRAP_AVAILABLE, reason="bwrap not installed on this host")
+    @pytest.mark.asyncio
+    async def test_real_execution_has_no_network(self):
+        """End-to-end: a sandboxed command can't resolve a hostname."""
+        tool = self._make_tool()
+        result = await tool.execute({
+            "command": "getent hosts example.com",
+            "timeout": 5,
+        })
+        assert result.status == ToolStatus.ERROR
+        assert result.output["exit_code"] != 0
+
+    @pytest.mark.skipif(not _BWRAP_AVAILABLE, reason="bwrap not installed on this host")
+    @pytest.mark.asyncio
+    async def test_real_execution_masks_ssh_dir(self):
+        """End-to-end: ~/.ssh appears empty inside the sandbox even though it
+        has real content on the host, per filesystem_denied_paths."""
+        ssh = Path("~/.ssh").expanduser()
+        if not ssh.exists() or not any(ssh.iterdir()):
+            pytest.skip("~/.ssh doesn't exist or is empty on this host")
+        tool = self._make_tool()
+        result = await tool.execute({"command": f"ls -A {ssh}"})
+        assert result.status == ToolStatus.SUCCESS
+        assert result.output["stdout"].strip() == ""
+
+    @pytest.mark.skipif(not _BWRAP_AVAILABLE, reason="bwrap not installed on this host")
+    @pytest.mark.asyncio
+    async def test_real_execution_still_works_normally(self, tmp_path):
+        """Sane baseline: ordinary commands still work under the sandbox,
+        including a /tmp working_directory (e.g. pytest's own tmp_path)."""
+        tool = self._make_tool()
+        (tmp_path / "f.txt").write_text("hello")
+        result = await tool.execute({
+            "command": "cat f.txt",
+            "working_directory": str(tmp_path),
+        })
+        assert result.status == ToolStatus.SUCCESS
+        assert result.output["stdout"].strip() == "hello"
 
 
 # ============================================================================
