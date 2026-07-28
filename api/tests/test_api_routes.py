@@ -369,6 +369,19 @@ class TestCreateConversation:
         assert "llm_config" in data
         assert data["llm_config"]["backend"] == "llamacpp"
 
+    @pytest.mark.asyncio
+    async def test_create_refuses_disabled_agent(self, client, mock_db):
+        agent_doc = _make_agent_doc(slug="search-agent")
+        agent_doc["enabled"] = False
+        mock_db.agents.find_one = AsyncMock(return_value=agent_doc)
+
+        resp = await client.post(
+            "/api/v1/conversations", json={"agent_slug": "search-agent"}
+        )
+        assert resp.status_code == 400
+        assert "disabled" in resp.json()["detail"]
+        assert "search-agent" in resp.json()["detail"]
+
 
 class TestGetConversation:
     @pytest.mark.asyncio

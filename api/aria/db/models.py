@@ -213,6 +213,7 @@ class AgentUpdate(BaseModel):
     mode_metadata: Optional[ModeMetadata] = None
     memory_config: Optional[MemoryConfig] = None
     enabled_tools: Optional[list[str]] = None
+    enabled: Optional[bool] = None
 
 
 class AgentResponse(BaseModel):
@@ -232,6 +233,11 @@ class AgentResponse(BaseModel):
     memory_config: MemoryConfig
     enabled_tools: list[str] = []
     is_default: bool = False
+    # Paused agents (e.g. temporarily taken off a shared backend to reduce
+    # contention) stay in db.agents rather than being deleted, but are refused
+    # at conversation-creation/mode-switch time. Defaults true so every
+    # existing agent doc (which predates this field) behaves unchanged.
+    enabled: bool = True
     created_at: datetime
     updated_at: datetime
 

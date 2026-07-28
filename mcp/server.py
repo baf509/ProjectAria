@@ -363,8 +363,10 @@ async def chat(
     """Send a message to ARIA and get her reply (non-streaming).
 
     Omit conversation_id to start a new conversation (uses the default ARIA
-    orchestrator agent unless you pass agent_slug, e.g. 'search-agent' or
-    'pi-coding'). Returns {content, conversation_id, tool_calls, usage} —
+    orchestrator agent unless you pass agent_slug, e.g. 'pi-coding'). Check
+    list_agents first — a disabled agent (enabled=false, e.g. 'search-agent',
+    paused 2026-07-28) is refused with a 400, not silently ignored. Returns
+    {content, conversation_id, tool_calls, usage} —
     pass the returned conversation_id back to continue the thread."""
     if not conversation_id:
         body: dict[str, Any] = {}

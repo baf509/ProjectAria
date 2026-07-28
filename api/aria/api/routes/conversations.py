@@ -100,6 +100,11 @@ async def create_conversation(
 
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.get("enabled", True) is False:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Agent '{agent['slug']}' is currently disabled",
+        )
 
     # Create conversation document
     now = datetime.now(timezone.utc)
@@ -205,6 +210,11 @@ async def switch_conversation_mode(
     agent = await db.agents.find_one({"slug": body.agent_slug})
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    if agent.get("enabled", True) is False:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Agent '{agent['slug']}' is currently disabled",
+        )
 
     await db.conversations.update_one(
         {"_id": valid_object_id(conversation_id)},
