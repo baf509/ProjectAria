@@ -257,6 +257,20 @@ class Orchestrator:
             "agent": agent,
         })
 
+        # _get_llm_candidates() silently forces private conversations onto
+        # llamacpp (see its docstring) — unlike the fallback_chain path below,
+        # that substitution had no hook, no usage-record flag, and no visible
+        # notice, so a caller whose agent is e.g. anthropic had no way to tell
+        # a private turn didn't run on the model they configured.
+        if is_private and agent["llm"]["backend"] != "llamacpp":
+            yield StreamChunk(
+                type="text",
+                content=(
+                    f"\n[Private conversation — running on the local model (llamacpp) "
+                    f"instead of {agent['llm']['backend']}]\n\n"
+                ),
+            )
+
         # 8. Stream response with tool-call loop
         # The LLM may request tool calls; we execute them and feed results
         # back to the LLM for a follow-up response, up to max_tool_rounds.

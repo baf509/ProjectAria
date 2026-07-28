@@ -303,6 +303,37 @@ class TestProcessMessage:
     @pytest.mark.asyncio
     @patch("aria.core.orchestrator.hook_registry")
     @patch("aria.core.orchestrator.llm_manager")
+    async def test_private_conversation_forced_backend_is_disclosed(self, mock_llm_mgr, mock_hooks):
+        """A private conversation silently swaps the agent's configured backend
+        for llamacpp (_get_llm_candidates) — the caller must be told, the way
+        an on-error fallback already announces itself via a text chunk."""
+        db = make_mock_db()
+        private_conversation = {**DEFAULT_CONVERSATION, "private": True}
+        db.conversations.find_one = AsyncMock(return_value=private_conversation)
+        cloud_agent = {**DEFAULT_AGENT, "llm": {"backend": "anthropic", "model": "claude-x"}}
+        db.agents.find_one = AsyncMock(return_value=cloud_agent)
+        orch = _make_orchestrator(db=db)
+
+        fake = FakeLLMAdapter(response_text="Hi there!")
+        mock_llm_mgr.get_adapter.return_value = fake
+        mock_llm_mgr.is_backend_healthy = AsyncMock(return_value=True)
+        mock_llm_mgr.record_backend_success = AsyncMock()
+        mock_llm_mgr.record_backend_failure = AsyncMock()
+        mock_llm_mgr.record_fallback = MagicMock()
+        mock_hooks.fire = AsyncMock(return_value={})
+
+        chunks = await _collect_chunks(
+            orch.process_message(CONV_ID, "hello")
+        )
+
+        notice = "".join(c.content for c in chunks if c.type == "text" and c.content)
+        assert "llamacpp" in notice and "anthropic" in notice
+        # And the adapter actually used is llamacpp, matching the notice.
+        mock_llm_mgr.get_adapter.assert_any_call("llamacpp", cloud_agent["llm"]["model"])
+
+    @pytest.mark.asyncio
+    @patch("aria.core.orchestrator.hook_registry")
+    @patch("aria.core.orchestrator.llm_manager")
     @patch("aria.core.orchestrator.steering_queue")
     async def test_with_tool_calls(self, mock_steering, mock_llm_mgr, mock_hooks):
         """LLM returns tool calls, tool gets executed, LLM called again."""
