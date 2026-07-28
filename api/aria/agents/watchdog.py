@@ -354,6 +354,14 @@ class CodingWatchdog:
             if settings.coding_auto_respond_prompts:
                 await self._auto_respond(session_id, output)
 
+        # Prune tracking state for sessions that left `running` since the last
+        # tick (completed/stopped/failed) -- list_sessions(status="running")
+        # above no longer returns them, so nothing else ever removes their
+        # entry and this dict would otherwise grow for the process lifetime.
+        running_ids = {str(session["_id"]) for session in sessions}
+        for stale_id in set(self._session_state) - running_ids:
+            self._session_state.pop(stale_id, None)
+
         if self.review_service:
             completed_sessions = await self.db.coding_sessions.find(
                 {"status": {"$in": ["completed", "failed"]}}

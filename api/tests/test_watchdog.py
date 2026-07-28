@@ -1,11 +1,15 @@
 """Tests for the coding session watchdog — stuck detection and diagnosis."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from aria.agents.watchdog import (
+    CodingWatchdog,
     StuckReason,
     diagnose_stuck,
 )
+from tests.conftest import make_mock_db
 
 
 class TestDiagnoseStuck:
@@ -73,3 +77,52 @@ class TestDiagnoseStuck:
         old_lines = ["normal output"] * 40
         old_lines[0] = "Error: 429 rate limit"  # Line 0 — beyond tail
         assert diagnose_stuck("\n".join(old_lines)) != StuckReason.RATE_LIMITED
+
+
+# ---------------------------------------------------------------------------
+# _session_state must not grow forever — pruned once a session stops running
+# ---------------------------------------------------------------------------
+
+def _make_watchdog(sessions_by_call):
+    """CodingWatchdog with a mocked session_manager; list_sessions returns
+    each element of `sessions_by_call` in turn, one per _check_sessions() call."""
+    session_manager = MagicMock()
+    session_manager.list_sessions = AsyncMock(side_effect=sessions_by_call)
+    session_manager.get_output = AsyncMock(return_value="working...")
+    notification_service = MagicMock()
+    notification_service.notify = AsyncMock()
+    wd = CodingWatchdog(
+        db=make_mock_db(),
+        session_manager=session_manager,
+        notification_service=notification_service,
+        review_service=None,
+    )
+    return wd
+
+
+class TestSessionStatePruning:
+    @pytest.mark.asyncio
+    async def test_state_tracked_while_running(self):
+        wd = _make_watchdog([[{"_id": "s1", "status": "running", "workspace": "/w"}]])
+        await wd._check_sessions()
+        assert "s1" in wd._session_state
+
+    @pytest.mark.asyncio
+    async def test_state_pruned_once_no_longer_running(self):
+        wd = _make_watchdog([
+            [{"_id": "s1", "status": "running", "workspace": "/w"}],
+            [],  # s1 completed — next tick's list_sessions(status="running") omits it
+        ])
+        await wd._check_sessions()
+        assert "s1" in wd._session_state
+        await wd._check_sessions()
+        assert "s1" not in wd._session_state
+        assert wd._session_state == {}
+
+    @pytest.mark.asyncio
+    async def test_still_running_session_not_pruned(self):
+        session = {"_id": "s1", "status": "running", "workspace": "/w"}
+        wd = _make_watchdog([[session], [session]])
+        await wd._check_sessions()
+        await wd._check_sessions()
+        assert "s1" in wd._session_state
