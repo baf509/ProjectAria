@@ -156,6 +156,13 @@ class CodingSessionManager:
                 raw.get("deadline_minutes") or settings.coding_loop_deadline_minutes
             ),
             "notify_every": int(raw.get("notify_every") or 0),
+            # Verification Gate (C1) per-session overrides. None here means
+            # "use the project's check_command, or the global default" — the
+            # watchdog resolves that chain, not this normalizer, since the
+            # project lookup needs a DB call this staticmethod can't make.
+            "gate_command": raw.get("gate_command") or None,
+            "gate_timeout": int(raw.get("gate_timeout") or settings.coding_gate_timeout_seconds),
+            "gate_max_retries": int(raw.get("gate_max_retries") or settings.coding_gate_max_retries),
         }
 
     async def set_loop_config(
@@ -175,6 +182,7 @@ class CodingSessionManager:
             updates["loop_nudges"] = 0
             updates["last_nudge_at"] = None
             updates["loop_started_at"] = now
+            updates["gate_failures"] = 0
         await self.db.coding_sessions.update_one({"_id": session_id}, {"$set": updates})
         return await self.get_session(session_id)
 

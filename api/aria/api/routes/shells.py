@@ -146,10 +146,12 @@ async def shells_overview(
     """One-call digest of the watched-shell fleet for agents.
 
     Each shell includes `idle_seconds`, `awaiting_input` (sitting at an
-    interactive prompt past the idle threshold), the matched `prompt_line`,
-    and the `last_line` of visible output. Shells awaiting input are listed
-    first. This replaces the list-then-snapshot-each-shell loop an agent would
-    otherwise run to answer "what's my fleet doing / what needs me?".
+    interactive prompt past the idle threshold), `activity_state` (a richer
+    working/blocked/done/idle read — see fleet_overview()'s docstring), the
+    matched `prompt_line`, and the `last_line` of visible output. Shells
+    needing attention (blocked, then done) are listed first. This replaces
+    the list-then-snapshot-each-shell loop an agent would otherwise run to
+    answer "what's my fleet doing / what needs me?".
     """
     items = await service.fleet_overview()
     if awaiting:
@@ -158,6 +160,8 @@ async def shells_overview(
         shells=items,
         active_count=len(items),
         awaiting_count=sum(1 for i in items if i["awaiting_input"]),
+        blocked_count=sum(1 for i in items if i["activity_state"] == "blocked"),
+        done_count=sum(1 for i in items if i["activity_state"] == "done"),
     )
 
 

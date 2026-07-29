@@ -189,6 +189,7 @@ class PlanningService:
             "next_steps": list(body.next_steps)[:MAX_NEXT_STEPS],
             "relevant_paths": list(body.relevant_paths),
             "tags": list(body.tags),
+            "check_command": body.check_command,
             "recent_activity": [],
             "created_at": now,
             "updated_at": now,

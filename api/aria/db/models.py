@@ -355,6 +355,9 @@ class CodingSessionResponse(BaseModel):
     # Set by pi-code / awaited sessions on completion; the payload workflow
     # fan-out consumes via wait_for_session().
     result_summary: Optional[str] = None
+    # Coherence C1 verification-gate history: [{at, passed, tail}, ...]. Empty
+    # when the gate is disabled, was skipped every time, or never ran.
+    gate_runs: list[dict] = []
     created_at: datetime
     updated_at: datetime
     completed_at: Optional[datetime] = None

@@ -501,12 +501,32 @@ class ShellService:
         input. `awaiting_input` mirrors the IdleNotifier's logic exactly (idle
         past the threshold + last output line matches a prompt pattern) so the
         overview agrees with what actually fires notifications.
+
+        `activity_state` is a richer four-way read on top of that (working /
+        blocked / done / idle, inspired by herdr.dev's semantic state model):
+        working = recent output; blocked = idle at a prompt (same signal as
+        awaiting_input); done = idle AND this shell backs an ARIA coding
+        session that reached a terminal status (completed/failed/stopped);
+        idle = idle with neither. "done" only applies to coding-session-backed
+        shells — a hand-run shell has no such oracle, and only really shows up
+        here in practice for the brief window before a finished session's
+        shell gets `mark_stopped()`'d and drops out of the default view.
         """
         patterns = parse_prompt_patterns(settings.shells_idle_prompt_patterns)
         idle_threshold = int(settings.shells_idle_threshold_seconds or 60)
         now = _utcnow()
 
         shells = await self.list_shells(status=list(statuses))
+        session_status_by_shell: dict[str, str] = {}
+        if shells:
+            names = [s.name for s in shells]
+            async for doc in self.db.coding_sessions.find(
+                {"shell_name": {"$in": names}}, {"shell_name": 1, "status": 1}
+            ):
+                shell_name = doc.get("shell_name")
+                if shell_name:
+                    session_status_by_shell[shell_name] = doc.get("status")
+
         out: list[dict] = []
         for shell in shells:
             la = shell.last_activity_at
@@ -539,11 +559,21 @@ class ShellService:
                     awaiting = True
                     prompt_line = last.text_clean.strip()[:200]
 
+            if idle_seconds < idle_threshold:
+                activity_state = "working"
+            elif session_status_by_shell.get(shell.name) in ("completed", "failed", "stopped"):
+                activity_state = "done"
+            elif awaiting:
+                activity_state = "blocked"
+            else:
+                activity_state = "idle"
+
             out.append(
                 {
                     "name": shell.name,
                     "short_name": shell.short_name,
                     "status": shell.status,
+                    "activity_state": activity_state,
                     "host": shell.host,
                     "project_dir": shell.project_dir,
                     "line_count": shell.line_count,
@@ -556,9 +586,11 @@ class ShellService:
                 }
             )
 
-        # Surface shells that need attention first: awaiting input, then most
-        # recently active (smallest idle_seconds).
-        out.sort(key=lambda s: (not s["awaiting_input"], s["idle_seconds"]))
+        # Surface shells that need attention first: blocked/awaiting input,
+        # then done (a finished task is worth a glance too), then most
+        # recently active (smallest idle_seconds) ahead of plain idle ones.
+        _STATE_ORDER = {"blocked": 0, "done": 1, "working": 2, "idle": 3}
+        out.sort(key=lambda s: (_STATE_ORDER.get(s["activity_state"], 9), s["idle_seconds"]))
         return out
 
     # -------------------------------------------------------------- reconcile

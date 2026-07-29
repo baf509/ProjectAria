@@ -288,11 +288,16 @@ async def lifespan(app: FastAPI):
 
         if settings.shared_scan_enabled:
             import socket
-            from aria.shared.scan import ScanReconcileWorker, MachineScanMemoryEmitter
+            from aria.shared.scan import ScanReconcileWorker, MachineScanMemoryEmitter, GitChangeEmitter
             node_id = settings.local_node_id or socket.gethostname()
+            emitters = [MachineScanMemoryEmitter(node_id)]
+            if settings.git_scan_enabled:
+                from aria.shells.harvest import DEFAULT_ROOTS, EXTRA_REPO_ROOTS
+                git_roots = settings.git_scan_roots or (DEFAULT_ROOTS + EXTRA_REPO_ROOTS)
+                emitters.append(GitChangeEmitter(git_roots, settings.git_scan_min_change_lines))
             scan_worker = ScanReconcileWorker(
                 db,
-                emitters=[MachineScanMemoryEmitter(node_id)],
+                emitters=emitters,
                 interval_seconds=settings.shared_scan_interval_seconds,
                 node_id=node_id,
             )

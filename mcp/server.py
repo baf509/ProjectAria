@@ -564,11 +564,12 @@ async def list_nodes() -> Any:
 @mcp.tool()
 async def get_coding_session(session_id: str) -> dict:
     """Get one coding sub-agent's structured status: status, backend/model,
-    workspace, routing decision, `error` (why it failed, if it did), and
-    `result_summary` (set once it reaches a terminal state). Prefer this over
-    list_coding_sessions + client-side filtering when you already have the id,
-    and over get_coding_output when you want a verdict rather than raw
-    terminal text."""
+    workspace, routing decision, `error` (why it failed, if it did),
+    `result_summary` (set once it reaches a terminal state), and `gate_runs`
+    (Verification Gate history — [{at, passed, tail}], empty if the gate is
+    off or never ran). Prefer this over list_coding_sessions + client-side
+    filtering when you already have the id, and over get_coding_output when
+    you want a verdict rather than raw terminal text."""
     return await _request("GET", f"/api/v1/coding/sessions/{session_id}")
 
 
@@ -632,6 +633,9 @@ async def set_coding_loop(
     max_nudges: Optional[int] = None,
     deadline_minutes: Optional[int] = None,
     notify_every: Optional[int] = None,
+    gate_command: Optional[str] = None,
+    gate_timeout: Optional[int] = None,
+    gate_max_retries: Optional[int] = None,
 ) -> dict:
     """Turn the Ralph loop on or off for a running coding sub-agent.
 
@@ -641,7 +645,16 @@ async def set_coding_loop(
     `max_nudges`/`deadline_minutes`. enabled=False stops nudging but leaves the
     session alive. Unset options fall back to the server's coding_loop_* defaults.
     `nudge_prompt_file` is re-read fresh on every nudge, so editing it steers a
-    live session."""
+    live session.
+
+    Verification Gate (only takes effect if the server has coding_gate_enabled
+    on — off by default): when the done token appears, the watchdog runs a
+    check command in the workspace before honoring it. Pass fails re-nudge
+    with the check's output instead of ending the loop, up to `gate_max_retries`
+    (then it gives up and alerts rather than looping forever). `gate_command`
+    overrides the project's `check_command`/the server default for this
+    session only; a project with no check configured anywhere is skipped, not
+    blocked. See get_coding_session's `gate_runs` for the history."""
     body: dict[str, Any] = {"enabled": enabled}
     for key, val in (
         ("nudge_prompt", nudge_prompt),
@@ -651,6 +664,9 @@ async def set_coding_loop(
         ("max_nudges", max_nudges),
         ("deadline_minutes", deadline_minutes),
         ("notify_every", notify_every),
+        ("gate_command", gate_command),
+        ("gate_timeout", gate_timeout),
+        ("gate_max_retries", gate_max_retries),
     ):
         if val is not None:
             body[key] = val

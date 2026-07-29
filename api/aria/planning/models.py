@@ -90,6 +90,12 @@ class Project(BaseModel):
     created_at: datetime
     updated_at: datetime
     last_signal_at: Optional[datetime] = None
+    # Coherence C1 Verification Gate: the shell command the watchdog runs in
+    # this project's workspace before honoring a Ralph-loop session's done
+    # token. None -> falls back to the server-wide coding_gate_command
+    # default ("make check"); a project with no usable check either way is
+    # skipped, not blocked.
+    check_command: Optional[str] = None
 
     # --- Derived fields, written by the project harvester (never hand-edited).
     # `status` above stays the human lifecycle (active/paused/archived); machine
@@ -116,6 +122,7 @@ class ProjectCreateRequest(BaseModel):
     next_steps: list[str] = Field(default_factory=list)
     relevant_paths: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    check_command: Optional[str] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -125,6 +132,7 @@ class ProjectUpdateRequest(BaseModel):
     next_steps: Optional[list[str]] = None
     relevant_paths: Optional[list[str]] = None
     tags: Optional[list[str]] = None
+    check_command: Optional[str] = None
 
 
 class ProjectListResponse(BaseModel):

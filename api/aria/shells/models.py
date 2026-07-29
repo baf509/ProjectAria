@@ -120,6 +120,11 @@ class ShellOverviewItem(BaseModel):
     name: str
     short_name: str
     status: ShellStatus
+    # Semantic task state (herdr.dev-inspired), computed in fleet_overview():
+    # working = recent output; blocked = idle at a prompt (== awaiting_input);
+    # done = idle AND backs a coding session that reached a terminal status;
+    # idle = idle with neither. See fleet_overview()'s docstring.
+    activity_state: Literal["working", "blocked", "done", "idle"] = "idle"
     host: str = ""
     project_dir: str = ""
     line_count: int = 0
@@ -135,3 +140,5 @@ class ShellOverviewResponse(BaseModel):
     shells: list[ShellOverviewItem]
     active_count: int = 0
     awaiting_count: int = 0
+    blocked_count: int = 0
+    done_count: int = 0

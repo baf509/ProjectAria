@@ -2,6 +2,58 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-29] - Coherence C1 (Verification Gate) + C2 (Repo-Change → Memory); herdr.dev-inspired shell activity_state
+
+### Added
+- **C1 Verification Gate** (`agents/watchdog.py`): a Ralph-looped session's
+  `RALPH_DONE` token is no longer honored at face value. `_verify_session_done()`
+  runs a check command (`loop_config.gate_command` → `projects.check_command`
+  → global `coding_gate_command`, default `"make check"`) via
+  `_run_gate_check()` before ending the loop; a failing check re-nudges the
+  session with the check's output instead of promoting to done, up to
+  `coding_gate_max_retries` consecutive failures (then gives up and alerts,
+  `source="coding:gate"`). A `make`-specific "no such target" heuristic treats
+  an unconfigured check as skip-not-block, per design. Off by default
+  (`coding_gate_enabled=False`). Gate history recorded on the session doc
+  (`gate_runs: [{at, passed, tail}]`) and surfaced via `CodingSessionResponse`
+  and the MCP `get_coding_session` tool. `projects.check_command` added
+  (`planning/models.py`) for a per-project override. `SessionLoopRequest` and
+  the MCP `set_coding_loop` tool both gained `gate_command`/`gate_timeout`/
+  `gate_max_retries`. Remote-node sessions are skipped for now (host-aware
+  gating needs C8's `run_command`, not yet built).
+- **C2 Repo-Change → Memory** (`shared/scan.py`): a new `GitChangeEmitter`
+  rides the existing S2 scan/reconcile worker, independent of its
+  container/service snapshot-diff — walks its own repo list
+  (`git_scan_roots`, default: the project harvester's roots) and tracks a
+  per-repo `rev-parse HEAD` cursor in `scan_state`. New commits since the
+  cursor, over `git_scan_min_change_lines` changed lines
+  (`git diff --shortstat`), mint a private memory summarizing the commit
+  subjects. Commits-only by design, not uncommitted/dirty-tree changes.
+  Gated by `git_scan_enabled` (on by default, but inert unless
+  `shared_scan_enabled` is also on) and registered in `main.py` alongside
+  `MachineScanMemoryEmitter`.
+- **C2a fix**: `shells/extraction.py` was extracting memories from shell
+  activity every tick and then only logging the count — the extracted list
+  was never persisted. Now calls `create_memory()` per extracted dict, same
+  pattern as `MemoryExtractor.extract_from_conversation()`.
+- **Shell `activity_state`** (`shells/service.py fleet_overview()`): a
+  herdr.dev-inspired fourth semantic state on top of the existing
+  `awaiting_input` boolean — `working`/`blocked`/`done`/`idle`. "done" is new:
+  a batched `coding_sessions` lookup by `shell_name` lets an idle shell
+  backing a session with a terminal status show as done, distinct from a
+  shell that's just idle with nothing happening. Threaded through
+  `ShellOverviewItem`/`ShellOverviewResponse` (new `blocked_count`/
+  `done_count`) and the Go TUI (`client.go`, `fleet_view.go`, `sidebar.go`).
+
+### Notes
+- Design-level writeup and the seams actually used (several had drifted from
+  the original design doc's line numbers): `vault/ProjectAria/Design/
+  COHERENCE_DESIGN.md`, the C1/C2 "✅ Implemented" callouts and decision-log
+  entry 29.
+- 915 tests pass (was 909); Go TUI (`tui/`) builds clean.
+
+---
+
 ## [2026-07-28] - Coding-session inspection tools for Hermes; qwen crash root-caused and mitigated; chadrock/GPU-memory monitoring closed
 
 ### Added

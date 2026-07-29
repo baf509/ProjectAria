@@ -224,6 +224,12 @@ type Shell struct {
 	Name          string `json:"name"`
 	ShortName     string `json:"short_name"`
 	Status        string `json:"status"`
+	// ActivityState is a richer working/blocked/done/idle read on top of
+	// Status/AwaitingInput (herdr.dev-inspired; see fleet_overview()'s
+	// docstring server-side). "done" means this shell backs an ARIA coding
+	// session that finished, distinct from "blocked" (idle at a prompt,
+	// same signal as AwaitingInput) and plain "idle" (neither).
+	ActivityState string `json:"activity_state"`
 	Host          string `json:"host"`
 	ProjectDir    string `json:"project_dir"`
 	IdleSeconds   int    `json:"idle_seconds"`
@@ -236,6 +242,8 @@ type shellsOverviewResp struct {
 	Shells        []Shell `json:"shells"`
 	ActiveCount   int     `json:"active_count"`
 	AwaitingCount int     `json:"awaiting_count"`
+	BlockedCount  int     `json:"blocked_count"`
+	DoneCount     int     `json:"done_count"`
 }
 
 // ListShells returns the watched-shell fleet digest (active/idle shells with

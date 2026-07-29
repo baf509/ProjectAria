@@ -14,6 +14,7 @@ Related: SHARED_SERVICES_DESIGN.md · S2 (substrate), S3 (review), ownership.py
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional, Protocol
 
@@ -122,6 +123,89 @@ class MachineScanMemoryEmitter:
                     source={"type": "machine_scan", "node": self.node_id, "change": "removed"},
                     private=True,
                 )
+
+
+class GitChangeEmitter:
+    """Coherence C2: mint a memory when a repo gets new commits since we last
+    looked — "what changed in my code," the half of C2 the machine-scan
+    snapshot/diff above doesn't cover (that's containers/services, not git).
+
+    Independent of this worker's node-wide snapshot/diff: ignores both params
+    and runs its own per-repo cursor (last-seen HEAD sha), stored in the same
+    `scan_state` collection under a `git:<repo>` key so it doesn't collide
+    with the node-keyed snapshot doc. Read-only (rev-parse / diff --shortstat
+    / log), timeout-bounded via `_run_cmd`.
+
+    Deliberately commits-only, not uncommitted/dirty-tree changes — there's
+    no stable cursor for "still dirty," so tracking it would re-fire the same
+    memory every tick for as long as something sits uncommitted.
+    """
+
+    _SHORTSTAT_RE = re.compile(
+        r"(?:(\d+) files? changed)?,?\s*"
+        r"(?:(\d+) insertions?\(\+\))?,?\s*"
+        r"(?:(\d+) deletions?\(-\))?"
+    )
+
+    def __init__(self, roots: list[str], min_change_lines: int = 10):
+        self.roots = roots
+        self.min_change_lines = min_change_lines
+
+    async def emit(self, db: AsyncIOMotorDatabase, snapshot: dict, diff: dict) -> None:
+        from aria.shells.harvest import _find_git_repos
+
+        ltm = LongTermMemory(db)
+        for repo in _find_git_repos(self.roots):
+            try:
+                await self._emit_for_repo(db, ltm, repo)
+            except Exception as exc:  # noqa: BLE001 — one bad repo must not kill the tick
+                logger.debug("git-change scan failed for %s: %s", repo, exc)
+
+    async def _emit_for_repo(
+        self, db: AsyncIOMotorDatabase, ltm: LongTermMemory, repo: str
+    ) -> None:
+        cursor_id = f"git:{repo}"
+        state = await db[STATE_COLLECTION].find_one({"_id": cursor_id})
+        last_sha = (state or {}).get("last_sha")
+
+        head = (await _run_cmd(["git", "-C", repo, "rev-parse", "HEAD"])).strip()
+        if not head:
+            return  # not a real repo yet (no commits), or rev-parse failed
+
+        # First time seeing this repo: establish the baseline only, same
+        # "don't diff against nothing" rule the node-wide snapshot follows.
+        if last_sha and last_sha != head:
+            shortstat = await _run_cmd(
+                ["git", "-C", repo, "diff", "--shortstat", f"{last_sha}..{head}"]
+            )
+            match = self._SHORTSTAT_RE.search(shortstat)
+            changed_lines = sum(int(g) for g in (match.groups() if match else ()) if g)
+            if changed_lines >= self.min_change_lines:
+                subjects_raw = await _run_cmd(
+                    ["git", "-C", repo, "log", f"{last_sha}..{head}", "--pretty=format:%s", "-n", "20"]
+                )
+                subjects = [l for l in subjects_raw.splitlines() if l.strip()]
+                repo_name = repo.rstrip("/").rsplit("/", 1)[-1]
+                await ltm.create_memory(
+                    content=(
+                        f"{repo_name}: {len(subjects)} new commit(s), "
+                        f"{shortstat.strip() or 'changes'}. "
+                        f"{'; '.join(subjects[:5])}"
+                    ),
+                    content_type="event",
+                    categories=["machine_scan", "git", repo_name],
+                    importance=0.4,
+                    confidence=0.9,
+                    source={"type": "machine_scan", "repo": repo, "revision": head},
+                    private=True,
+                )
+
+        if last_sha != head:
+            await db[STATE_COLLECTION].update_one(
+                {"_id": cursor_id},
+                {"$set": {"last_sha": head, "repo": repo, "updated_at": datetime.now(timezone.utc)}},
+                upsert=True,
+            )
 
 
 class ScanReconcileWorker:

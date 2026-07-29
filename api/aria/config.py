@@ -162,6 +162,18 @@ class Settings(BaseSettings):
         "Continue the next step of the task. When the entire task is complete AND "
         "verified (tests pass), reply with exactly RALPH_DONE and stop."
     )
+    # Verification Gate (Coherence C1): a Ralph-looped session's done-signal is
+    # self-reported ("done" in the agent's head, not "verified"). When enabled,
+    # the watchdog runs a check command in the workspace before honoring the
+    # done token; failure re-nudges with the check's output instead of ending
+    # the loop. Per-project override lives on `projects.check_command`
+    # (fallback: this global default); missing/no-op check → skip, don't
+    # block. Off by default -- opt in per the Coherence design's principle 2
+    # (propose/gate, don't silently change behavior).
+    coding_gate_enabled: bool = False
+    coding_gate_command: str = "make check"
+    coding_gate_timeout_seconds: int = 300
+    coding_gate_max_retries: int = 3          # consecutive gate failures before giving up (alert, stop nudging)
     # Complexity routing: when a coding session is started with NO explicit
     # backend/model, a Sonnet-class judge classifies the task into a tier and
     # picks the model. An explicit pin always wins — routing only fills the gap.
@@ -556,6 +568,16 @@ class Settings(BaseSettings):
     # C2 machine-scan → memory; ontology entity attributes).
     shared_scan_enabled: bool = False
     shared_scan_interval_seconds: int = 300
+
+    # Coherence C2: GitChangeEmitter on the S2 scan worker above — per-repo
+    # "what changed in my code" memories (new commits since last seen).
+    # Read-only (rev-parse/diff --shortstat/log), riding the same worker/
+    # interval as shared_scan_enabled; has no effect if that's off. Empty
+    # roots falls back to the project harvester's repo roots
+    # (shells/harvest.py _find_git_repos + EXTRA_REPO_ROOTS).
+    git_scan_enabled: bool = True
+    git_scan_roots: list[str] = []
+    git_scan_min_change_lines: int = 10
 
     # Self-monitoring: periodically verify DB / LLM / embeddings / extraction
     # and raise an alert (with cooldown) when something silently broke.

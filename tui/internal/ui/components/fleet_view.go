@@ -163,8 +163,13 @@ func (fv *FleetView) refreshContent() {
 			name = sh.Name
 		}
 		status := sh.Status
-		if sh.AwaitingInput {
-			status = "awaiting"
+		switch sh.ActivityState {
+		case "blocked":
+			status = "blocked"
+		case "done":
+			status = "done"
+		case "working":
+			status = "working"
 		}
 		idle := fmt.Sprintf("%ds", sh.IdleSeconds)
 		fv.writeRow(&b, headerFmt, false, false, "shell", sh.Host, name, "tmux", status, idle, "", "")

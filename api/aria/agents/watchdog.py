@@ -440,6 +440,130 @@ class CodingWatchdog:
             except Exception as e:
                 logger.debug("loop-end stop_session failed for %s: %s", session_id, e)
 
+    # ----- Verification Gate (Coherence C1) -----------------------------
+
+    _GATE_NO_TARGET_RE = re.compile(
+        r"No rule to make target|No targets specified|Makefile.*not found|"
+        r"make(?:\[\d+\])?:\s*\*\*\*.*No such file",
+        re.IGNORECASE,
+    )
+
+    async def _run_gate_check(self, session: dict) -> tuple[bool, str] | None:
+        """Resolve and run the verification-gate check command for a session
+        that just signaled done. Returns (passed, output_tail), or None if the
+        gate should be skipped entirely (disabled; a remote-node session —
+        C8's run_command isn't wired to this yet, so we don't run the check on
+        the wrong machine; or no check command resolves at all for this
+        project — "missing check -> skip, don't block", never trap the loop).
+        """
+        if not settings.coding_gate_enabled:
+            return None
+        if session.get("host"):
+            return None
+
+        loop = session.get("loop_config") or {}
+        command = loop.get("gate_command")
+        if not command:
+            try:
+                project = await self.db.projects.find_one({"path": session["workspace"]})
+            except Exception:
+                project = None
+            command = (project or {}).get("check_command")
+        if not command:
+            command = settings.coding_gate_command
+        if not command:
+            return None
+
+        timeout = int(loop.get("gate_timeout") or settings.coding_gate_timeout_seconds)
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=session["workspace"],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            text = stdout.decode("utf-8", errors="replace")
+            if self._GATE_NO_TARGET_RE.search(text):
+                # The global fallback (`make check`) found no target -- this
+                # project simply has no check configured, not a real failure.
+                return None
+            return (proc.returncode == 0, text[-2000:])
+        except asyncio.TimeoutError:
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            return (False, f"gate command timed out after {timeout}s: {command}")
+        except Exception as exc:
+            return (False, f"gate command errored: {exc}")
+
+    async def _verify_session_done(self, session: dict, state: dict) -> bool:
+        """Run the C1 gate for a session that just emitted its done token.
+
+        Returns True if the caller should proceed to end+stop the session
+        (gate passed, was skipped, or is disabled) — the pre-existing
+        behavior. Returns False if this method already fully handled the
+        outcome itself (re-nudged with the failure output, or gave up after
+        `gate_max_retries` and alerted) — the caller just returns without
+        ending the loop.
+        """
+        session_id = str(session["_id"])
+        result = await self._run_gate_check(session)
+        if result is None:
+            return True
+        passed, tail = result
+
+        now = datetime.now(timezone.utc)
+        await self.db.coding_sessions.update_one(
+            {"_id": session_id},
+            {"$push": {"gate_runs": {"at": now, "passed": passed, "tail": tail[-2000:]}}},
+        )
+        if passed:
+            return True
+
+        loop = session.get("loop_config") or {}
+        max_retries = int(loop.get("gate_max_retries") or settings.coding_gate_max_retries)
+        gate_failures = int(session.get("gate_failures", 0)) + 1
+
+        if gate_failures >= max_retries:
+            await self._end_loop(
+                session_id, f"verification gate failed {gate_failures}x, giving up", stop=False
+            )
+            try:
+                await self.notification_service.notify(
+                    source="coding:gate",
+                    event_type="gate:failed",
+                    detail=f"Session {session_id} emitted done but failed verification "
+                            f"{gate_failures}x: {tail[-300:]}",
+                    cooldown_seconds=30,
+                )
+            except Exception:
+                pass
+            return False
+
+        nudge_text = (
+            f"That wasn't verified — the check failed:\n{tail[-1500:]}\n\n"
+            "Fix the issue(s) above, then reply RALPH_DONE again once the "
+            "check actually passes."
+        )
+        await self.session_manager.send_input(session_id, nudge_text)
+        await self.db.coding_sessions.update_one(
+            {"_id": session_id},
+            {
+                "$set": {"gate_failures": gate_failures, "last_nudge_at": now, "updated_at": now},
+                "$inc": {"loop_nudges": 1},
+            },
+        )
+        state["last_changed_at"] = now
+        logger.info(
+            "Ralph loop gate failed for %s (attempt %d/%d), re-nudged",
+            session_id, gate_failures, max_retries,
+        )
+        return False
+
     async def _maybe_nudge(self, session: dict, state: dict) -> None:
         loop = session.get("loop_config") or {}
         session_id = str(session["_id"])
@@ -462,12 +586,15 @@ class CodingWatchdog:
             await self._end_loop(session_id, f"e-stop check failed: {e}", stop=False)
             return
 
-        # 2) Done? (done token seen in the visible output)
+        # 2) Done? (done token seen in the visible output) — gated: a
+        # self-reported done token isn't "verified" until the Coherence C1
+        # check command passes (or is skipped, if none applies/resolves).
         done_regex = loop.get("done_regex")
         if done_regex:
             try:
                 if re.search(done_regex, output):
-                    await self._end_loop(session_id, "done signal seen", stop=True)
+                    if await self._verify_session_done(session, state):
+                        await self._end_loop(session_id, "done signal seen (gate passed)", stop=True)
                     return
             except re.error:
                 pass

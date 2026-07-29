@@ -45,6 +45,11 @@ class SessionLoopRequest(BaseModel):
     max_nudges: int | None = None
     deadline_minutes: int | None = None
     notify_every: int | None = None
+    # Verification Gate (Coherence C1) per-session overrides. Unset falls back
+    # to the project's check_command, then coding_gate_* global defaults.
+    gate_command: str | None = None
+    gate_timeout: int | None = None
+    gate_max_retries: int | None = None
 
 
 class EstopRequest(BaseModel):
@@ -70,6 +75,7 @@ def serialize_session(doc: dict) -> dict:
         "routing": doc.get("routing"),
         "error": doc.get("error"),
         "result_summary": doc.get("result_summary"),
+        "gate_runs": doc.get("gate_runs", []),
         "created_at": doc["created_at"],
         "updated_at": doc["updated_at"],
         "completed_at": doc.get("completed_at"),

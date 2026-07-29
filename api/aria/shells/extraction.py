@@ -125,6 +125,30 @@ class ShellExtractionWorker:
                 logger.warning("shells extract failed for %s: %s", shell.name, exc)
                 continue
 
+            # Persist (Coherence C2a fix, 2026-07-29): `extracted` used to be
+            # logged and dropped here — a whole memory stream discarded every
+            # tick for every watched shell. Same create_memory call pattern as
+            # MemoryExtractor.extract_from_conversation().
+            for memory_data in extracted:
+                try:
+                    await self.memory_extractor.long_term_memory.create_memory(
+                        content=memory_data["content"],
+                        content_type=memory_data.get("content_type", "fact"),
+                        categories=memory_data.get("categories", []),
+                        importance=memory_data.get("importance", 0.5),
+                        confidence=0.8,  # auto-extracted, moderate confidence
+                        source={
+                            "type": "shell_extraction",
+                            "shell_name": shell.name,
+                            "extracted_at": datetime.now(timezone.utc),
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "shells extraction: failed to persist a memory for %s: %s",
+                        shell.name, exc,
+                    )
+
             await state_coll.update_one(
                 {"shell_name": shell.name},
                 {

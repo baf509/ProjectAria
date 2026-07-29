@@ -153,15 +153,23 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 	// sessions). Distinct from Agents (personas) and Coding Sessions (the ones
 	// ARIA spawns); these are live external processes you started. ---
 	if len(shells) > 0 {
-		awaiting := 0
+		awaiting, done := 0, 0
 		for i := range shells {
 			if shells[i].AwaitingInput {
 				awaiting++
 			}
+			if shells[i].ActivityState == "done" {
+				done++
+			}
 		}
 		label := fmt.Sprintf("Shells (%d)", len(shells))
-		if awaiting > 0 {
+		switch {
+		case awaiting > 0 && done > 0:
+			label = fmt.Sprintf("Shells (%d · %d awaiting · %d done)", len(shells), awaiting, done)
+		case awaiting > 0:
 			label = fmt.Sprintf("Shells (%d · %d awaiting)", len(shells), awaiting)
+		case done > 0:
+			label = fmt.Sprintf("Shells (%d · %d done)", len(shells), done)
 		}
 		s.Nodes = append(s.Nodes, TreeNode{
 			Kind:     NodeSection,
@@ -172,9 +180,13 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 			sh := &shells[i]
 			status := sh.Status
 			meta := relativeIdle(sh.IdleSeconds)
-			if sh.AwaitingInput {
-				status = "awaiting"
-				meta = "⏳ awaiting"
+			switch sh.ActivityState {
+			case "blocked":
+				status = "blocked"
+				meta = "⏳ blocked"
+			case "done":
+				status = "done"
+				meta = "✓ done"
 			}
 			name := sh.ShortName
 			if name == "" {
