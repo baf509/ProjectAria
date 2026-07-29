@@ -348,10 +348,18 @@ pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total`** — not
    you add another small model to this box:
    - Gemma 4 has a real hybrid local/global attention pattern (its GGUF
      metadata carries a per-layer `sliding_window_pattern` — 35 of 42 layers
-     window-capped at 512 tokens) that makes its KV cache far cheaper than a
-     dense model at the same context (~0.26 GiB at 8192 ctx, computed). Check
-     any future model's GGUF metadata for this before assuming its KV cache
-     scales like chadrock/qwen's (dense, no such pattern).
+     window-capped at 512 tokens, only 7 scale with `--ctx-size` at all) that
+     makes its KV cache far cheaper than a dense model at the same context:
+     ~0.26 GiB computed at 8192 ctx, ~1.78 GiB at 65536 — not the 8× a dense
+     model would cost. (`--ctx-size` was in fact raised 8192→65536 the same
+     evening: Hermes hard-rejects any configured model below a 64,000-token
+     context floor regardless of what a given task actually sends — "ARIA
+     alert triage" started failing with "Model gemma-4-e4b-it has a context
+     window of 8,192 tokens, which is below the minimum 64,000 required by
+     Hermes Agent." `mem_limit` bumped 6g→8g to match.) Check any future
+     model's GGUF metadata for this before assuming its KV cache scales like
+     chadrock/qwen's (dense, no such pattern) — and check Hermes's context
+     floor before picking a small model's `--ctx-size` at all.
    - Gemma 4 has a **stochastic reasoning mode** that can silently consume an
      entire `max_tokens` budget (`reasoning_content` preamble, empty `content`,
      `finish_reason: length`) — disabled with `--reasoning off
