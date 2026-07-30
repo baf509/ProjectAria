@@ -242,9 +242,92 @@ export const apiClient = {
     return res.json()
   },
 
-  async listInfrastructureModels(): Promise<any> {
-    const res = await apiFetch('/infrastructure/llamacpp/models')
+  async listModelServers(): Promise<any> {
+    const res = await apiFetch('/infrastructure/model-servers')
     return res.json()
+  },
+
+  // Not via apiFetch: its error path discards the response body, but the
+  // 409 refusals here carry the useful part (which server conflicts, RAM
+  // projection, the force hint) in FastAPI's `detail`.
+  async startModelServer(slug: string, force = false): Promise<any> {
+    const res = await fetch(
+      `${API_URL}/api/v1/infrastructure/model-servers/${encodeURIComponent(slug)}/start`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+        },
+        body: JSON.stringify({ force }),
+      },
+    )
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
+  async stopModelServer(slug: string): Promise<any> {
+    const res = await fetch(
+      `${API_URL}/api/v1/infrastructure/model-servers/${encodeURIComponent(slug)}/stop`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+        },
+      },
+    )
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
+  async sleepModelServer(slug: string): Promise<any> {
+    const res = await fetch(
+      `${API_URL}/api/v1/infrastructure/model-servers/${encodeURIComponent(slug)}/sleep`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+        },
+      },
+    )
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
+  async listModelRuntimes(): Promise<any> {
+    const res = await apiFetch('/infrastructure/model-servers/runtimes')
+    return res.json()
+  },
+
+  async listModelPulls(): Promise<any> {
+    const res = await apiFetch('/infrastructure/model-servers/pulls')
+    return res.json()
+  },
+
+  async pullModel(body: {
+    repo_id: string
+    filename: string
+    name: string
+    runtime: string
+    port?: number
+    ctx?: number
+  }): Promise<any> {
+    const res = await fetch(`${API_URL}/api/v1/infrastructure/model-servers/pull`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
   },
 
   async *streamMessage(

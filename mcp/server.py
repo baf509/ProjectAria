@@ -22,6 +22,9 @@ Tool groups:
   - Alerts (relay) : list_alerts, ack_alert  — ProjectAria queues alerts here and
                      Hermes relays them over Signal, since ProjectAria no longer
                      pushes notifications directly.
+  - Model servers  : list_model_servers, start_model_server, stop_model_server,
+                     bind_model_server, unbind_model_server — the local LLM
+                     control plane (see aria.infrastructure.model_servers).
 
 ProjectAria listens on :8200 after the cutover (it inherited aria-shells' port).
 """
@@ -464,6 +467,100 @@ async def update_agent(
             llm["temperature"] = temperature
         body["llm"] = llm
     return await _request("PUT", f"/api/v1/agents/{agent_slug}", json=body)
+
+
+# ─────────────────────────────────────────────────────────── model servers ──
+# The local LLM model-server control plane (aria.infrastructure.model_servers).
+# As of 2026-07-29 ALL model-server start/stop on corsair-ai goes through this
+# — not manual docker/docker compose. Each server runs a DIFFERENT llama.cpp
+# fork/build (Vulkan vs HIP, different repos); mixing a model with the wrong
+# one either refuses to load or can wedge the GPU. start() hard-refuses on a
+# RAM-exclusivity conflict or a live-GTT-usage SWAG overflow unless force=True.
+# bind()/unbind() pair a server with an agent slug — purely descriptive (it
+# does not change the agent's actual llm.backend/model routing), enforced
+# one-agent-per-server unless force=True adds an extra slot.
+
+@mcp.tool()
+async def list_model_servers() -> Any:
+    """List every registered local model server (+ the off-box Ridge entry)
+    with its live docker state, runtime fork, RAM SWAG estimate, live GTT
+    usage, and which agent (if any) it's bound to."""
+    return await _request("GET", "/api/v1/infrastructure/model-servers")
+
+
+@mcp.tool()
+async def start_model_server(slug: str, force: bool = False) -> dict:
+    """Start a model server by its registry slug (e.g. 'gemma-4-e4b-Q4').
+    Refuses (409) if a RAM-exclusive server is already running or the live GTT
+    usage + this server's SWAG would blow the safety margin — pass force=True
+    only if you've verified it's actually safe."""
+    # Longer per-request timeout than the global default: a cold
+    # `docker compose up -d` (image build/pull, container recreate) can far
+    # exceed 20s, and timing out client-side while the start proceeds
+    # server-side reads as a false failure.
+    return await _request(
+        "POST", f"/api/v1/infrastructure/model-servers/{slug}/start",
+        json={"force": force}, timeout=180.0,
+    )
+
+
+@mcp.tool()
+async def stop_model_server(slug: str) -> dict:
+    """Stop a model server by its registry slug."""
+    return await _request("POST", f"/api/v1/infrastructure/model-servers/{slug}/stop")
+
+
+@mcp.tool()
+async def bind_model_server(slug: str, agent: str, force: bool = False) -> dict:
+    """Record that `agent` (slug or id) is powered by model server `slug` —
+    descriptive bookkeeping, not a routing change. Refuses (409) if that
+    server is already bound to a different agent; pass force=True to add an
+    extra slot for a rare case outside ARIA's normal one-agent-per-server rule."""
+    return await _request(
+        "POST", f"/api/v1/infrastructure/model-servers/{slug}/bind",
+        json={"agent": agent, "force": force},
+    )
+
+
+@mcp.tool()
+async def unbind_model_server(agent: str) -> dict:
+    """Clear whatever model-server binding `agent` (slug or id) currently has."""
+    return await _request("POST", "/api/v1/infrastructure/model-servers/unbind", json={"agent": agent})
+
+
+@mcp.tool()
+async def sleep_model_server(slug: str) -> dict:
+    """Suspend an off-box machine (currently only 'Ridge-Qwen3.6-35B-A3B').
+    Wake is automatic — the ridge-llama-proxy WoLs it on the next inference
+    request. Noops with state=asleep if it's already unreachable."""
+    return await _request("POST", f"/api/v1/infrastructure/model-servers/{slug}/sleep")
+
+
+@mcp.tool()
+async def pull_model(
+    repo_id: str, filename: str, name: str, runtime: str,
+    port: Optional[int] = None, ctx: int = 32768,
+) -> dict:
+    """Download a GGUF from Hugging Face into the shared models dir and
+    provision it as a new startable model server. `runtime` picks the
+    llama.cpp build (GET /infrastructure/model-servers/runtimes, or:
+    mainline-vulkan | mainline-cpu | rocmfp4-fork | rocmfpx-vulkan-fork —
+    standard GGUFs take mainline; ROCmFP4/FP6/FPX-quantized files need their
+    matching fork). Returns a job id — poll list_model_pulls for progress;
+    downloads are 20-60 GB so completion takes many minutes."""
+    body: dict[str, Any] = {
+        "repo_id": repo_id, "filename": filename, "name": name, "runtime": runtime, "ctx": ctx,
+    }
+    if port is not None:
+        body["port"] = port
+    return await _request("POST", "/api/v1/infrastructure/model-servers/pull", json=body)
+
+
+@mcp.tool()
+async def list_model_pulls() -> Any:
+    """Recent model-pull jobs with status (downloading/wiring/completed/failed),
+    log tail, and a stale flag (aria-api restarted mid-pull)."""
+    return await _request("GET", "/api/v1/infrastructure/model-servers/pulls")
 
 
 # ──────────────────────────────────────────────────────────────────── memory ──

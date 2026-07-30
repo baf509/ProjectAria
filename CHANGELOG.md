@@ -2,6 +2,145 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-29] - Model-server control plane: registry of the local LLM servers + agent binding
+
+Prompted by downloading two new local models (Chadrockv2, Qwythos) with no
+consistent way to know which docker-compose service / llama.cpp runtime fork
+each model on this box actually needs, or to start/stop them safely. As of
+this change, ALL model-server start/stop on corsair-ai goes through ARIA —
+no more hand-run `docker`/`docker compose` commands.
+
+### Added
+- **`api/aria/infrastructure/model_servers.py`** (replaces the retired
+  `LlamaCppModelSwitcher`, which targeted the single-`llamacpp`-on-:8080
+  topology and had no concept of per-service compose files, profile gating,
+  runtime forks, or RAM exclusivity): a static registry of every local model
+  server plus the off-box Ridge entry, each carrying its compose file/
+  service/container name, port, runtime fork (repo + branch/commit),
+  backend device (Vulkan/HIP/CPU/remote), a RAM SWAG (`resident_gib`), and
+  which other servers it's mutually exclusive with. Renamed per Ben to
+  track quant/runtime at a glance: `Laguna-S-2.1`, `Chadrock-Laguna-S-2.1`,
+  `ROCmFP4-qwen3.6-35b-a3b`, `qwen3.6-35b-a3b-Q4`, `qwen3.6-27b-Q8`,
+  `context1-Q4`, `gemma-4-e4b-Q4`, `Chadrock-ROCmFP6-qwen3.6-27b` (Chadrockv2,
+  not yet startable — needs a HIP build that doesn't exist on this box),
+  `Qwythos-27b-Q8` (not yet wired to a service), `Ridge-Qwen3.6-35B-A3B`
+  (off-box, informational only).
+- **`ModelServerManager`**: `status()` (live docker state + a live GTT-usage
+  read, same sysfs signal `shells/selfcheck.py` already alerts on, since
+  docker/cgroup memory limits don't see GPU-offloaded allocations on this
+  unified-memory box); `start()`/`stop()` (raw `docker start`/`stop` when the
+  container already exists — sidesteps the compose-stop-is-a-silent-noop
+  gotcha for hand-run containers — falling back to `docker compose up -d`
+  only when it doesn't); `bind()`/`unbind()` (pair a model server with an
+  agent, descriptive only — does not change the agent's actual `llm.backend`/
+  `model` routing). `start()` hard-refuses on a RAM-exclusivity conflict or a
+  projected-GTT-usage overflow (SWAG, not exact) unless `force=True`;
+  `bind()` hard-refuses a second binding to an already-bound server unless
+  `force=True` adds an extra slot.
+- `AgentResponse` gained a `model_server` field (read-only via `AgentUpdate`
+  — only settable through bind/unbind, so the one-agent-per-service
+  enforcement can't be bypassed by a raw `PUT /agents/{id}`).
+- API: `GET /infrastructure/model-servers[/{slug}]`,
+  `POST .../{slug}/start|stop|bind`, `POST .../unbind`.
+- MCP: `list_model_servers`, `start_model_server`, `stop_model_server`,
+  `bind_model_server`, `unbind_model_server` (`mcp/server.py` — restart
+  `hermes-gateway.service` to pick these up).
+- 22 new tests (`api/tests/test_model_servers.py`): exclusivity refusal, RAM
+  SWAG refusal, force bypass, raw-start-vs-compose-up dispatch, bind conflict
+  + force override, off-box/unstartable refusals.
+
+### Removed
+- `api/aria/infrastructure/model_switcher.py`, `tools/builtin/model_switch.py`
+  (`list_llamacpp_models`/`switch_llamacpp_model` tools) — dead code against
+  the retired single-server topology, replaced rather than kept alongside.
+
+### Fixed (same day, via a 3-agent adversarial review of the diff)
+- **start()/bind() TOCTOU race**: all check-then-act sequences now serialize
+  on one `asyncio.Lock` in the singleton manager — two concurrent MCP calls
+  could previously both pass the exclusivity/RAM gates and launch two ~90 GiB
+  servers together.
+- **Noop-before-gates**: the already-running check now precedes the safety
+  gates, which used to double-count a running server's own memory (already in
+  GTT-used) and refuse an idempotent restart.
+- **Daemon-down conflation**: a docker-daemon failure is no longer read as
+  "container doesn't exist" — previously `stop()` returned success while the
+  server was still up, and `status()` reported the whole fleet absent. Now
+  raises (routes map it to 503); only "No such object" means not-created.
+- **Stale-config resurrection**: compose-managed containers now start via
+  `docker compose up -d` (natively reconciles compose-file edits); raw
+  `docker start` is reserved for hand-run containers (compose can't adopt
+  those — name conflict), and its response carries an explicit config-drift
+  note. Also fixed an unwired-entry crash in the same branch (force-start of
+  a no-container entry hit the raw-start path with `container_name=None`).
+- **Exclusivity data rebuilt from ground truth**: the blanket 5-way exclusion
+  group forbade pairs that are fine (qwen3.6-35b-a3b-Q4 + qwen3.6-27b-Q8 are
+  designed to start together; context1 coexists with everything) and missed
+  the one dangerous unguarded pair (Laguna-S-2.1 + ROCmFP4-qwen3.6-35b-a3b,
+  87+29 > margin). Now explicit symmetric pairs, all laguna-centric, with a
+  symmetry test. Exclusivity also counts paused/restarting containers (frozen
+  processes keep their GTT allocations), and paused gets a clear
+  unpause-manually error instead of a failed `docker start`.
+- **Chadrock RAM SWAG 90→60 GiB**: the "~90 GiB class" guess in chadrock's
+  own compose header is superseded by the measured ~89.4 GiB chadrock+qwen
+  combined (qwen's compose header, 2026-07-28) — at 90 the gate refused the
+  exact coexistence the two-server split was designed for.
+- **CPU-only servers skip the GTT gate** (`gtt_resident=False` on gemma):
+  CPU allocations never appear in `mem_info_gtt_used`, so the projection was
+  a category error (conservative, but could false-refuse gemma).
+- **Two wrong model_file paths**: qwen3.6-35b-a3b-Q4/qwen3.6-27b-Q8 GGUFs
+  live under `qwen-rocmfp4/models/`, not `models/llm/` — all paths are now
+  explicitly relative to the infrastructure root.
+- **Web UI dashboard**: the Settings-tab panel still called the removed
+  `/infrastructure/llamacpp/models` route (silent 404, permanently empty
+  card) — repointed to `/infrastructure/model-servers` and rendered as
+  slug/state/device/port/bound-agent.
+- **MCP start timeout**: `start_model_server` uses a 180s per-request timeout
+  (global default 20s would false-fail a cold `compose up`).
+- Stale leftovers removed: `list_llamacpp_models` from `tool_allowed_names`,
+  `switch_llamacpp_model` from `tool_sensitive_names` (config.py).
+
+### Added (same day, follow-on requests)
+- **Web UI model-server controls** (dashboard → Settings tab): Start/Stop
+  buttons per server with the 409 refusal text surfaced inline and a
+  "Force start" retry when the refusal mentions force; live GTT usage line.
+- **Hugging Face pull & provision pipeline**
+  (`api/aria/infrastructure/model_pull.py` + UI form + MCP
+  `pull_model`/`list_model_pulls`): give it a repo, GGUF filename, name, and
+  a runtime template (mainline-vulkan / mainline-cpu / rocmfp4-fork /
+  rocmfpx-vulkan-fork — all images already on this box) and it downloads
+  into `infrastructure/models/llm/<name>/` (positional filename, not
+  `--include`, per the known hf-CLI gotcha), generates a compose service
+  under `infrastructure/generated/<name>/`, auto-allocates a port from
+  8105+, and registers a DYNAMIC registry entry (`db.model_servers`) that
+  start/stop/bind treat exactly like static ones (RAM SWAG estimated from
+  file size; no static exclusivity — the live GTT gate guards it). Jobs
+  tracked in `db.model_pulls` with log tail + a `stale` flag for
+  api-restart-orphaned pulls; one pull at a time.
+- **Ridge sleep** (`sleep_command` on off-box specs, POST
+  `.../{slug}/sleep`, MCP `sleep_model_server`, UI Sleep button): suspends
+  Ridge over `ssh ridge` (SetSuspendState) after a reachability probe —
+  already-asleep noops cleanly, and the suspend dropping the ssh connection
+  is treated as the success shape. Wake stays automatic via
+  ridge-llama-proxy WoL; ARIA only owns the sleep direction.
+
+### Changed (same day)
+- **Compose services renamed to match the registry slugs** (safe — the
+  containers are not created): `qwen-chat` → `qwen3.6-35b-a3b-Q4`,
+  `qwen-agentic` → `qwen3.6-27b-Q8` in `infrastructure/qwen-rocmfp4/`
+  (docker-compose.yml service keys/container_name/hostname/depends_on +
+  serve.sh), with comment cross-references updated in laguna's and the root
+  compose files.
+
+### Notes
+- 961 Python tests pass (removed the old switcher's 3 dead tests; the
+  registry/manager suite is now 33 tests including the race, daemon-down,
+  paused-state, CPU-skip, and exclusivity-symmetry regressions).
+- Chadrockv2 and Qwythos are registered but `startable=False`: Chadrockv2
+  needs a new HIP build of the ROCmFPX-family fork (its bundled profile
+  points at a binary path from the author's machine); Qwythos is a standard
+  GGUF (any existing MTP-capable runtime works) but isn't wired to a compose
+  service yet. Both can be flipped on once that infra work happens.
+
 ## [2026-07-30 evening] - Fleet unification: pi-code on the shell substrate, verified idle-reaper, Ridge concurrency limit, restructured sidebar; pool disabled
 
 Prompted by a user observation that Agents/Shells/Coding Sessions/

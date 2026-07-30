@@ -214,6 +214,10 @@ class AgentUpdate(BaseModel):
     memory_config: Optional[MemoryConfig] = None
     enabled_tools: Optional[list[str]] = None
     enabled: Optional[bool] = None
+    # Deliberately NOT settable here — model_server binding must go through
+    # POST /infrastructure/model-servers/{slug}/bind (or /unbind) so
+    # ModelServerManager can enforce the one-agent-per-service slot rule. A
+    # raw PUT /agents/{id} with this field would bypass that check entirely.
 
 
 class AgentResponse(BaseModel):
@@ -238,6 +242,11 @@ class AgentResponse(BaseModel):
     # at conversation-creation/mode-switch time. Defaults true so every
     # existing agent doc (which predates this field) behaves unchanged.
     enabled: bool = True
+    # Descriptive model-server registry-slug binding (which physical server
+    # backs this agent — does NOT drive llm.backend/model routing). Set only
+    # via POST /infrastructure/model-servers/{slug}/bind — see the note on
+    # AgentUpdate for why it is deliberately absent there.
+    model_server: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

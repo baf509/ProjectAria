@@ -139,6 +139,8 @@ export interface Agent {
   memory_config: MemoryConfig
   enabled_tools: string[]
   is_default: boolean
+  enabled?: boolean
+  model_server?: string | null
   created_at: string
   updated_at: string
 }

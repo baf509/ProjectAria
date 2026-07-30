@@ -15,7 +15,8 @@ from fastapi import Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.db.mongodb import get_database
 from aria.core.orchestrator import Orchestrator
-from aria.infrastructure.model_switcher import LlamaCppModelSwitcher
+from aria.infrastructure.model_pull import ModelPullService
+from aria.infrastructure.model_servers import ModelServerManager
 from aria.research.service import ResearchService
 from aria.agents.session import CodingSessionManager
 from aria.agents.review import CodingReviewService
@@ -58,7 +59,8 @@ _signal_service: SignalService = None
 _notification_service: NotificationService = None
 _task_runner: TaskRunner = None
 _research_service: ResearchService = None
-_model_switcher: LlamaCppModelSwitcher = None
+_model_server_manager: ModelServerManager = None
+_model_pull_service: ModelPullService = None
 _coding_session_manager: CodingSessionManager = None
 _coding_review_service: CodingReviewService = None
 _coding_watchdog: CodingWatchdog = None
@@ -139,12 +141,20 @@ async def get_audit_service(
     return _audit_service
 
 
-def get_model_switcher() -> LlamaCppModelSwitcher:
-    """Get shared llama.cpp model switcher."""
-    global _model_switcher
-    if _model_switcher is None:
-        _model_switcher = LlamaCppModelSwitcher()
-    return _model_switcher
+def get_model_server_manager() -> ModelServerManager:
+    """Get shared model-server registry/control-plane manager."""
+    global _model_server_manager
+    if _model_server_manager is None:
+        _model_server_manager = ModelServerManager()
+    return _model_server_manager
+
+
+def get_model_pull_service() -> ModelPullService:
+    """Get shared Hugging Face model pull/provisioning service."""
+    global _model_pull_service
+    if _model_pull_service is None:
+        _model_pull_service = ModelPullService()
+    return _model_pull_service
 
 
 async def get_task_runner(

@@ -1089,61 +1089,6 @@ class TestDeepThinkTool:
 
 
 # ============================================================================
-# Model Switch Tools
-# ============================================================================
-
-class TestModelSwitchTools:
-    """Tests for ListLlamaCppModelsTool and SwitchLlamaCppModelTool."""
-
-    @pytest.mark.asyncio
-    async def test_list_models(self):
-        mock_model = MagicMock()
-        mock_model.to_dict.return_value = {"name": "qwen3", "active": True, "size_gb": 8.5}
-
-        mock_switcher = AsyncMock()
-        mock_switcher.list_models = AsyncMock(return_value=[mock_model])
-
-        with patch("aria.tools.builtin.model_switch.LlamaCppModelSwitcher", return_value=mock_switcher):
-            from aria.tools.builtin.model_switch import ListLlamaCppModelsTool
-            tool = ListLlamaCppModelsTool()
-
-        assert tool.name == "list_llamacpp_models"
-        assert tool.parameters == []
-
-        result = await tool.execute({})
-        assert result.status == ToolStatus.SUCCESS
-        assert len(result.output["models"]) == 1
-        assert result.output["models"][0]["name"] == "qwen3"
-
-    @pytest.mark.asyncio
-    async def test_switch_model_success(self):
-        mock_switcher = AsyncMock()
-        mock_switcher.switch_model = AsyncMock(return_value={"switched": True, "model": "mistral"})
-
-        with patch("aria.tools.builtin.model_switch.LlamaCppModelSwitcher", return_value=mock_switcher):
-            from aria.tools.builtin.model_switch import SwitchLlamaCppModelTool
-            tool = SwitchLlamaCppModelTool()
-
-        assert tool.name == "switch_llamacpp_model"
-        result = await tool.execute({"model_name": "mistral", "restart": True})
-        assert result.status == ToolStatus.SUCCESS
-        mock_switcher.switch_model.assert_called_once_with(model_name="mistral", restart=True)
-
-    @pytest.mark.asyncio
-    async def test_switch_model_error(self):
-        mock_switcher = AsyncMock()
-        mock_switcher.switch_model = AsyncMock(side_effect=RuntimeError("model not found"))
-
-        with patch("aria.tools.builtin.model_switch.LlamaCppModelSwitcher", return_value=mock_switcher):
-            from aria.tools.builtin.model_switch import SwitchLlamaCppModelTool
-            tool = SwitchLlamaCppModelTool()
-
-        result = await tool.execute({"model_name": "nonexistent"})
-        assert result.status == ToolStatus.ERROR
-        assert "not found" in result.error
-
-
-# ============================================================================
 # DocumentGenerationTool
 # ============================================================================
 

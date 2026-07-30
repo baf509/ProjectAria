@@ -280,7 +280,6 @@ class Settings(BaseSettings):
         "list_coding_sessions",
         "get_coding_output",
         "get_coding_diff",
-        "list_llamacpp_models",
         "update_soul",
         "claude_agent",
         "pi_coding_agent",
@@ -291,7 +290,7 @@ class Settings(BaseSettings):
     # allowlist policy — e.g. the Playwright MCP computer-use tools (browser_*).
     tool_allowed_prefixes: list[str] = ["browser_"]
     tool_denied_names: list[str] = []
-    tool_sensitive_names: list[str] = ["shell", "filesystem", "switch_llamacpp_model"]
+    tool_sensitive_names: list[str] = ["shell", "filesystem"]
     tool_api_sensitive_enabled: bool = False
     tool_rate_limit_per_minute: int = 30
     shell_allowed_commands: list[str] = [

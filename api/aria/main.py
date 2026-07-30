@@ -55,7 +55,6 @@ from aria.tools.builtin import (
     GetCodingDiffTool,
     GetCodingOutputTool,
     ListCodingSessionsTool,
-    ListLlamaCppModelsTool,
     PiCodingAgentTool,
     ScreenshotTool,
     SearchAgentTool,
@@ -65,7 +64,6 @@ from aria.tools.builtin import (
     BrowsePageTool,
     StartCodingSessionTool,
     StopCodingSessionTool,
-    SwitchLlamaCppModelTool,
     WebTool,
 )
 
@@ -122,7 +120,6 @@ async def lifespan(app: FastAPI):
     tool_router.register_tool(GetCodingDiffTool(coding_manager))
     tool_router.register_tool(GetCodingOutputTool(coding_manager))
     tool_router.register_tool(ListCodingSessionsTool(coding_manager))
-    tool_router.register_tool(ListLlamaCppModelsTool())
     tool_router.register_tool(SendToCodingSessionTool(coding_manager))
     tool_router.register_tool(
         ShellTool(
@@ -134,7 +131,6 @@ async def lifespan(app: FastAPI):
     )
     tool_router.register_tool(StartCodingSessionTool(coding_manager))
     tool_router.register_tool(StopCodingSessionTool(coding_manager))
-    tool_router.register_tool(SwitchLlamaCppModelTool())
     tool_router.register_tool(WebTool())
     tool_router.register_tool(BrowsePageTool())
     tool_router.register_tool(ScreenshotTool())

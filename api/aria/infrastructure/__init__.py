@@ -1,5 +1,5 @@
 """Infrastructure integration helpers."""
 
-from .model_switcher import LlamaCppModelSwitcher
+from .model_servers import ModelServerManager, ModelServerSpec
 
-__all__ = ["LlamaCppModelSwitcher"]
+__all__ = ["ModelServerManager", "ModelServerSpec"]

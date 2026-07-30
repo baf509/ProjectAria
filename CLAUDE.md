@@ -86,6 +86,7 @@ Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter
 - **The old shared-`laguna` slot-proxy topology is retired.** `:8095`–`:8100` no longer listen; there's no per-agent slot pinning anymore because each server now has exactly the consumer set described above, not a pool of consumers to pin against.
 - **Fireworks / GLM 5.2 is not in use.** `FIREWORKS_API_KEY` was removed from `.env` on 2026-07-23 after it began returning 401. The adapter and the `fireworks`/`glm` aliases remain — re-add a key to reactivate.
 - The `qwen-rocmfp4` compose project under `infrastructure/` still defines **qwen-chat** `:8092` and **qwen-agentic** `:8093`; those containers are **RETIRED** (not deleted — profile-gated). ⚠️ `:8092` is bound by `ridge-llama-proxy` on the **tailnet IP only**, so `localhost:8092` is connection-refused even though `ss` shows a listener — this has caused misdiagnosis repeatedly.
+- **As of 2026-07-29, ALL start/stop of these servers goes through ARIA's model-server registry (`api/aria/infrastructure/model_servers.py`), not manual `docker`/`docker compose` commands.** It tracks, per server, which llama.cpp fork/branch/commit + backend device (Vulkan/HIP/CPU) it needs — mixing a model with the wrong runtime either refuses to load or can wedge the GPU — plus a RAM-exclusivity group and a live-GTT-usage SWAG check, both of which hard-refuse `start()` unless `force=True`. Registry slugs (Ben's naming, tracks quant/runtime): `Laguna-S-2.1`, `Chadrock-Laguna-S-2.1`, `ROCmFP4-qwen3.6-35b-a3b`, `qwen3.6-35b-a3b-Q4`, `qwen3.6-27b-Q8`, `context1-Q4`, `gemma-4-e4b-Q4`, plus not-yet-startable `Chadrock-ROCmFP6-qwen3.6-27b`/`Qwythos-27b-Q8` and off-box `Ridge-Qwen3.6-35B-A3B`. `bind()`/`unbind()` descriptively pair a server with an agent (`AgentResponse.model_server`, one-agent-per-server enforced) — it does not change the agent's actual `llm.backend`/`model` routing. API: `/api/v1/infrastructure/model-servers`; MCP: `list_model_servers`/`start_model_server`/`stop_model_server`/`bind_model_server`/`unbind_model_server`.
 
 **Model pinning, cost & health:**
 - A conversation can be pinned to a specific backend/model via `/model <backend> [<model-id>]` (strict — no fallback); `/model auto` unpins; `/route <task>` applies an advisory heuristic pin. Backend aliases include `agentic`/`qwen-agentic` and `fireworks`/`glm`.
@@ -145,6 +146,7 @@ Overview*) — ~35 tools wrapping `/api/v1`:
 - **Projects / tasks** — native `/todos` + `/projects/{id|slug}`.
 - **Alerts** — list_alerts, ack_alert.
 - **Health / cost** — aria_health (quick, config-presence only), **health_services** (real per-backend reachability probes), **get_usage_cost** (spend by model/backend).
+- **Model servers** — list_model_servers, start_model_server, stop_model_server, bind_model_server, unbind_model_server (the local LLM control plane — see *LLM Adapter Pattern* above).
 
 After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset —
 the `aria` MCP connection has no per-tool whitelist on Hermes's side, so this

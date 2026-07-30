@@ -4,10 +4,10 @@ import { startTransition, useEffect, useMemo, useState } from 'react'
 import { apiClient } from '@/lib/api-client'
 import type { Agent, Conversation, Memory, PlanningProject, PlanningTask, ResearchRun, Workflow } from '@/types'
 
-type Tab = 'modes' | 'memories' | 'tasks' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
+type Tab = 'agents' | 'memories' | 'tasks' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
 
 export default function DashboardPage() {
-  const [tab, setTab] = useState<Tab>('modes')
+  const [tab, setTab] = useState<Tab>('agents')
   const [statusMessage, setStatusMessage] = useState<string>('')
   const [agents, setAgents] = useState<Agent[]>([])
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null)
@@ -26,6 +26,12 @@ export default function DashboardPage() {
   const [newTodoTitle, setNewTodoTitle] = useState('')
   const [newProjectName, setNewProjectName] = useState('')
   const [models, setModels] = useState<any[]>([])
+  const [serverBusy, setServerBusy] = useState<string | null>(null)
+  const [serverError, setServerError] = useState<{ slug: string; message: string } | null>(null)
+  const [runtimes, setRuntimes] = useState<any[]>([])
+  const [pulls, setPulls] = useState<any[]>([])
+  const [pullError, setPullError] = useState<string>('')
+  const [newPull, setNewPull] = useState({ repo_id: '', filename: '', name: '', runtime: 'mainline-vulkan', port: '' })
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [workflowStatus, setWorkflowStatus] = useState<any | null>(null)
   const [auditOverview, setAuditOverview] = useState<any | null>(null)
@@ -61,7 +67,7 @@ export default function DashboardPage() {
       apiClient.usageByAgent(),
       apiClient.usageByModel(),
       apiClient.listTasks(),
-      apiClient.listInfrastructureModels(),
+      apiClient.listModelServers(),
       apiClient.listWorkflows(),
       apiClient.auditOverview(),
       apiClient.cutoverStatus(),
@@ -81,7 +87,7 @@ export default function DashboardPage() {
       setUsageByAgent(val(results[5], []))
       setUsageByModel(val(results[6], []))
       setTasks(val(results[7], []))
-      setModels(val(results[8], { models: [] })?.models || [])
+      setModels(val(results[8], { servers: [] })?.servers || [])
       setWorkflows(val(results[9], []))
       setAuditOverview(val(results[10], null))
       setCutover(val(results[11], null))
@@ -99,6 +105,108 @@ export default function DashboardPage() {
       if (todosResult.status === 'fulfilled') setTodos(todosResult.value)
       if (projectsResult.status === 'fulfilled') setPlanningProjects(projectsResult.value)
     })
+  }
+
+  async function refreshModelServers() {
+    try {
+      const [serversRes, pullsRes] = await Promise.allSettled([
+        apiClient.listModelServers(),
+        apiClient.listModelPulls(),
+      ])
+      startTransition(() => {
+        if (serversRes.status === 'fulfilled') setModels(serversRes.value?.servers || [])
+        if (pullsRes.status === 'fulfilled') setPulls(pullsRes.value?.pulls || [])
+      })
+    } catch {
+      // panel keeps showing the last known state
+    }
+  }
+
+  // While a pull is downloading/wiring, poll so progress + the new server appear.
+  useEffect(() => {
+    const active = pulls.some((p) => !p.stale && (p.status === 'downloading' || p.status === 'wiring'))
+    if (!active) return
+    const id = setInterval(() => void refreshModelServers(), 5000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pulls])
+
+  useEffect(() => {
+    apiClient.listModelRuntimes().then((d) => setRuntimes(d?.runtimes || [])).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handlePullModel() {
+    setPullError('')
+    const { repo_id, filename, name, runtime, port } = newPull
+    if (!repo_id.trim() || !filename.trim() || !name.trim()) {
+      setPullError('Repo, filename, and name are all required.')
+      return
+    }
+    try {
+      await apiClient.pullModel({
+        repo_id: repo_id.trim(),
+        filename: filename.trim(),
+        name: name.trim(),
+        runtime,
+        ...(port.trim() ? { port: Number(port) } : {}),
+      })
+      setNewPull({ repo_id: '', filename: '', name: '', runtime: 'mainline-vulkan', port: '' })
+      setStatusMessage('Pull started — the download runs in the background.')
+      await refreshModelServers()
+    } catch (e: any) {
+      setPullError(e.message || String(e))
+    }
+  }
+
+  async function handleServerAction(slug: string, action: 'start' | 'stop' | 'sleep', force = false) {
+    if ((action === 'stop' || action === 'sleep') && !confirm(`${action === 'stop' ? 'Stop' : 'Put to sleep:'} ${slug}?`)) return
+    setServerBusy(slug)
+    setServerError(null)
+    try {
+      let result: any
+      if (action === 'start') result = await apiClient.startModelServer(slug, force)
+      else if (action === 'stop') result = await apiClient.stopModelServer(slug)
+      else result = await apiClient.sleepModelServer(slug)
+      setStatusMessage(`${slug}: ${result?.action || action}${result?.detail ? ` — ${result.detail}` : ''}`)
+    } catch (e: any) {
+      setServerError({ slug, message: e.message || String(e) })
+    } finally {
+      setServerBusy(null)
+      await refreshModelServers()
+    }
+  }
+
+  async function handleToggleAgent(agent: Agent, force = false) {
+    setServerBusy(agent.slug)
+    setServerError(null)
+    try {
+      if (!(agent.enabled ?? true)) {
+        // Enabling: bring up the bound model server first, through the
+        // RAM/exclusivity gate — a refusal keeps the agent disabled.
+        const server = agent.model_server ? models.find((s) => s.slug === agent.model_server) : null
+        if (server && server.onbox && !['running', 'paused', 'restarting'].includes(server.state)) {
+          await apiClient.startModelServer(server.slug, force)
+        }
+        await apiClient.updateAgent(agent.id, { enabled: true })
+        setStatusMessage(`${agent.name} enabled${server && server.state !== 'running' ? ` — ${server.slug} starting` : ''}.`)
+      } else {
+        await apiClient.updateAgent(agent.id, { enabled: false })
+        const server = agent.model_server ? models.find((s) => s.slug === agent.model_server) : null
+        const othersOnServer = agents.some(
+          (a) => a.id !== agent.id && (a.enabled ?? true) && a.model_server === agent.model_server,
+        )
+        setStatusMessage(
+          `${agent.name} disabled.${server && server.state === 'running' && !othersOnServer
+            ? ` ${server.slug} is still running — stop it from the card if it's no longer needed.` : ''}`,
+        )
+      }
+    } catch (e: any) {
+      setServerError({ slug: agent.slug, message: e.message || String(e) })
+    } finally {
+      setServerBusy(null)
+      await Promise.all([refreshDashboard(), refreshModelServers()])
+    }
   }
 
   async function handleCreateTodo() {
@@ -197,11 +305,11 @@ export default function DashboardPage() {
 
   return (
     <main className="min-h-screen bg-stone-950 text-stone-100">
-      <div className="mx-auto max-w-7xl px-6 py-10">
-        <div className="mb-8 flex items-end justify-between gap-6">
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4 sm:mb-8 sm:gap-6">
           <div>
             <p className="mb-2 text-xs uppercase tracking-[0.3em] text-amber-400">Operations Console</p>
-            <h1 className="font-serif text-5xl text-stone-50">ARIA Dashboard</h1>
+            <h1 className="font-serif text-3xl text-stone-50 sm:text-5xl">ARIA Dashboard</h1>
             <p className="mt-3 max-w-2xl text-sm text-stone-400">
               Modes, memory, research, task health, and runtime settings in one place.
             </p>
@@ -213,8 +321,8 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <div className="mb-8 flex flex-wrap gap-3">
-          {(['modes', 'memories', 'tasks', 'research', 'usage', 'conversations', 'workflows', 'settings'] as Tab[]).map((item) => (
+        <div className="mb-6 flex flex-wrap gap-2 sm:mb-8 sm:gap-3">
+          {(['agents', 'memories', 'tasks', 'research', 'usage', 'conversations', 'workflows', 'settings'] as Tab[]).map((item) => (
             <button
               key={item}
               onClick={() => setTab(item)}
@@ -235,60 +343,270 @@ export default function DashboardPage() {
           </a>
         </div>
 
-        {tab === 'modes' && (
+        {tab === 'agents' && (
           <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="space-y-4">
             <div className="grid gap-4 md:grid-cols-2">
-              {agents.map((agent) => (
-                <article key={agent.id} className="rounded-3xl border border-stone-800 bg-stone-900 p-5">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="text-lg font-semibold">
-                      {agent.mode_metadata?.icon ? `${agent.mode_metadata.icon} ` : ''}{agent.name}
+              {agents.map((agent) => {
+                const enabled = agent.enabled ?? true
+                const server = agent.model_server ? models.find((s) => s.slug === agent.model_server) : null
+                const serverActive = server && ['running', 'paused', 'restarting'].includes(server.state)
+                return (
+                  <article
+                    key={agent.id}
+                    className={`rounded-3xl border bg-stone-900 p-5 ${enabled ? 'border-stone-800' : 'border-stone-800/60 opacity-60'}`}
+                  >
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <div className="min-w-0 truncate text-lg font-semibold">
+                        {agent.mode_metadata?.icon ? `${agent.mode_metadata.icon} ` : ''}{agent.name}
+                      </div>
+                      <span className={`shrink-0 rounded-full px-3 py-1 text-xs uppercase ${
+                        enabled ? 'bg-emerald-950 text-emerald-300' : 'bg-stone-800 text-stone-500'
+                      }`}>
+                        {enabled ? 'enabled' : 'disabled'}
+                      </span>
                     </div>
-                    <div className="rounded-full bg-stone-800 px-3 py-1 text-xs uppercase text-stone-300">
-                      {agent.mode_category || 'chat'}
-                    </div>
-                  </div>
-                  <p className="mb-3 text-sm text-stone-400">{agent.description}</p>
-                  <p className="mb-2 text-xs text-stone-500">Model</p>
-                  <p className="text-sm text-stone-200">{agent.llm.backend}/{agent.llm.model}</p>
-                  {agent.mode_metadata?.keywords?.length ? (
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {agent.mode_metadata.keywords.map((keyword) => (
-                        <span key={keyword} className="rounded-full bg-stone-800 px-2 py-1 text-xs text-stone-300">
-                          {keyword}
+                    <p className="mb-3 text-sm text-stone-400">{agent.description}</p>
+                    <p className="mb-1 text-xs text-stone-500">Model</p>
+                    <p className="text-sm text-stone-200">{agent.llm.backend}/{agent.llm.model}</p>
+                    <p className="mb-1 mt-3 text-xs text-stone-500">Model server</p>
+                    {agent.model_server ? (
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="min-w-0 truncate text-stone-200">{agent.model_server}</span>
+                        <span className={server?.state === 'running' ? 'text-emerald-400' : 'text-stone-500'}>
+                          {server?.state || 'unknown'}
                         </span>
-                      ))}
+                        {serverActive && server?.onbox && (
+                          <button
+                            disabled={serverBusy !== null}
+                            onClick={() => void handleServerAction(server.slug, 'stop')}
+                            className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
+                          >
+                            Stop
+                          </button>
+                        )}
+                        {server?.can_sleep && (
+                          <button
+                            disabled={serverBusy !== null}
+                            onClick={() => void handleServerAction(server.slug, 'sleep')}
+                            className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
+                          >
+                            Sleep
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-stone-500">
+                        not bound — bind one via POST /infrastructure/model-servers/&#123;slug&#125;/bind
+                      </p>
+                    )}
+                    {serverError && serverError.slug === agent.slug && (
+                      <div className="mt-2 rounded-xl border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+                        {serverError.message}
+                        {serverError.message.includes('force=True') && (
+                          <button
+                            disabled={serverBusy !== null}
+                            onClick={() => void handleToggleAgent(agent, true)}
+                            className="ml-2 rounded-lg border border-amber-600 bg-amber-900/50 px-3 py-1.5 text-amber-100 sm:px-2 sm:py-0.5 hover:bg-amber-900/80 disabled:opacity-40"
+                          >
+                            Force enable
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        disabled={serverBusy !== null}
+                        onClick={() => void handleToggleAgent(agent)}
+                        className={`rounded-full border px-4 py-2 text-sm disabled:opacity-40 sm:px-3 sm:py-1 sm:text-xs ${
+                          enabled
+                            ? 'border-stone-700 text-stone-300 hover:border-stone-500'
+                            : 'border-emerald-700 bg-emerald-900/40 text-emerald-200 hover:bg-emerald-900/70'
+                        }`}
+                      >
+                        {serverBusy === agent.slug ? 'Working…' : enabled ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        onClick={() => loadAgentIntoForm(agent)}
+                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Delete agent "${agent.name}"?`)) return
+                          await apiClient.deleteAgent(agent.id)
+                          setStatusMessage(`Deleted agent ${agent.name}.`)
+                          await refreshDashboard()
+                        }}
+                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                      >
+                        Delete
+                      </button>
                     </div>
-                  ) : null}
-                  <div className="mt-4 flex gap-2">
-                    <button
-                      onClick={() => loadAgentIntoForm(agent)}
-                      className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={async () => {
-                        if (!confirm(`Delete mode "${agent.name}"?`)) return
-                        await apiClient.deleteAgent(agent.id)
-                        setStatusMessage(`Deleted mode ${agent.name}.`)
-                        await refreshDashboard()
-                      }}
-                      className="rounded-full border border-red-900 px-3 py-1 text-xs text-red-400 hover:border-red-700 hover:bg-red-950"
-                    >
-                      Delete
-                    </button>
+                  </article>
+                )
+              })}
+            </div>
+            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Model Servers</h2>
+              <div className="space-y-3">
+                {models.map((server) => {
+                  const active = ['running', 'paused', 'restarting'].includes(server.state)
+                  const canStart = server.onbox && server.startable && !active
+                  const canStop = server.onbox && active
+                  return (
+                    <div key={server.slug} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
+                      <div className="mb-1 flex items-center justify-between gap-3 text-stone-100">
+                        <span className="min-w-0 truncate">{server.slug}</span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className={server.state === 'running' ? 'text-emerald-400' : 'text-stone-500'}>
+                            {server.state}
+                          </span>
+                          {canStart && (
+                            <button
+                              disabled={serverBusy !== null}
+                              onClick={() => void handleServerAction(server.slug, 'start')}
+                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70 disabled:opacity-40"
+                            >
+                              {serverBusy === server.slug ? 'Starting…' : 'Start'}
+                            </button>
+                          )}
+                          {canStop && (
+                            <button
+                              disabled={serverBusy !== null}
+                              onClick={() => void handleServerAction(server.slug, 'stop')}
+                              className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
+                            >
+                              {serverBusy === server.slug ? 'Stopping…' : 'Stop'}
+                            </button>
+                          )}
+                          {server.can_sleep && (
+                            <button
+                              disabled={serverBusy !== null}
+                              onClick={() => void handleServerAction(server.slug, 'sleep')}
+                              className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
+                            >
+                              {serverBusy === server.slug ? 'Sleeping…' : 'Sleep'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="text-stone-400">
+                        {server.backend_device}
+                        {server.port ? ` · :${server.port}` : ''}
+                        {server.resident_gib_estimate ? ` · ~${server.resident_gib_estimate} GiB` : ''}
+                        {server.bound_agents?.length ? ` · agent: ${server.bound_agents.join(', ')}` : ''}
+                      </div>
+                      {!server.startable && server.not_startable_reason && (
+                        <div className="mt-1 text-xs text-stone-500">{server.not_startable_reason}</div>
+                      )}
+                      {serverError && serverError.slug === server.slug && (
+                        <div className="mt-2 rounded-xl border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+                          {serverError.message}
+                          {serverError.message.includes('force=True') && (
+                            <button
+                              disabled={serverBusy !== null}
+                              onClick={() => void handleServerAction(server.slug, 'start', true)}
+                              className="ml-2 rounded-lg border border-amber-600 bg-amber-900/50 px-3 py-1.5 text-amber-100 sm:px-2 sm:py-0.5 hover:bg-amber-900/80 disabled:opacity-40"
+                            >
+                              Force start
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {models.length > 0 && models[0].gtt_used_gib != null && (
+                <p className="mt-3 text-xs text-stone-500">
+                  GPU unified memory (GTT): {models[0].gtt_used_gib} / {models[0].gtt_total_gib} GiB used
+                </p>
+              )}
+
+              <h3 className="mb-2 mt-6 text-xs uppercase tracking-[0.2em] text-stone-400">
+                Pull new model from Hugging Face
+              </h3>
+              <div className="space-y-2">
+                <input
+                  value={newPull.repo_id}
+                  onChange={(e) => setNewPull({ ...newPull, repo_id: e.target.value })}
+                  placeholder="Repo — e.g. unsloth/Qwen3.6-27B-MTP-GGUF"
+                  className="w-full rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                />
+                <input
+                  value={newPull.filename}
+                  onChange={(e) => setNewPull({ ...newPull, filename: e.target.value })}
+                  placeholder="GGUF filename — e.g. Qwen3.6-27B-MTP-Q4_K_M.gguf"
+                  className="w-full rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                />
+                <div className="flex gap-2">
+                  <input
+                    value={newPull.name}
+                    onChange={(e) => setNewPull({ ...newPull, name: e.target.value })}
+                    placeholder="Server name (slug)"
+                    className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  />
+                  <input
+                    value={newPull.port}
+                    onChange={(e) => setNewPull({ ...newPull, port: e.target.value })}
+                    placeholder="Port (auto)"
+                    className="w-28 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <select
+                    value={newPull.runtime}
+                    onChange={(e) => setNewPull({ ...newPull, runtime: e.target.value })}
+                    className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 focus:border-amber-400 focus:outline-none"
+                  >
+                    {(runtimes.length ? runtimes : [{ slug: 'mainline-vulkan', description: 'mainline llama.cpp, Vulkan GPU' }]).map((r) => (
+                      <option key={r.slug} value={r.slug}>
+                        {r.slug} — {r.description}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => void handlePullModel()}
+                    className="rounded-xl border border-amber-400 bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950 hover:bg-amber-300"
+                  >
+                    Pull
+                  </button>
+                </div>
+                {pullError && (
+                  <div className="rounded-xl border border-rose-900/60 bg-rose-950/30 p-2 text-xs text-rose-200">
+                    {pullError}
                   </div>
-                </article>
-              ))}
+                )}
+                {pulls.filter((p) => !(p.status === 'completed' && p.stale === false)).slice(0, 5).map((p) => (
+                  <div key={p.job_id} className="rounded-xl border border-stone-800 bg-stone-950 p-2 text-xs">
+                    <div className="flex items-center justify-between text-stone-200">
+                      <span>{p.slug} ← {p.repo_id}</span>
+                      <span className={
+                        p.status === 'completed' ? 'text-emerald-400'
+                        : p.status === 'failed' || p.stale ? 'text-rose-400'
+                        : 'text-amber-300'
+                      }>
+                        {p.stale && p.status !== 'completed' && p.status !== 'failed' ? 'stale (api restarted)' : p.status}
+                      </span>
+                    </div>
+                    {p.error && <div className="mt-1 text-rose-300">{p.error}</div>}
+                    {!p.error && p.status === 'downloading' && p.log_tail && (
+                      <pre className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-stone-500">{p.log_tail.slice(-300)}</pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
               <div className="mb-4 flex items-center justify-between gap-4">
-                <h2 className="text-2xl font-semibold">{editingAgentId ? 'Edit Mode' : 'Mode Creation Wizard'}</h2>
+                <h2 className="text-2xl font-semibold">{editingAgentId ? 'Edit Agent' : 'Agent Creation Wizard'}</h2>
                 {editingAgentId ? (
                   <button
                     onClick={resetModeForm}
-                    className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
+                    className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                   >
                     New Mode
                   </button>
@@ -467,7 +785,7 @@ export default function DashboardPage() {
                         setStatusMessage('Memory deleted.')
                         await refreshDashboard()
                       }}
-                      className="rounded-full border border-red-900 px-3 py-1 text-xs text-red-400 hover:border-red-700 hover:bg-red-950"
+                      className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
                     >
                       Delete
                     </button>
@@ -527,7 +845,7 @@ export default function DashboardPage() {
                           <div className="flex shrink-0 gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'accept')}
-                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/70"
+                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
                             >
                               Accept
                             </button>
@@ -565,7 +883,7 @@ export default function DashboardPage() {
                           <div className="flex shrink-0 gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'done')}
-                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900/70"
+                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
                             >
                               Done
                             </button>
@@ -663,7 +981,7 @@ export default function DashboardPage() {
         {tab === 'research' && (
           <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Research Runs</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Research Runs</h2>
               <div className="space-y-3">
                 {researchRuns.map((run) => (
                   <article key={run.id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
@@ -683,7 +1001,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Background Tasks</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Background Tasks</h2>
               <div className="space-y-3">
                 {tasks.slice(0, 10).map((task) => (
                   <article key={task._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
@@ -704,7 +1022,7 @@ export default function DashboardPage() {
         {tab === 'usage' && (
           <section className="grid gap-4 xl:grid-cols-[0.8fr_1.1fr_1.1fr]">
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Summary</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Summary</h2>
               <div className="space-y-3 text-sm text-stone-300">
                 <div>Requests: {usage?.requests ?? 0}</div>
                 <div>Input tokens: {usage?.input_tokens ?? 0}</div>
@@ -713,7 +1031,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">By Agent</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Agent</h2>
               <div className="space-y-3">
                 {usageByAgent.map((row) => (
                   <div key={row._id || 'unknown'} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
@@ -724,7 +1042,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">By Model</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Model</h2>
               <div className="space-y-3">
                 {usageByModel.map((row) => (
                   <div key={row._id || 'unknown'} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
@@ -763,7 +1081,7 @@ export default function DashboardPage() {
                           const exported = await apiClient.exportConversation(conversation.id, 'markdown')
                           setSelectedConversationExport(exported.content || '')
                         }}
-                        className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
+                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                       >
                         Export Markdown
                       </button>
@@ -774,7 +1092,7 @@ export default function DashboardPage() {
                           setStatusMessage(`Deleted conversation.`)
                           await refreshDashboard()
                         }}
-                        className="rounded-full border border-red-900 px-3 py-1 text-xs text-red-400 hover:border-red-700 hover:bg-red-950"
+                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
                       >
                         Delete
                       </button>
@@ -784,7 +1102,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Export Preview</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Export Preview</h2>
               <pre className="max-h-[70vh] overflow-auto rounded-2xl bg-stone-950 p-4 text-xs text-stone-300">
                 {selectedConversationExport || 'Select a conversation to preview exported markdown.'}
               </pre>
@@ -795,7 +1113,7 @@ export default function DashboardPage() {
         {tab === 'workflows' && (
           <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Workflow Library</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Workflow Library</h2>
               <div className="space-y-3">
                 {workflows.map((workflow) => (
                   <article key={workflow._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
@@ -807,7 +1125,7 @@ export default function DashboardPage() {
                             const status = await apiClient.workflowStatus(workflow._id)
                             setWorkflowStatus(status)
                           }}
-                          className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
+                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                         >
                           Status
                         </button>
@@ -817,7 +1135,7 @@ export default function DashboardPage() {
                             setStatusMessage(`Started dry run for ${workflow.name}.`)
                             setTasks(await apiClient.listTasks())
                           }}
-                          className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
+                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                         >
                           Dry Run
                         </button>
@@ -827,7 +1145,7 @@ export default function DashboardPage() {
                             setStatusMessage(`Started workflow ${workflow.name}.`)
                             setTasks(await apiClient.listTasks())
                           }}
-                          className="rounded-full border border-stone-700 px-3 py-1 text-xs text-stone-300 hover:border-stone-500"
+                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                         >
                           Run
                         </button>
@@ -838,7 +1156,7 @@ export default function DashboardPage() {
                             setStatusMessage(`Deleted workflow ${workflow.name}.`)
                             await refreshDashboard()
                           }}
-                          className="rounded-full border border-red-900 px-3 py-1 text-xs text-red-400 hover:border-red-700 hover:bg-red-950"
+                          className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
                         >
                           Delete
                         </button>
@@ -851,7 +1169,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Create Workflow</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Create Workflow</h2>
               <div className="space-y-3">
                 <input
                   value={newWorkflow.name}
@@ -913,18 +1231,7 @@ export default function DashboardPage() {
         {tab === 'settings' && (
           <section className="grid gap-4 md:grid-cols-2">
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Infrastructure Models</h2>
-              <div className="space-y-3">
-                {models.map((model) => (
-                  <div key={model.name} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
-                    <div className="mb-1 text-stone-100">{model.name}</div>
-                    <div className="text-stone-400">{model.backend} · {model.active ? 'active' : 'available'}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Runtime Notes</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Runtime Notes</h2>
               <div className="space-y-3 text-sm text-stone-400">
                 <p>Settings editing is still partial. This panel currently exposes runtime state for models and tasks.</p>
                 <p>API-key auth and configurable CORS are now backend-configurable via environment variables.</p>
@@ -932,7 +1239,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <h2 className="mb-4 text-2xl font-semibold">Cutover Readiness</h2>
+              <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Cutover Readiness</h2>
               <div className="space-y-3 text-sm text-stone-300">
                 <div className="rounded-2xl bg-stone-950 p-4">
                   <div className="mb-2 text-stone-100">Ready: {cutover?.ready ? 'yes' : 'not yet'}</div>

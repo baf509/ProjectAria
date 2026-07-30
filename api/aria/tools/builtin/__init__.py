@@ -18,7 +18,6 @@ from .coding import (
     StopCodingSessionTool,
 )
 from .filesystem import FilesystemTool
-from .model_switch import ListLlamaCppModelsTool, SwitchLlamaCppModelTool
 from .shell import ShellTool
 from .web import WebTool
 from .browse import BrowsePageTool
@@ -35,7 +34,6 @@ __all__ = [
     "FilesystemTool",
     "GetCodingDiffTool",
     "GetCodingOutputTool",
-    "ListLlamaCppModelsTool",
     "ListCodingSessionsTool",
     "ScreenshotTool",
     "SearchAgentTool",
@@ -45,7 +43,6 @@ __all__ = [
     "SoulTool",
     "StartCodingSessionTool",
     "StopCodingSessionTool",
-    "SwitchLlamaCppModelTool",
     "WebTool",
     "BrowsePageTool",
 ]
