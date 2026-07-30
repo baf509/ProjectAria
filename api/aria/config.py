@@ -21,17 +21,24 @@ class Settings(BaseSettings):
     mongodb_min_pool_size: int = 5
 
     # llama.cpp (local, OpenAI-compatible)
-    llamacpp_url: str = "http://localhost:8092/v1"
+    # Default corrected 2026-07-30: was :8092, which is now the ridge-llama-proxy
+    # (Wake-on-LAN). A missing/incomplete .env would therefore have pointed
+    # ARIA's PRIMARY chat backend at Ridge and woken a sleeping gaming PC on
+    # every call. :8103 is the real local chat server (Qwen3.6-35B-A3B-MTP
+    # ROCmFP4), which is also what .env sets.
+    llamacpp_url: str = "http://localhost:8103/v1"
     llamacpp_api_key: str = ""
     # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
     # busy/half-open local server wedge a caller for ~10min; a hang never raises
     # so retry_async can't recover it.
     llamacpp_timeout_seconds: int = 120
 
-    # Qwen-agentic (local, OpenAI-compatible) — a second coresident llama.cpp
-    # server tuned for agentic/tool-use with long context, served on :8093.
-    # Distinct from llamacpp (:8092, qwen-chat); address it with backend "agentic".
-    agentic_url: str = "http://localhost:8093/v1"
+    # The "agentic" backend slot. REPURPOSED 2026-07-30: it no longer means the
+    # retired qwen-agentic :8093 server — it is now ARIA's LOCAL CODING backend,
+    # pointed at :8105 (chadrockv2, Qwen3.6-27B ROCmFP6 "STRIX QUALITY") and used
+    # by agent slug=pi-coding. Overridden by AGENTIC_URL in .env; the default is
+    # kept in step with it so the two can't disagree.
+    agentic_url: str = "http://localhost:8105/v1"
     agentic_api_key: str = ""
 
     # Ridge (RTX 3090) — NInfer serving Qwen3.6-35B-A3B, reached over the tailnet

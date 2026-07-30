@@ -248,7 +248,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         description="chromadb/context-1 20B Q4_K_M, same charlie12345 rocmfp4-llama "
         "HIP runtime as qwen3.6-35b-a3b-Q4/qwen3.6-27b-Q8. Backed ARIA's Search Agent; "
         "stopped and profile-gated (`optional`) since 2026-07-21, unused. Small enough "
-        "(16 GiB) to coexist with anything — guarded by the live GTT gate only.",
+        "(16 GiB) to coexist with anything — guarded by the live GTT gate only. "
+        "Its port binding was 0.0.0.0 until 2026-07-30 (missed by the 07-21 "
+        "loopback+tailnet sweep because it was already stopped); now matches.",
         runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
         runtime_ref="branch mtp-rocmfp4-strix",
         backend_device="HIP (ROCm0)",

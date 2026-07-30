@@ -2,6 +2,46 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-30 audit] - Model/agent/runtime pairing audit: 5 real mismatches fixed
+
+Full cross-check of every agent → backend → URL → bound server → live alias,
+plus registry ↔ compose ↔ disk ↔ listening ports, plus Hermes's own config.
+All four ARIA agents now resolve MATCH (backend URL == bound server endpoint);
+registry/compose wiring verified clean; no duplicate ports.
+
+### Fixed
+- **Hermes's primary model was named `laguna-s-2.1`** but has served
+  Qwen3.6-35B-A3B-MTP **ROCmFP4** on :8103 since the 07-28 split — poolside
+  Laguna (:8095) is stopped and hasn't backed Hermes since. Renamed to the
+  alias the server actually reports (`qwen35b-a3b-mtp`). The provider KEY stays
+  `laguna` on purpose: ~20 references point at it, so renaming the key risks
+  more than the confusing name costs. Confirmed: Hermes IS on the ROCmFP4 Qwen.
+- **Hermes's `model_aliases` silently overrode their own providers.**
+  `qwen-chat` and `qwen-agentic` both carried `base_url: :8103` +
+  `model: qwen35b-a3b-mtp`, so selecting "qwen-agentic" ran the 35B on :8103
+  instead of the 27B on :8093 — wrong model, no error. Each alias now matches
+  its provider.
+- **`PLANNING_AMBIENT_MODEL` / `HEARTBEAT_MODEL` were still `laguna-s-2.1`**
+  while :8103 serves `qwen35b-a3b-mtp`. Worked only because llama-server ignores
+  the request model field in single-model mode. Ambient capture fires on EVERY
+  conversation turn, so this was live config lying about which model runs.
+- **`config.py` defaulted `llamacpp_url` to :8092 — now the Ridge WoL proxy.**
+  A missing/incomplete `.env` would have pointed ARIA's PRIMARY chat backend at
+  Ridge and woken a sleeping gaming PC on every call. Defaulted to :8103.
+  `agentic_url` default likewise moved :8093 → :8105 to match its repurposing
+  as the local coding backend (comment still described the retired qwen-agentic).
+- **`context1` published on `0.0.0.0:8081`** — every other model server was moved
+  to loopback+tailnet on 2026-07-21, but context1 was missed because it was
+  already stopped. llama.cpp has no auth, so starting it would have offered the
+  whole LAN free GPU inference. Now loopback + tailnet like the rest.
+
+### Notes
+- 985 tests pass. Hermes config backed up before editing.
+- Deliberately left: the `aria` agent stays unbound (it is disabled by design;
+  binding it would consume :8103's 1:1 slot for no benefit). `:8094`/`:8099`
+  listeners are the wake-proxies, `:8101` is an unrelated `api` process —
+  none are model servers.
+
 ## [2026-07-30 later] - No quota fallback; 1:1 agent↔model bindings; Hermes memory unstuck
 
 ### Changed
