@@ -35,6 +35,22 @@ async def connect_db():
         maxPoolSize=settings.mongodb_max_pool_size,
         minPoolSize=settings.mongodb_min_pool_size,
         maxIdleTimeMS=30000,
+        # Without this, datetimes read back from Mongo are naive (no tzinfo),
+        # so FastAPI/Pydantic serializes them to JSON with no offset/'Z'
+        # (e.g. "2026-07-29T23:41:21.003000"). That's not valid RFC3339, and
+        # the Go TUI's strict time.Time unmarshaling fails on the FIRST such
+        # field -- silently failing the entire GET /conversations/{id} decode
+        # on every reload. Symptom: the TUI's own optimistically-appended user
+        # messages kept showing (added client-side at send time), but every
+        # assistant response vanished on the next reload, because the message
+        # list was never successfully re-synced from the server again. This
+        # also retroactively explains the scattered `if x.tzinfo is None:
+        # x = x.replace(tzinfo=timezone.utc)` guards throughout the codebase
+        # (shells/service.py, shells/notifier.py, shells/selfcheck.py, etc.)
+        # -- all working around this same root cause ad hoc. tz_aware=True
+        # makes Motor attach UTC tzinfo to every datetime it returns, so
+        # those guards become harmless no-ops instead of load-bearing.
+        tz_aware=True,
     )
     db.db = db.client[settings.mongodb_database]
 

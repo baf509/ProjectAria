@@ -2,6 +2,63 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-30] - Fixed: TUI chat responses vanishing on reload; agents advertising delegation tools they don't have
+
+### Fixed
+- **TUI chat responses disappeared after the first render, on every agent,
+  every conversation.** `GET /api/v1/conversations/{id}` returned `created_at`
+  timestamps with no timezone offset (`"2026-07-29T23:41:21.003000"`, not
+  valid RFC3339) because Motor returns naive datetimes from MongoDB by
+  default. The Go TUI's `time.Time` JSON unmarshaling fails hard on the first
+  such field, so the *entire* conversation payload silently failed to decode
+  on every reload. Symptom: your own messages kept appearing (added
+  optimistically client-side at send time — `model.go` `Messages = append`),
+  but the assistant's responses — only ever populated by a successful reload —
+  vanished within seconds of being streamed. Root-caused via a raw Mongo
+  query on a live conversation showing every message intact server-side (so
+  it was never a persistence bug), then confirmed via the raw JSON response
+  showing the offset-less timestamps directly. Fixed with a single
+  `tz_aware=True` on the app's `AsyncIOMotorClient` (`db/mongodb.py`) —
+  Motor now attaches UTC tzinfo to every datetime it returns, so every
+  existing `if x.tzinfo is None: x = x.replace(tzinfo=timezone.utc)` guard
+  scattered through the codebase (shells/service.py, shells/notifier.py,
+  shells/selfcheck.py, etc. — all silent workarounds for this exact root
+  cause) becomes a harmless no-op instead of load-bearing. Verified the raw
+  API response now returns `...003000Z` (valid RFC3339) and the Go TUI still
+  builds clean.
+- **An agent's system prompt advertised sub-agent delegation tools
+  (`claude_agent`, `pi_coding_agent`) regardless of whether that agent
+  actually had them.** `core/context.py`'s "Sub-Agent Coordination" /
+  "Reasoning Delegation" prompt block was gated only by the global
+  `settings.deep_think_enabled` flag, not by the current agent's own
+  `enabled_tools`. Concretely: `pi-coding-ridge` (`enabled_tools =
+  ["filesystem", "shell", "web", "deep_think"]` — no `claude_agent`, no
+  `pi_coding_agent`) was still told "you can delegate substantial tasks via
+  the `claude_agent` and `pi_coding_agent` tools," so a plain "review this
+  project" request got answered with an attempt to delegate to a Claude Code
+  sub-session instead of just using its own direct filesystem/shell tools —
+  same failure class as the Stock Scanner cron job's `send_message` bug
+  (2026-07-29): a prompt promising a capability the execution context never
+  actually wired up. Fixed by building the delegation guidance from the
+  agent's real `enabled_tools` — `deep_think` guidance only if `deep_think`
+  is enabled; the sub-agent section (and each tool's own bullet) only for
+  whichever of `claude_agent`/`pi_coding_agent` are actually present; the
+  whole block omitted if neither applies. Added a regression test
+  (`test_build_messages_deep_think_enabled_globally_but_not_for_agent`).
+
+### Notes
+- 916 tests pass (was 915 — one new regression test); one existing test
+  (`test_build_messages_with_deep_think`) updated to declare `deep_think` in
+  its mock agent's `enabled_tools`, since it was implicitly relying on the
+  old, buggy blanket-enable behavior.
+- Neither fix required touching `pi-coding-ridge`'s own system prompt, which
+  was already correct and explicit about the shell tool's no-chaining
+  (`&&`/`;`) restriction — a separately-observed retry loop where the agent
+  kept retrying chained shell commands despite that guidance is a model
+  reliability limitation, not a missing-information bug, and wasn't changed.
+
+---
+
 ## [2026-07-29] - Coherence C1 (Verification Gate) + C2 (Repo-Change → Memory); herdr.dev-inspired shell activity_state
 
 ### Added

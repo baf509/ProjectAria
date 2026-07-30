@@ -211,9 +211,22 @@ Use these memories to provide personalized and contextual responses.
             except Exception as e:
                 logger.debug("Shells context injection skipped: %s", e)
 
-        # Inject deep_think delegation instructions if enabled
+        # Inject deep_think / sub-agent delegation instructions -- but ONLY for
+        # the tools THIS agent actually has. Previously this whole block was
+        # gated solely by the global settings.deep_think_enabled flag, so an
+        # agent whose own enabled_tools didn't include claude_agent/
+        # pi_coding_agent (e.g. pi-coding-ridge, which has direct filesystem/
+        # shell tools and neither delegation tool) still got told "you can
+        # delegate via claude_agent" -- and, reasonably, tried to use a tool
+        # that was never actually wired up for it. Same failure class as a
+        # prompt promising a capability the execution context doesn't have.
+        enabled_tools = set(agent_config.get("enabled_tools") or [])
+        has_deep_think = "deep_think" in enabled_tools
+        has_claude_agent = "claude_agent" in enabled_tools
+        has_pi_coding_agent = "pi_coding_agent" in enabled_tools
+
         delegation_context = ""
-        if settings.deep_think_enabled:
+        if settings.deep_think_enabled and has_deep_think:
             delegation_context = """
 
 ## Reasoning Delegation (IMPORTANT)
@@ -239,10 +252,31 @@ When to ALWAYS use `deep_think`:
 - The user asks you to write something (text, code, plans)
 - The user asks for help debugging or understanding something
 - Any response where the quality of your thinking matters
+"""
+
+        if has_claude_agent or has_pi_coding_agent:
+            agent_bullets = []
+            if has_claude_agent:
+                agent_bullets.append(
+                    "- `claude_agent`: Most capable. Uses Claude Code CLI (subscription "
+                    "tokens). Best for complex multi-step work, code generation, and "
+                    "tasks requiring real filesystem actions."
+                )
+            if has_pi_coding_agent:
+                agent_bullets.append(
+                    "- `pi_coding_agent`: Uses local LLM. Creates a persistent "
+                    "conversation the user can continue. Best for iterative coding "
+                    "work where follow-up interaction is expected."
+                )
+            tool_names = " and ".join(
+                f"`{t}`" for t in (["claude_agent"] if has_claude_agent else [])
+                + (["pi_coding_agent"] if has_pi_coding_agent else [])
+            )
+            delegation_context += f"""
 
 ## Sub-Agent Coordination
 
-You can delegate substantial tasks to sub-agents via the `claude_agent` and `pi_coding_agent` tools.
+You can delegate substantial tasks to sub-agents via the {tool_names} tool{"s" if has_claude_agent and has_pi_coding_agent else ""}.
 Follow these coordination principles:
 
 **When to delegate:**
@@ -264,9 +298,7 @@ Follow these coordination principles:
 - If a sub-agent fails or returns partial results, diagnose why before retrying with adjusted instructions.
 
 **Choosing the right agent:**
-- `claude_agent`: Most capable. Uses Claude Code CLI (subscription tokens). Best for complex multi-step work, code generation, and tasks requiring real filesystem actions.
-- `pi_coding_agent`: Uses local LLM. Creates a persistent conversation the user can continue. Best for iterative coding work where follow-up interaction is expected.
-"""
+""" + "\n".join(agent_bullets) + "\n"
 
         # Combine system prompt with memory context, skills, awareness, and delegation
         full_system_prompt = system_prompt + memory_context + skill_context + awareness_context + shells_context + delegation_context

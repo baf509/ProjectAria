@@ -327,18 +327,44 @@ async def test_build_messages_conversation_messages_included():
 
 @pytest.mark.asyncio
 async def test_build_messages_with_deep_think():
-    """deep_think_enabled injects delegation instructions into system prompt."""
+    """deep_think_enabled injects delegation instructions into system prompt
+    for an agent whose enabled_tools actually includes deep_think."""
     _apply_common_patches(deep_think_enabled=True)
     try:
         cb = _make_context_builder()
         msgs = await cb.build_messages(
             conversation_id="aabbccddee112233aabbccdd",
             user_message="Explain something complex",
-            agent_config=_make_agent_config(),
+            agent_config=_make_agent_config(enabled_tools=["deep_think"]),
         )
         system_content = msgs[0].content
         assert "## Reasoning Delegation (IMPORTANT)" in system_content
         assert "deep_think" in system_content
+    finally:
+        _stop_common_patches()
+
+
+@pytest.mark.asyncio
+async def test_build_messages_deep_think_enabled_globally_but_not_for_agent():
+    """Regression: settings.deep_think_enabled=True must NOT inject delegation
+    instructions (deep_think or claude_agent/pi_coding_agent) for an agent
+    whose own enabled_tools doesn't include them -- e.g. pi-coding-ridge,
+    which has direct filesystem/shell tools and neither delegation tool.
+    Previously this was gated solely by the global setting, so such an agent
+    was told it could delegate via tools it could never actually call."""
+    _apply_common_patches(deep_think_enabled=True)
+    try:
+        cb = _make_context_builder()
+        msgs = await cb.build_messages(
+            conversation_id="aabbccddee112233aabbccdd",
+            user_message="Review this project",
+            agent_config=_make_agent_config(enabled_tools=["filesystem", "shell", "web"]),
+        )
+        system_content = msgs[0].content
+        assert "## Reasoning Delegation (IMPORTANT)" not in system_content
+        assert "## Sub-Agent Coordination" not in system_content
+        assert "claude_agent" not in system_content
+        assert "pi_coding_agent" not in system_content
     finally:
         _stop_common_patches()
 
