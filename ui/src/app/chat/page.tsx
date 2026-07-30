@@ -163,10 +163,12 @@ export default function ChatPage() {
     }
   }
 
+  // h-[100dvh] rather than h-screen: on mobile, 100vh exceeds the visible area
+  // (browser chrome), which would push the composer off-screen.
   return (
-    <div className="flex h-screen bg-gray-50 dark:bg-gray-900">
-      {/* Sidebar */}
-      <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
+    <div className="flex h-[100dvh] bg-gray-50 dark:bg-gray-900">
+      {/* Sidebar — desktop only; below md the header carries a conversation picker */}
+      <div className="hidden w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 md:flex md:flex-col">
         <div className="p-4 border-b border-gray-200 dark:border-gray-700">
           <h1 className="text-xl font-bold">ARIA</h1>
         </div>
@@ -198,20 +200,20 @@ export default function ChatPage() {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col">
-        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-6 py-3">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 sm:px-6">
+          <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-4">
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
                 {currentConversation?.title || 'Conversation'}
               </h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
+              <p className="truncate text-xs text-gray-500 dark:text-gray-400">
                 Active mode: {agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon ? `${agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon} ` : ''}{agents.find(agent => agent.id === selectedAgentId)?.name || 'Default'}
               </p>
             </div>
 
-            <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-              <span>Mode</span>
+            <label className="flex min-w-0 items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
+              <span className="shrink-0">Mode</span>
               <select
                 value={selectedAgentId}
                 onChange={(e) => {
@@ -221,7 +223,7 @@ export default function ChatPage() {
                   }
                 }}
                 disabled={!currentConversation || isStreaming || agents.length === 0}
-                className="rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                className="min-w-0 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
               >
                 {agents.map(agent => (
                   <option key={agent.id} value={agent.id}>
@@ -231,30 +233,61 @@ export default function ChatPage() {
               </select>
             </label>
           </div>
+
+          {/* Mobile conversation switcher — stands in for the hidden sidebar */}
+          <div className="mt-3 flex items-center gap-2 md:hidden">
+            <select
+              value={currentConversation?.id || ''}
+              onChange={(e) => {
+                if (e.target.value) {
+                  void loadConversation(e.target.value)
+                }
+              }}
+              disabled={isStreaming}
+              className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            >
+              {/* A freshly created conversation is prepended to `conversations`, but
+                  guard anyway so the picker never shows an unrelated title */}
+              {currentConversation && !conversations.some(convo => convo.id === currentConversation.id) && (
+                <option value={currentConversation.id}>{currentConversation.title}</option>
+              )}
+              {conversations.map((convo) => (
+                <option key={convo.id} value={convo.id}>
+                  {convo.title}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={createNewConversation}
+              className="shrink-0 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+            >
+              + New
+            </button>
+          </div>
         </div>
 
         {/* Connection error banner */}
         {connectionError && (
-          <div className="px-6 py-2 bg-yellow-900/50 border-b border-yellow-700 text-yellow-200 text-sm text-center">
+          <div className="px-4 py-2 sm:px-6 bg-yellow-900/50 border-b border-yellow-700 text-yellow-200 text-sm text-center">
             {connectionError}
           </div>
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
           {messages.map((msg) => (
             <div
               key={msg.id}
               className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-2xl px-4 py-2 rounded-lg ${
+                className={`max-w-[85%] sm:max-w-2xl px-4 py-2 rounded-lg ${
                   msg.role === 'user'
                     ? 'bg-blue-600 text-white'
                     : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
                 }`}
               >
-                <div className="whitespace-pre-wrap">{msg.content}</div>
+                <div className="whitespace-pre-wrap break-words">{msg.content}</div>
                 {msg.tool_calls && msg.tool_calls.length > 0 && (
                   <div className="mt-2 text-sm opacity-75">
                     🔧 Used {msg.tool_calls.length} tool(s)
@@ -267,8 +300,8 @@ export default function ChatPage() {
           {/* Streaming message */}
           {isStreaming && streamingContent && (
             <div className="flex justify-start">
-              <div className="max-w-2xl px-4 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
-                <div className="whitespace-pre-wrap">{streamingContent}</div>
+              <div className="max-w-[85%] sm:max-w-2xl px-4 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+                <div className="whitespace-pre-wrap break-words">{streamingContent}</div>
                 <div className="mt-2 flex items-center gap-2 text-sm opacity-75">
                   <Loader2 className="w-4 h-4 animate-spin" />
                   Thinking...
@@ -288,14 +321,14 @@ export default function ChatPage() {
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyPress}
               placeholder="Type your message..."
-              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 dark:bg-gray-700 resize-none"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 dark:bg-gray-700 resize-none"
               rows={1}
               disabled={isStreaming}
             />
             <button
               onClick={handleSendMessage}
               disabled={!input.trim() || isStreaming}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              className="shrink-0 px-5 py-3 sm:px-6 sm:py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isStreaming ? (
                 <Loader2 className="w-5 h-5 animate-spin" />

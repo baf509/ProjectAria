@@ -36,7 +36,13 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      {/*
+        Global horizontal-overflow guard: `overflow-x-hidden` on <body> clips any
+        page that would otherwise scroll sideways on a phone (body overflow does
+        not propagate to the viewport, so vertical page scrolling is unaffected).
+        `max-w-full` keeps the body itself from being widened by a stray child.
+      */}
+      <body className={`${inter.className} max-w-full overflow-x-hidden`}>
         {children}
         <ServiceWorkerRegister />
       </body>

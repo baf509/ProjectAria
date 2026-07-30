@@ -256,19 +256,19 @@ export default function ShellsDashboardPage() {
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100">
-      <header className="border-b border-stone-800 bg-stone-950/80 backdrop-blur px-6 py-4">
-        <div className="flex items-center justify-between gap-4">
-          <div>
+      <header className="border-b border-stone-800 bg-stone-950/80 backdrop-blur px-4 py-4 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.3em] text-fuchsia-400">Watched Shells</p>
-            <h1 className="text-2xl font-semibold text-stone-50">Terminal Sessions</h1>
+            <h1 className="text-xl font-semibold text-stone-50 sm:text-2xl">Terminal Sessions</h1>
           </div>
-          <div className="flex items-center gap-4 text-sm">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="text-stone-400">
               <span className="text-stone-200 font-semibold">{counts.active}</span> active ·{' '}
               <span className="text-stone-200 font-semibold">{counts.idle}</span> idle ·{' '}
               <span className="text-stone-200 font-semibold">{counts.stopped}</span> stopped
             </span>
-            <a href="/dashboard" className="text-stone-400 hover:text-stone-200">
+            <a href="/dashboard" className="-my-2 shrink-0 py-2 text-stone-400 hover:text-stone-200">
               ← Dashboard
             </a>
           </div>
@@ -276,17 +276,25 @@ export default function ShellsDashboardPage() {
       </header>
 
       {error && (
-        <div className="bg-red-950/60 border-b border-red-900 px-6 py-2 text-sm text-red-200" role="alert">
+        <div className="bg-red-950/60 border-b border-red-900 px-4 py-2 text-sm text-red-200 break-words sm:px-6" role="alert">
           {error}
-          <button className="ml-4 underline hover:text-red-100" onClick={() => setError(null)}>
+          <button
+            className="ml-4 inline-block py-1 underline hover:text-red-100 sm:py-0"
+            onClick={() => setError(null)}
+          >
             dismiss
           </button>
         </div>
       )}
 
-      <div className="flex flex-col md:flex-row h-[calc(100vh-72px)]">
+      {/*
+        The one-viewport split is md-and-up only. On a phone the two panes stack, so
+        pinning the pair to 100vh-72px would leave each with an unusable sliver;
+        instead each pane sizes itself (list capped, terminal given a floor below).
+      */}
+      <div className="flex flex-col md:h-[calc(100vh-72px)] md:flex-row">
         {/* Sidebar: shell list */}
-        <aside className="md:w-80 border-r border-stone-800 flex flex-col">
+        <aside className="flex max-h-[40vh] flex-col border-b border-stone-800 md:max-h-none md:w-80 md:shrink-0 md:border-b-0 md:border-r">
           <div className="p-3 border-b border-stone-800 space-y-2">
             <input
               type="text"
@@ -303,7 +311,7 @@ export default function ShellsDashboardPage() {
                   <button
                     key={s}
                     onClick={() => setStatusFilter(s)}
-                    className={`px-2 py-0.5 text-xs rounded-full border transition ${
+                    className={`px-3 py-1.5 text-sm sm:px-2 sm:py-0.5 sm:text-xs rounded-full border transition ${
                       active
                         ? 'bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-700'
                         : 'bg-stone-900 text-stone-400 border-stone-800 hover:border-stone-700'
@@ -316,7 +324,7 @@ export default function ShellsDashboardPage() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {filteredShells.length === 0 && (
               <div className="p-6 text-sm text-stone-500">
                 {shells.length === 0 ? (
@@ -386,8 +394,8 @@ export default function ShellsDashboardPage() {
               {/* Detail header */}
               <div className="px-4 py-3 border-b border-stone-800 flex items-center gap-3 text-sm flex-wrap">
                 <span className={`w-2.5 h-2.5 rounded-full ${statusDot(currentShell.status)}`} />
-                <div className="flex flex-col">
-                  <span className="font-mono font-semibold text-stone-100">{currentShell.short_name}</span>
+                <div className="flex min-w-0 flex-col">
+                  <span className="font-mono font-semibold text-stone-100 truncate">{currentShell.short_name}</span>
                   <span className="text-[10px] text-stone-500 truncate" title={currentShell.project_dir}>
                     {currentShell.project_dir || currentShell.name}
                   </span>
@@ -409,7 +417,7 @@ export default function ShellsDashboardPage() {
                     <button
                       key={m}
                       onClick={() => setViewMode(m)}
-                      className={`px-3 py-1 text-xs uppercase tracking-wider ${
+                      className={`px-4 py-2 text-xs uppercase tracking-wider sm:px-3 sm:py-1 ${
                         viewMode === m ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'text-stone-400 hover:text-stone-200'
                       }`}
                     >
@@ -418,7 +426,7 @@ export default function ShellsDashboardPage() {
                   ))}
                 </div>
                 {viewMode === 'stream' && (
-                  <label className="flex items-center gap-1.5 text-xs text-stone-400 cursor-pointer select-none">
+                  <label className="flex items-center gap-1.5 py-1.5 text-xs text-stone-400 cursor-pointer select-none sm:py-0">
                     <input
                       type="checkbox"
                       checked={hideNoise}
@@ -431,9 +439,20 @@ export default function ShellsDashboardPage() {
               </div>
 
               {/* Body */}
-              <div className="flex-1 relative overflow-hidden">
+              {/*
+                The terminal panes inside are `absolute inset-0`, so they have zero
+                height unless this parent is given one. On md+ the fixed-height split
+                above supplies it via flex-1; on mobile the column has no fixed height,
+                so `min-h-[60vh]` is what keeps the terminal from collapsing to nothing.
+              */}
+              <div className="flex-1 min-h-[60vh] md:min-h-0 relative overflow-hidden">
+                {/*
+                  overflow-auto (not just -y) on the scroll boxes below: the snapshot
+                  <pre> is whitespace-pre, so long terminal lines must scroll inside
+                  the box rather than widen the page.
+                */}
                 {viewMode === 'snapshot' ? (
-                  <div className="absolute inset-0 overflow-y-auto bg-black font-mono text-xs px-4 py-3">
+                  <div className="absolute inset-0 overflow-auto bg-black font-mono text-xs px-4 py-3">
                     {snapshot ? (
                       <>
                         <div className="text-stone-500 text-[10px] mb-2 uppercase tracking-widest">
@@ -452,7 +471,7 @@ export default function ShellsDashboardPage() {
                     <div
                       ref={scrollRef}
                       onScroll={onScroll}
-                      className="absolute inset-0 overflow-y-auto bg-black font-mono text-xs px-4 py-2 whitespace-pre-wrap"
+                      className="absolute inset-0 overflow-auto bg-black font-mono text-xs px-4 py-2 whitespace-pre-wrap"
                     >
                       {displayLines.length === 0 && (
                         <div className="text-stone-600 italic">
@@ -533,7 +552,7 @@ export default function ShellsDashboardPage() {
                       key={k.label}
                       onClick={() => handleSend(k.text, { literal: !!k.literal, appendEnter: !!k.appendEnter })}
                       disabled={sending || currentShell.status === 'stopped'}
-                      className="px-2 py-1 text-[11px] font-mono bg-stone-900 hover:bg-stone-800 rounded border border-stone-800 hover:border-stone-700 disabled:opacity-40"
+                      className="min-w-[2.75rem] px-3 py-2.5 text-sm sm:min-w-0 sm:px-2 sm:py-1 sm:text-[11px] font-mono bg-stone-900 hover:bg-stone-800 rounded border border-stone-800 hover:border-stone-700 disabled:opacity-40"
                     >
                       {k.label}
                     </button>
@@ -542,7 +561,7 @@ export default function ShellsDashboardPage() {
               </div>
             </>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-stone-500">
+            <div className="flex-1 min-h-[40vh] md:min-h-0 flex items-center justify-center px-4 text-center text-stone-500">
               {shells.length === 0
                 ? 'Start a watched shell with `aria shells new` to get started.'
                 : 'Select a shell to view its scrollback.'}

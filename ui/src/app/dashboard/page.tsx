@@ -336,12 +336,12 @@ export default function DashboardPage() {
           </div>
         ) : null}
 
-        <div className="mb-6 flex flex-wrap gap-2 sm:mb-8 sm:gap-3">
+        <div className="mb-6 -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:mb-8 sm:flex-wrap sm:gap-3 sm:overflow-visible sm:px-0">
           {(['agents', 'memories', 'tasks', 'research', 'usage', 'conversations', 'workflows', 'settings'] as Tab[]).map((item) => (
             <button
               key={item}
               onClick={() => setTab(item)}
-              className={`rounded-full border px-4 py-2 text-sm capitalize transition ${
+              className={`shrink-0 rounded-full border px-4 py-2 text-sm capitalize transition ${
                 tab === item
                   ? 'border-amber-400 bg-amber-400 text-stone-950'
                   : 'border-stone-700 bg-stone-900 text-stone-300 hover:border-stone-500'
@@ -359,9 +359,9 @@ export default function DashboardPage() {
         </div>
 
         {tab === 'agents' && (
-          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className="space-y-4">
-            <div className="grid gap-4 md:grid-cols-2">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="min-w-0 space-y-4">
+            <div className="grid min-w-0 gap-4 md:grid-cols-2">
               {agents.map((agent) => {
                 const enabled = agent.enabled ?? true
                 const server = agent.model_server ? models.find((s) => s.slug === agent.model_server) : null
@@ -369,11 +369,18 @@ export default function DashboardPage() {
                 return (
                   <article
                     key={agent.id}
-                    className={`rounded-3xl border bg-stone-900 p-5 ${enabled ? 'border-stone-800' : 'border-stone-800/60 opacity-60'}`}
+                    className={`min-w-0 rounded-3xl border bg-stone-900 p-4 sm:p-5 ${enabled ? 'border-stone-800' : 'border-stone-800/60 opacity-60'}`}
                   >
                     <div className="mb-3 flex items-center justify-between gap-2">
                       <div className="min-w-0 truncate text-lg font-semibold">
-                        {agent.mode_metadata?.icon ? `${agent.mode_metadata.icon} ` : ''}{agent.name}
+                        {/* mode_metadata.icon holds a Lucide icon NAME ('code',
+                            'search') for the widget, not a glyph — rendering it
+                            as text produced titles like "code Pi Coding Agent".
+                            Show it only when it actually is a glyph. */}
+                        {agent.mode_metadata?.icon && !/[a-z]/i.test(agent.mode_metadata.icon)
+                          ? `${agent.mode_metadata.icon} `
+                          : ''}
+                        {agent.name}
                       </div>
                       <span className={`shrink-0 rounded-full px-3 py-1 text-xs uppercase ${
                         enabled ? 'bg-emerald-950 text-emerald-300' : 'bg-stone-800 text-stone-500'
@@ -381,7 +388,7 @@ export default function DashboardPage() {
                         {enabled ? 'enabled' : 'disabled'}
                       </span>
                     </div>
-                    <p className="mb-3 text-sm text-stone-400">{agent.description}</p>
+                    <p className="mb-3 break-words text-sm text-stone-400">{agent.description}</p>
                     <p className="mb-1 text-xs text-stone-500">Model</p>
                     <p className="text-sm text-stone-200">{agent.llm.backend}/{agent.llm.model}</p>
                     <p className="mb-1 mt-3 text-xs text-stone-500">Model server</p>
@@ -398,7 +405,7 @@ export default function DashboardPage() {
                             value={agent.model_server}
                             disabled={serverBusy !== null}
                             onChange={(e) => void handleRebindAgent(agent, e.target.value)}
-                            className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-950 px-2 py-1 text-sm text-stone-100 focus:border-amber-400 focus:outline-none disabled:opacity-40"
+                            className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-950 px-2 py-2.5 text-sm text-stone-100 focus:border-amber-400 focus:outline-none disabled:opacity-40 sm:py-1"
                           >
                             {models
                               .filter((m) => m.onbox && m.startable)
@@ -450,7 +457,7 @@ export default function DashboardPage() {
                         )}
                       </div>
                     )}
-                    <div className="mt-4 flex gap-2">
+                    <div className="mt-4 flex flex-wrap gap-2">
                       <button
                         disabled={serverBusy !== null}
                         onClick={() => void handleToggleAgent(agent)}
@@ -473,7 +480,7 @@ export default function DashboardPage() {
                 )
               })}
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Model Servers</h2>
               <div className="space-y-3">
                 {models.map((server) => {
@@ -531,7 +538,7 @@ export default function DashboardPage() {
                               void navigator.clipboard?.writeText(server.endpoints.tailnet)
                               setStatusMessage(`Copied ${server.endpoints.tailnet}`)
                             }}
-                            className="shrink-0 rounded border border-stone-700 px-2 py-1 text-[10px] uppercase tracking-wide text-stone-400 hover:border-stone-500"
+                            className="shrink-0 rounded border border-stone-700 px-3 py-2 text-[10px] uppercase tracking-wide text-stone-400 hover:border-stone-500 sm:px-2 sm:py-1"
                           >
                             copy
                           </button>
@@ -580,7 +587,7 @@ export default function DashboardPage() {
                   placeholder="GGUF filename — e.g. Qwen3.6-27B-MTP-Q4_K_M.gguf"
                   className="w-full rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
                 />
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <input
                     value={newPull.name}
                     onChange={(e) => setNewPull({ ...newPull, name: e.target.value })}
@@ -594,11 +601,11 @@ export default function DashboardPage() {
                     className="w-28 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
                   />
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <select
                     value={newPull.runtime}
                     onChange={(e) => setNewPull({ ...newPull, runtime: e.target.value })}
-                    className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 focus:border-amber-400 focus:outline-none"
+                    className="min-w-0 flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2.5 text-sm text-stone-100 focus:border-amber-400 focus:outline-none sm:py-2"
                   >
                     {(runtimes.length ? runtimes : [{ slug: 'mainline-vulkan', description: 'mainline llama.cpp, Vulkan GPU' }]).map((r) => (
                       <option key={r.slug} value={r.slug}>
@@ -632,15 +639,15 @@ export default function DashboardPage() {
                     </div>
                     {p.error && <div className="mt-1 text-rose-300">{p.error}</div>}
                     {!p.error && p.status === 'downloading' && p.log_tail && (
-                      <pre className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-stone-500">{p.log_tail.slice(-300)}</pre>
+                      <pre className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap break-all text-stone-500">{p.log_tail.slice(-300)}</pre>
                     )}
                   </div>
                 ))}
               </div>
             </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">{editingAgentId ? 'Edit Agent' : 'Agent Creation Wizard'}</h2>
                 {editingAgentId ? (
                   <button
@@ -804,14 +811,14 @@ export default function DashboardPage() {
         )}
 
         {tab === 'memories' && (
-          <section className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-            <div className="mb-4 flex items-center justify-between gap-4">
+          <section className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
               <h2 className="text-2xl font-semibold">Memory Browser</h2>
               <input
                 value={memoryQuery}
                 onChange={(e) => setMemoryQuery(e.target.value)}
                 placeholder="Search memories"
-                className="w-full max-w-md rounded-full border border-stone-700 bg-stone-950 px-4 py-2 text-sm text-stone-100 outline-none"
+                className="w-full min-w-0 rounded-full border border-stone-700 bg-stone-950 px-4 py-2 text-sm text-stone-100 outline-none sm:max-w-md"
               />
             </div>
             <div className="space-y-3">
@@ -821,8 +828,8 @@ export default function DashboardPage() {
                     <span>{memory.content_type}</span>
                     <span>confidence {memory.confidence ?? 'n/a'}</span>
                   </div>
-                  <p className="text-sm text-stone-100">{memory.content}</p>
-                  <div className="mt-3 flex items-center justify-between">
+                  <p className="break-words text-sm text-stone-100">{memory.content}</p>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap gap-2">
                       {memory.categories.map((category) => (
                         <span key={category} className="rounded-full bg-stone-800 px-2 py-1 text-xs text-stone-300">
@@ -848,10 +855,10 @@ export default function DashboardPage() {
         )}
 
         {tab === 'tasks' && (
-          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             {/* Todos column */}
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Todos</h2>
                 <span className="text-xs text-stone-500">
                   {todos.filter((t) => t.status === 'proposed').length} proposed ·{' '}
@@ -893,7 +900,7 @@ export default function DashboardPage() {
                                 : `from ${t.source.type}`}
                             </p>
                           </div>
-                          <div className="flex shrink-0 gap-1">
+                          <div className="flex shrink-0 flex-wrap justify-end gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'accept')}
                               className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
@@ -931,7 +938,7 @@ export default function DashboardPage() {
                               <p className="mt-1 text-[11px] text-amber-400">due {t.due_at.slice(0, 10)}</p>
                             )}
                           </div>
-                          <div className="flex shrink-0 gap-1">
+                          <div className="flex shrink-0 flex-wrap justify-end gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'done')}
                               className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
@@ -954,8 +961,8 @@ export default function DashboardPage() {
             </div>
 
             {/* Projects column */}
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Projects</h2>
                 <span className="text-xs text-stone-500">{planningProjects.length} active</span>
               </div>
@@ -1030,8 +1037,8 @@ export default function DashboardPage() {
         )}
 
         {tab === 'research' && (
-          <section className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Research Runs</h2>
               <div className="space-y-3">
                 {researchRuns.map((run) => (
@@ -1051,12 +1058,12 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Background Tasks</h2>
               <div className="space-y-3">
                 {tasks.slice(0, 10).map((task) => (
                   <article key={task._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
-                    <div className="mb-2 flex items-center justify-between">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="text-sm text-stone-100">{task.name}</div>
                       <div className="text-xs uppercase text-stone-400">{task.status}</div>
                     </div>
@@ -1071,8 +1078,8 @@ export default function DashboardPage() {
         )}
 
         {tab === 'usage' && (
-          <section className="grid gap-4 xl:grid-cols-[0.8fr_1.1fr_1.1fr]">
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[0.8fr_1.1fr_1.1fr]">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Summary</h2>
               <div className="space-y-3 text-sm text-stone-300">
                 <div>Requests: {usage?.requests ?? 0}</div>
@@ -1081,7 +1088,7 @@ export default function DashboardPage() {
                 <div>Total tokens: {usage?.total_tokens ?? 0}</div>
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Agent</h2>
               <div className="space-y-3">
                 {usageByAgent.map((row) => (
@@ -1092,7 +1099,7 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Model</h2>
               <div className="space-y-3">
                 {usageByModel.map((row) => (
@@ -1107,9 +1114,9 @@ export default function DashboardPage() {
         )}
 
         {tab === 'conversations' && (
-          <section className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
-              <div className="mb-4 flex items-center justify-between gap-4">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.8fr]">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Conversation Management</h2>
                 <input
                   value={conversationQuery}
@@ -1126,7 +1133,7 @@ export default function DashboardPage() {
                       <div className="text-xs uppercase text-stone-500">{conversation.status}</div>
                     </div>
                     <p className="text-sm text-stone-400">{conversation.summary || 'No summary yet.'}</p>
-                    <div className="mt-3 flex gap-2">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={async () => {
                           const exported = await apiClient.exportConversation(conversation.id, 'markdown')
@@ -1151,9 +1158,9 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Export Preview</h2>
-              <pre className="max-h-[70vh] overflow-auto rounded-2xl bg-stone-950 p-4 text-xs text-stone-300">
+              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-stone-950 p-4 text-xs text-stone-300">
                 {selectedConversationExport || 'Select a conversation to preview exported markdown.'}
               </pre>
             </div>
@@ -1161,15 +1168,15 @@ export default function DashboardPage() {
         )}
 
         {tab === 'workflows' && (
-          <section className="grid gap-4 xl:grid-cols-[1fr_0.9fr]">
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+          <section className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.9fr]">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Workflow Library</h2>
               <div className="space-y-3">
                 {workflows.map((workflow) => (
                   <article key={workflow._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
-                    <div className="mb-2 flex items-center justify-between">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <div className="font-medium text-stone-100">{workflow.name}</div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <button
                           onClick={async () => {
                             const status = await apiClient.workflowStatus(workflow._id)
@@ -1211,13 +1218,13 @@ export default function DashboardPage() {
                         />
                       </div>
                     </div>
-                    <p className="text-sm text-stone-400">{workflow.description}</p>
+                    <p className="break-words text-sm text-stone-400">{workflow.description}</p>
                     <p className="mt-2 text-xs text-stone-500">{workflow.steps.length} steps</p>
                   </article>
                 ))}
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Create Workflow</h2>
               <div className="space-y-3">
                 <input
@@ -1267,7 +1274,7 @@ export default function DashboardPage() {
                 {workflowStatus ? (
                   <div className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-xs text-stone-300">
                     <div className="mb-2 text-sm text-stone-100">{workflowStatus.workflow?.name || 'Workflow status'}</div>
-                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap">
+                    <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
                       {JSON.stringify(workflowStatus.runs?.slice(0, 3) || [], null, 2)}
                     </pre>
                   </div>
@@ -1278,8 +1285,8 @@ export default function DashboardPage() {
         )}
 
         {tab === 'settings' && (
-          <section className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+          <section className="grid min-w-0 gap-4 md:grid-cols-2">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Runtime Notes</h2>
               <div className="space-y-3 text-sm text-stone-400">
                 <p>Settings editing is still partial. This panel currently exposes runtime state for models and tasks.</p>
@@ -1287,7 +1294,7 @@ export default function DashboardPage() {
                 <p>Use the chat UI for live mode switching, or the CLI for scripting and automation.</p>
               </div>
             </div>
-            <div className="rounded-3xl border border-stone-800 bg-stone-900 p-6">
+            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Cutover Readiness</h2>
               <div className="space-y-3 text-sm text-stone-300">
                 <div className="rounded-2xl bg-stone-950 p-4">
