@@ -329,7 +329,9 @@ class TestProcessMessage:
         notice = "".join(c.content for c in chunks if c.type == "text" and c.content)
         assert "llamacpp" in notice and "anthropic" in notice
         # And the adapter actually used is llamacpp, matching the notice.
-        mock_llm_mgr.get_adapter.assert_any_call("llamacpp", cloud_agent["llm"]["model"])
+        mock_llm_mgr.get_adapter.assert_any_call(
+            "llamacpp", cloud_agent["llm"]["model"], base_url=None
+        )
 
     @pytest.mark.asyncio
     @patch("aria.core.orchestrator.hook_registry")
@@ -353,7 +355,7 @@ class TestProcessMessage:
 
         call_count = 0
 
-        def get_adapter_side_effect(backend, model):
+        def get_adapter_side_effect(backend, model, base_url=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:
@@ -458,7 +460,7 @@ class TestProcessMessage:
         failing = FakeLLMAdapter(raise_on_call=RuntimeError("primary down"))
         success = FakeLLMAdapter(response_text="Fallback response!")
 
-        def adapter_side_effect(backend, model):
+        def adapter_side_effect(backend, model, base_url=None):
             if backend == "llamacpp":
                 return failing
             return success
