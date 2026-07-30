@@ -34,8 +34,25 @@ cache, which is the entire point.
 | `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan), `-c 131072` (unchanged, kept at max — see §10) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB; **unmonitored until §10** |
 | `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan), `-c` trimmed **131072 → 100000** same evening (§10) | **Hermes main chat only** as of §10 — ARIA's default chat agent (`aria`) and Search Agent are both **disabled** (`enabled=false`), so despite `LLAMACPP_URL`/`AGENTIC_URL` still pointing here, neither sends real traffic today; Hermes's auxiliary tasks + 2 cron jobs moved off to `gemma-aux` (below) the same evening | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable). **Crashed once, §10** |
 | `:8104` **gemma-aux** (new, 2026-07-28 evening) | Gemma 4 E4B, Q4_0 GGUF, **CPU-only** (`-ngl 0`) | Hermes's ~16 "auxiliary" side-tasks (title generation, compression, curator, approval, triage_specifier, mcp, etc.) + both cron jobs (alert triage, stock scanner) | see §10 for why CPU, the reasoning-mode gotcha, and real KV-cache sizing |
+| `:8105` **chadrockv2** (new, 2026-07-30) | Chadrockv2 Qwen3.6-27B **ROCmFP6** STRIX QUALITY, `-c 65536`, q8_0 KV, MTP draft, text-only | unbound — no consumer yet | **STOPPED** (wired + verified, start on demand). MEASURED ~30 GiB at 65536 ctx |
+| `:8106` **qwythos** (new, 2026-07-30) | Qwythos-27B-v1 MTP Q8_0 + F16 vision projector, `-c 65536`, q8_0 KV | unbound — **the only vision-capable local model on this box** | **STOPPED** (wired + verified). MEASURED ~32 GiB |
 | `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
-| `:8092` qwen-chat / `:8093` qwen-agentic | — | — | retired, down for days |
+| `:8092` `qwen3.6-35b-a3b-Q4` / `:8093` `qwen3.6-27b-Q8` (renamed 2026-07-29 from `qwen-chat`/`qwen-agentic`) | — | — | retired, containers not created. ⚠ `:8092` is additionally held by `ridge-llama-proxy` on the tailnet IP, so this service **cannot** be started there as-is |
+
+**Both 2026-07-30 additions run on the EXISTING `chadrock-rocmfpx:latest`
+image** (ciru-ai/ROCmFPX @090e317b, Vulkan) — no new build was needed.
+Chadrockv2's model card implies a HIP build is required (`DEVICE=ROCm0`, and
+`LLAMA_SERVER_BIN` pointing at a `build-strix-rocmfp4-quality-hip` path on the
+author's machine). That is **wrong for this box**: the ROCmFPX tensor types are
+a *fork* feature, not a backend feature, and the FP6 types are already in the
+pinned commit. Verified by loading the exact GGUF on the Vulkan build and
+generating correctly. Don't spend an hour building a HIP image for these.
+
+**Start/stop these through ARIA, not docker.** Since 2026-07-29 the
+model-server registry (`api/aria/infrastructure/model_servers.py`) is the
+control plane: it knows which runtime fork each model needs, enforces
+RAM exclusivity + a live GTT check, and is reachable from the dashboard,
+`POST /api/v1/infrastructure/model-servers/{slug}/start|stop`, or Hermes MCP.
 
 `qwen3.6-35b-a3b` is now genuinely **single-consumer** (Hermes main chat) as of
 this evening — the auxiliary-task sharing this table used to describe was
