@@ -288,7 +288,11 @@ class CodingSessionManager:
         routing_meta = None
         if model is None and settings.coding_routing_enabled:
             try:
-                from aria.agents.routing import ComplexityRouter, is_routable_backend
+                from aria.agents.routing import (
+                    ComplexityRouter,
+                    QuotaCooldownError,
+                    is_routable_backend,
+                )
 
                 if is_routable_backend(backend):
                     verdict = await ComplexityRouter(self.db).classify(
@@ -302,6 +306,11 @@ class CodingSessionManager:
                         "routed coding task -> %s/%s (tier=%s, %s)",
                         verdict.backend, verdict.model, verdict.tier, verdict.why,
                     )
+            except QuotaCooldownError:
+                # Deliberately NOT swallowed like other routing failures: with no
+                # fallback configured, an exhausted Claude quota must stop the
+                # spawn rather than quietly run the task on a weaker model.
+                raise
             except Exception as exc:
                 logger.warning("complexity routing failed (%s); using defaults", exc)
 

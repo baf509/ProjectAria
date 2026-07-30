@@ -220,9 +220,15 @@ class Settings(BaseSettings):
     # fallback would itself have failed. `pool` reaches laguna directly via
     # pool_api_url. Note it consumes the single laguna coding slot, so if a
     # coding session already holds it the fallback queues rather than evicting.
-    coding_routing_fallback_backend: str = "pool"
-    coding_routing_fallback_llm: str = ""          # unused by the pool backend
-    coding_routing_fallback_model: str = "laguna-s21-rocmfp4-strixkvspine-v4"
+    # EMPTY = NO FALLBACK, by deliberate choice (Ben, 2026-07-30): when the
+    # Claude quota is exhausted a coding task should FAIL AND PAUSE, not quietly
+    # continue on a weaker local model and produce work of a different standard.
+    # Set this to a backend name to re-enable demotion; `pool` was the old
+    # default and pointed at a server that has since been shut down, so the
+    # "fallback" was a broken path pretending to be a safety net.
+    coding_routing_fallback_backend: str = ""
+    coding_routing_fallback_llm: str = ""
+    coding_routing_fallback_model: str = ""
     coding_routing_quota_cooldown_minutes: int = 60
 
     infrastructure_root: str = "/home/ben/Development/infrastructure"

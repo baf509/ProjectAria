@@ -2,6 +2,51 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-30 later] - No quota fallback; 1:1 agent↔model bindings; Hermes memory unstuck
+
+### Changed
+- **The Claude-quota fallback is OFF by default.** `coding_routing_fallback_backend`
+  now defaults to `""` — an exhausted quota makes a coding task **fail and pause**
+  instead of quietly finishing on a weaker local model (Ben's call: a silent
+  downgrade produces work to a different standard than the one asked for). This
+  needed a dedicated `QuotaCooldownError`, because `start_session` wraps routing
+  in a broad `except Exception -> use defaults`; a generic raise would have been
+  swallowed and the task would have run on claude_code straight into the dead
+  quota. Setting a backend re-enables demotion (both paths tested).
+- **Agents are 1:1 with model servers.** `pi-coding` and `pi-coding-ridge` were
+  BOTH on Ridge; `pi-coding` now runs locally on Chadrockv2 via the `agentic`
+  backend slot (`AGENTIC_URL` :8103 → :8105, that slot was documented unused),
+  and `search-agent` moved from `llamacpp` to its own `context1` backend.
+  Bound: pi-coding→Chadrockv2, pi-coding-ridge→Ridge, search-agent→context1-Q4.
+  Verified the one-agent-per-server rule rejects a second bind with a 409.
+- **`qwen3.6-35b-a3b-Q4` moved :8092 → :8107.** `ridge-llama-proxy` holds :8092
+  on the tailnet IP, so that service could never have bound there.
+
+### Fixed
+- **selfcheck alerted on a deliberately-stopped server.** With chadrock shut
+  down (`pool_enabled=false`) the probe reported DEGRADED every tick; each
+  alert woke the Hermes triage cron, which spawned a diagnostic coding agent to
+  investigate a server that is off on purpose. The probe is now gated on
+  `pool_enabled`, matching how context1 and `/health/services` already omit
+  disabled backends rather than counting them unhealthy. This was the upstream
+  cause of the alert-triage loop, not just its symptom.
+- **Hermes memory was permanently full at 2,198/2,200 chars**, so every write
+  failed. Three causes, all fixed: (1) transient junk written by the stuck cron
+  (an alert id, a "watch logic executed" note) — purged; (2) project detail that
+  belongs in ARIA's unbounded vector memory — moved there via `add_memory`, with
+  a pointer left behind; (3) the cap itself was too small for a five-machine
+  setup — raised 2200 → 3500 (~875 tokens/prompt, negligible against the 64k
+  floor every model now clears). Content also had stale ports; rewritten with
+  the current map and an explicit "never write transient state here" rule.
+  Headroom went from -9 chars to 1,333.
+- Triage cron no longer curls the dead `8081/8092/8093` endpoints; it calls
+  `list_model_servers` and is told that stopped servers are not incidents.
+
+### Notes
+- 981 tests pass. Hermes config + cron + memory each backed up before editing.
+- Hermes can now select `chadrockv2` and `qwythos` as models (providers +
+  aliases added; both clear its 64,000-token floor).
+
 ## [2026-07-30] - Chadrockv2 + Qwythos wired up; MCP `id`-alias fix for the alert-triage loop
 
 ### Fixed

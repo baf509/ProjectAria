@@ -203,15 +203,17 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         slug="qwen3.6-35b-a3b-Q4",
         description="Qwen3.6-35B-A3B-MTP UD-Q4_K_XL on the charlie12345 rocmfp4-llama "
         "HIP runtime. Profile-gated (`qwen`), retired, not currently created. Designed "
-        "to run TOGETHER with qwen3.6-27b-Q8 (~61 GiB pair). NOTE: :8092 is also bound "
-        "by ridge-llama-proxy on the tailnet IP — localhost:8092 will look free even "
-        "when it isn't reachable from the tailnet side.",
+        "to run TOGETHER with qwen3.6-27b-Q8 (~61 GiB pair). Moved off :8092 to :8107 "
+        "on 2026-07-30 — ridge-llama-proxy holds :8092 on the tailnet IP, so this "
+        "service could never have bound there while the proxy runs.",
         runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
         runtime_ref="branch mtp-rocmfp4-strix",
         backend_device="HIP (ROCm0)",
         # NOT under models/llm/ — this compose project mounts its own ./models dir.
         model_file="qwen-rocmfp4/models/Qwen3.6-35B-A3B-MTP/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
-        port=8092,
+        # MOVED 8092 -> 8107 (2026-07-30): ridge-llama-proxy holds :8092 on the
+        # tailnet IP, so this service could never bind there while the proxy runs.
+        port=8107,
         compose_file="qwen-rocmfp4/docker-compose.yml",
         # renamed from qwen-chat 2026-07-29 (service + container_name, safe
         # while not created) so the compose service matches this slug.

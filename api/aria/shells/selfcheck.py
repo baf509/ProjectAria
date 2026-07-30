@@ -77,8 +77,18 @@ async def run_checks(db) -> list[dict]:
     # exact same GPU-wedge crash risk as llamacpp_url's server (both are
     # deliberately restart:"no" for that reason) and was the OTHER party in
     # that day's qwen crash. Without this, a chadrock crash pages no one.
-    ok, detail = await _check_http(settings.pool_api_url.rstrip("/") + "/models")
-    checks.append({"name": "chadrock", "ok": ok, "detail": detail})
+    #
+    # SKIPPED when pool_enabled is false (2026-07-30). Ben shut chadrock down
+    # deliberately, so an unconditional probe reported DEGRADED every 10
+    # minutes forever — and each one enqueued an alert that woke the Hermes
+    # alert-triage cron, which spun up a diagnostic coding agent to
+    # investigate a server that is off ON PURPOSE. A deliberately-stopped
+    # service is not an incident. Mirrors how context1_enabled and the
+    # /health/services probes already omit disabled backends rather than
+    # counting them unhealthy.
+    if settings.pool_enabled:
+        ok, detail = await _check_http(settings.pool_api_url.rstrip("/") + "/models")
+        checks.append({"name": "chadrock", "ok": ok, "detail": detail})
 
     # GPU unified-memory (GTT) pressure — see _check_gtt docstring.
     ok, detail = _check_gtt()

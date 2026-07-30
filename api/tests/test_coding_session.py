@@ -473,3 +473,48 @@ async def test_send_input_pi_code_without_shell_falls_back_to_process_manager():
 
     assert result is True  # _make_manager's mock_proc_mgr.send_input returns True
     mgr.process_manager.send_input.assert_awaited_once_with("sess-pi", "keep going")
+
+
+class TestQuotaCooldownNoFallback:
+    """With no fallback backend configured (the 2026-07-30 default), an
+    exhausted Claude quota must FAIL AND PAUSE, not silently downgrade."""
+
+    @pytest.mark.asyncio
+    async def test_cooldown_raises_when_no_fallback_configured(self):
+        from datetime import datetime, timedelta, timezone
+        from aria.agents.routing import (
+            ComplexityRouter,
+            QuotaCooldownError,
+            RoutingVerdict,
+        )
+
+        router = ComplexityRouter(db=MagicMock())
+        verdict = RoutingVerdict(
+            tier="standard", backend="claude_code", model="claude-sonnet-5",
+            llm="", why="", confidence=1.0, source="heuristic", judge_model=None,
+        )
+        cooled = datetime.now(timezone.utc) + timedelta(minutes=30)
+        with patch("aria.agents.routing.get_cooldown", AsyncMock(return_value=cooled)), \
+             patch("aria.agents.routing.settings.coding_routing_fallback_backend", ""):
+            with pytest.raises(QuotaCooldownError, match="no fallback"):
+                await router._apply_availability(verdict)
+
+    @pytest.mark.asyncio
+    async def test_cooldown_still_demotes_when_fallback_is_configured(self):
+        """Opt-in path: setting a backend restores the old demotion behaviour."""
+        from datetime import datetime, timedelta, timezone
+        from aria.agents.routing import ComplexityRouter, RoutingVerdict
+
+        router = ComplexityRouter(db=MagicMock())
+        verdict = RoutingVerdict(
+            tier="standard", backend="claude_code", model="claude-sonnet-5",
+            llm="", why="", confidence=1.0, source="heuristic", judge_model=None,
+        )
+        cooled = datetime.now(timezone.utc) + timedelta(minutes=30)
+        with patch("aria.agents.routing.get_cooldown", AsyncMock(return_value=cooled)), \
+             patch("aria.agents.routing.settings.coding_routing_fallback_backend", "pi-code"), \
+             patch("aria.agents.routing.settings.coding_routing_fallback_model", "x"), \
+             patch("aria.agents.routing.settings.coding_routing_fallback_llm", ""):
+            out = await router._apply_availability(verdict)
+        assert out.backend == "pi-code"
+        assert out.source == "fallback"

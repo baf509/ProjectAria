@@ -175,6 +175,15 @@ class _CacheEntry:
     expires_at: float
 
 
+class QuotaCooldownError(RuntimeError):
+    """Claude quota is in cooldown and no fallback backend is configured.
+
+    Deliberately distinct from every other routing failure: routing is
+    otherwise advisory and degrades to the standard tier, but this one must
+    reach the caller and stop the spawn.
+    """
+
+
 class ComplexityRouter:
     """Classify a coding task and pick the backend/model to run it on."""
 
@@ -366,6 +375,21 @@ class ComplexityRouter:
             return verdict
 
         mins = max(1, int((cooled_until - datetime.now(timezone.utc)).total_seconds() // 60))
+
+        # No fallback configured = fail and pause, on purpose. Raising a
+        # DEDICATED type matters: start_session wraps routing in a broad
+        # `except Exception -> use defaults`, so a generic raise here would be
+        # swallowed and the task would run on claude_code anyway — straight
+        # into the exhausted quota. QuotaCooldownError is re-raised by that
+        # caller ahead of the generic handler.
+        if not settings.coding_routing_fallback_backend:
+            raise QuotaCooldownError(
+                f"Claude quota is cooling down for ~{mins}m and no fallback "
+                f"backend is configured (coding_routing_fallback_backend is "
+                f"empty, by design). Not silently downgrading the model — "
+                f"retry after the cooldown, or pin a backend/model explicitly."
+            )
+
         return RoutingVerdict(
             tier=TIER_FALLBACK,
             backend=settings.coding_routing_fallback_backend,

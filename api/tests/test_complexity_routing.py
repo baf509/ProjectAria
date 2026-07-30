@@ -321,18 +321,30 @@ def _db_with_availability(doc):
 
 class TestAvailability:
     @pytest.mark.asyncio
-    async def test_active_cooldown_demotes_to_fallback(self):
+    async def test_active_cooldown_raises_by_default(self):
+        """DEFAULT since 2026-07-30: no fallback is configured, so an exhausted
+        Claude quota must FAIL AND PAUSE rather than quietly finish the task on
+        a weaker model. Ben's call — a silent downgrade produces work to a
+        different standard than the one that was asked for."""
+        from aria.agents.routing import QuotaCooldownError
+
         future = datetime.now(timezone.utc) + timedelta(minutes=30)
         db = _db_with_availability({"_id": CLAUDE_PROVIDER, "cooled_until": future})
         router = ComplexityRouter(db)
-        verdict = await router.classify("design the new fleet API")
+        with pytest.raises(QuotaCooldownError, match="no fallback"):
+            await router.classify("design the new fleet API")
+
+    @pytest.mark.asyncio
+    async def test_active_cooldown_demotes_when_fallback_configured(self):
+        """Opt-in: setting coding_routing_fallback_backend restores demotion."""
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        db = _db_with_availability({"_id": CLAUDE_PROVIDER, "cooled_until": future})
+        router = ComplexityRouter(db)
+        with patch("aria.agents.routing.settings.coding_routing_fallback_backend", "pool"), \
+             patch("aria.agents.routing.settings.coding_routing_fallback_model", "laguna-x"):
+            verdict = await router.classify("design the new fleet API")
         assert verdict.tier == TIER_FALLBACK
         assert verdict.source == "fallback"
-        assert verdict.backend != "claude_code"
-        # 2026-07-28: the fallback backend moved from pi-code to `pool` (a
-        # subprocess CLI backend run against laguna directly), so it carries a
-        # model but no `llm` pin — `llm` is meaningless for a non-pi-code
-        # backend and is documented as such in config.py.
         assert verdict.backend == "pool"
         assert verdict.model
         assert "quota" in verdict.why
