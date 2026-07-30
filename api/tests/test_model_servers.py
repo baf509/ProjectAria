@@ -713,3 +713,51 @@ async def test_sleep_noop_when_already_asleep(manager):
 async def test_sleep_refused_for_onbox_server(manager):
     with pytest.raises(ModelServerSafetyError, match="no sleep command"):
         await manager.sleep("gemma-4-e4b-Q4")
+
+
+# ────────────────────────── binding drives real routing (not just a label) ──
+
+@pytest.mark.asyncio
+async def test_resolve_endpoint_static_slug():
+    from aria.infrastructure.model_servers import resolve_endpoint
+    assert await resolve_endpoint("Chadrock-ROCmFP6-qwen3.6-27b") == "http://localhost:8105/v1"
+    assert await resolve_endpoint("Qwythos-27b-Q8") == "http://localhost:8106/v1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_endpoint_prefers_override_for_offbox():
+    """Ridge is reachable ONLY via its tailnet-bound proxy — localhost is
+    refused there, so the override must win over any port-derived guess."""
+    from aria.infrastructure.model_servers import resolve_endpoint
+    assert await resolve_endpoint("Ridge-Qwen3.6-35B-A3B") == "http://100.123.245.84:8092/v1"
+
+
+@pytest.mark.asyncio
+async def test_resolve_endpoint_dynamic_and_unknown():
+    from aria.infrastructure.model_servers import resolve_endpoint
+    db = FakeDB()
+    db.model_servers.docs.append(_dynamic_doc(slug="pulled-x", port=8120))
+    assert await resolve_endpoint("pulled-x", db) == "http://localhost:8120/v1"
+    assert await resolve_endpoint("nope", db) is None
+
+
+def test_get_adapter_caches_per_base_url():
+    """Two agents on the same backend+model but different bound servers must
+    NOT share an adapter — otherwise the second silently talks to the first's
+    server. Adapter construction is stubbed so this doesn't need the openai
+    SDK (present in the API venv, not necessarily in the test interpreter)."""
+    from types import SimpleNamespace
+    from aria.llm.manager import LLMManager
+
+    mgr = LLMManager()
+    with patch("aria.llm.llamacpp.LlamaCppAdapter", lambda **kw: SimpleNamespace(**kw)):
+        a = mgr.get_adapter("agentic", "m", base_url="http://localhost:8105/v1")
+        b = mgr.get_adapter("agentic", "m", base_url="http://localhost:8106/v1")
+        again = mgr.get_adapter("agentic", "m", base_url="http://localhost:8105/v1")
+        default = mgr.get_adapter("agentic", "m")
+
+    assert a.base_url == "http://localhost:8105/v1"
+    assert b.base_url == "http://localhost:8106/v1"
+    assert a is not b            # distinct servers -> distinct adapters
+    assert again is a            # same server -> cached
+    assert default is not a      # unbound falls back to the static AGENTIC_URL

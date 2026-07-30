@@ -299,6 +299,37 @@ export const apiClient = {
     return data
   },
 
+  async bindModelServer(slug: string, agent: string, force = false): Promise<any> {
+    const res = await fetch(
+      `${API_URL}/api/v1/infrastructure/model-servers/${encodeURIComponent(slug)}/bind`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+        },
+        body: JSON.stringify({ agent, force }),
+      },
+    )
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
+  async unbindModelServer(agent: string): Promise<any> {
+    const res = await fetch(`${API_URL}/api/v1/infrastructure/model-servers/unbind`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      },
+      body: JSON.stringify({ agent }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
   async listModelRuntimes(): Promise<any> {
     const res = await apiFetch('/infrastructure/model-servers/runtimes')
     return res.json()

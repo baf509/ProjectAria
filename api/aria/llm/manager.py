@@ -71,7 +71,7 @@ class LLMManager:
             "failures": dict(self._failure_counts),
         }
 
-    def get_adapter(self, backend: str, model: str) -> LLMAdapter:
+    def get_adapter(self, backend: str, model: str, base_url: str | None = None) -> LLMAdapter:
         """
         Get or create an LLM adapter.
 
@@ -85,14 +85,17 @@ class LLMManager:
         Raises:
             ValueError: If backend is unknown or API key is missing
         """
-        key = f"{backend}:{model}"
+        # base_url is part of the identity: an agent bound to a specific model
+        # server must not be handed a cached adapter pointing at the backend's
+        # static default (or at another agent's server).
+        key = f"{backend}:{model}" if base_url is None else f"{backend}:{model}@{base_url}"
 
         if key not in self.adapters:
             if backend == "llamacpp":
                 try:
                     from aria.llm.llamacpp import LlamaCppAdapter
                     self.adapters[key] = LlamaCppAdapter(
-                        base_url=settings.llamacpp_url,
+                        base_url=base_url or settings.llamacpp_url,
                         model=model,
                         api_key=settings.llamacpp_api_key,
                     )
@@ -107,7 +110,7 @@ class LLMManager:
                 try:
                     from aria.llm.context1 import ContextOneAdapter
                     self.adapters[key] = ContextOneAdapter(
-                        base_url=settings.context1_url,
+                        base_url=base_url or settings.context1_url,
                         model=model,
                         api_key=settings.context1_api_key,
                     )
@@ -123,7 +126,7 @@ class LLMManager:
                 try:
                     from aria.llm.llamacpp import LlamaCppAdapter
                     self.adapters[key] = LlamaCppAdapter(
-                        base_url=settings.agentic_url,
+                        base_url=base_url or settings.agentic_url,
                         model=model,
                         api_key=settings.agentic_api_key,
                     )
@@ -141,7 +144,7 @@ class LLMManager:
                 try:
                     from aria.llm.llamacpp import LlamaCppAdapter
                     self.adapters[key] = LlamaCppAdapter(
-                        base_url=settings.ridge_url,
+                        base_url=base_url or settings.ridge_url,
                         model=model,
                         api_key=settings.ridge_api_key,
                         timeout_seconds=settings.ridge_timeout_seconds,

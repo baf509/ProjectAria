@@ -426,6 +426,30 @@ async def _find_agent_doc(db: AsyncIOMotorDatabase, agent_id_or_slug: str) -> Op
     return await db.agents.find_one({"slug": agent_id_or_slug})
 
 
+async def resolve_endpoint(slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> Optional[str]:
+    """OpenAI-compatible base_url for a bound model server, or None.
+
+    This is what turns an agent's `model_server` binding from a label into
+    real routing: the orchestrator hands the result to the LLM adapter
+    instead of the backend's static *_URL, so re-binding an agent to a
+    different local model actually moves its traffic.
+
+    Prefers loopback — this runs ON the box that hosts the servers. An
+    endpoint_override wins (Ridge is only reachable through its tailnet-bound
+    proxy; localhost there is refused).
+    """
+    spec = _BY_SLUG.get(slug)
+    if spec is None and db is not None:
+        doc = await db.model_servers.find_one({"slug": slug})
+        if doc:
+            spec = ModelServerManager._spec_from_doc(doc)
+    if spec is None:
+        return None
+    if spec.endpoint_override:
+        return spec.endpoint_override
+    return f"http://localhost:{spec.port}/v1" if spec.port else None
+
+
 class ModelServerManager:
     """Start/stop/bind the local model servers. The single control plane —
     see the module docstring for why manual docker commands are retired."""

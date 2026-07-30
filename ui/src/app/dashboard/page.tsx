@@ -177,6 +177,21 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleRebindAgent(agent: Agent, slug: string) {
+    setServerBusy(agent.slug)
+    setServerError(null)
+    try {
+      if (slug) await apiClient.bindModelServer(slug, agent.slug)
+      else await apiClient.unbindModelServer(agent.slug)
+      setStatusMessage(`${agent.name} -> ${slug || 'unbound'}`)
+    } catch (e: any) {
+      setServerError({ slug: agent.slug, message: e.message || String(e) })
+    } finally {
+      setServerBusy(null)
+      await Promise.all([refreshDashboard(), refreshModelServers()])
+    }
+  }
+
   async function handleToggleAgent(agent: Agent, force = false) {
     setServerBusy(agent.slug)
     setServerError(null)
@@ -371,8 +386,29 @@ export default function DashboardPage() {
                     <p className="text-sm text-stone-200">{agent.llm.backend}/{agent.llm.model}</p>
                     <p className="mb-1 mt-3 text-xs text-stone-500">Model server</p>
                     {agent.model_server ? (
-                      <div className="flex items-center gap-2 text-sm">
-                        <span className="min-w-0 truncate text-stone-200">{agent.model_server}</span>
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        {server && !server.onbox ? (
+                          // Off-box (Ridge): pinned to its own hardware, not a choice.
+                          <span className="min-w-0 truncate text-stone-200">
+                            {agent.model_server}
+                            <span className="ml-1 text-xs text-stone-500">(pinned — off-box)</span>
+                          </span>
+                        ) : (
+                          <select
+                            value={agent.model_server}
+                            disabled={serverBusy !== null}
+                            onChange={(e) => void handleRebindAgent(agent, e.target.value)}
+                            className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-950 px-2 py-1 text-sm text-stone-100 focus:border-amber-400 focus:outline-none disabled:opacity-40"
+                          >
+                            {models
+                              .filter((m) => m.onbox && m.startable)
+                              .map((m) => (
+                                <option key={m.slug} value={m.slug}>
+                                  {m.slug} ({m.state})
+                                </option>
+                              ))}
+                          </select>
+                        )}
                         <span className={server?.state === 'running' ? 'text-emerald-400' : 'text-stone-500'}>
                           {server?.state || 'unknown'}
                         </span>

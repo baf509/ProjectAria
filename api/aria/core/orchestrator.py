@@ -304,9 +304,28 @@ class Orchestrator:
                     continue
 
                 try:
+                    # An agent bound to a model server routes to THAT server,
+                    # not the backend's static *_URL. This is what makes the
+                    # binding real rather than decorative: re-binding the local
+                    # pi-coding agent to a different local model moves its
+                    # traffic. Never applied to a fallback candidate — those
+                    # name a different backend on purpose.
+                    bound_url = None
+                    if not is_fallback and agent.get("model_server"):
+                        try:
+                            from aria.infrastructure.model_servers import resolve_endpoint
+                            bound_url = await resolve_endpoint(
+                                agent["model_server"], self.db
+                            )
+                        except Exception as exc:  # never block a turn on this
+                            logger.warning(
+                                "model_server endpoint resolution failed for %s: %s",
+                                agent.get("model_server"), exc,
+                            )
                     adapter = llm_manager.get_adapter(
                         backend_name,
                         candidate_llm_config["model"],
+                        base_url=bound_url,
                     )
                     if is_fallback:
                         primary_backend = self._get_llm_candidates(agent, conversation)[0][0]["backend"]
