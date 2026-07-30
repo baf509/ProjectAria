@@ -2,6 +2,57 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-30] - Chadrockv2 + Qwythos wired up; MCP `id`-alias fix for the alert-triage loop
+
+### Fixed
+- **`ack_alert` (and 9 sibling MCP tools) rejected the `id` spelling**, which
+  put the gemma-backed "ARIA alert triage" cron into an infinite retry loop
+  ("I cannot pass the id argument... despite the tool schema"). Root cause was
+  a pure contract mismatch, not a backend fault: every listing endpoint
+  serializes its primary key as plain `id`, but the matching action tools
+  required `alert_id`/`session_id`/`conversation_id`/`workflow_id`. A model
+  that reads a list and acts on an item naturally passes `id`. All ten tools
+  now accept either spelling via a shared `_one_id` resolver, with a clear
+  error when both are absent. VERIFIED end-to-end against the live MCP server
+  over JSON-RPC: `ack_alert(id=...)` returns ok and the DB shows `acked=true`.
+- **Test suite could shell out to the real docker daemon.** Proven, not
+  theoretical: `test_start_unstartable_without_force_raises` called
+  `manager.start()` un-mocked, relying on the unstartable gate to raise first;
+  the moment Chadrockv2 became startable the test fell through and really ran
+  `docker compose up -d chadrockv2`, launching a 27 GiB model server from a
+  unit test. Added an autouse fixture that makes any un-patched `_run` fail
+  loudly, and rebuilt the unstartable/unwired tests on a synthetic spec so
+  they no longer depend on which model happens to be un-wired.
+
+### Added
+- **Chadrock-ROCmFP6-qwen3.6-27b is startable** (`:8105`,
+  `infrastructure/chadrockv2/`). **No new image was needed** — the registry's
+  "needs a HIP build" blocker was wrong. The model card's bundled profile sets
+  `DEVICE=ROCm0` and points `LLAMA_SERVER_BIN` at a
+  `build-strix-rocmfp4-quality-hip` path on the *author's* machine, which read
+  as a hard requirement; in fact the ROCmFPX tensor types are a FORK feature,
+  not a backend one, and the FP6 types are already in the pinned 090e317b
+  commit. Verified by loading the exact GGUF on the existing
+  `chadrock-rocmfpx:latest` Vulkan build and generating correctly. Configured
+  per the profile: 65536 ctx, q8_0 KV, MTP draft (n_max 6), greedy sampling,
+  reasoning off, text-only. MEASURED ~30 GiB resident at 65536 ctx.
+- **Qwythos-27b-Q8 is startable** (`:8106`, `infrastructure/qwythos/`), on the
+  same already-built Vulkan image, driving **both** of its extras at once —
+  the F16 vision projector (`--mmproj`, the only vision-capable local model on
+  this box) and the native MTP head (`--spec-type draft-mtp`). 65536 ctx
+  (weights go to 1M; KV cost is why they don't here, and it clears Hermes's
+  hard 64,000-token floor). MEASURED ~32 GiB resident.
+- Both entries carry measured `resident_gib` rather than file-size guesses,
+  and both were started AND stopped through ARIA's own control plane as the
+  integration test (all three GPU servers co-resident peaked at 88.1/124 GiB,
+  well under the 92% gate; teardown returned GTT to its 26.1 GiB baseline).
+
+### Notes
+- 976 tests pass.
+- Neither model is left running — they are wired and verified, then stopped,
+  matching the "release idle resources" preference. Start either from the
+  dashboard, `POST /infrastructure/model-servers/{slug}/start`, or Hermes.
+
 ## [2026-07-29] - Model-server control plane: registry of the local LLM servers + agent binding
 
 Prompted by downloading two new local models (Chadrockv2, Qwythos) with no

@@ -134,6 +134,27 @@ class DaemonDownDocker:
         return 1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
 
 
+@pytest.fixture(autouse=True)
+def _never_touch_real_docker():
+    """Hard stop against the suite shelling out to the real docker daemon.
+
+    Not hypothetical: on 2026-07-30 `test_start_unstartable_without_force_raises`
+    called manager.start() without mocking _run, relying on the unstartable
+    gate to raise before any subprocess. The moment Chadrockv2 became startable
+    that gate stopped firing, the test fell through, and it really ran
+    `docker compose up -d chadrockv2` — starting a 27 GiB model server from a
+    unit test. Tests that want docker behaviour patch _run themselves; this
+    default makes the un-patched path fail loudly instead of escaping.
+    """
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            f"test attempted a real subprocess: {' '.join(args)!r}. "
+            "Patch aria.infrastructure.model_servers._run in this test."
+        )
+    with patch.object(ms, "_run", _forbidden):
+        yield
+
+
 @pytest.fixture
 def manager():
     return ModelServerManager()
@@ -196,7 +217,10 @@ async def test_status_reports_live_docker_state(manager):
     assert by_slug["Chadrock-Laguna-S-2.1"]["state"] == "exited"
     assert by_slug["gemma-4-e4b-Q4"]["state"] == "running"
     assert by_slug["Laguna-S-2.1"]["state"] == "not_created"  # not in container_states
-    assert by_slug["Chadrock-ROCmFP6-qwen3.6-27b"]["state"] == "unwired"  # no container_name
+    # Chadrockv2 is wired as of 2026-07-30 (compose service + container), so it
+    # reports not_created like any other absent container. The synthetic-spec
+    # tests below still cover the "unwired"/unstartable branches.
+    assert by_slug["Chadrock-ROCmFP6-qwen3.6-27b"]["state"] == "not_created"
     assert by_slug["Ridge-Qwen3.6-35B-A3B"]["state"] == "external"  # onbox=False
     assert by_slug["gemma-4-e4b-Q4"]["gtt_used_gib"] == 25.0
 
@@ -332,20 +356,47 @@ async def test_start_paused_container_raises_clear_error(manager):
     assert not docker.calls
 
 
+# Every real onbox entry is startable as of 2026-07-30, so the unstartable
+# branches are exercised with a synthetic spec rather than by pinning a test to
+# whichever model happens to be un-wired that week.
+_UNWIRED = ms.ModelServerSpec(
+    slug="synthetic-unwired",
+    description="test-only",
+    runtime_repo="", runtime_ref="", backend_device="",
+    startable=False,
+    not_startable_reason="No compose service exists yet; needs a build.",
+)
+
+
+@pytest.fixture
+def unwired_registry():
+    # get_spec reads _BY_SLUG; status() walks REGISTRY — patch both.
+    with patch.dict(ms._BY_SLUG, {"synthetic-unwired": _UNWIRED}), \
+         patch.object(ms, "REGISTRY", ms.REGISTRY + (_UNWIRED,)):
+        yield
+
+
 @pytest.mark.asyncio
-async def test_start_unstartable_without_force_raises(manager):
+async def test_start_unstartable_without_force_raises(manager, unwired_registry):
     with pytest.raises(ModelServerSafetyError, match="No compose service"):
-        await manager.start("Chadrock-ROCmFP6-qwen3.6-27b")
+        await manager.start("synthetic-unwired")
 
 
 @pytest.mark.asyncio
-async def test_start_unstartable_with_force_still_fails_no_compose_service(manager):
+async def test_start_unstartable_with_force_still_fails_no_compose_service(manager, unwired_registry):
     # force bypasses the startable gate, but there's still no compose_file
     # configured, so it must fail loudly rather than silently no-op.
     docker = FakeDocker({})
     with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
         with pytest.raises(ModelServerSafetyError, match="no compose service configured"):
-            await manager.start("Chadrock-ROCmFP6-qwen3.6-27b", force=True)
+            await manager.start("synthetic-unwired", force=True)
+
+
+@pytest.mark.asyncio
+async def test_status_reports_unwired_for_container_less_spec(manager, unwired_registry):
+    with patch.object(ms, "_run", FakeDocker()), patch.object(ms, "_read_gtt_gib", return_value=None):
+        results = await manager.status()
+    assert {r["slug"]: r["state"] for r in results}["synthetic-unwired"] == "unwired"
 
 
 @pytest.mark.asyncio
@@ -591,9 +642,11 @@ class TestPullValidation:
     async def test_port_allocation_skips_used_ports(self):
         svc = ModelPullService()
         db = FakeDBWithServers()
-        db.model_servers.docs.append(_dynamic_doc(slug="taken", port=8105))
+        db.model_servers.docs.append(_dynamic_doc(slug="taken", port=8107))
         port = await svc._validate(db, "org/repo", "m.gguf", "ok-name", "mainline-cpu", None)
-        assert port == 8106  # 8105 taken by the dynamic entry
+        # 8105/8106 are static (chadrockv2, qwythos) and the dynamic fixture
+        # takes 8107, so allocation lands on the next free port.
+        assert port == 8108
         with pytest.raises(ModelServerError, match="already assigned"):
             await svc._validate(db, "org/repo", "m.gguf", "ok-name", "mainline-cpu", 8103)  # static qwen port
 

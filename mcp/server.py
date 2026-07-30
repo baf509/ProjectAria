@@ -62,6 +62,21 @@ async def _request(method: str, path: str, **kw: Any) -> Any:
         return r.json() if "application/json" in ctype else r.text
 
 
+def _one_id(canonical: Optional[str], alias: Optional[str], name: str) -> str:
+    """Resolve a canonical `<thing>_id` parameter against a bare `id` alias.
+
+    Every listing endpoint serializes its primary key as plain `id` (or `_id`
+    for workflows), so a model that reads a list and then calls the matching
+    action naturally passes `id=...`. Rejecting that is a pure contract wart —
+    it cost a gemma-backed alert-triage cron an infinite retry loop on
+    2026-07-30. Accept either spelling; require exactly one.
+    """
+    value = canonical or alias
+    if not value:
+        raise ValueError(f"{name} is required (pass `{name}` or its `id` alias)")
+    return value
+
+
 async def _resolve_project(slug_or_id: str) -> dict:
     """Fetch a project by slug or id. ProjectAria's /projects/{id} accepts both."""
     return await _request("GET", f"/api/v1/projects/{slug_or_id}")
@@ -361,9 +376,10 @@ async def list_alerts(unacked_only: bool = True, limit: int = 50) -> dict:
 
 
 @mcp.tool()
-async def ack_alert(alert_id: str) -> dict:
-    """Acknowledge an alert by id so it is not relayed again."""
-    return await _request("POST", f"/api/v1/alerts/{alert_id}/ack")
+async def ack_alert(alert_id: Optional[str] = None, id: Optional[str] = None) -> dict:
+    """Acknowledge an alert by id so it is not relayed again. Takes the id
+    under either `alert_id` or `id` — list_alerts returns it as `id`."""
+    return await _request("POST", f"/api/v1/alerts/{_one_id(alert_id, id, 'alert_id')}/ack")
 
 
 # ─────────────────────────────────────────────────── ARIA chat / orchestrator ──
@@ -421,10 +437,13 @@ async def get_usage_cost(days: int = 7) -> Any:
 
 
 @mcp.tool()
-async def read_conversation(conversation_id: str, message_limit: int = 20) -> dict:
-    """Read one conversation including its recent messages."""
+async def read_conversation(
+    conversation_id: Optional[str] = None, message_limit: int = 20, id: Optional[str] = None,
+) -> dict:
+    """Read one conversation including its recent messages. Takes the id under
+    either `conversation_id` or `id` — list_conversations returns it as `id`."""
     return await _request(
-        "GET", f"/api/v1/conversations/{conversation_id}",
+        "GET", f"/api/v1/conversations/{_one_id(conversation_id, id, 'conversation_id')}",
         params={"msg_limit": message_limit},
     )
 
@@ -659,19 +678,20 @@ async def list_nodes() -> Any:
 
 
 @mcp.tool()
-async def get_coding_session(session_id: str) -> dict:
+async def get_coding_session(session_id: Optional[str] = None, id: Optional[str] = None) -> dict:
     """Get one coding sub-agent's structured status: status, backend/model,
     workspace, routing decision, `error` (why it failed, if it did),
     `result_summary` (set once it reaches a terminal state), and `gate_runs`
     (Verification Gate history — [{at, passed, tail}], empty if the gate is
     off or never ran). Prefer this over list_coding_sessions + client-side
     filtering when you already have the id, and over get_coding_output when
-    you want a verdict rather than raw terminal text."""
-    return await _request("GET", f"/api/v1/coding/sessions/{session_id}")
+    you want a verdict rather than raw terminal text. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
+    return await _request("GET", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}")
 
 
 @mcp.tool()
-async def wait_for_coding_session(session_id: str, timeout_seconds: float = 60.0) -> dict:
+async def wait_for_coding_session(session_id: Optional[str] = None, timeout_seconds: float = 60.0, id: Optional[str] = None) -> dict:
     """Block until a coding sub-agent reaches a terminal state (completed/
     failed/stopped) or timeout_seconds elapses (clamped server-side to
     [1, 300]), then return it with `result_summary` attached — the same join
@@ -680,43 +700,48 @@ async def wait_for_coding_session(session_id: str, timeout_seconds: float = 60.0
     instead of handing the human a session id to poll themselves. If it comes
     back with timed_out=true, the session is still running — check back later
     with get_coding_session rather than waiting inline again (a Ralph-looped
-    or long task will keep timing out here)."""
+    or long task will keep timing out here). Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
     return await _request(
         "GET",
-        f"/api/v1/coding/sessions/{session_id}/wait",
+        f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/wait",
         params={"timeout": timeout_seconds},
         timeout=timeout_seconds + 15,
     )
 
 
 @mcp.tool()
-async def get_coding_diff(session_id: str) -> dict:
+async def get_coding_diff(session_id: Optional[str] = None, id: Optional[str] = None) -> dict:
     """Get the working-tree diff a coding sub-agent has produced so far in its
     workspace. Use this to summarize what a session actually changed instead
-    of paraphrasing raw terminal scrollback from get_coding_output."""
-    return await _request("GET", f"/api/v1/coding/sessions/{session_id}/diff")
+    of paraphrasing raw terminal scrollback from get_coding_output. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
+    return await _request("GET", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/diff")
 
 
 @mcp.tool()
-async def get_coding_output(session_id: str, lines: int = 100) -> Any:
-    """Read recent output from a coding sub-agent."""
+async def get_coding_output(session_id: Optional[str] = None, lines: int = 100, id: Optional[str] = None) -> Any:
+    """Read recent output from a coding sub-agent. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
     return await _request(
-        "GET", f"/api/v1/coding/sessions/{session_id}/output", params={"lines": lines}
+        "GET", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/output", params={"lines": lines}
     )
 
 
 @mcp.tool()
-async def send_to_coding_session(session_id: str, text: str) -> dict:
-    """Send input/instructions to a running coding sub-agent."""
+async def send_to_coding_session(text: str, session_id: Optional[str] = None, id: Optional[str] = None) -> dict:
+    """Send input/instructions to a running coding sub-agent. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
     return await _request(
-        "POST", f"/api/v1/coding/sessions/{session_id}/input", json={"text": text}
+        "POST", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/input", json={"text": text}
     )
 
 
 @mcp.tool()
-async def stop_coding_session(session_id: str) -> dict:
-    """Stop a running coding sub-agent."""
-    return await _request("POST", f"/api/v1/coding/sessions/{session_id}/stop")
+async def stop_coding_session(session_id: Optional[str] = None, id: Optional[str] = None) -> dict:
+    """Stop a running coding sub-agent. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """
+    return await _request("POST", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/stop")
 
 
 @mcp.tool()
@@ -767,7 +792,7 @@ async def set_coding_loop(
     ):
         if val is not None:
             body[key] = val
-    return await _request("POST", f"/api/v1/coding/sessions/{session_id}/loop", json=body)
+    return await _request("POST", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}/loop", json=body)
 
 
 # ───────────────────────────────────────────────────────────── workflows ──
@@ -813,19 +838,19 @@ async def create_workflow(
 
 
 @mcp.tool()
-async def run_workflow(workflow_id: str, dry_run: bool = False) -> dict:
+async def run_workflow(workflow_id: Optional[str] = None, dry_run: bool = False, id: Optional[str] = None) -> dict:
     """Run a saved workflow. Returns {run_id, task_id}; poll get_workflow_status
     for step results. dry_run=True validates + renders params without executing
     the actions."""
     return await _request(
-        "POST", f"/api/v1/workflows/{workflow_id}/run", json={"dry_run": dry_run}
+        "POST", f"/api/v1/workflows/{_one_id(workflow_id, id, 'workflow_id')}/run", json={"dry_run": dry_run}
     )
 
 
 @mcp.tool()
-async def get_workflow_status(workflow_id: str) -> dict:
+async def get_workflow_status(workflow_id: Optional[str] = None, id: Optional[str] = None) -> dict:
     """Get a workflow definition plus its recent runs (status + step_results)."""
-    return await _request("GET", f"/api/v1/workflows/{workflow_id}/status")
+    return await _request("GET", f"/api/v1/workflows/{_one_id(workflow_id, id, 'workflow_id')}/status")
 
 
 if __name__ == "__main__":

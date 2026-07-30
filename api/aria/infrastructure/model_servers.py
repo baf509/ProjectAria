@@ -283,37 +283,48 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Chadrock-ROCmFP6-qwen3.6-27b",
-        description="Chadrockv2 Qwen3.6-27B ROCmFP6 STRIX QUALITY. Downloaded "
-        "2026-07-29, not runnable yet: its bundled launch profile requires a "
-        "HIP-built `build-strix-rocmfp4-quality-hip` llama-server binary at a path "
-        "from the author's own machine — no image on this box has that build.",
-        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git (likely — unconfirmed "
-        "which fork/branch produces the quality-hip build target)",
-        runtime_ref="unbuilt",
-        backend_device="HIP (ROCm0) — required, not present on this box",
+        description="Chadrockv2 Qwen3.6-27B ROCmFP6 STRIX QUALITY (Q6_0_ROCMFPX bulk "
+        "+ Q8 attention/FFN bands), text-only, MTP draft speculation, 65536 ctx. "
+        "Runs on the EXISTING ciru-ai ROCmFPX Vulkan image — its bundled profile's "
+        "claim of needing a HIP build was an artifact of the author's own machine "
+        "path; verified loading and generating on Vulkan0 2026-07-30.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="branch agent/laguna-radv-device-lost-20260724 @ 090e317b4e2f998a9470faeb076cf841ba72b739 "
+        "(shared with Chadrock-Laguna-S-2.1 — same chadrock-rocmfpx:latest image)",
+        backend_device="Vulkan0 (not HIP — no /dev/kfd, despite the profile's DEVICE=ROCm0)",
         model_file="models/llm/Chadrockv2-Qwen3.6-27B-ROCmFP6-STRIX-QUALITY/"
         "Chadrockv2-Qwen3.6-27B-ROCmFP6-STRIX-QUALITY.gguf",
-        resident_gib=30,
+        port=8105,
+        compose_file="chadrockv2/docker-compose.yml",
+        service_name="chadrockv2",
+        container_name="chadrockv2",
+        # MEASURED 27 GiB at 4096 ctx (2026-07-30); budgeted for the larger
+        # q8_0 KV at the configured 65536 ctx.
+        resident_gib=34,
         exclusive_with=_exclusive_with("Chadrock-ROCmFP6-qwen3.6-27b"),
-        startable=False,
-        not_startable_reason="No compose service exists yet; needs a new HIP build "
-        "of the ROCmFPX-family fork before it can run.",
     ),
     ModelServerSpec(
         slug="Qwythos-27b-Q8",
-        description="Qwythos-27B-v1 MTP Q8_0 (+ mmproj for vision). Downloaded "
-        "2026-07-29. Standard GGUF, no special tensor types — unlike Chadrockv2, any "
-        "existing MTP-capable runtime on this box can serve it once wired to a "
-        "compose service.",
-        runtime_repo="any existing llama.cpp build on this box with MTP draft support",
-        runtime_ref="not wired to a compose service yet",
-        backend_device="any",
+        description="Qwythos-27B-v1 MTP Q8_0 (Empero) with the F16 vision projector — "
+        "multimodal, MTP draft speculation, 65536 ctx (weights go to 1M; KV cost is "
+        "why they don't here). Standard GGUF, served on the same ciru-ai ROCmFPX "
+        "Vulkan image; verified 2026-07-30 driving mmproj + draft-mtp together.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="branch agent/laguna-radv-device-lost-20260724 @ 090e317b4e2f998a9470faeb076cf841ba72b739 "
+        "(chadrock-rocmfpx:latest — chosen for being already built + Vulkan; any "
+        "recent MTP-capable llama.cpp would also serve this standard GGUF)",
+        backend_device="Vulkan0",
         model_file="models/llm/Qwythos-27B-v1-GGUF/Qwythos-27B-MTP-Q8_0.gguf "
         "(+ mmproj-Qwythos-27B-F16.gguf)",
-        resident_gib=35,
+        port=8106,
+        compose_file="qwythos/docker-compose.yml",
+        service_name="qwythos",
+        container_name="qwythos",
+        # MEASURED 32 GiB at 8192 ctx WITH mmproj + MTP draft ctx (2026-07-30);
+        # budgeted for the larger KV at the configured 65536 ctx.
+        resident_gib=40,
         exclusive_with=_exclusive_with("Qwythos-27b-Q8"),
-        startable=False,
-        not_startable_reason="Not wired to any compose service yet.",
+        consumers_note="unbound — the only vision-capable local model on this box",
     ),
     ModelServerSpec(
         slug="Ridge-Qwen3.6-35B-A3B",
