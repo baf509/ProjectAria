@@ -9,21 +9,22 @@ import asyncio
 
 import pytest
 
+from aria.agents.backends.registry import BackendRegistry
 from aria.agents.mail import AgentMessage, MessageType
 from aria.agents.session import CodingSessionManager
 
 
-def _bare_manager(limit: int) -> CodingSessionManager:
+def _bare_manager(limit: int, pool_limit: int = 0, ridge_limit: int = 0) -> CodingSessionManager:
     mgr = CodingSessionManager.__new__(CodingSessionManager)
     mgr._slot_limit = limit
     mgr._slot_cv = asyncio.Condition()
     mgr._active = 0
     mgr._slotted = set()
-    # laguna-scoped sub-limit (added alongside the `pool` backend): __new__
-    # bypasses __init__, so these need the same manual seeding as the fields
-    # above or _release_slot's self._laguna_slotted.discard(...) AttributeErrors.
-    mgr._laguna_limit = 0
-    mgr._laguna_slotted = set()
+    # Per-backend-family sub-limits (pool/laguna, ridge): __new__ bypasses
+    # __init__, so these need the same manual seeding as the fields above.
+    mgr._backend_limits = {"pool": pool_limit, "ridge": ridge_limit}
+    mgr._backend_slotted = {"pool": set(), "ridge": set()}
+    mgr.registry = BackendRegistry()
     return mgr
 
 
@@ -88,6 +89,56 @@ class TestSlots:
         await asyncio.wait_for(waiter, timeout=1.0)
         assert "b" in mgr._slotted
         assert mgr._active == 1
+
+
+class TestBackendLimits:
+    """pool (laguna) and ridge each have their own single-consumer ceiling,
+    independent of the global cap -- their model server has no continuous
+    batching, so a second concurrent session there would queue/evict at the
+    inference layer instead of ARIA's own queue."""
+
+    @pytest.mark.asyncio
+    async def test_pool_limited_independent_of_global_cap(self):
+        mgr = _bare_manager(limit=10, pool_limit=1)
+        assert await mgr._try_acquire_slot_nowait("a", "pool") is True
+        # Global cap (10) has plenty of room, but pool's own limit (1) is hit.
+        assert await mgr._try_acquire_slot_nowait("b", "pool") is False
+        assert mgr._active == 1
+        # A non-pool backend is unaffected by pool's exhausted sub-limit.
+        assert await mgr._try_acquire_slot_nowait("c", "claude_code") is True
+        assert mgr._active == 2
+
+    @pytest.mark.asyncio
+    async def test_ridge_limited_independent_of_pool(self):
+        mgr = _bare_manager(limit=10, pool_limit=1, ridge_limit=1)
+        assert await mgr._try_acquire_slot_nowait("a", "pool") is True
+        # ridge has its own separate slot -- pool being full doesn't block it.
+        assert await mgr._try_acquire_slot_nowait("b", "ridge") is True
+        assert await mgr._try_acquire_slot_nowait("c", "ridge") is False
+        assert mgr._active == 2
+
+    @pytest.mark.asyncio
+    async def test_release_frees_the_right_backend_slot_only(self):
+        mgr = _bare_manager(limit=10, pool_limit=1, ridge_limit=1)
+        await mgr._try_acquire_slot_nowait("a", "pool")
+        await mgr._try_acquire_slot_nowait("b", "ridge")
+        await mgr._release_slot("a")
+        # pool freed, ridge still held.
+        assert await mgr._try_acquire_slot_nowait("c", "pool") is True
+        assert await mgr._try_acquire_slot_nowait("d", "ridge") is False
+
+    @pytest.mark.asyncio
+    async def test_blocking_acquire_respects_backend_limit(self):
+        mgr = _bare_manager(limit=10, ridge_limit=1)
+        await mgr._acquire_slot("a", "ridge")
+
+        waiter = asyncio.create_task(mgr._acquire_slot("b", "ridge"))
+        await asyncio.sleep(0.02)
+        assert not waiter.done()  # ridge's single slot is held
+
+        await mgr._release_slot("a")
+        await asyncio.wait_for(waiter, timeout=1.0)
+        assert "b" in mgr._backend_slotted["ridge"]
 
 
 # ---------------------------------------------------------------------------

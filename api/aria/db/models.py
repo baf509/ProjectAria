@@ -332,6 +332,10 @@ class CodingSessionResponse(BaseModel):
     """Coding session metadata."""
     id: str
     backend: str
+    # LLM-adapter name for pi-code sessions (llamacpp/agentic/ridge/...) --
+    # distinguishes a Ridge-backed pi-code session from a local one; both
+    # share backend="pi-code". None for claude_code/codex/pool.
+    llm: Optional[str] = None
     model: Optional[str] = None
     workspace: str
     prompt: str

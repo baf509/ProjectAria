@@ -61,6 +61,11 @@ def serialize_session(doc: dict) -> dict:
     return {
         "id": str(doc["_id"]),
         "backend": doc["backend"],
+        # LLM-adapter name (llamacpp/agentic/ridge/...) for pi-code sessions --
+        # a DIFFERENT vocabulary from `backend` (see subagent_profile
+        # resolution in agents/session.py). Needed to tell a Ridge-backed
+        # pi-code session apart from a local one; both share backend="pi-code".
+        "llm": doc.get("llm"),
         "model": doc.get("model"),
         "workspace": doc["workspace"],
         "prompt": doc["prompt"],

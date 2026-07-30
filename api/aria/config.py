@@ -128,6 +128,19 @@ class Settings(BaseSettings):
     # laguna hosts ONE coding slot; a second concurrent laguna session evicts
     # the first's prefix. Cloud backends are not affected by this cap.
     coding_max_concurrent_laguna_sessions: int = 1
+    # Ridge (NInfer) has no continuous batching -- "one request at a time,
+    # concurrent callers queue" (docs/ops/LOCAL_INFERENCE_TOPOLOGY.md §3.1).
+    # Same reasoning as laguna above, different resource. Cloud backends are
+    # not affected by this cap either.
+    coding_max_concurrent_ridge_sessions: int = 1
+
+    # Master switch, independent of everything below: False refuses any
+    # pool-backed coding session up front (start_session) with a clear error,
+    # rather than letting it dial a model server that isn't there. Flip this
+    # off when chadrock/Laguna is physically down -- e.g. 2026-07-30, Ben shut
+    # the model down -- without deleting any of the config below, so turning
+    # it back on later is a one-line change once the server is back.
+    pool_enabled: bool = True
 
     # Poolside `pool` CLI, run in standalone mode against the local laguna
     # endpoint. pool_api_url should point at the slot-proxy port for the coding

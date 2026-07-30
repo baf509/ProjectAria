@@ -2,6 +2,80 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-30 evening] - Fleet unification: pi-code on the shell substrate, verified idle-reaper, Ridge concurrency limit, restructured sidebar; pool disabled
+
+Prompted by a user observation that Agents/Shells/Coding Sessions/
+Conversations "seem overlapping" in the TUI — they were, in two different
+ways, one already by design (a coding session and its shell are the same
+live process) and one a real gap (pi-code had no shell at all). This pass
+closes both, plus three related pieces agreed along the way.
+
+### Added
+- **Ridge concurrency limiter**: mirrors chadrock/pool's existing
+  single-consumer ceiling (`coding_max_concurrent_ridge_sessions`, default 1)
+  — Ridge/NInfer has no continuous batching, so a second concurrent session
+  there would queue messily at the inference layer instead of ARIA's own
+  queue. Generalized the old laguna-only `_is_laguna_session`/`_laguna_limit`
+  into `_limited_backend`/`_backend_limits` (keyed by canonical backend name)
+  so a third such backend is one line, not four new methods. **Found and
+  fixed a real pre-existing bug while wiring this in**: the main
+  `start_session()` launch path never actually passed `backend` into
+  `_try_acquire_slot_nowait`/`_acquire_slot` at all — the pool/laguna limiter
+  had been silently non-functional in production despite existing since the
+  two-server split.
+- **pi-code runs on the shell substrate**: `_start_pi_code_session` now
+  launches a real tmux-backed shell (`aria pi-code run` — new CLI command,
+  `cli/aria_cli/main.py`) instead of driving the orchestrator in-process.
+  Removed the three pi-code-specific branches in `stop_session`/`get_output`/
+  `send_input` (`shell_name`-based fallthrough into the generic shell paths
+  the rest of the fleet already uses); deleted the now-dead
+  `_run_pi_code_session`/`_finalize_pi_code`. `PiCodeBackend.is_in_process`
+  renamed to `needs_custom_launch` (it was never really "in-process" as a
+  concept — it's launch sequencing that needs a conversation created first).
+  Verified live end-to-end: spawn → real shell → streamed response →
+  `send_input` follow-up → `stop_session`, all through the same paths every
+  other backend uses, no special-casing left.
+- **Universal, verified capture-then-reap** (`shells/reaper.py`, Coherence
+  C9): scope is now ANY idle watched shell, not just ARIA coding sessions —
+  a hand-run shell gets the same save-then-reap treatment instead of blanket
+  exclusion. Before reaping, independently verifies the save happened
+  (`<project_dir>/HANDOFF.md` must exist AND be modified after the save
+  prompt was sent) rather than trusting the agent's self-reported `REAP_SAVED`
+  token alone — same lesson as C1's verification gate applied here. Neither
+  signal alone is sufficient; an unconfirmed save is skipped and alerted on,
+  never reaped anyway.
+- **Restructured TUI sidebar** (`tui/internal/ui/components/sidebar.go`):
+  Conversations now nest under their owning Agent instead of a disconnected
+  flat list; coding sessions render as ONE row (using their live shell's
+  `activity_state`), not a coding-session row and a separate shell row for
+  the same process; Pool/Ridge get their own groups showing "x/1 active"
+  (the real ceiling, visible instead of implicit); Claude Code/Codex show
+  unbounded "N active"; hand-run shells get their own "Your Shells" group,
+  explicitly excluding anything a coding session already claims. Same
+  dedup fix applied to `fleet_view.go` (the Fleet screen had the identical
+  double-listing). New `CodingSessionResponse.llm` / `CodingSession.LLM`
+  field (server + Go client) — needed to tell a Ridge-backed pi-code session
+  apart from a local one, since both share `backend="pi-code"`.
+- **`pool_enabled` setting**: master switch, checked in `start_session()`
+  before ever dialing chadrock. Set to `false` (2026-07-30 — chadrock
+  physically shut down) so a pool-backed request fails with a clear 409
+  instead of a confusing connection error. Config and `db.agents`-adjacent
+  wiring left intact, not removed, for a one-line re-enable.
+
+### Notes
+- `coding_routing_fallback_backend` still defaults to `"pool"` (the
+  sub-Sonnet quota-exhaustion fallback) — with pool disabled, that path now
+  fails loudly instead of connection-refusing silently, but there is
+  currently no *working* quota fallback while both are true. Flagged, not
+  silently reconfigured.
+- 931 Python tests pass (was 920 at the start of this session's fleet work);
+  Go: build/vet/test all clean, including new coverage for the sidebar's
+  grouping/dedup logic and the reaper's verification logic (neither had any
+  tests before this pass).
+- Design-level writeup: `vault/ProjectAria/Design/COHERENCE_DESIGN.md` (C9's
+  "still open" decisions — save-timeout behavior and reap scope — are now
+  both resolved: skip-and-alert on an unconfirmed save, universal scope).
+
 ## [2026-07-30] - Fixed: TUI chat responses vanishing on reload; agents advertising delegation tools they don't have
 
 ### Fixed

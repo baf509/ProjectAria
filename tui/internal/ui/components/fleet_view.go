@@ -156,8 +156,20 @@ func (fv *FleetView) refreshContent() {
 			"session", s.Host, name, backendModel, s.Status, age, tokens, cost)
 	}
 
-	// Watched shells.
+	// Watched shells NOT already claimed by a coding session above -- a
+	// session and its shell are the same live process (every backend runs on
+	// the shell substrate as of 2026-07-30, pi-code included), so showing
+	// both would list the same thing twice.
+	claimedShells := make(map[string]bool, len(fv.Sessions))
+	for _, s := range fv.Sessions {
+		if s.ShellName != "" {
+			claimedShells[s.ShellName] = true
+		}
+	}
 	for _, sh := range fv.Shells {
+		if claimedShells[sh.Name] {
+			continue
+		}
 		name := sh.ShortName
 		if name == "" {
 			name = sh.Name

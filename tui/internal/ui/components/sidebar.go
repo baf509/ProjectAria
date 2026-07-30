@@ -103,6 +103,25 @@ func (s *Sidebar) visibleCount() int {
 }
 
 // SetData rebuilds the tree from API data.
+//
+// Structure (2026-07-30 restructuring — Agents/Shells/CodingSessions/
+// Conversations used to be four flat, overlapping lists; a coding session
+// and its backing shell showed up as two separate-looking rows for the same
+// live process, and an agent's conversations had no visible link to the
+// agent itself):
+//
+//	▸ Agents (N)                     -- each agent, its conversations nested under it
+//	▸ Pool (x/1 active)              -- chadrock: single-consumer, queue rather than stack
+//	▸ Ridge (x/1 active)             -- NInfer: same single-consumer constraint
+//	▸ Claude Code (N active)         -- cloud, unbounded concurrent sessions
+//	▸ Codex (N active)               -- cloud, unbounded (only shown if any exist)
+//	▸ Your Shells (N)                -- hand-run shells with no coding_sessions record
+//	▸ Other Conversations (N)        -- conversations whose agent no longer exists
+//
+// A coding session and the shell backing it are the same live process as of
+// 2026-07-30 (pi-code runs on the shell substrate too) -- rendered as ONE
+// row per session, not two; "Your Shells" explicitly excludes anything a
+// coding session already claims.
 func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions []api.CodingSession, shells []api.Shell) {
 	// Remember what was selected so the 3s refresh doesn't yank the cursor onto
 	// a different row (which would make Enter open the wrong thing).
@@ -121,7 +140,20 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 		agentByID[a.ID] = a
 	}
 
-	// --- Agents section (exclude default/ARIA — she's the coordinator, not a delegated agent) ---
+	// Conversations grouped by owning agent (nil-keyed slice for orphans).
+	convsByAgent := make(map[string][]*api.Conversation)
+	var orphanConvs []*api.Conversation
+	for i := range convs {
+		c := &convs[i]
+		if _, ok := agentByID[c.AgentID]; ok {
+			convsByAgent[c.AgentID] = append(convsByAgent[c.AgentID], c)
+		} else {
+			orphanConvs = append(orphanConvs, c)
+		}
+	}
+
+	// --- Agents section (exclude default/ARIA — she's the coordinator, not a
+	// delegated agent), each with its own conversations nested beneath it. ---
 	var delegatedAgents []*api.Agent
 	for i := range agents {
 		if !agents[i].IsDefault {
@@ -146,137 +178,97 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 				Depth:     1,
 				Agent:     a,
 			})
+			for _, c := range convsByAgent[a.ID] {
+				s.Nodes = append(s.Nodes, conversationNode(c, a.ModeCategory, a.Slug, 2))
+			}
 		}
 	}
 
-	// --- Watched Shells section (the fleet ARIA observes — your claude-* tmux
-	// sessions). Distinct from Agents (personas) and Coding Sessions (the ones
-	// ARIA spawns); these are live external processes you started. ---
-	if len(shells) > 0 {
+	// Shell lookup by name, and the set already claimed by a coding session --
+	// a session and its shell are one live process, shown once.
+	shellByName := make(map[string]*api.Shell)
+	for i := range shells {
+		shellByName[shells[i].Name] = &shells[i]
+	}
+	claimedShells := make(map[string]bool)
+
+	// --- Coding-session backend groups. Pool/Ridge have a real single-
+	// consumer ceiling at the model-server level (see
+	// coding_max_concurrent_{laguna,ridge}_sessions server-side) -- shown as
+	// "x/1 active" so hitting the limit is visible, not queued sessions
+	// silently piling up looking like a bug. Claude Code/Codex are cloud,
+	// unbounded. ---
+	active := filterSessionsAny(sessions, "running", "queued")
+	var poolSessions, ridgeSessions, claudeSessions, codexSessions, otherSessions []*api.CodingSession
+	for i := range active {
+		cs := active[i]
+		switch {
+		case cs.Backend == "pool":
+			poolSessions = append(poolSessions, cs)
+		case cs.Backend == "pi-code" && cs.LLM == "ridge":
+			ridgeSessions = append(ridgeSessions, cs)
+		case cs.Backend == "claude_code":
+			claudeSessions = append(claudeSessions, cs)
+		case cs.Backend == "codex":
+			codexSessions = append(codexSessions, cs)
+		default:
+			otherSessions = append(otherSessions, cs)
+		}
+		if cs.ShellName != "" {
+			claimedShells[cs.ShellName] = true
+		}
+	}
+
+	s.appendBackendGroup("Pool", poolSessions, 1, shellByName)
+	s.appendBackendGroup("Ridge", ridgeSessions, 1, shellByName)
+	s.appendBackendGroup("Claude Code", claudeSessions, 0, shellByName)
+	s.appendBackendGroup("Codex", codexSessions, 0, shellByName)
+	s.appendBackendGroup("Local Pi-Code", otherSessions, 0, shellByName)
+
+	// --- Your Shells: hand-run shells only (no coding_sessions record) --
+	// the fleet ARIA observes but didn't spawn. Distinct from the backend
+	// groups above, which already cover every ARIA-spawned session's shell. ---
+	var handRun []*api.Shell
+	for i := range shells {
+		if !claimedShells[shells[i].Name] {
+			handRun = append(handRun, &shells[i])
+		}
+	}
+	if len(handRun) > 0 {
 		awaiting, done := 0, 0
-		for i := range shells {
-			if shells[i].AwaitingInput {
+		for _, sh := range handRun {
+			if sh.AwaitingInput {
 				awaiting++
 			}
-			if shells[i].ActivityState == "done" {
+			if sh.ActivityState == "done" {
 				done++
 			}
 		}
-		label := fmt.Sprintf("Shells (%d)", len(shells))
+		label := fmt.Sprintf("Your Shells (%d)", len(handRun))
 		switch {
 		case awaiting > 0 && done > 0:
-			label = fmt.Sprintf("Shells (%d · %d awaiting · %d done)", len(shells), awaiting, done)
+			label = fmt.Sprintf("Your Shells (%d · %d awaiting · %d done)", len(handRun), awaiting, done)
 		case awaiting > 0:
-			label = fmt.Sprintf("Shells (%d · %d awaiting)", len(shells), awaiting)
+			label = fmt.Sprintf("Your Shells (%d · %d awaiting)", len(handRun), awaiting)
 		case done > 0:
-			label = fmt.Sprintf("Shells (%d · %d done)", len(shells), done)
+			label = fmt.Sprintf("Your Shells (%d · %d done)", len(handRun), done)
 		}
-		s.Nodes = append(s.Nodes, TreeNode{
-			Kind:     NodeSection,
-			Label:    label,
-			Children: len(shells),
-		})
-		for i := range shells {
-			sh := &shells[i]
-			status := sh.Status
-			meta := relativeIdle(sh.IdleSeconds)
-			switch sh.ActivityState {
-			case "blocked":
-				status = "blocked"
-				meta = "⏳ blocked"
-			case "done":
-				status = "done"
-				meta = "✓ done"
-			}
-			name := sh.ShortName
-			if name == "" {
-				name = sh.Name
-			}
-			s.Nodes = append(s.Nodes, TreeNode{
-				ID:       sh.Name,
-				Label:    name,
-				Kind:     NodeShell,
-				Category: "coding",
-				Status:   status,
-				Meta:     meta,
-				Depth:    1,
-				Shell:    sh,
-			})
+		s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: label, Children: len(handRun)})
+		for _, sh := range handRun {
+			s.Nodes = append(s.Nodes, shellNode(sh, 1))
 		}
 	}
 
-	// --- Active Coding Sessions section ---
-	activeSessions := filterSessions(sessions, "running")
-	if len(activeSessions) > 0 {
+	// --- Other Conversations: agent no longer exists (deleted/renamed). Not
+	// dropped silently -- surfaced so nothing just vanishes. ---
+	if len(orphanConvs) > 0 {
 		s.Nodes = append(s.Nodes, TreeNode{
 			Kind:     NodeSection,
-			Label:    fmt.Sprintf("Coding Sessions (%d)", len(activeSessions)),
-			Children: len(activeSessions),
+			Label:    fmt.Sprintf("Other Conversations (%d)", len(orphanConvs)),
+			Children: len(orphanConvs),
 		})
-		for i := range activeSessions {
-			cs := &activeSessions[i]
-			label := truncate(cs.Prompt, 30)
-			if label == "" {
-				label = cs.ID[:8]
-			}
-			s.Nodes = append(s.Nodes, TreeNode{
-				ID:            cs.ID,
-				Label:         label,
-				Kind:          NodeCodingSession,
-				Category:      "coding",
-				Status:        cs.Status,
-				Meta:          cs.Backend,
-				Depth:         1,
-				CodingSession: cs,
-			})
-		}
-	}
-
-	// --- Conversations section ---
-	if len(convs) > 0 {
-		s.Nodes = append(s.Nodes, TreeNode{
-			Kind:     NodeSection,
-			Label:    fmt.Sprintf("Conversations (%d)", len(convs)),
-			Children: len(convs),
-		})
-		for i := range convs {
-			c := &convs[i]
-			category := "chat"
-			agentSlug := ""
-			if a, ok := agentByID[c.AgentID]; ok {
-				category = a.ModeCategory
-				agentSlug = a.Slug
-			}
-			for _, tag := range c.Tags {
-				if tag == "pi-coding" || tag == "coding" {
-					category = "coding"
-					break
-				}
-				if tag == "research" {
-					category = "research"
-					break
-				}
-			}
-
-			title := c.Title
-			if title == "" {
-				title = c.ID[:min(8, len(c.ID))]
-			}
-			if c.Private {
-				title = "[private] " + title
-			}
-
-			s.Nodes = append(s.Nodes, TreeNode{
-				ID:           c.ID,
-				Label:        title,
-				Kind:         NodeConversation,
-				Category:     category,
-				AgentSlug:    agentSlug,
-				Status:       c.Status,
-				Meta:         relativeTime(c.UpdatedAt),
-				Depth:        1,
-				Conversation: c,
-			})
+		for _, c := range orphanConvs {
+			s.Nodes = append(s.Nodes, conversationNode(c, "chat", "", 1))
 		}
 	}
 
@@ -292,6 +284,136 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 	}
 	s.fixCursor()
 	s.ensureVisible()
+}
+
+// appendBackendGroup renders one coding-session backend family as a section:
+// "Name (x/limit active)" when limit > 0 (Pool/Ridge's real single-consumer
+// ceiling), or "Name (N active)" when limit == 0 (unbounded, e.g. Claude
+// Code/Codex). Queued sessions count toward the header but are labeled
+// "queued", not "active", so a hit limit reads as "waiting," not "broken."
+// Each session renders as ONE row using its live shell's activity_state when
+// it has a shell (every backend does, as of the 2026-07-30 pi-code change) --
+// not a separate, possibly-stale coding_sessions.Status.
+func (s *Sidebar) appendBackendGroup(name string, sessions []*api.CodingSession, limit int, shellByName map[string]*api.Shell) {
+	if len(sessions) == 0 {
+		return
+	}
+	activeCount, queuedCount := 0, 0
+	for _, cs := range sessions {
+		if cs.Status == "queued" {
+			queuedCount++
+		} else {
+			activeCount++
+		}
+	}
+	var label string
+	if limit > 0 {
+		label = fmt.Sprintf("%s (%d/%d active", name, activeCount, limit)
+	} else {
+		label = fmt.Sprintf("%s (%d active", name, activeCount)
+	}
+	if queuedCount > 0 {
+		label += fmt.Sprintf(" · %d queued", queuedCount)
+	}
+	label += ")"
+	s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: label, Children: len(sessions)})
+	for _, cs := range sessions {
+		s.Nodes = append(s.Nodes, codingSessionNode(cs, shellByName[cs.ShellName], 1))
+	}
+}
+
+// codingSessionNode renders a coding session as one row. When its shell is
+// known, the shell's activity_state drives status/meta (the more real-time
+// signal); otherwise falls back to the coding_sessions.Status field.
+func codingSessionNode(cs *api.CodingSession, shell *api.Shell, depth int) TreeNode {
+	label := truncate(cs.Prompt, 30)
+	if label == "" {
+		label = cs.ID[:min(8, len(cs.ID))]
+	}
+	status := cs.Status
+	meta := cs.Backend
+	if shell != nil {
+		meta = relativeIdle(shell.IdleSeconds)
+		switch shell.ActivityState {
+		case "blocked":
+			status = "blocked"
+			meta = "⏳ blocked"
+		case "done":
+			status = "done"
+			meta = "✓ done"
+		case "working":
+			status = "running"
+		}
+	}
+	return TreeNode{
+		ID:            cs.ID,
+		Label:         label,
+		Kind:          NodeCodingSession,
+		Category:      "coding",
+		Status:        status,
+		Meta:          meta,
+		Depth:         depth,
+		CodingSession: cs,
+		Shell:         shell,
+	}
+}
+
+func shellNode(sh *api.Shell, depth int) TreeNode {
+	status := sh.Status
+	meta := relativeIdle(sh.IdleSeconds)
+	switch sh.ActivityState {
+	case "blocked":
+		status = "blocked"
+		meta = "⏳ blocked"
+	case "done":
+		status = "done"
+		meta = "✓ done"
+	}
+	name := sh.ShortName
+	if name == "" {
+		name = sh.Name
+	}
+	return TreeNode{
+		ID:       sh.Name,
+		Label:    name,
+		Kind:     NodeShell,
+		Category: "coding",
+		Status:   status,
+		Meta:     meta,
+		Depth:    depth,
+		Shell:    sh,
+	}
+}
+
+func conversationNode(c *api.Conversation, category, agentSlug string, depth int) TreeNode {
+	for _, tag := range c.Tags {
+		if tag == "pi-coding" || tag == "coding" {
+			category = "coding"
+			break
+		}
+		if tag == "research" {
+			category = "research"
+			break
+		}
+	}
+	title := c.Title
+	if title == "" {
+		title = c.ID[:min(8, len(c.ID))]
+	}
+	if c.Private {
+		title = "[private] " + title
+	}
+	return TreeNode{
+		ID:           c.ID,
+		Label:        title,
+		Kind:         NodeConversation,
+		Category:     category,
+		AgentSlug:    agentSlug,
+		Status:       c.Status,
+		Meta:         relativeTime(c.UpdatedAt),
+		Depth:        depth,
+		Conversation: c,
+	}
 }
 
 // ensureVisible clamps Offset so the cursor stays on screen after the node list
@@ -538,11 +660,17 @@ func relativeIdle(seconds int) string {
 	}
 }
 
-func filterSessions(sessions []api.CodingSession, status string) []api.CodingSession {
-	var out []api.CodingSession
+// filterSessionsAny returns pointers into `sessions` whose Status matches any
+// of `statuses` -- pointers (not copies) so callers can key off ShellName etc.
+// without the slice-of-structs aliasing footgun copying would introduce.
+func filterSessionsAny(sessions []api.CodingSession, statuses ...string) []*api.CodingSession {
+	var out []*api.CodingSession
 	for i := range sessions {
-		if sessions[i].Status == status {
-			out = append(out, sessions[i])
+		for _, want := range statuses {
+			if sessions[i].Status == want {
+				out = append(out, &sessions[i])
+				break
+			}
 		}
 	}
 	return out

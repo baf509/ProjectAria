@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -58,14 +59,28 @@ class CodingSessionManager:
         self._slot_cv = asyncio.Condition()
         self._active: int = 0
         self._slotted: set[str] = set()
-        # Second, narrower limit: sessions that occupy a laguna KV slot. laguna
-        # holds ONE coding slot in the unified KV pool, so two concurrent laguna
-        # sessions would evict each other's prefix and force full re-prefills
-        # (measured 2026-07-27: ~220 s for a 30k prefix). Cloud backends
-        # (claude_code, codex) are unaffected and still bounded only by the
-        # global cap above.
-        self._laguna_limit: int = int(settings.coding_max_concurrent_laguna_sessions or 0)
-        self._laguna_slotted: set[str] = set()
+        # Second, narrower limit: backends whose underlying model server has
+        # its own hard single-consumer ceiling, independent of ARIA's global
+        # cap above. Two concurrent sessions on one of these would queue or
+        # evict at the INFERENCE layer instead of ARIA's own queue:
+        #   - laguna (backend `pool`) holds ONE coding slot in the unified KV
+        #     pool -- a second concurrent session evicts the first's prefix
+        #     and forces a full re-prefill (measured 2026-07-27: ~220s for a
+        #     30k prefix).
+        #   - Ridge (backend `ridge`, NInfer) has no continuous batching --
+        #     "one request at a time, concurrent callers queue"
+        #     (docs/ops/LOCAL_INFERENCE_TOPOLOGY.md §3.1).
+        # Cloud backends (claude_code, codex) have neither constraint and are
+        # bounded only by the global cap above. Keyed by canonical backend
+        # name so adding a third such backend is one line, not four new
+        # methods.
+        self._backend_limits: dict[str, int] = {
+            "pool": int(settings.coding_max_concurrent_laguna_sessions or 0),
+            "ridge": int(settings.coding_max_concurrent_ridge_sessions or 0),
+        }
+        self._backend_slotted: dict[str, set[str]] = {
+            name: set() for name in self._backend_limits
+        }
 
     def _use_shell_substrate(self) -> bool:
         return bool(settings.coding_use_shell_substrate and self.shell_service)
@@ -73,25 +88,22 @@ class CodingSessionManager:
     # ------------------------------------------------------------------
     # Concurrency slots
     # ------------------------------------------------------------------
-    def _is_laguna_session(self, backend: str | None) -> bool:
-        """Does this session consume the single laguna coding slot?
-
-        `pool` always runs standalone against the local laguna endpoint
-        (settings.pool_api_url), so it always counts. pi-code would count too if
-        its llm targeted laguna, but no ARIA llm backend does today -- llamacpp
-        is :8092 (qwen-chat) and agentic is :8093 (qwen-agentic), both down --
-        so this is pool-only until a laguna llm backend is added.
-        """
+    def _limited_backend(self, backend: str | None) -> str | None:
+        """Canonical backend name if it has its own narrower slot limit
+        (see `_backend_limits`), else None."""
         try:
-            return self.registry.canonicalize(backend) == "pool"
+            canon = self.registry.canonicalize(backend)
         except Exception:
-            return False
+            return None
+        return canon if canon in self._backend_limits else None
 
-    def _slot_free(self, laguna: bool = False) -> bool:
+    def _slot_free(self, limited_backend: str | None = None) -> bool:
         if self._slot_limit > 0 and self._active >= self._slot_limit:
             return False
-        if laguna and self._laguna_limit > 0 and len(self._laguna_slotted) >= self._laguna_limit:
-            return False
+        if limited_backend:
+            limit = self._backend_limits.get(limited_backend, 0)
+            if limit > 0 and len(self._backend_slotted[limited_backend]) >= limit:
+                return False
         return True
 
     async def _try_acquire_slot_nowait(self, session_id: str, backend: str | None = None) -> bool:
@@ -101,12 +113,12 @@ class CodingSessionManager:
         async with self._slot_cv:
             if session_id in self._slotted:
                 return True
-            laguna = self._is_laguna_session(backend)
-            if self._slot_free(laguna):
+            limited = self._limited_backend(backend)
+            if self._slot_free(limited):
                 self._active += 1
                 self._slotted.add(session_id)
-                if laguna:
-                    self._laguna_slotted.add(session_id)
+                if limited:
+                    self._backend_slotted[limited].add(session_id)
                 return True
             return False
 
@@ -115,31 +127,46 @@ class CodingSessionManager:
         async with self._slot_cv:
             if session_id in self._slotted:
                 return
-            laguna = self._is_laguna_session(backend)
-            while not self._slot_free(laguna):
+            limited = self._limited_backend(backend)
+            while not self._slot_free(limited):
                 await self._slot_cv.wait()
             self._active += 1
             self._slotted.add(session_id)
-            if laguna:
-                self._laguna_slotted.add(session_id)
+            if limited:
+                self._backend_slotted[limited].add(session_id)
 
     async def _release_slot(self, session_id: str) -> None:
         """Release a held slot (idempotent) and wake one waiter."""
         async with self._slot_cv:
             if session_id in self._slotted:
                 self._slotted.discard(session_id)
-                self._laguna_slotted.discard(session_id)
+                for slotted in self._backend_slotted.values():
+                    slotted.discard(session_id)
                 self._active = max(0, self._active - 1)
-                # notify_all, not notify(1): with two independent limits a single
-                # woken waiter may still be blocked on the other one and would
-                # otherwise consume the wakeup, stalling an eligible waiter.
+                # notify_all, not notify(1): with independent per-backend
+                # limits a single woken waiter may still be blocked on
+                # another one and would otherwise consume the wakeup,
+                # stalling an eligible waiter.
                 self._slot_cv.notify_all()
 
     async def concurrency_stats(self) -> dict:
         """Live limiter gauge: currently-running (slot-holding) sessions, how
-        many are queued waiting for a slot, and the configured cap (0 = off)."""
+        many are queued waiting for a slot, the configured global cap (0 =
+        off), and per-backend-family usage (pool/ridge — each's own
+        single-consumer ceiling, independent of the global cap; see
+        `_backend_limits`). A future cockpit/TUI surface can render "1/1
+        active, N queued" per backend from `backends` directly."""
         queued = await self.db.coding_sessions.count_documents({"status": "queued"})
-        return {"active": self._active, "queued": queued, "limit": self._slot_limit}
+        backends = {
+            name: {"active": len(self._backend_slotted[name]), "limit": limit}
+            for name, limit in self._backend_limits.items()
+        }
+        return {
+            "active": self._active,
+            "queued": queued,
+            "limit": self._slot_limit,
+            "backends": backends,
+        }
 
     @staticmethod
     def _normalize_loop_config(raw: dict) -> dict:
@@ -279,14 +306,19 @@ class CodingSessionManager:
                 logger.warning("complexity routing failed (%s); using defaults", exc)
 
         backend_name = backend or settings.coding_default_backend
+        if backend_name == "pool" and not settings.pool_enabled:
+            raise RuntimeError(
+                "pool backend is disabled (settings.pool_enabled=False) -- "
+                "the underlying model server is down. Not attempting to connect."
+            )
         selected_backend = self.registry.get(backend_name)
         workspace_path = os.path.abspath(workspace)
 
-        # In-process substrate (pi-code): run ARIA's own agentic loop with a
-        # pinned LLM instead of exec'ing an external CLI. It still gets a
-        # coding_sessions doc + supervising task, so it inherits the watchdog
-        # and the safety gates above for free.
-        if getattr(selected_backend, "is_in_process", False) is True:
+        # pi-code: run ARIA's own agentic loop against a pinned LLM, inside a
+        # real tmux pane (aria pi-code run) -- same shell substrate as every
+        # other backend, just with launch sequencing that needs a conversation
+        # created first, hence the custom dispatch instead of start_command().
+        if getattr(selected_backend, "needs_custom_launch", False) is True:
             return await self._start_pi_code_session(
                 workspace=workspace_path,
                 prompt=prompt,
@@ -339,7 +371,7 @@ class CodingSessionManager:
         # Concurrency gate: hold a slot for the session's active life. If one is
         # free now, launch inline (unchanged fast path). Otherwise leave the doc
         # `queued` and launch from a background waiter when a slot frees.
-        if await self._try_acquire_slot_nowait(session_id):
+        if await self._try_acquire_slot_nowait(session_id, backend_name):
             try:
                 return await self._launch_substrate(
                     session_id, command, backend_name, workspace_path, visible, host, prompt
@@ -383,7 +415,7 @@ class CodingSessionManager:
         launch the substrate. `_launch_substrate` installs the real watch task,
         which owns the slot release."""
         try:
-            await self._acquire_slot(session_id)
+            await self._acquire_slot(session_id, backend_name)
             from aria.api.deps import get_killswitch, resolve_estop_manager
             try:
                 get_killswitch().check_or_raise("queued coding session start")
@@ -577,6 +609,69 @@ class CodingSessionManager:
         )
         return await self.get_session(session_id)
 
+    async def _launch_pi_code_shell(
+        self, session_id: str, agent_conv_id: str, prompt: str, workspace: str
+    ) -> None:
+        """Spawn the tmux-backed pi-code shell for an already-persisted,
+        slot-holding session doc. Same shell substrate every other backend
+        uses (`shell_service.create_shell` + `_watch_shell_session`), so a
+        pi-code session is a real watched shell: auto-captured, drivable via
+        the generic send_input/get_output/stop_session paths, and reachable
+        by Hermes's shell-level MCP tools with no special-casing.
+
+        The prompt goes to a temp file rather than the launch command string,
+        to avoid shell-escaping a large/multiline prompt; `aria pi-code run`
+        reads it once at startup and sends it as the conversation's first
+        turn, then drops into an interactive loop reading further turns from
+        stdin (i.e. from send_input, same as any other coding-session shell).
+        """
+        fd, prompt_path = tempfile.mkstemp(prefix=f"pi-code-{session_id[:8]}-", suffix=".txt")
+        with os.fdopen(fd, "w") as f:
+            f.write(prompt)
+        # Explicit ARIA_API_URL/ARIA_API_KEY: a tmux pane inherits the tmux
+        # SERVER's environment (owned by aria-tmux.service), not aria-api's --
+        # can't assume the API key is already there. Same reasoning other
+        # backends' command.env prefixing already relies on.
+        env_prefix = (
+            f"ARIA_API_URL={shlex.quote(f'http://localhost:{settings.api_port}')} "
+            f"ARIA_API_KEY={shlex.quote(settings.api_key)}"
+        )
+        launch = (
+            f"{env_prefix} aria pi-code run --conversation {shlex.quote(agent_conv_id)} "
+            f"--prompt-file {shlex.quote(prompt_path)}"
+        )
+        shell_name = None
+        try:
+            shell = await self.shell_service.create_shell(
+                name=f"coding-{session_id[:8]}",
+                workdir=workspace,
+                launch_command=launch,
+            )
+            shell_name = shell.name
+        except Exception as exc:
+            logger.warning("pi-code shell-substrate spawn failed for %s (%s)", session_id, exc)
+        now = datetime.now(timezone.utc)
+        if shell_name:
+            await self.db.coding_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {"status": "running", "shell_name": shell_name, "updated_at": now}},
+            )
+            self._watch_tasks[session_id] = asyncio.create_task(
+                self._watch_shell_session(session_id)
+            )
+            logger.info("Started pi-code session %s on shell %s", session_id, shell_name)
+        else:
+            await self.db.coding_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {
+                    "status": "failed",
+                    "error": "pi-code shell-substrate spawn failed",
+                    "updated_at": now,
+                    "completed_at": now,
+                }},
+            )
+            await self._release_slot(session_id)
+
     async def _start_pi_code_session(
         self,
         *,
@@ -588,8 +683,9 @@ class CodingSessionManager:
         conversation_id: Optional[str],
         routing: Optional[dict] = None,
     ) -> dict:
-        """Spawn an in-process pi-code session: a working conversation pinned to
-        the chosen LLM, driven by ARIA's orchestrator in a background task."""
+        """Spawn a pi-code coding session: a working conversation pinned to the
+        chosen LLM, driven interactively via `aria pi-code run` inside a tmux
+        pane — the same shell substrate as every other backend."""
         agent = (
             await self.db.agents.find_one({"slug": "pi-code"})
             or await self.db.agents.find_one({"slug": "pi-coding"})
@@ -663,20 +759,18 @@ class CodingSessionManager:
             "completed_at": None,
         }
         await self.db.coding_sessions.insert_one(doc)
-        if await self._try_acquire_slot_nowait(session_id):
-            await self.db.coding_sessions.update_one(
-                {"_id": session_id},
-                {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
-            )
-            self._watch_tasks[session_id] = asyncio.create_task(
-                self._run_pi_code_session(session_id, agent_conv_id, prompt)
-            )
+        # Pass llm_backend, not "pi-code" -- for the pi-code substrate, the
+        # thing that determines backend-family concurrency limiting (does
+        # this hit Ridge? laguna?) is the resolved LLM adapter, not the
+        # coding-session substrate name (see _limited_backend/_backend_limits).
+        if await self._try_acquire_slot_nowait(session_id, llm_backend):
+            await self._launch_pi_code_shell(session_id, agent_conv_id, prompt, workspace)
             logger.info(
                 "Started pi-code session %s (llm=%s model=%s)", session_id, llm_backend, llm_model
             )
         else:
             self._watch_tasks[session_id] = asyncio.create_task(
-                self._deferred_pi_code(session_id, agent_conv_id, prompt)
+                self._deferred_pi_code(session_id, agent_conv_id, prompt, llm_backend, workspace)
             )
             logger.info(
                 "Queued pi-code session %s (limit=%s, active=%s)",
@@ -685,21 +779,23 @@ class CodingSessionManager:
         return await self.get_session(session_id)
 
     async def _deferred_pi_code(
-        self, session_id: str, conversation_id: str, prompt: str
+        self,
+        session_id: str,
+        conversation_id: str,
+        prompt: str,
+        llm_backend: Optional[str] = None,
+        workspace: Optional[str] = None,
     ) -> None:
-        """Background waiter for a queued pi-code session: block for a slot, then
-        drive the loop. `_run_pi_code_session` releases the slot on finalize."""
+        """Background waiter for a queued pi-code session: block for a slot,
+        then launch the shell. `_watch_shell_session` (installed by
+        `_launch_pi_code_shell`) releases the slot on finalize."""
         try:
-            await self._acquire_slot(session_id)
+            await self._acquire_slot(session_id, llm_backend)
             cur = await self.get_session(session_id)
             if not cur or cur.get("status") != "queued":
                 await self._release_slot(session_id)
                 return
-            await self.db.coding_sessions.update_one(
-                {"_id": session_id},
-                {"$set": {"status": "running", "updated_at": datetime.now(timezone.utc)}},
-            )
-            await self._run_pi_code_session(session_id, conversation_id, prompt)
+            await self._launch_pi_code_shell(session_id, conversation_id, prompt, workspace)
         except asyncio.CancelledError:
             await self._release_slot(session_id)
             raise
@@ -707,96 +803,14 @@ class CodingSessionManager:
             logger.warning("deferred pi-code launch failed for %s: %s", session_id, exc)
             await self._release_slot(session_id)
 
-    async def _run_pi_code_session(
-        self, session_id: str, conversation_id: str, prompt: str
-    ) -> None:
-        """Drive the orchestrator over the session's conversation until the turn
-        completes, then finalize. Cancellation (stop_session) ends it cleanly."""
-        try:
-            from aria.api.deps import (
-                get_tool_router,
-                get_task_runner,
-                get_coding_session_manager,
-            )
-            from aria.core.orchestrator import Orchestrator
-
-            tool_router = get_tool_router()
-            task_runner = await get_task_runner(self.db)
-            coding_manager = await get_coding_session_manager(self.db)
-            orchestrator = Orchestrator(
-                db=self.db,
-                tool_router=tool_router,
-                task_runner=task_runner,
-                coding_manager=coding_manager,
-            )
-            async for chunk in orchestrator.process_message(
-                conversation_id, prompt, stream=False
-            ):
-                if chunk.type == "error":
-                    raise RuntimeError(chunk.error or "pi-code stream error")
-            await self._finalize_pi_code(session_id, "completed")
-        except asyncio.CancelledError:
-            await self._finalize_pi_code(session_id, "stopped")
-            raise
-        except Exception as e:
-            logger.warning("pi-code session %s failed: %s", session_id, e)
-            await self._finalize_pi_code(session_id, "failed", error=str(e))
-        finally:
-            self._watch_tasks.pop(session_id, None)
-            await self._release_slot(session_id)
-
-    async def _finalize_pi_code(
-        self, session_id: str, status: str, error: Optional[str] = None
-    ) -> None:
-        now = datetime.now(timezone.utc)
-        res = await self.db.coding_sessions.update_one(
-            {"_id": session_id, "status": "running"},
-            {"$set": {
-                "status": status,
-                "updated_at": now,
-                "completed_at": now,
-                "exit_code": 0 if status == "completed" else None,
-                "error": error,
-            }},
-        )
-        if res.modified_count == 0:
-            return  # already finalized elsewhere (e.g. stop_session)
-        session = await self.get_session(session_id)
-        try:
-            output_tail = await self.get_output(session_id, lines=10)
-            await self.mailbox.send_task_done(
-                sender="coding:pi-code",
-                recipient="orchestrator",
-                session_id=session_id,
-                result_summary=output_tail or f"pi-code {status}",
-                exit_status=status,
-                conversation_id=(session or {}).get("conversation_id"),
-            )
-        except Exception as e:
-            logger.debug("Failed to send pi-code task_done mail: %s", e)
-        if self.notification_service:
-            try:
-                await self.notification_service.notify(
-                    source=f"coding:{session_id}",
-                    event_type=status,
-                    detail=f"pi-code session {status}",
-                    cooldown_seconds=10,
-                )
-            except Exception:
-                pass
-
     async def stop_session(self, session_id: str) -> bool:
         session = await self.get_session(session_id)
         if not session:
             return False
 
-        # In-process pi-code session: cancel its driver task.
-        if session.get("backend") == "pi-code":
-            task = self._watch_tasks.pop(session_id, None)
-            if task is not None:
-                task.cancel()
-        # Handle shell-substrate sessions (kill the watched tmux shell)
-        elif session.get("shell_name") and self.shell_service:
+        # Handle shell-substrate sessions (kill the watched tmux shell) --
+        # this covers pi-code too now that it runs on the shell substrate.
+        if session.get("shell_name") and self.shell_service:
             try:
                 await self.shell_service.kill_shell(session["shell_name"])
             except Exception as exc:  # pragma: no cover - defensive
@@ -885,23 +899,8 @@ class CodingSessionManager:
 
     async def get_output(self, session_id: str, lines: int = 50) -> str:
         session = await self.get_session(session_id)
-        # In-process pi-code: synthesize a transcript from the loop's conversation
-        # messages (restart-safe; gives the watchdog signal for idle detection).
-        if session and session.get("backend") == "pi-code" and session.get("agent_conversation_id"):
-            try:
-                conv = await self.db.conversations.find_one(
-                    {"_id": ObjectId(session["agent_conversation_id"])},
-                    {"messages": {"$slice": -int(lines)}},
-                )
-            except Exception:
-                conv = None
-            out = []
-            for m in (conv or {}).get("messages", []):
-                content = str(m.get("content", "")).strip()
-                if content:
-                    out.append(f"[{m.get('role', '?')}] {content}")
-            return "\n".join(out)
-        # Shell-substrate sessions: live ANSI-stripped pane from the fleet; if the
+        # Shell-substrate sessions (pi-code included, now that it runs on the
+        # shell substrate too): live ANSI-stripped pane from the fleet; if the
         # tmux session has ended (completed), fall back to captured scrollback.
         if session and session.get("shell_name") and self.shell_service:
             screen = await self.shell_service.current_screen(session["shell_name"], lines=lines)
@@ -918,47 +917,15 @@ class CodingSessionManager:
 
     async def send_input(self, session_id: str, text: str) -> bool:
         session = await self.get_session(session_id)
-        # In-process pi-code: a follow-up message = a new orchestrator turn.
-        if session and session.get("backend") == "pi-code":
-            conv_id = session.get("agent_conversation_id")
-            if not conv_id:
-                return False
-            # A follow-up message spins up a new orchestrator turn, same as a
-            # fresh spawn — it must honour the same fail-closed killswitch/
-            # e-stop gate start_session and the deferred-launch re-check use,
-            # not just the initial spawn. Return False (this method's existing
-            # not-possible signal) rather than raising, so callers that check
-            # the bool see the same "couldn't do it" outcome as any other
-            # send_input failure instead of an unhandled 500.
-            from aria.api.deps import get_killswitch, resolve_estop_manager
-            try:
-                get_killswitch().check_or_raise("coding session send_input")
-                estop = await resolve_estop_manager(self.db)
-                if await estop.is_active():
-                    state = await estop.get_state()
-                    raise RuntimeError(f"Emergency stop active — {state.reason}")
-            except Exception as exc:
-                logger.warning("send_input blocked for %s by safety gate: %s", session_id, exc)
-                return False
-            existing = self._watch_tasks.get(session_id)
-            if existing is not None and not existing.done():
-                return False  # a turn is already running
-            # Re-acquire a slot for the revived turn (best-effort — a user-driven
-            # follow-up isn't blocked when at capacity; the finally releases it
-            # either way, idempotently).
-            await self._try_acquire_slot_nowait(session_id)
-            await self.db.coding_sessions.update_one(
-                {"_id": session_id},
-                {"$set": {
-                    "status": "running",
-                    "updated_at": datetime.now(timezone.utc),
-                    "completed_at": None,
-                }},
-            )
-            self._watch_tasks[session_id] = asyncio.create_task(
-                self._run_pi_code_session(session_id, conv_id, text)
-            )
-            return True
+        # Shell-substrate sessions (pi-code included): send_input is a plain
+        # tmux send-keys equivalent -- the pane's `aria pi-code run` process
+        # reads it as the next line of stdin, same mechanism as any other
+        # coding-session shell. The killswitch/e-stop gates that mattered for
+        # the old in-process-turn-per-message design are irrelevant now: the
+        # pi-code process is already running continuously (slot already
+        # held for its whole life, same as claude_code/codex/pool), so
+        # there's no new turn to gate here -- only start_session/the Ralph
+        # loop spin up new work, and both already check these gates.
         if session and session.get("shell_name") and self.shell_service:
             try:
                 line, _screen = await self.shell_service.send_input(session["shell_name"], text)

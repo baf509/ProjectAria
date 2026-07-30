@@ -402,6 +402,69 @@ def chat(message, conversation, new):
         sys.exit(1)
 
 
+@cli.group("pi-code")
+def pi_code_group():
+    """ARIA's own agentic coding loop.
+
+    Not meant to be run by hand -- CodingSessionManager._launch_pi_code_shell
+    spawns `pi-code run` inside a tmux pane so a pi-code coding session is a
+    real watched shell, same substrate as claude_code/codex/pool.
+    """
+    pass
+
+
+@pi_code_group.command("run")
+@click.option("--conversation", "-c", required=True, help="Conversation ID to drive")
+@click.option(
+    "--prompt-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help="File containing the initial prompt (read once at startup)",
+)
+def pi_code_run(conversation, prompt_file):
+    """Drive a pi-code session's conversation from inside its tmux pane.
+
+    Sends --prompt-file's contents as the conversation's first turn, prints
+    the streamed response, then loops reading further turns from stdin --
+    one line per message, fed by send_input via the shell substrate exactly
+    like any other coding-session backend. Prints a bare "> " prompt before
+    each read so the idle-prompt detector (shells_idle_prompt_patterns, which
+    matches a trailing ">") recognizes this session as blocked/awaiting input
+    when it's sitting here idle, same as any other CLI agent shell.
+    """
+    client = AriaClient()
+
+    def stream_and_print(message: str) -> None:
+        console.print("[green]assistant:[/green] ", end="")
+        try:
+            for event in client.send_message(conversation, message):
+                etype = event.get("type")
+                if etype == "text":
+                    console.print(event.get("content", ""), end="")
+                elif etype == "error":
+                    console.print(f"\n[red]Error:[/red] {event.get('error')}")
+        except Exception as e:
+            console.print(f"\n[red]Error:[/red] {str(e)}")
+        console.print()
+
+    with open(prompt_file, "r") as f:
+        initial_prompt = f.read()
+    console.print(f"[cyan]task:[/cyan] {initial_prompt[:200]}\n")
+    stream_and_print(initial_prompt)
+
+    while True:
+        try:
+            message = console.input("> ")
+        except EOFError:
+            break
+        except KeyboardInterrupt:
+            console.print("\n[dim]interrupted[/dim]")
+            break
+        if not message.strip():
+            continue
+        stream_and_print(message)
+
+
 @cli.group()
 def agents():
     """Manage agents."""

@@ -459,7 +459,7 @@ def _routing_manager():
         mgr = CodingSessionManager(make_mock_db())
 
     backend = MagicMock()
-    backend.is_in_process = False
+    backend.needs_custom_launch = False
     backend.start_command.return_value = MagicMock(argv=["claude"], cwd="/tmp/ws", env={})
     mgr.registry = MagicMock()
     mgr.registry.get.return_value = backend

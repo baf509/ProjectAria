@@ -353,36 +353,33 @@ async def test_watch_session_real_crash_still_writes_checkpoint():
 
 
 # ---------------------------------------------------------------------------
-# send_input on a pi-code session must honor the same fail-closed safety
-# gate as start_session / the deferred-launch re-check
+# send_input on a pi-code session now routes through the generic shell path
+# (pi-code runs on the shell substrate as of 2026-07-30, same as every other
+# backend) -- it's plain tmux send-keys, not a new orchestrator turn, so it
+# does NOT re-check the killswitch/e-stop per call (those gate start_session
+# and the Ralph loop's per-nudge check, same as claude_code/codex/pool).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_send_input_pi_code_blocked_by_estop():
-    """An active emergency stop must block a pi-code follow-up turn, not just
-    the initial spawn."""
+async def test_send_input_pi_code_routes_through_shell_substrate():
+    """A pi-code session with a shell_name sends input the same way any other
+    shell-substrate backend does -- no special-casing, no per-call safety gate."""
     db = make_mock_db()
     db.coding_sessions.find_one = AsyncMock(return_value={
         "_id": "sess-pi",
         "status": "running",
         "backend": "pi-code",
         "agent_conversation_id": "conv-1",
+        "shell_name": "claude-coding-sess-pi",
     })
     mgr = _make_manager(db=db)
+    mgr.shell_service = MagicMock()
+    mgr.shell_service.send_input = AsyncMock(return_value=(5, "screen text"))
 
-    mock_estop = MagicMock()
-    mock_estop.is_active = AsyncMock(return_value=True)
-    mock_estop.get_state = AsyncMock(return_value=MagicMock(reason="rate limit cooldown"))
+    result = await mgr.send_input("sess-pi", "keep going")
 
-    with patch("aria.api.deps.get_killswitch") as mock_get_ks, \
-         patch("aria.api.deps.resolve_estop_manager", new_callable=AsyncMock) as mock_resolve_estop:
-        mock_get_ks.return_value.check_or_raise = MagicMock()  # killswitch: not engaged
-        mock_resolve_estop.return_value = mock_estop
-
-        result = await mgr.send_input("sess-pi", "keep going")
-
-    assert result is False
-    assert "sess-pi" not in mgr._watch_tasks
+    assert result is True
+    mgr.shell_service.send_input.assert_awaited_once_with("claude-coding-sess-pi", "keep going")
 
 
 @pytest.mark.asyncio
@@ -436,23 +433,43 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
 
 
 @pytest.mark.asyncio
-async def test_send_input_pi_code_blocked_by_killswitch():
-    """An engaged manual killswitch must block a pi-code follow-up turn."""
+async def test_start_session_refuses_pool_when_disabled():
+    """settings.pool_enabled=False must refuse a pool-backed session up front
+    with a clear error, not attempt to dial the (physically shut down)
+    chadrock server and fail with a confusing connection error instead."""
+    mgr = _make_manager()
+    mgr.registry = BackendRegistry()  # real registry: need "pool" to canonicalize
+
+    with patch("aria.api.deps.get_killswitch") as mock_get_ks, \
+         patch("aria.api.deps.resolve_estop_manager", new_callable=AsyncMock) as mock_resolve_estop, \
+         patch("aria.agents.session.settings.pool_enabled", False), \
+         patch("aria.agents.session.settings.coding_routing_enabled", False):
+        mock_get_ks.return_value.check_or_raise = MagicMock()
+        mock_estop = MagicMock()
+        mock_estop.is_active = AsyncMock(return_value=False)
+        mock_resolve_estop.return_value = mock_estop
+
+        with pytest.raises(RuntimeError, match="pool backend is disabled"):
+            await mgr.start_session(workspace="/tmp/ws", backend="pool", prompt="do stuff")
+
+
+@pytest.mark.asyncio
+async def test_send_input_pi_code_without_shell_falls_back_to_process_manager():
+    """A pi-code session that somehow has no shell_name (e.g. shell-substrate
+    spawn failed and the session errored before one was assigned) falls back
+    to the generic process-manager path, same as any other backend without
+    a shell -- not a crash, not a special pi-code branch."""
     db = make_mock_db()
     db.coding_sessions.find_one = AsyncMock(return_value={
         "_id": "sess-pi",
         "status": "running",
         "backend": "pi-code",
         "agent_conversation_id": "conv-1",
+        "shell_name": None,
     })
     mgr = _make_manager(db=db)
 
-    with patch("aria.api.deps.get_killswitch") as mock_get_ks:
-        mock_get_ks.return_value.check_or_raise = MagicMock(
-            side_effect=RuntimeError("killswitch engaged")
-        )
+    result = await mgr.send_input("sess-pi", "keep going")
 
-        result = await mgr.send_input("sess-pi", "keep going")
-
-    assert result is False
-    assert "sess-pi" not in mgr._watch_tasks
+    assert result is True  # _make_manager's mock_proc_mgr.send_input returns True
+    mgr.process_manager.send_input.assert_awaited_once_with("sess-pi", "keep going")

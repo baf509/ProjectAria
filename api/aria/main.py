@@ -252,7 +252,7 @@ async def lifespan(app: FastAPI):
 
         if settings.shells_reap_enabled:
             from aria.shells.reaper import ShellReaperWorker
-            shell_reaper = ShellReaperWorker(shell_service)
+            shell_reaper = ShellReaperWorker(shell_service, get_notification_service())
             await shell_reaper.start()
             app.state.shell_reaper = shell_reaper
 

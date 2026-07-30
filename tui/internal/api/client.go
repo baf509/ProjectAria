@@ -189,13 +189,18 @@ func (c *Client) ListAgents() ([]Agent, error) {
 // ---------- Coding Sessions ----------
 
 type CodingSession struct {
-	ID          string     `json:"id"`
-	Backend     string     `json:"backend"`
+	ID        string `json:"id"`
+	Backend   string `json:"backend"`
+	// LLM-adapter name for pi-code sessions (llamacpp/agentic/ridge/...) --
+	// a DIFFERENT vocabulary from Backend. Needed to tell a Ridge-backed
+	// pi-code session apart from a local one; both share Backend="pi-code".
+	LLM         string     `json:"llm,omitempty"`
 	Model       string     `json:"model,omitempty"`
 	Workspace   string     `json:"workspace"`
 	Prompt      string     `json:"prompt"`
 	Branch      string     `json:"branch,omitempty"`
 	PID         *int       `json:"pid,omitempty"`
+	ShellName   string     `json:"shell_name,omitempty"`
 	Status      string     `json:"status"`
 	Host        string     `json:"host,omitempty"`
 	LoopEnabled bool       `json:"loop_enabled"`
