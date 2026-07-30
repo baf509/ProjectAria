@@ -104,6 +104,11 @@ class ModelServerSpec:
     # Off-box only: command that suspends the remote machine (its wake path is
     # separate — e.g. Ridge's WoL proxy wakes it on the next inference request).
     sleep_command: Optional[tuple[str, ...]] = None
+    # Consumer-facing OpenAI-compatible endpoint override. Default is computed
+    # from `port` (localhost + tailnet variants); set this when the URI isn't
+    # port-derivable — e.g. Ridge, reached ONLY via the tailnet-bound proxy
+    # (localhost:8092 is connection-refused, a repeatedly-misdiagnosed gotcha).
+    endpoint_override: Optional[str] = None
 
 
 # Only the pairs that ALWAYS overflow the box, per the compose-file headers
@@ -331,8 +336,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "ridge",
             "rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
         ),
+        endpoint_override="http://100.123.245.84:8092/v1",
     ),
 )
+
+# This node's stable Tailscale IP — same constant every compose file binds to.
+_TAILNET_IP = "100.123.245.84"
 
 _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
@@ -504,6 +513,17 @@ class ModelServerManager:
                 "consumers_note": spec.consumers_note,
                 "can_sleep": spec.sleep_command is not None,
                 "bound_agents": bindings.get(spec.slug, []),
+                # What a consumer (e.g. Hermes's config.yaml) should dial.
+                "endpoints": (
+                    {"tailnet": spec.endpoint_override}
+                    if spec.endpoint_override
+                    else {
+                        "local": f"http://localhost:{spec.port}/v1",
+                        "tailnet": f"http://{_TAILNET_IP}:{spec.port}/v1",
+                    }
+                    if spec.port
+                    else {}
+                ),
             }
             if gtt is not None:
                 entry["gtt_used_gib"] = round(gtt[0], 1)

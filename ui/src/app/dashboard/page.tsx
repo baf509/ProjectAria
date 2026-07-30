@@ -2,6 +2,7 @@
 
 import { startTransition, useEffect, useMemo, useState } from 'react'
 import { apiClient } from '@/lib/api-client'
+import { ConfirmButton } from '@/components/ConfirmButton'
 import type { Agent, Conversation, Memory, PlanningProject, PlanningTask, ResearchRun, Workflow } from '@/types'
 
 type Tab = 'agents' | 'memories' | 'tasks' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
@@ -160,7 +161,6 @@ export default function DashboardPage() {
   }
 
   async function handleServerAction(slug: string, action: 'start' | 'stop' | 'sleep', force = false) {
-    if ((action === 'stop' || action === 'sleep') && !confirm(`${action === 'stop' ? 'Stop' : 'Put to sleep:'} ${slug}?`)) return
     setServerBusy(slug)
     setServerError(null)
     try {
@@ -377,22 +377,22 @@ export default function DashboardPage() {
                           {server?.state || 'unknown'}
                         </span>
                         {serverActive && server?.onbox && (
-                          <button
+                          <ConfirmButton
+                            label="Stop"
+                            confirmLabel="Confirm stop"
                             disabled={serverBusy !== null}
-                            onClick={() => void handleServerAction(server.slug, 'stop')}
+                            onConfirm={() => void handleServerAction(server.slug, 'stop')}
                             className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
-                          >
-                            Stop
-                          </button>
+                          />
                         )}
                         {server?.can_sleep && (
-                          <button
+                          <ConfirmButton
+                            label="Sleep"
+                            confirmLabel="Confirm sleep"
                             disabled={serverBusy !== null}
-                            onClick={() => void handleServerAction(server.slug, 'sleep')}
+                            onConfirm={() => void handleServerAction(server.slug, 'sleep')}
                             className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
-                          >
-                            Sleep
-                          </button>
+                          />
                         )}
                       </div>
                     ) : (
@@ -432,17 +432,6 @@ export default function DashboardPage() {
                       >
                         Edit
                       </button>
-                      <button
-                        onClick={async () => {
-                          if (!confirm(`Delete agent "${agent.name}"?`)) return
-                          await apiClient.deleteAgent(agent.id)
-                          setStatusMessage(`Deleted agent ${agent.name}.`)
-                          await refreshDashboard()
-                        }}
-                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
-                      >
-                        Delete
-                      </button>
                     </div>
                   </article>
                 )
@@ -473,22 +462,22 @@ export default function DashboardPage() {
                             </button>
                           )}
                           {canStop && (
-                            <button
+                            <ConfirmButton
+                              label={serverBusy === server.slug ? 'Stopping…' : 'Stop'}
+                              confirmLabel="Confirm stop"
                               disabled={serverBusy !== null}
-                              onClick={() => void handleServerAction(server.slug, 'stop')}
+                              onConfirm={() => void handleServerAction(server.slug, 'stop')}
                               className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
-                            >
-                              {serverBusy === server.slug ? 'Stopping…' : 'Stop'}
-                            </button>
+                            />
                           )}
                           {server.can_sleep && (
-                            <button
+                            <ConfirmButton
+                              label={serverBusy === server.slug ? 'Sleeping…' : 'Sleep'}
+                              confirmLabel="Confirm sleep"
                               disabled={serverBusy !== null}
-                              onClick={() => void handleServerAction(server.slug, 'sleep')}
+                              onConfirm={() => void handleServerAction(server.slug, 'sleep')}
                               className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
-                            >
-                              {serverBusy === server.slug ? 'Sleeping…' : 'Sleep'}
-                            </button>
+                            />
                           )}
                         </div>
                       </div>
@@ -498,6 +487,20 @@ export default function DashboardPage() {
                         {server.resident_gib_estimate ? ` · ~${server.resident_gib_estimate} GiB` : ''}
                         {server.bound_agents?.length ? ` · agent: ${server.bound_agents.join(', ')}` : ''}
                       </div>
+                      {server.endpoints?.tailnet && (
+                        <div className="mt-1 flex items-center gap-2">
+                          <code className="min-w-0 truncate font-mono text-xs text-stone-500">{server.endpoints.tailnet}</code>
+                          <button
+                            onClick={() => {
+                              void navigator.clipboard?.writeText(server.endpoints.tailnet)
+                              setStatusMessage(`Copied ${server.endpoints.tailnet}`)
+                            }}
+                            className="shrink-0 rounded border border-stone-700 px-2 py-1 text-[10px] uppercase tracking-wide text-stone-400 hover:border-stone-500"
+                          >
+                            copy
+                          </button>
+                        </div>
+                      )}
                       {!server.startable && server.not_startable_reason && (
                         <div className="mt-1 text-xs text-stone-500">{server.not_startable_reason}</div>
                       )}
@@ -608,7 +611,7 @@ export default function DashboardPage() {
                     onClick={resetModeForm}
                     className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
                   >
-                    New Mode
+                    New Agent
                   </button>
                 ) : null}
               </div>
@@ -616,7 +619,7 @@ export default function DashboardPage() {
                 <input
                   value={newMode.name}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="Mode name"
+                  placeholder="Agent name"
                   className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
                 />
                 <input
@@ -725,25 +728,38 @@ export default function DashboardPage() {
 
                       if (editingAgentId) {
                         await apiClient.updateAgent(editingAgentId, payload)
-                        setStatusMessage(`Updated mode ${newMode.name}.`)
+                        setStatusMessage(`Updated agent ${newMode.name}.`)
                       } else {
                         await apiClient.createAgent(payload)
-                        setStatusMessage(`Created mode ${newMode.name}.`)
+                        setStatusMessage(`Created agent ${newMode.name}.`)
                       }
                       await refreshDashboard()
                       resetModeForm()
                     }}
                     className="rounded-full bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950"
                   >
-                    {editingAgentId ? 'Save Mode' : 'Create Mode'}
+                    {editingAgentId ? 'Save Agent' : 'Create Agent'}
                   </button>
                   {editingAgentId ? (
-                    <button
-                      onClick={resetModeForm}
-                      className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 hover:border-stone-500"
-                    >
-                      Cancel
-                    </button>
+                    <>
+                      <button
+                        onClick={resetModeForm}
+                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 hover:border-stone-500"
+                      >
+                        Cancel
+                      </button>
+                      <ConfirmButton
+                        label="Delete agent"
+                        confirmLabel="Confirm delete"
+                        onConfirm={async () => {
+                          await apiClient.deleteAgent(editingAgentId)
+                          setStatusMessage(`Deleted agent ${newMode.name}.`)
+                          resetModeForm()
+                          await refreshDashboard()
+                        }}
+                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                      />
+                    </>
                   ) : null}
                 </div>
               </div>
@@ -778,17 +794,16 @@ export default function DashboardPage() {
                         </span>
                       ))}
                     </div>
-                    <button
-                      onClick={async () => {
-                        if (!confirm('Delete this memory?')) return
+                    <ConfirmButton
+                      label="Delete"
+                      confirmLabel="Confirm delete"
+                      onConfirm={async () => {
                         await apiClient.deleteMemory(memory.id)
                         setStatusMessage('Memory deleted.')
                         await refreshDashboard()
                       }}
                       className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
-                    >
-                      Delete
-                    </button>
+                    />
                   </div>
                 </article>
               ))}
@@ -887,12 +902,12 @@ export default function DashboardPage() {
                             >
                               Done
                             </button>
-                            <button
-                              onClick={() => void handleTodoAction(t.id, 'delete')}
+                            <ConfirmButton
+                              label="Delete"
+                              confirmLabel="Confirm delete"
+                              onConfirm={() => void handleTodoAction(t.id, 'delete')}
                               className="rounded-lg border border-stone-700 bg-stone-800 px-2 py-1 text-xs text-stone-500 hover:text-rose-300"
-                            >
-                              Delete
-                            </button>
+                            />
                           </div>
                         </div>
                       </article>
@@ -1085,17 +1100,16 @@ export default function DashboardPage() {
                       >
                         Export Markdown
                       </button>
-                      <button
-                        onClick={async () => {
-                          if (!confirm(`Delete conversation "${conversation.title}"?`)) return
+                      <ConfirmButton
+                        label="Delete"
+                        confirmLabel="Confirm delete"
+                        onConfirm={async () => {
                           await apiClient.deleteConversation(conversation.id)
                           setStatusMessage(`Deleted conversation.`)
                           await refreshDashboard()
                         }}
                         className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
-                      >
-                        Delete
-                      </button>
+                      />
                     </div>
                   </article>
                 ))}
@@ -1149,17 +1163,16 @@ export default function DashboardPage() {
                         >
                           Run
                         </button>
-                        <button
-                          onClick={async () => {
-                            if (!confirm(`Delete workflow "${workflow.name}"?`)) return
+                        <ConfirmButton
+                          label="Delete"
+                          confirmLabel="Confirm delete"
+                          onConfirm={async () => {
                             await apiClient.deleteWorkflow(workflow._id)
                             setStatusMessage(`Deleted workflow ${workflow.name}.`)
                             await refreshDashboard()
                           }}
                           className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
-                        >
-                          Delete
-                        </button>
+                        />
                       </div>
                     </div>
                     <p className="text-sm text-stone-400">{workflow.description}</p>
