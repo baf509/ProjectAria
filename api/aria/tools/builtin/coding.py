@@ -30,12 +30,9 @@ class StartCodingSessionTool(_CodingBaseTool):
         return (
             "Start a coding agent session in a workspace. backend is one of "
             "'claude_code', 'codex', 'pi-code', or 'pool'. Use 'pool' for "
-            "Poolside's own agent against the local Laguna model. For 'pi-code' (ARIA's own "
-            "agentic loop), set llm to the LLM backend and model to pin a "
-            "specific model. Valid llm values are whatever is CONFIGURED on "
-            "this host - call aria_health or GET /health to see the live list "
-            "(currently the local backends 'llamacpp' and 'agentic'); cloud "
-            "backends exist in code but raise unless their API key is set."
+            "Poolside's own agent against the local Laguna model. 'pi-code' "
+            "launches the real upstream Pi executable in a watched shell; set "
+            "llm to its configured Pi provider and model to the exact model id."
         )
 
     @property
@@ -44,7 +41,7 @@ class StartCodingSessionTool(_CodingBaseTool):
             ToolParameter(name="workspace", type="string", description="Workspace path", required=True),
             ToolParameter(name="prompt", type="string", description="Task prompt", required=True),
             ToolParameter(name="backend", type="string", description="Backend: claude_code | codex | pi-code", required=False),
-            ToolParameter(name="llm", type="string", description="For pi-code: LLM backend. Use a backend that is actually configured here (see /health); llamacpp and agentic are the local ones. Unconfigured cloud backends now fail at spawn with a 400 rather than dying asynchronously.", required=False),
+            ToolParameter(name="llm", type="string", description="For pi-code: Pi provider/ARIA LLM name (llamacpp, agentic, or ridge).", required=False),
             ToolParameter(name="model", type="string", description="Model id to pin", required=False),
             ToolParameter(name="branch", type="string", description="Branch hint", required=False),
             ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (Ralph loop). Default false.", required=False, default=False),

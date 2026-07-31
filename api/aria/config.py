@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     research_default_model: str = "default"
     codex_binary: str = "codex"
     claude_code_binary: str = "claude"
+    # Installed Pi coding-agent executable. ARIA supervises this real
+    # interactive TUI in a watched tmux shell; it does not reimplement
+    # Pi's agent loop. Provider names correspond to ~/.pi/agent/models.json.
+    pi_coding_binary: str = "pi"
+    pi_coding_provider_llamacpp: str = "llama-cpp"
+    pi_coding_provider_agentic: str = "agentic"
+    pi_coding_provider_ridge: str = "ridge"
     coding_default_backend: str = "codex"
     coding_default_workspace: str = "/home/ben/Development/aria-projects"
     coding_output_lines: int = 500

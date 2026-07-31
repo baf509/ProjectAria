@@ -530,6 +530,11 @@ export default function DashboardPage() {
                         {server.resident_gib_estimate ? ` · ~${server.resident_gib_estimate} GiB` : ''}
                         {server.bound_agents?.length ? ` · agent: ${server.bound_agents.join(', ')}` : ''}
                       </div>
+                      {server.consumers_note && (
+                        // consumers_note covers consumers bind() can't express — e.g. Hermes,
+                        // which isn't a db.agents row, so it never appears in bound_agents above.
+                        <div className="mt-1 text-xs text-stone-500">{server.consumers_note}</div>
+                      )}
                       {server.endpoints?.tailnet && (
                         <div className="mt-1 flex items-center gap-2">
                           <code className="min-w-0 truncate font-mono text-xs text-stone-500">{server.endpoints.tailnet}</code>

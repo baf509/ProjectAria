@@ -37,6 +37,7 @@ func NewToolsMenu() *ToolsMenu {
 			{Key: "o", Label: "Observations", Desc: "Awareness sensor data"},
 			{Key: "b", Label: "Database", Desc: "Browse collections"},
 			{Key: "h", Label: "Health", Desc: "Service health"},
+			{Key: "y", Label: "History", Desc: "Browse all shells (any status)"},
 		},
 	}
 }

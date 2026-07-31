@@ -1,13 +1,15 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-07-29 (model-server control plane: registry of the local LLM servers + agent binding)
-**Updated By:** Claude Code
+**Last Updated:** 2026-07-31 (real external Pi coding backend)
+**Updated By:** Codex
 
 This is a living "current state" page. For the full shipped history (what shipped, when), see `CHANGELOG.md`.
 
 ---
 
 ## Current Focus / Next Actions
+
+00000000. **Pi Coding now launches the real upstream `pi` executable (2026-07-31).** The prior `pi-code` backend ran ARIA's own orchestrator—first in-process, then hidden behind an `aria pi-code run` tmux wrapper—which looked shell-like but was not Pi. Replaced it with a normal external CLI backend parallel to Claude Code/Codex: explicit Pi provider/model, interactive positional prompt, watched tmux shell, native Pi tools/context/session transcript, and the existing ARIA worktree/fleet/watchdog/review/Ralph supervision. The compatibility `pi_coding_agent` tool now starts this coding session instead of creating an ARIA conversation. Local profile → Chadrockv2 `:8105`; Ridge profile → wake proxy/Ridge. **Done.**
 
 0000000. **Model-server control plane implemented (2026-07-29), prompted by downloading two new local models with no consistent record of which runtime fork each server on this box needs.** `api/aria/infrastructure/model_servers.py` replaces the retired `LlamaCppModelSwitcher` (which targeted the old single-`llamacpp`-on-:8080 topology) with a static registry of every local model server — renamed per Ben to track quant/runtime at a glance (`Laguna-S-2.1`, `Chadrock-Laguna-S-2.1`, `ROCmFP4-qwen3.6-35b-a3b`, `qwen3.6-35b-a3b-Q4`, `qwen3.6-27b-Q8`, `context1-Q4`, `gemma-4-e4b-Q4`, plus the two new not-yet-startable downloads `Chadrock-ROCmFP6-qwen3.6-27b`/`Qwythos-27b-Q8`, and an off-box `Ridge-Qwen3.6-35B-A3B` entry) — each carrying its compose file/service/container, runtime repo+branch/commit, backend device (Vulkan/HIP/CPU/remote), a RAM SWAG, and mutual-exclusion group. `ModelServerManager.start()`/`stop()` are now the ONLY sanctioned way to bring these up/down (raw `docker start`/`stop` when the container exists, `docker compose up -d` when it doesn't — sidesteps the compose-stop-is-a-silent-noop gotcha for hand-run containers); `start()` hard-refuses on a RAM-exclusivity conflict or a live-GTT-usage SWAG overflow unless `force=True`. `bind()`/`unbind()` pair a server with an ARIA agent — purely descriptive (doesn't touch the agent's actual `llm.backend`/`model` routing), enforced one-agent-per-server unless `force=True` adds an extra slot; `AgentResponse.model_server` is read-only outside bind/unbind so the enforcement can't be bypassed via a raw agent PUT. Exposed over `/api/v1/infrastructure/model-servers` and 5 new MCP tools. 22 new tests, 950 total passing. Full detail: `CHANGELOG.md` [2026-07-29]. **Done — no follow-up**, beyond the flagged next steps: build a HIP runtime for Chadrockv2 and wire Qwythos to a compose service before either can actually start.
 

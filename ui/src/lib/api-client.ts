@@ -61,6 +61,36 @@ export const apiClient = {
     return res.json()
   },
 
+  async createCodingSession(body: {
+    workspace: string
+    prompt: string
+    backend?: string
+    subagent_profile?: string
+    create_worktree?: boolean
+    worktree_name?: string
+  }): Promise<any> {
+    const res = await fetch(`${API_URL}/api/v1/coding/sessions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      // Worktree/backend-validation failures carry a real reason in `detail`
+      // (e.g. "Could not provision a worktree at ... : ..."); the generic
+      // apiFetch() error swallows that, so this route handles its own.
+      let detail = res.statusText
+      try {
+        const data = await res.json()
+        detail = data.detail || detail
+      } catch {}
+      throw new Error(detail)
+    }
+    return res.json()
+  },
+
   async createAgent(body: Record<string, any>): Promise<Agent> {
     const res = await apiFetch('/agents', {
       method: 'POST',

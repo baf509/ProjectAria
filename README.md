@@ -66,7 +66,12 @@ Same infrastructure as Claude Code but using OpenAI's Codex CLI with `--sandbox 
 
 ### Pi Coding Agent
 
-A coding-assistant persona. ARIA creates a persistent conversation and processes it through her own orchestrator. (Its model is configurable per agent — currently GLM 5.2 via Fireworks; it can be pointed at a local qwen backend instead.)
+Interactive coding sessions using the real upstream `pi` CLI. ARIA launches Pi
+inside the same watched tmux-shell substrate as Claude Code, with an explicit
+provider/model selected from the `pi-coding` or `pi-coding-ridge` launch
+profile. Pi owns its coding loop, tools, context files, and session transcript;
+ARIA owns worktree setup, fleet capture, input/stop controls, concurrency,
+watchdog, review, and Ralph-loop supervision.
 
 > **Note on coding sub-agents:** ARIA-spawned coding sessions now run on the **watched-shell substrate** — each becomes an interactive `claude-coding-*` tmux shell, captured and visible in the fleet/TUI and drivable via the same tools, with the watchdog/checkpoint/review overlay still managing it. A session can opt into the **Ralph loop** to keep running: the watchdog re-feeds it whenever it idles (re-checking killswitch/e-stop each nudge) until it emits `RALPH_DONE` or hits a nudge/deadline cap. Toggle it from the TUI (`l`), `POST /coding/sessions/{id}/loop`, or the MCP `set_coding_loop` tool.
 

@@ -2,6 +2,110 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-07-31] - Pi Coding corrected to launch upstream Pi
+
+### Changed
+- Replaced the custom ARIA `pi-code` agent loop with the installed Pi 0.83
+  `pi` executable. `PiCodeBackend` now builds
+  an interactive `pi --provider ... --model ... <task>` command and uses the
+  same generic watched-shell launch path as Claude Code and Codex.
+- Deleted the obsolete `aria pi-code run` CLI wrapper and the special
+  conversation/start/deferred launch path. Pi now owns its tools, context
+  files, session JSONL, compaction, and TUI; ARIA retains worktrees, tmux fleet
+  capture/control, concurrency, watchdog, review, notifications, and Ralph.
+- Pi 0.83's `--session-id` is pinned to the ARIA coding-session UUID, giving
+  both persistence layers one stable identity and deterministic resume.
+- `pi_coding_agent` is now a compatibility launcher for a real Pi coding
+  session and requires a workspace; it no longer creates an ARIA chat
+  conversation or calls `Orchestrator.process_message()`.
+- Added explicit Pi providers for local Qwen 35B (`:8103`), local Chadrockv2
+  27B (`:8105`), and Ridge. `pi-coding`/`pi-coding-ridge` database rows now act
+  as launch profiles selecting provider/model and appended role instructions.
+
+### Verified
+- Pi enumerates all three configured providers/models.
+- 988 API tests and all Go TUI tests pass. A live managed session produced two
+  requested responses across separate turns through ARIA's shell input/output
+  API while remaining inside the same Pi TUI process. A second smoke test on
+  Pi 0.83 confirmed the Pi JSONL filename and header use ARIA's exact session
+  UUID.
+
+## [2026-07-31] - TUI: session delete/history browser; Fleet/Health/Memory rendering bugs; shell extraction gap closed
+
+### Added
+- **`DELETE /api/v1/coding/sessions/{id}`** (`agents/session.py` `delete_session()`,
+  route in `api/routes/coding_sessions.py`) — permanently removes a
+  `coding_sessions` record; refuses (409) while `status` is `running`/`queued`.
+  Does not touch the underlying shell/shell_events (owned by the watched-shell
+  subsystem's own retention, not this manager). Wired into the TUI: `d` on a
+  coding-session sidebar row now deletes it (mirrors the existing conversation-
+  delete convention), guarded client-side against deleting an active session.
+- **TUI Shell History screen** (`y` hotkey, `tui/internal/ui/components/history_view.go`
+  + `history_detail.go`) — the sidebar and Fleet only ever showed
+  coding_sessions/active shells; the `shells` collection itself (hundreds of
+  entries, months of history, decoupled from coding_sessions by design) had no
+  browsing surface at all. New screen lists every shell regardless of status
+  (`GET /shells`, already unfiltered/unbounded server-side — no new backend
+  route needed for the list), client-side text filter (`/`), Enter drills into
+  a read-only scrollback viewer sourced from `GET /shells/{name}/events`
+  (works for stopped shells — reads `shell_events` directly, no live tmux pane
+  needed).
+- **`POST /api/v1/shells/extraction/backfill`** (`shells/extraction.py`
+  `ShellExtractionWorker.backfill()`) — one-time (re-runnable) catch-up that
+  drains every **stopped** shell's unextracted event backlog to completion,
+  not just the single 1000-event chunk per shell per periodic tick. Capped at
+  200 chunks/shell as a safety backstop.
+- TUI: generic background-command error surfacing (`Model.lastErr`, footer
+  banner) — `errMsg` used to be handled only on `screenChat`, so a failed API
+  call on any other screen failed completely silently.
+
+### Fixed
+- **Shell-history memory extraction silently skipped ~all of it.**
+  `ShellExtractionWorker._tick()` only ever queried
+  `status=["active","idle"]` — once a shell went `stopped` (the status of the
+  vast majority: 299/304 shells) it was excluded from extraction *permanently*,
+  with no path back. Confirmed live: 215 shells with real captured events,
+  some with 12,000+, had never been touched by extraction at all (42 shells
+  above the 20-event minimum). `_tick()` now includes `stopped`; the one-time
+  backfill above cleared the existing backlog (~209k events / 42 shells).
+  First backfill attempt included active/idle shells too and hit a real
+  infinite loop — an active shell's `line_count` kept growing while the loop
+  held a stale copy of it, so the stale-cursor self-heal kept firing and
+  resetting to the same point every pass. Fixed by scoping `backfill()` to
+  `stopped` only (frozen `line_count`, no race) plus the chunk cap as
+  defense in depth.
+- **`Memory.Source` typed as `string` in the TUI's Go client** (`api/client.go`)
+  but the real `/api/v1/memories` response's `source` field is an object
+  (`{"type": ..., "project": ..., ...}`) — every single memory list/search
+  call failed to decode, and because errors were only surfaced on
+  `screenChat`, the Memory Browser just looked permanently empty with zero
+  indication anything was wrong. Field was unused by the TUI; removed.
+- **`lipgloss.Style.Render(text + "\n")`** — baking the trailing newline
+  *inside* the styled string instead of appending it after `Render()`
+  returns — desyncs a `bubbles` `viewport.Model`'s line handling and silently
+  swallows whatever content line immediately follows. Ate the Fleet table's
+  first session row (always the newest, e.g. a just-started session),
+  Health's first service check, and Memory Browser's first result, on any
+  sufficiently wide terminal. Fixed in `fleet_view.go`, `health_view.go`,
+  `memory_browser.go`, `observations.go`, `tools_browser.go`,
+  `usage_monitor.go`. Regression tests added (`fleet_view_test.go`,
+  `history_view_test.go`) reproducing the exact width/content shape that
+  triggered it live.
+- Deleted 84 stale coding_sessions records (test artifacts + genuinely
+  finished old sessions, oldest 85 of 96 total) accumulated across TUI
+  worktree-feature testing; archived recoverable transcripts to
+  `.aria-archived-sessions/` in their workspaces first.
+
+### Notes
+- `agent_mail (41)`, `coding_sessions (8)` etc. in the DB browser now line up
+  with what Fleet/History actually show — this was the concrete symptom that
+  surfaced the Fleet/Memory rendering bugs (reported as "gaps between what
+  we discussed and what's showing up").
+- Extraction backfill runs via `ClaudeRunner` (the Claude Code CLI,
+  `use_claude_runner=True` default) when available, not the local
+  `qwen3.6-35b-a3b` server — so it does not contend with Hermes's chat model
+  as initially assumed.
+
 ## [2026-07-30 audit] - Model/agent/runtime pairing audit: 5 real mismatches fixed
 
 Full cross-check of every agent → backend → URL → bound server → live alias,

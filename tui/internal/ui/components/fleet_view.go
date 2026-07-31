@@ -112,11 +112,21 @@ func (fv *FleetView) refreshContent() {
 	}
 
 	// Table header.
+	//
+	// The trailing "\n" on each of these must stay OUTSIDE the lipgloss
+	// Render() call, not baked into the string passed to it. Render() reflows
+	// a string containing an embedded newline into its own internal line
+	// block; fed through a bubbles Viewport that also splits raw content on
+	// "\n", the result desyncs by one line and silently swallows whatever
+	// content line immediately follows -- reproduced directly against
+	// viewport.Model: Render(text+"\n") eats the next line, Render(text)+"\n"
+	// does not. This is how the Ridge pi-code session's row (index 0, always
+	// first since sessions are newest-first) went missing from Fleet.
 	headerFmt := "  %-7s %-10s %-18s %-16s %-9s %7s %8s %8s\n"
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render(
-		fmt.Sprintf(headerFmt, "TYPE", "HOST", "NAME", "BACKEND/MODEL", "STATUS", "IDLE/AGE", "TOKENS", "COST $")))
+		fmt.Sprintf(strings.TrimSuffix(headerFmt, "\n"), "TYPE", "HOST", "NAME", "BACKEND/MODEL", "STATUS", "IDLE/AGE", "TOKENS", "COST $")) + "\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
-		"  " + strings.Repeat("─", cw-4) + "\n"))
+		"  "+strings.Repeat("─", cw-4)) + "\n")
 
 	var totalTokens int
 	var totalCost float64
@@ -188,12 +198,12 @@ func (fv *FleetView) refreshContent() {
 	}
 
 	if len(fv.Sessions) == 0 && len(fv.Shells) == 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("\n  No sessions or shells\n"))
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Muted).Render("  No sessions or shells") + "\n")
 	}
 
 	// Totals row.
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
-		"  " + strings.Repeat("─", cw-4) + "\n"))
+		"  "+strings.Repeat("─", cw-4)) + "\n")
 	b.WriteString(fmt.Sprintf(headerFmt,
 		styles.VitalLabel.Render("TOTAL"), "", "", "", "", "",
 		styles.VitalValue.Render(formatTokensLong(totalTokens)),

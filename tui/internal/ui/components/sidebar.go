@@ -14,11 +14,12 @@ import (
 type TreeNodeKind int
 
 const (
-	NodeSection TreeNodeKind = iota // Collapsible section header
-	NodeAgent                       // Agent template (start new conversation)
-	NodeConversation                // Existing conversation
-	NodeCodingSession               // Active coding session
-	NodeShell                       // Watched tmux shell (the fleet ARIA observes)
+	NodeSection          TreeNodeKind = iota // Non-selectable collapsible header
+	NodeAgent                                // Other Agents entry: Search Agent (chat-style) or the Hermes stub
+	NodeConversation                         // Existing conversation (an Other Agents chat-style entry)
+	NodeCodingSession                        // A coding session (running/queued/recent)
+	NodeShell                                // Watched tmux shell -- used by the Fleet screen's data, not this tree
+	NodeCodingAgentGroup                     // Selectable header for a coding-session family (Pi Local/Ridge/Claude Code/Codex). Enter opens the New Session modal pre-filled for it.
 )
 
 // TreeNode is a single row in the sidebar tree.
@@ -33,21 +34,32 @@ type TreeNode struct {
 	Depth     int    // indentation level
 	Children  int    // count of children (for section headers)
 
+	// New Session modal pre-fill -- set on NodeCodingAgentGroup nodes only.
+	// Exactly one of SessionBackend/SessionProfile is non-empty.
+	SessionBackend string // "claude_code" | "codex"
+	SessionProfile string // "pi-coding" | "pi-coding-ridge" (resolves a db.agents specialist)
+
+	// IsStub marks a placeholder entry with no live backend yet (the Hermes
+	// Agent row) -- Enter shows a "not yet available" message instead of
+	// acting, rather than silently doing nothing or erroring against an API
+	// call that was never going to succeed.
+	IsStub bool
+
 	// Original data pointers for detail views
-	Agent          *api.Agent
-	Conversation   *api.Conversation
-	CodingSession  *api.CodingSession
-	Shell          *api.Shell
+	Agent         *api.Agent
+	Conversation  *api.Conversation
+	CodingSession *api.CodingSession
+	Shell         *api.Shell
 }
 
 type Sidebar struct {
-	Nodes    []TreeNode
-	Cursor   int
-	Offset   int
-	Height   int
-	Width    int
-	Focused  bool
-	Filter   string // future: text filter
+	Nodes   []TreeNode
+	Cursor  int
+	Offset  int
+	Height  int
+	Width   int
+	Focused bool
+	Filter  string // future: text filter
 }
 
 func NewSidebar() *Sidebar {
@@ -104,25 +116,31 @@ func (s *Sidebar) visibleCount() int {
 
 // SetData rebuilds the tree from API data.
 //
-// Structure (2026-07-30 restructuring — Agents/Shells/CodingSessions/
-// Conversations used to be four flat, overlapping lists; a coding session
-// and its backing shell showed up as two separate-looking rows for the same
-// live process, and an agent's conversations had no visible link to the
-// agent itself):
+// Structure (2026-07-30 restructuring: split "Coding Agents" into Local vs
+// Cloud sections, so the local/self-hosted-model agents and the cloud-API
+// agents aren't visually flattened into one undifferentiated list — grouping
+// coding sessions by db.agents SLUG rather than raw backend string, unchanged
+// from the prior pass, since that's what survives pi-coding's model moving
+// between backends):
 //
-//	▸ Agents (N)                     -- each agent, its conversations nested under it
-//	▸ Pool (x/1 active)              -- chadrock: single-consumer, queue rather than stack
-//	▸ Ridge (x/1 active)             -- NInfer: same single-consumer constraint
-//	▸ Claude Code (N active)         -- cloud, unbounded concurrent sessions
-//	▸ Codex (N active)               -- cloud, unbounded (only shown if any exist)
-//	▸ Your Shells (N)                -- hand-run shells with no coding_sessions record
-//	▸ Other Conversations (N)        -- conversations whose agent no longer exists
+//	▸ Local Coding Agents             -- non-selectable umbrella label
+//	  ⊕ Pi Coding Agent (Local) — <model>   (x/1 active)   -- Enter: new session
+//	    session, session, session (active first, capped at 3)
+//	  ⊕ Pi Coding Agent (Ridge) — <model>   (x/1 active)   -- Enter: new session
+//	    session, session, session (active first, capped at 3)
+//	▸ Cloud Coding Agents             -- non-selectable umbrella label
+//	  ⊕ Claude Code (N active)        -- Enter: new session; uncapped, unbounded concurrency
+//	  ⊕ Codex (N active)              -- Enter: new session; uncapped, unbounded concurrency
+//	▸ Other Agents                    -- non-selectable umbrella label
+//	  Search Agent                    -- greyed out while disabled in db.agents
+//	  Hermes Agent                    -- stub; Hermes has no API surface to drive yet
 //
-// A coding session and the shell backing it are the same live process as of
-// 2026-07-30 (pi-code runs on the shell substrate too) -- rendered as ONE
-// row per session, not two; "Your Shells" explicitly excludes anything a
-// coding session already claims.
+// A coding session and the shell backing it are the same live process (pi-code
+// runs on the shell substrate too) -- rendered as ONE row per session, not two.
 func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions []api.CodingSession, shells []api.Shell) {
+	_ = convs  // Other Agents' chat-style entries no longer nest conversations inline; kept for signature stability.
+	_ = shells // shell activity_state enrichment removed with "Your Shells" — sessions show coding_sessions.Status directly.
+
 	// Remember what was selected so the 3s refresh doesn't yank the cursor onto
 	// a different row (which would make Enter open the wrong thing).
 	var prevID string
@@ -134,143 +152,101 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 
 	s.Nodes = nil
 
-	// Build agent lookup
-	agentByID := make(map[string]api.Agent)
-	for _, a := range agents {
-		agentByID[a.ID] = a
-	}
-
-	// Conversations grouped by owning agent (nil-keyed slice for orphans).
-	convsByAgent := make(map[string][]*api.Conversation)
-	var orphanConvs []*api.Conversation
-	for i := range convs {
-		c := &convs[i]
-		if _, ok := agentByID[c.AgentID]; ok {
-			convsByAgent[c.AgentID] = append(convsByAgent[c.AgentID], c)
-		} else {
-			orphanConvs = append(orphanConvs, c)
-		}
-	}
-
-	// --- Agents section (exclude default/ARIA — she's the coordinator, not a
-	// delegated agent), each with its own conversations nested beneath it. ---
-	var delegatedAgents []*api.Agent
+	// Live agent lookup by slug -- the whole point of grouping this way
+	// instead of matching backend/LLM strings is that it keeps working when
+	// an agent gets repointed at a different model server.
+	var piLocalAgent, piRidgeAgent *api.Agent
+	var otherAgents []*api.Agent
 	for i := range agents {
-		if !agents[i].IsDefault {
-			delegatedAgents = append(delegatedAgents, &agents[i])
-		}
-	}
-	if len(delegatedAgents) > 0 {
-		s.Nodes = append(s.Nodes, TreeNode{
-			Kind:     NodeSection,
-			Label:    fmt.Sprintf("Agents (%d)", len(delegatedAgents)),
-			Children: len(delegatedAgents),
-		})
-		for _, a := range delegatedAgents {
-			s.Nodes = append(s.Nodes, TreeNode{
-				ID:        a.Slug,
-				Label:     a.Name,
-				Kind:      NodeAgent,
-				Category:  a.ModeCategory,
-				AgentSlug: a.Slug,
-				Meta:      fmt.Sprintf("%s/%s", a.LLM.Backend, a.LLM.Model),
-				Status:    "idle",
-				Depth:     1,
-				Agent:     a,
-			})
-			for _, c := range convsByAgent[a.ID] {
-				s.Nodes = append(s.Nodes, conversationNode(c, a.ModeCategory, a.Slug, 2))
-			}
-		}
-	}
-
-	// Shell lookup by name, and the set already claimed by a coding session --
-	// a session and its shell are one live process, shown once.
-	shellByName := make(map[string]*api.Shell)
-	for i := range shells {
-		shellByName[shells[i].Name] = &shells[i]
-	}
-	claimedShells := make(map[string]bool)
-
-	// --- Coding-session backend groups. Pool/Ridge have a real single-
-	// consumer ceiling at the model-server level (see
-	// coding_max_concurrent_{laguna,ridge}_sessions server-side) -- shown as
-	// "x/1 active" so hitting the limit is visible, not queued sessions
-	// silently piling up looking like a bug. Claude Code/Codex are cloud,
-	// unbounded. ---
-	active := filterSessionsAny(sessions, "running", "queued")
-	var poolSessions, ridgeSessions, claudeSessions, codexSessions, otherSessions []*api.CodingSession
-	for i := range active {
-		cs := active[i]
+		a := &agents[i]
 		switch {
-		case cs.Backend == "pool":
-			poolSessions = append(poolSessions, cs)
-		case cs.Backend == "pi-code" && cs.LLM == "ridge":
-			ridgeSessions = append(ridgeSessions, cs)
-		case cs.Backend == "claude_code":
-			claudeSessions = append(claudeSessions, cs)
-		case cs.Backend == "codex":
-			codexSessions = append(codexSessions, cs)
+		case a.IsDefault:
+			// ARIA herself -- the coordinator, not a delegated agent. Excluded
+			// from every group, same as before.
+		case a.Slug == "pi-coding":
+			piLocalAgent = a
+		case a.Slug == "pi-coding-ridge":
+			piRidgeAgent = a
 		default:
-			otherSessions = append(otherSessions, cs)
-		}
-		if cs.ShellName != "" {
-			claimedShells[cs.ShellName] = true
+			otherAgents = append(otherAgents, a)
 		}
 	}
 
-	s.appendBackendGroup("Pool", poolSessions, 1, shellByName)
-	s.appendBackendGroup("Ridge", ridgeSessions, 1, shellByName)
-	s.appendBackendGroup("Claude Code", claudeSessions, 0, shellByName)
-	s.appendBackendGroup("Codex", codexSessions, 0, shellByName)
-	s.appendBackendGroup("Local Pi-Code", otherSessions, 0, shellByName)
-
-	// --- Your Shells: hand-run shells only (no coding_sessions record) --
-	// the fleet ARIA observes but didn't spawn. Distinct from the backend
-	// groups above, which already cover every ARIA-spawned session's shell. ---
-	var handRun []*api.Shell
-	for i := range shells {
-		if !claimedShells[shells[i].Name] {
-			handRun = append(handRun, &shells[i])
+	// --- Local Coding Agents: Pi Local + Pi Ridge, always shown when the
+	// agent exists (even with zero sessions -- otherwise there'd be no way to
+	// start a FIRST session under one from here). ---
+	if piLocalAgent != nil || piRidgeAgent != nil {
+		s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: "Local Coding Agents"})
+		if piLocalAgent != nil {
+			s.appendCodingAgentGroup("Pi Coding Agent (Local)", piLocalAgent, sessions, 1)
 		}
-	}
-	if len(handRun) > 0 {
-		awaiting, done := 0, 0
-		for _, sh := range handRun {
-			if sh.AwaitingInput {
-				awaiting++
-			}
-			if sh.ActivityState == "done" {
-				done++
-			}
-		}
-		label := fmt.Sprintf("Your Shells (%d)", len(handRun))
-		switch {
-		case awaiting > 0 && done > 0:
-			label = fmt.Sprintf("Your Shells (%d · %d awaiting · %d done)", len(handRun), awaiting, done)
-		case awaiting > 0:
-			label = fmt.Sprintf("Your Shells (%d · %d awaiting)", len(handRun), awaiting)
-		case done > 0:
-			label = fmt.Sprintf("Your Shells (%d · %d done)", len(handRun), done)
-		}
-		s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: label, Children: len(handRun)})
-		for _, sh := range handRun {
-			s.Nodes = append(s.Nodes, shellNode(sh, 1))
+		if piRidgeAgent != nil {
+			s.appendCodingAgentGroup("Pi Coding Agent (Ridge)", piRidgeAgent, sessions, 1)
 		}
 	}
 
-	// --- Other Conversations: agent no longer exists (deleted/renamed). Not
-	// dropped silently -- surfaced so nothing just vanishes. ---
-	if len(orphanConvs) > 0 {
+	// --- Cloud Coding Agents: Claude Code / Codex, unbounded concurrency, not
+	// tied to a single-consumer model server -- every ACTIVE matching session
+	// shown, no cap (unlike the Pi agents' cap-of-3, there's no ceiling to
+	// respect here). Nested at the same depth as the Pi agent group headers
+	// under their own section, not top-level, so the two coding-agent
+	// families read as siblings rather than Claude Code looking more
+	// "important" by sitting outside any group. Active-only, not "no cap at
+	// all": `sessions` is every session ever created for this workspace,
+	// active or finished months ago -- the original code filtered this
+	// before grouping and an earlier restructure dropped that filter, so
+	// this rendered all ~94 historical sessions on first live test. Same
+	// class of bug "Your Shells" had at 297 entries.
+	var claudeSessions, codexSessions []*api.CodingSession
+	for i := range sessions {
+		cs := &sessions[i]
+		if cs.Status != "running" && cs.Status != "queued" {
+			continue
+		}
+		switch cs.Backend {
+		case "claude_code":
+			claudeSessions = append(claudeSessions, cs)
+		case "codex":
+			codexSessions = append(codexSessions, cs)
+		}
+	}
+	s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: "Cloud Coding Agents"})
+	s.appendTopLevelGroup("Claude Code", "claude_code", "", claudeSessions, 1)
+	s.appendTopLevelGroup("Codex", "codex", "", codexSessions, 1)
+
+	// --- Other Agents: everything else that isn't a coding specialist --
+	// e.g. Search Agent -- shown even while disabled (greyed, not hidden, so
+	// re-enabling it doesn't feel like the entry appeared from nowhere) --
+	// plus a stub for Hermes: it has no API surface yet for this TUI to
+	// drive, so Enter explains that instead of either doing nothing or
+	// failing against a call that was never going to work.
+	s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: "Other Agents"})
+	for _, a := range otherAgents {
+		status := "idle"
+		if !a.Enabled {
+			status = "disabled"
+		}
 		s.Nodes = append(s.Nodes, TreeNode{
-			Kind:     NodeSection,
-			Label:    fmt.Sprintf("Other Conversations (%d)", len(orphanConvs)),
-			Children: len(orphanConvs),
+			ID:        a.Slug,
+			Label:     a.Name,
+			Kind:      NodeAgent,
+			Category:  a.ModeCategory,
+			AgentSlug: a.Slug,
+			Meta:      fmt.Sprintf("%s/%s", a.LLM.Backend, a.LLM.Model),
+			Status:    status,
+			Depth:     1,
+			Agent:     a,
 		})
-		for _, c := range orphanConvs {
-			s.Nodes = append(s.Nodes, conversationNode(c, "chat", "", 1))
-		}
 	}
+	s.Nodes = append(s.Nodes, TreeNode{
+		ID:     "hermes-agent-stub",
+		Label:  "Hermes Agent",
+		Kind:   NodeAgent,
+		Status: "disabled",
+		Meta:   "not yet available",
+		Depth:  1,
+		IsStub: true,
+	})
 
 	// Restore the previous selection by identity if it still exists; otherwise
 	// fall back to clamping onto a selectable node.
@@ -286,39 +262,109 @@ func (s *Sidebar) SetData(agents []api.Agent, convs []api.Conversation, sessions
 	s.ensureVisible()
 }
 
-// appendBackendGroup renders one coding-session backend family as a section:
-// "Name (x/limit active)" when limit > 0 (Pool/Ridge's real single-consumer
-// ceiling), or "Name (N active)" when limit == 0 (unbounded, e.g. Claude
-// Code/Codex). Queued sessions count toward the header but are labeled
-// "queued", not "active", so a hit limit reads as "waiting," not "broken."
-// Each session renders as ONE row using its live shell's activity_state when
-// it has a shell (every backend does, as of the 2026-07-30 pi-code change) --
-// not a separate, possibly-stale coding_sessions.Status.
-func (s *Sidebar) appendBackendGroup(name string, sessions []*api.CodingSession, limit int, shellByName map[string]*api.Shell) {
-	if len(sessions) == 0 {
-		return
+// appendCodingAgentGroup renders one Pi Coding Agent as a selectable header
+// ("x/1 active" -- chadrockv2 and Ridge/NInfer are both --parallel 1, a real
+// single-consumer ceiling, not a display choice) followed by up to 3 of its
+// sessions: active/queued first, then most-recently-updated, so the group
+// stays useful without turning into an unbounded scrollback the way "Your
+// Shells" did at 297 entries.
+func (s *Sidebar) appendCodingAgentGroup(label string, agent *api.Agent, sessions []api.CodingSession, depth int) {
+	var mine []*api.CodingSession
+	for i := range sessions {
+		cs := &sessions[i]
+		if cs.Backend == "pi-code" && cs.LLM == agent.LLM.Backend {
+			mine = append(mine, cs)
+		}
 	}
+	sortSessionsForDisplay(mine)
+
+	activeCount := 0
+	for _, cs := range mine {
+		if cs.Status == "running" || cs.Status == "queued" {
+			activeCount++
+		}
+	}
+	modelLabel := formatModelLabel(agent.LLM.Model)
+	header := label
+	if modelLabel != "" {
+		header = fmt.Sprintf("%s — %s", label, modelLabel)
+	}
+	header = fmt.Sprintf("%s (%d/1 active)", header, activeCount)
+
+	s.Nodes = append(s.Nodes, TreeNode{
+		ID:             "coding-agent:" + agent.Slug,
+		Label:          header,
+		Kind:           NodeCodingAgentGroup,
+		Category:       "coding",
+		SessionProfile: agent.Slug,
+		Depth:          depth,
+		Agent:          agent,
+	})
+	shown := mine
+	if len(shown) > 3 {
+		shown = shown[:3]
+	}
+	for _, cs := range shown {
+		s.Nodes = append(s.Nodes, codingSessionNode(cs, nil, depth+1))
+	}
+}
+
+// appendTopLevelGroup renders a cloud coding-session family (Claude Code,
+// Codex) as a selectable, uncapped header + all matching sessions. Always
+// shown, even with zero sessions -- otherwise Enter (start a new one) would
+// have nowhere to live until the first session already existed.
+func (s *Sidebar) appendTopLevelGroup(label, backend, profile string, sessions []*api.CodingSession, depth int) {
 	activeCount, queuedCount := 0, 0
 	for _, cs := range sessions {
 		if cs.Status == "queued" {
 			queuedCount++
-		} else {
+		} else if cs.Status == "running" {
 			activeCount++
 		}
 	}
-	var label string
-	if limit > 0 {
-		label = fmt.Sprintf("%s (%d/%d active", name, activeCount, limit)
-	} else {
-		label = fmt.Sprintf("%s (%d active", name, activeCount)
-	}
+	header := fmt.Sprintf("%s (%d active", label, activeCount)
 	if queuedCount > 0 {
-		label += fmt.Sprintf(" · %d queued", queuedCount)
+		header += fmt.Sprintf(" · %d queued", queuedCount)
 	}
-	label += ")"
-	s.Nodes = append(s.Nodes, TreeNode{Kind: NodeSection, Label: label, Children: len(sessions)})
+	header += ")"
+
+	s.Nodes = append(s.Nodes, TreeNode{
+		ID:             "coding-agent:" + backend + profile,
+		Label:          header,
+		Kind:           NodeCodingAgentGroup,
+		Category:       "coding",
+		SessionBackend: backend,
+		SessionProfile: profile,
+		Depth:          depth,
+	})
+	sortSessionsForDisplay(sessions)
 	for _, cs := range sessions {
-		s.Nodes = append(s.Nodes, codingSessionNode(cs, shellByName[cs.ShellName], 1))
+		s.Nodes = append(s.Nodes, codingSessionNode(cs, nil, depth+1))
+	}
+}
+
+// sortSessionsForDisplay orders active/queued sessions before finished ones,
+// most-recently-updated first within each group -- simple insertion sort,
+// these lists are never more than a handful of items.
+func sortSessionsForDisplay(sessions []*api.CodingSession) {
+	rank := func(cs *api.CodingSession) int {
+		if cs.Status == "running" || cs.Status == "queued" {
+			return 0
+		}
+		return 1
+	}
+	for i := 1; i < len(sessions); i++ {
+		for j := i; j > 0; j-- {
+			a, b := sessions[j-1], sessions[j]
+			swap := rank(a) > rank(b)
+			if rank(a) == rank(b) && b.UpdatedAt.After(a.UpdatedAt) {
+				swap = true
+			}
+			if !swap {
+				break
+			}
+			sessions[j-1], sessions[j] = sessions[j], sessions[j-1]
+		}
 	}
 }
 
@@ -355,33 +401,6 @@ func codingSessionNode(cs *api.CodingSession, shell *api.Shell, depth int) TreeN
 		Depth:         depth,
 		CodingSession: cs,
 		Shell:         shell,
-	}
-}
-
-func shellNode(sh *api.Shell, depth int) TreeNode {
-	status := sh.Status
-	meta := relativeIdle(sh.IdleSeconds)
-	switch sh.ActivityState {
-	case "blocked":
-		status = "blocked"
-		meta = "⏳ blocked"
-	case "done":
-		status = "done"
-		meta = "✓ done"
-	}
-	name := sh.ShortName
-	if name == "" {
-		name = sh.Name
-	}
-	return TreeNode{
-		ID:       sh.Name,
-		Label:    name,
-		Kind:     NodeShell,
-		Category: "coding",
-		Status:   status,
-		Meta:     meta,
-		Depth:    depth,
-		Shell:    sh,
 	}
 }
 
@@ -591,12 +610,11 @@ func (s *Sidebar) renderNode(idx int, node TreeNode, maxWidth int) string {
 	availWidth := maxWidth - (node.Depth * 2) - 6
 	label := truncate(node.Label, availWidth)
 
-	// Prefix for agents
+	// Prefix for agents and coding-agent group headers (both selectable,
+	// Enter-able "start something new" rows).
 	prefix := ""
-	if node.Kind == NodeAgent {
+	if node.Kind == NodeAgent || node.Kind == NodeCodingAgentGroup {
 		prefix = "⊕ "
-	} else if node.Kind == NodeShell {
-		prefix = "❯ "
 	}
 
 	line := fmt.Sprintf("%s%s %s %s%s", indent, icon, catDot, prefix, label)
@@ -608,6 +626,15 @@ func (s *Sidebar) renderNode(idx int, node TreeNode, maxWidth int) string {
 			line += strings.Repeat(" ", gap) +
 				lipgloss.NewStyle().Foreground(styles.Muted).Render(node.Meta)
 		}
+	}
+
+	// Disabled agents (Search Agent while paused) and the Hermes stub are
+	// shown, not hidden -- re-enabling one, or Hermes eventually getting a
+	// real API, shouldn't feel like the row appeared from nowhere -- but
+	// dimmed throughout so they read as "not actionable right now" even
+	// when the cursor is on them, unlike the normal selected-row highlight.
+	if node.Status == "disabled" {
+		return lipgloss.NewStyle().Foreground(styles.Muted).Italic(true).Render(line)
 	}
 
 	if selected {
@@ -660,20 +687,27 @@ func relativeIdle(seconds int) string {
 	}
 }
 
-// filterSessionsAny returns pointers into `sessions` whose Status matches any
-// of `statuses` -- pointers (not copies) so callers can key off ShellName etc.
-// without the slice-of-structs aliasing footgun copying would introduce.
-func filterSessionsAny(sessions []api.CodingSession, statuses ...string) []*api.CodingSession {
-	var out []*api.CodingSession
-	for i := range sessions {
-		for _, want := range statuses {
-			if sessions[i].Status == want {
-				out = append(out, &sessions[i])
-				break
-			}
-		}
+// formatModelLabel turns a raw model id/alias into a short, human label for
+// the Coding Agents sidebar headers. Pattern-matched against known model
+// families rather than an exact lookup table, since pi-coding's bound model
+// has already changed backends twice this cycle (chadrock -> ridge ->
+// chadrockv2/agentic) -- an exhaustive map would just go stale again the
+// same way the old backend-string grouping did. Extend the patterns as new
+// model families get bound to these agents; unrecognized ids pass through
+// as-is rather than showing nothing.
+func formatModelLabel(raw string) string {
+	if raw == "" {
+		return ""
 	}
-	return out
+	lower := strings.ToLower(raw)
+	switch {
+	case strings.Contains(lower, "35b"):
+		return "Qwen3.6 35B"
+	case strings.Contains(lower, "27b"):
+		return "Qwen3.6 27B"
+	default:
+		return raw
+	}
 }
 
 func truncate(s string, maxLen int) string {

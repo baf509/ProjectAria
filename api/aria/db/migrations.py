@@ -356,6 +356,8 @@ You follow a structured coding workflow inspired by best practices:
 - Explaining complex code and concepts
 - Writing tests and documentation
 - Analyzing error messages and stack traces
+- Directly reading, editing, and writing files through Pi's native tools
+- Running shell commands and verification checks in the assigned workspace
 
 ## Interaction Style
 
@@ -369,7 +371,8 @@ You follow a structured coding workflow inspired by best practices:
 
 - You run on a local LLM — be mindful of context window limits
 - Focus on one task at a time for best results
-- If you need more context (file contents, error logs), ask for it explicitly
+- Use Pi's tools to inspect available files and logs before asking the user for
+  context that is already present in the workspace
 """
 
 
@@ -389,18 +392,10 @@ command, it runs on corsair-ai. Reason about paths accordingly.
 
 ## You actually change code
 
-Unlike the chat-only Pi Coding Agent, you have filesystem and shell tools and you
-are expected to use them. Read the real file before editing it; do not guess at
-contents or invent APIs. After a change, VERIFY it rather than asserting success.
-
-You can run exactly these, and nothing else: `pytest`, `python3 -m pytest`,
-`npm test`, `npm run test`, `make test`, `cargo test`, `cargo check`,
-`cargo clippy`. Prefer the cheapest check that would catch your mistake.
-
-The shell runs ONE command per call with NO pipes, redirection, chaining (`&&`,
-`;`) or substitution — those are rejected. There is no `cd`; pass
-`working_directory` instead, or give pytest an absolute path. You cannot run a
-bare interpreter (`python3`, `node`) or install packages.
+You run as the real Pi coding CLI and have Pi's native read, write, edit, and
+bash tools. Read the real file before editing it; do not guess at contents or
+invent APIs. After a change, VERIFY it rather than asserting success. Prefer
+the cheapest project check that would catch your mistake.
 
 If a check fails, report the failure and its actual output. Never claim a change
 works when the check did not pass, and never describe a test as passing that you
@@ -435,10 +430,9 @@ did not run.
 async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
     """Ensure the Ridge-backed Pi Coding Agent exists (idempotent).
 
-    Deliberately distinct from `pi-coding`: that one is chat-only on the local
-    laguna server, this one has filesystem/shell tools and runs its inference on
-    Ridge's 3090 via the wake-on-demand proxy. Different slug, different backend,
-    different capabilities — they are not interchangeable.
+    Deliberately distinct from `pi-coding`: both launch the real Pi executable,
+    but this profile selects Ridge's 3090 through the wake-on-demand proxy while
+    `pi-coding` selects the local Chadrockv2 server.
     """
     existing = await db.agents.find_one({"slug": "pi-coding-ridge"})
     if existing:
@@ -451,7 +445,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         "description": (
             "Hands-on coding agent: inference on Ridge's RTX 3090 "
             "(Qwen3.6-35B-A3B via NInfer), tools execute locally on corsair-ai. "
-            "Wakes Ridge on demand. Unlike pi-coding, it can write files and run commands."
+            "Wakes Ridge on demand; the real Pi CLI runs locally in an ARIA shell."
         ),
         "system_prompt": _PI_CODING_RIDGE_SYSTEM_PROMPT,
         "mode_category": "coding",
@@ -491,10 +485,8 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
             "long_term_results": 5,
             "categories_filter": None,
         },
-        # filesystem + shell are the point of this agent. claude_agent and
-        # pi_coding_agent are intentionally absent: delegating to Claude would
-        # defeat "run it on my own GPU", and pi_coding_agent is the chat-only
-        # sibling this agent exists to replace.
+        # Legacy agent-schema fields retained for launch-profile compatibility;
+        # external Pi supplies its own tools rather than ARIA's ToolRouter.
         "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
         "is_default": False,
         "created_at": now,
@@ -520,18 +512,14 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_category": "coding",
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
-        # 2026-07-28: pi-coding no longer runs on this host's local model at
-        # all (was backend=agentic -> chadrock/laguna, sharing chadrock's
-        # single --parallel 1 slot with the pool CLI it was never meant to
-        # share with). Ridge is now the ONLY backend a pi-coding-family agent
-        # runs on -- this repoints the chat-only agent to match
-        # pi-coding-ridge rather than leaving two divergent local backends.
+        # This legacy db.agents row is now a launch profile for the external Pi
+        # CLI, selecting the dedicated local Chadrockv2 server.
         "llm": {
-            "backend": "ridge",
-            "model": "qwen3.6-35b-a3b",
+            "backend": "agentic",
+            "model": "chadrockv2-qwen36-27b-fp6",
             "temperature": 0.4,
             "max_tokens": 4096,
-            "max_context_tokens": None,
+            "max_context_tokens": 258048,
             "force_non_streaming": False,
         },
         "fallback_chain": [],

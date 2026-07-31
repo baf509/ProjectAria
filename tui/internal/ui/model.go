@@ -28,6 +28,9 @@ const (
 	screenFleet
 	screenHealth
 	screenSearch
+	screenNewSession
+	screenHistory
+	screenHistoryDetail
 )
 
 // Which quadrant has focus on the dashboard
@@ -51,6 +54,7 @@ type conversationsLoaded struct {
 type conversationOpened struct{ conv *api.ConversationDetail }
 type conversationCreated struct{ conv *api.ConversationDetail }
 type conversationDeleted struct{ id string }
+type codingSessionDeleted struct{ id string }
 type streamStartMsg struct{ ch <-chan api.StreamChunk }
 type streamChunkMsg struct{ chunk api.StreamChunk }
 type streamDoneMsg struct{}
@@ -87,6 +91,13 @@ type searchResultLoaded struct {
 	result *api.ToolExecuteResult
 	err    error
 }
+type codingSessionCreated struct{ session *api.CodingSession }
+type codingSessionCreateFailed struct{ err error }
+type historyLoaded struct{ shells []api.ShellRecord }
+type historyEventsLoaded struct {
+	shell  *api.ShellRecord
+	events []api.ShellEventRecord
+}
 type errMsg struct{ err error }
 
 // ---- Main Model ----
@@ -100,14 +111,17 @@ type Model struct {
 	menu    *components.ToolsMenu
 
 	// Sub-screens
-	memBrowser   *components.MemoryBrowser
-	usageMonitor *components.UsageMonitor
-	toolsBrowser *components.ToolsBrowser
-	obsView      *components.ObservationsView
-	dbBrowser    *components.DBBrowser
-	fleetView    *components.FleetView
-	healthView   *components.HealthView
-	searchView   *components.SearchView
+	memBrowser    *components.MemoryBrowser
+	usageMonitor  *components.UsageMonitor
+	toolsBrowser  *components.ToolsBrowser
+	obsView       *components.ObservationsView
+	dbBrowser     *components.DBBrowser
+	fleetView     *components.FleetView
+	healthView    *components.HealthView
+	searchView    *components.SearchView
+	newSession    *components.NewSessionModal
+	historyView   *components.HistoryView
+	historyDetail *components.HistoryDetail
 
 	// Navigation
 	screen     screen
@@ -132,27 +146,38 @@ type Model struct {
 	// Detail panel content (for dashboard top-right)
 	detailText string
 	logText    string
+
+	// lastErr surfaces the most recent background-command failure in the
+	// footer on WHATEVER screen is active. errMsg used to be handled only on
+	// screenChat, so a failed API call anywhere else (e.g. a memory search
+	// that 400s) failed completely silently -- the screen just stayed empty
+	// with no indication anything went wrong. Cleared on navigation so it
+	// doesn't linger once the user has moved on.
+	lastErr string
 }
 
 func NewModel(client *api.Client) Model {
 	return Model{
-		client:       client,
-		sidebar:      components.NewSidebar(),
-		chat:         components.NewChatView(),
-		session:      components.NewSessionView(),
-		vitals:       components.NewVitalsPanel(),
-		menu:         components.NewToolsMenu(),
-		memBrowser:   components.NewMemoryBrowser(),
-		usageMonitor: components.NewUsageMonitor(),
-		toolsBrowser: components.NewToolsBrowser(),
-		obsView:      components.NewObservationsView(),
-		dbBrowser:    components.NewDBBrowser(),
-		fleetView:    components.NewFleetView(),
-		healthView:   components.NewHealthView(),
-		searchView:   components.NewSearchView(),
-		screen:       screenDashboard,
-		quad:         quadTopLeft,
-		headerH:      1,
+		client:        client,
+		sidebar:       components.NewSidebar(),
+		chat:          components.NewChatView(),
+		session:       components.NewSessionView(),
+		vitals:        components.NewVitalsPanel(),
+		menu:          components.NewToolsMenu(),
+		memBrowser:    components.NewMemoryBrowser(),
+		usageMonitor:  components.NewUsageMonitor(),
+		toolsBrowser:  components.NewToolsBrowser(),
+		obsView:       components.NewObservationsView(),
+		dbBrowser:     components.NewDBBrowser(),
+		fleetView:     components.NewFleetView(),
+		healthView:    components.NewHealthView(),
+		searchView:    components.NewSearchView(),
+		newSession:    components.NewNewSessionModal(),
+		historyView:   components.NewHistoryView(),
+		historyDetail: components.NewHistoryDetail(),
+		screen:        screenDashboard,
+		quad:          quadTopLeft,
+		headerH:       1,
 	}
 }
 
@@ -240,6 +265,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmds = append(cmds, fetchSnapshot(m.client))
 
+	case codingSessionDeleted:
+		if m.activeSessionID == msg.id {
+			m.activeSessionID = ""
+			m.popScreen()
+		}
+		cmds = append(cmds, fetchSnapshot(m.client))
+
 	case streamStartMsg:
 		m.streamCh = msg.ch
 		cmds = append(cmds, waitForChunk(m.streamCh))
@@ -311,6 +343,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case healthLoaded:
 		m.healthView.SetData(msg.health)
 
+	case historyLoaded:
+		m.historyView.SetShells(msg.shells)
+
+	case historyEventsLoaded:
+		m.historyDetail.SetEvents(msg.shell, msg.events)
+
 	case searchResultLoaded:
 		errStr := ""
 		if msg.err != nil {
@@ -318,10 +356,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.searchView.SetResult(msg.result, errStr)
 
+	case codingSessionCreated:
+		// Land on the new session's own view, not back on the modal --
+		// popScreen first so the session's prevScreen is the dashboard
+		// (where the modal came from), not the now-stale modal itself.
+		m.popScreen()
+		cmds = append(cmds, m.openSession(msg.session.ID, msg.session), fetchSnapshot(m.client))
+
+	case codingSessionCreateFailed:
+		m.newSession.SetErr(msg.err.Error())
+
 	case errMsg:
 		if m.screen == screenChat {
 			m.chat.AppendStreamChunk("\n[Error: " + msg.err.Error() + "]")
 			m.chat.FinishStream()
+		} else {
+			m.lastErr = msg.err.Error()
 		}
 	}
 
@@ -365,6 +415,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	} else if m.screen == screenSearch {
 		var cmd tea.Cmd
 		m.searchView, cmd = m.searchView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenNewSession {
+		var cmd tea.Cmd
+		m.newSession, cmd = m.newSession.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenHistory {
+		var cmd tea.Cmd
+		m.historyView, cmd = m.historyView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenHistoryDetail {
+		var cmd tea.Cmd
+		m.historyDetail, cmd = m.historyDetail.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -431,7 +493,20 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 			return nil
 		}
 		switch node.Kind {
+		case components.NodeCodingAgentGroup:
+			m.newSession.Reset(node.Label, node.SessionBackend, node.SessionProfile)
+			m.pushScreen(screenNewSession)
+			return nil
 		case components.NodeAgent:
+			// Other Agents entries only, as of the 2026-07-31 sidebar
+			// restructure (Coding Agents moved to NodeCodingAgentGroup
+			// above). The Hermes stub has no live backend to act on; a
+			// disabled agent (Search Agent while paused) would just 400 --
+			// both explain themselves in the detail panel instead of
+			// silently doing nothing or firing a call that can't succeed.
+			if node.IsStub || node.Agent == nil || !node.Agent.Enabled {
+				return nil
+			}
 			return createConversation(m.client, node.ID, "")
 		case components.NodeConversation:
 			return openConversation(m.client, node.ID)
@@ -446,8 +521,20 @@ func (m *Model) handleDashboardKey(key string) tea.Cmd {
 		return createPrivateConversation(m.client)
 	case "d":
 		node := m.sidebar.Selected()
-		if node != nil && node.Kind == components.NodeConversation {
+		if node == nil {
+			return nil
+		}
+		switch node.Kind {
+		case components.NodeConversation:
 			return deleteConversation(m.client, node.ID)
+		case components.NodeCodingSession:
+			// The server already refuses to delete a running/queued session
+			// (stop it first) -- checking here too so 'd' on a live session is
+			// a silent no-op instead of a round trip that comes back 409.
+			if node.CodingSession != nil && (node.CodingSession.Status == "running" || node.CodingSession.Status == "queued") {
+				return nil
+			}
+			return deleteCodingSession(m.client, node.ID)
 		}
 	case "r":
 		return fetchSnapshot(m.client)
@@ -496,6 +583,9 @@ func (m *Model) openHotkey(key string) tea.Cmd {
 	case "s":
 		m.pushScreen(screenSearch)
 		return nil
+	case "y":
+		m.pushScreen(screenHistory)
+		return loadHistory(m.client)
 	}
 	return nil
 }
@@ -506,6 +596,13 @@ func (m *Model) openSession(id string, cs *api.CodingSession) tea.Cmd {
 	m.session.SetSession(cs)
 	m.pushScreen(screenSession)
 	return loadCodingOutput(m.client, id)
+}
+
+// openHistoryDetail shows a historical shell's stored scrollback.
+func (m *Model) openHistoryDetail(shell api.ShellRecord) tea.Cmd {
+	m.historyView.Blur()
+	m.pushScreen(screenHistoryDetail)
+	return loadHistoryEvents(m.client, shell)
 }
 
 func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -527,6 +624,18 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}
 		default:
 			m.dbBrowser.HandleFilterKey(key)
+		}
+		return nil, true
+	}
+
+	// Same swallow-everything-until-dismissed shape as the DB filter editor
+	// above, for History's filter box.
+	if m.screen == screenHistory && m.historyView.Editing {
+		switch key {
+		case "esc", "enter":
+			m.historyView.ExitFilterEdit()
+		default:
+			m.historyView.UpdateFilterInput(msg)
 		}
 		return nil, true
 	}
@@ -611,6 +720,43 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}
 			return nil, true
 		}
+	case screenHistory:
+		switch key {
+		case "enter":
+			if s := m.historyView.Selected(); s != nil {
+				return m.openHistoryDetail(*s), true
+			}
+			return nil, true
+		case "r":
+			return loadHistory(m.client), true
+		case "/":
+			m.historyView.EnterFilterEdit()
+			return nil, true
+		case "up", "k":
+			m.historyView.MoveCursor(-1)
+			return nil, true
+		case "down", "j":
+			m.historyView.MoveCursor(1)
+			return nil, true
+		}
+	case screenNewSession:
+		submit, consumed := m.newSession.HandleKey(key)
+		if !consumed {
+			return nil, false // ordinary typing (or a literal space) -- fall through to Update()
+		}
+		if submit {
+			repo, prompt, useWorktree, worktreeName := m.newSession.Values()
+			m.newSession.Submitting = true
+			return createCodingSession(m.client, api.CreateCodingSessionRequest{
+				Workspace:       repo,
+				Prompt:          prompt,
+				Backend:         m.newSession.SessionBackend,
+				SubagentProfile: m.newSession.SessionProfile,
+				CreateWorktree:  useWorktree,
+				WorktreeName:    worktreeName,
+			}), true
+		}
+		return nil, true
 	case screenUsage, screenTools, screenObservations, screenHealth:
 		if key == "r" {
 			switch m.screen {
@@ -705,6 +851,7 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 func (m *Model) pushScreen(s screen) {
 	m.prevScreen = m.screen
 	m.screen = s
+	m.lastErr = ""
 	if s == screenChat {
 		m.chat.Focus()
 	} else if s == screenSession {
@@ -715,6 +862,10 @@ func (m *Model) pushScreen(s screen) {
 		m.dbBrowser.Focus()
 	} else if s == screenSearch {
 		m.searchView.Focus()
+	} else if s == screenHistory {
+		m.historyView.Focus()
+	} else if s == screenHistoryDetail {
+		m.historyDetail.Focus()
 	}
 }
 
@@ -724,8 +875,11 @@ func (m *Model) popScreen() {
 	m.memBrowser.Blur()
 	m.dbBrowser.Blur()
 	m.searchView.Blur()
+	m.historyView.Blur()
+	m.historyDetail.Blur()
 	m.screen = m.prevScreen
 	m.prevScreen = screenDashboard
+	m.lastErr = ""
 }
 
 // ---- Detail Panel ----
@@ -739,17 +893,38 @@ func (m *Model) updateDetail() {
 
 	var b strings.Builder
 	switch node.Kind {
+	case components.NodeCodingAgentGroup:
+		b.WriteString(styles.PanelTitle.Render(node.Label) + "\n")
+		if node.SessionProfile != "" && node.Agent != nil {
+			b.WriteString(styles.VitalLabel.Render("  Model: ") + node.Agent.LLM.Backend + "/" + node.Agent.LLM.Model + "\n")
+		} else if node.SessionBackend != "" {
+			b.WriteString(styles.VitalLabel.Render("  Backend: ") + node.SessionBackend + "\n")
+		}
+		b.WriteString("\n" + styles.HelpKey.Render("  Enter") + styles.HelpDesc.Render(" start a new session here"))
 	case components.NodeAgent:
+		if node.IsStub {
+			b.WriteString(styles.PanelTitle.Render(node.Label) + "\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(styles.SubText).Render(
+				"  Hermes has no chat/query API for this TUI to call yet -- only\n"+
+					"  a narrow inbound webhook listener. Reachable today via the\n"+
+					"  hermes CLI or its own web dashboard, not from here.") + "\n")
+			break
+		}
 		a := node.Agent
 		if a != nil {
 			b.WriteString(styles.PanelTitle.Render("Agent: "+a.Name) + "\n")
 			b.WriteString(styles.VitalLabel.Render("  Slug: ") + a.Slug + "\n")
 			b.WriteString(styles.VitalLabel.Render("  Backend: ") + a.LLM.Backend + "/" + a.LLM.Model + "\n")
 			b.WriteString(styles.VitalLabel.Render("  Category: ") + a.ModeCategory + "\n")
+			if !a.Enabled {
+				b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Warning).Render("  Disabled -- re-enable it before starting a conversation.") + "\n")
+			}
 			if a.Description != "" {
 				b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.SubText).Render("  "+a.Description) + "\n")
 			}
-			b.WriteString("\n" + styles.HelpKey.Render("  Enter") + styles.HelpDesc.Render(" start conversation"))
+			if a.Enabled {
+				b.WriteString("\n" + styles.HelpKey.Render("  Enter") + styles.HelpDesc.Render(" start conversation"))
+			}
 		}
 	case components.NodeConversation:
 		c := node.Conversation
@@ -776,6 +951,9 @@ func (m *Model) updateDetail() {
 			}
 			if cs.Workspace != "" {
 				b.WriteString(styles.VitalLabel.Render("  Workspace: ") + cs.Workspace + "\n")
+			}
+			if cs.SourceRepo != "" {
+				b.WriteString(styles.VitalLabel.Render("  Source repo: ") + cs.SourceRepo + "\n")
 			}
 			if cs.Branch != "" {
 				b.WriteString(styles.VitalLabel.Render("  Branch: ") + cs.Branch + "\n")
@@ -821,6 +999,9 @@ func (m *Model) layout() {
 	m.fleetView.SetSize(m.width, bodyH)
 	m.healthView.SetSize(m.width, bodyH)
 	m.searchView.SetSize(m.width, bodyH)
+	m.newSession.SetSize(m.width, bodyH)
+	m.historyView.SetSize(m.width, bodyH)
+	m.historyDetail.SetSize(m.width, bodyH)
 
 	m.sidebar.SetSize(m.leftW, m.topH)
 	m.vitals.SetSize(m.rightW, m.botH)
@@ -890,7 +1071,8 @@ func (m Model) renderHeader() string {
 			screenChat: "chat", screenSession: "session", screenMemory: "memory",
 			screenUsage: "usage", screenTools: "tools", screenObservations: "awareness",
 			screenDB: "database", screenFleet: "fleet", screenHealth: "health",
-			screenSearch: "search",
+			screenSearch: "search", screenNewSession: "new session",
+			screenHistory: "history", screenHistoryDetail: "history › scrollback",
 		}
 		screenLabel = " › " + labels[m.screen]
 	}
@@ -912,12 +1094,16 @@ func (m Model) renderFooter() string {
 			hk("u", "usage") + " " + hk("t", "tools") + " " +
 			hk("o", "obs") + " " + hk("b", "db") + " " +
 			hk("f", "fleet") + " " + hk("h", "health") + " " +
-			hk("s", "search") + " " +
+			hk("s", "search") + " " + hk("y", "history") + " " +
 			hk("n", "new") + " " + hk("p", "private") + " " +
+			hk("d", "delete") + " " +
 			hk("r", "refresh") + " " + hk("tab", "tasks/tools") + " " +
 			hk("q", "quit")
 	} else if m.screen == screenSearch {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
+	} else if m.screen == screenNewSession {
+		hints = hk("tab", "field") + " " + hk("space", "toggle") + " " +
+			hk("^s", "start") + " " + hk("esc", "cancel")
 	} else if m.screen == screenChat {
 		hints = hk("⏎", "send") + " " + hk("esc", "back") + " " + hk("ctrl+c", "quit")
 	} else if m.screen == screenSession {
@@ -932,6 +1118,9 @@ func (m Model) renderFooter() string {
 			hk("n/p", "page") + " " + hk("esc", "back")
 	} else {
 		hints = hk("r", "refresh") + " " + hk("esc", "back")
+	}
+	if m.lastErr != "" {
+		hints = lipgloss.NewStyle().Foreground(styles.Danger).Render("⚠ "+m.lastErr) + "   " + hints
 	}
 	return styles.StatusBar.Width(m.width).Render(hints)
 }
@@ -1018,6 +1207,15 @@ func (m Model) renderSubScreen() string {
 	case screenSearch:
 		m.searchView.SetSize(m.width, bodyH)
 		return m.searchView.View()
+	case screenNewSession:
+		m.newSession.SetSize(m.width, bodyH)
+		return m.newSession.View()
+	case screenHistory:
+		m.historyView.SetSize(m.width, bodyH)
+		return m.historyView.View()
+	case screenHistoryDetail:
+		m.historyDetail.SetSize(m.width, bodyH)
+		return m.historyDetail.View()
 	}
 	return ""
 }
@@ -1114,10 +1312,32 @@ func sendCodingInput(client *api.Client, sessionID, text string) tea.Cmd {
 	}
 }
 
+// createCodingSession starts a real coding session -- the New Session
+// modal's submit action. Mirrors the web UI's equivalent call; see
+// api.Client.CreateCodingSession for the worktree-provisioning contract.
+func createCodingSession(client *api.Client, req api.CreateCodingSessionRequest) tea.Cmd {
+	return func() tea.Msg {
+		session, err := client.CreateCodingSession(req)
+		if err != nil {
+			return codingSessionCreateFailed{err: err}
+		}
+		return codingSessionCreated{session: session}
+	}
+}
+
 func stopCodingSession(client *api.Client, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		_ = client.StopCodingSession(sessionID)
 		return dashboardTick{}
+	}
+}
+
+func deleteCodingSession(client *api.Client, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.DeleteCodingSession(sessionID); err != nil {
+			return errMsg{err}
+		}
+		return codingSessionDeleted{id: sessionID}
 	}
 }
 
@@ -1217,6 +1437,34 @@ func loadServicesHealth(client *api.Client) tea.Cmd {
 			return errMsg{err}
 		}
 		return healthLoaded{health: health}
+	}
+}
+
+func loadHistory(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		shells, err := client.ListAllShells()
+		if err != nil {
+			return errMsg{err}
+		}
+		return historyLoaded{shells: shells}
+	}
+}
+
+// loadHistoryEvents fetches a shell's tail scrollback -- the events endpoint
+// has no "last N" shorthand, so the tail is approximated from the shell's
+// own line_count (captured when the list was loaded, not re-fetched here).
+func loadHistoryEvents(client *api.Client, shell api.ShellRecord) tea.Cmd {
+	return func() tea.Msg {
+		const windowSize = 800
+		sinceLine := shell.LineCount - windowSize
+		if sinceLine < 0 {
+			sinceLine = 0
+		}
+		events, err := client.GetShellEvents(shell.Name, sinceLine, windowSize)
+		if err != nil {
+			return errMsg{err}
+		}
+		return historyEventsLoaded{shell: &shell, events: events}
 	}
 }
 

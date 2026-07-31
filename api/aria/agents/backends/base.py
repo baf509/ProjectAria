@@ -16,6 +16,13 @@ class StartParams:
     prompt: str
     model: Optional[str] = None
     branch: Optional[str] = None
+    # Provider name is used by external multi-provider CLIs such as Pi. It is
+    # deliberately separate from `model`: ARIA's coding-session backend
+    # (`pi-code`) and its LLM/provider (`agentic`, `ridge`, ...) are different
+    # routing dimensions.
+    provider: Optional[str] = None
+    append_system_prompt: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @dataclass

@@ -165,6 +165,23 @@ async def shells_overview(
     )
 
 
+@router.post("/shells/extraction/backfill")
+async def backfill_shell_extraction(request: Request):
+    """One-time (re-runnable) catch-up: drain every watched shell's
+    unextracted event backlog to completion, not just the single chunk per
+    shell per tick the periodic worker does. Synchronous — a full backfill
+    across hundreds of thousands of events is a real, potentially long-running
+    LLM workload, and the caller should see it actually finish (or its error)
+    rather than fire-and-forget into the worker's own background loop."""
+    worker = getattr(request.app.state, "shell_extractor", None)
+    if worker is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Shell extraction worker is not running (shells_extraction_enabled is false)",
+        )
+    return await worker.backfill()
+
+
 @router.get("/shells/search")
 async def search_shell_events(
     q: str = Query(..., min_length=1),

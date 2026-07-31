@@ -59,7 +59,7 @@ func (hv *HealthView) refreshContent() {
 	var b strings.Builder
 
 	if hv.Health == nil {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("\n  No health data available\n"))
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Muted).Render("  No health data available") + "\n")
 		hv.Viewport.SetContent(b.String())
 		return
 	}
@@ -69,9 +69,9 @@ func (hv *HealthView) refreshContent() {
 	b.WriteString("\n\n")
 
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render(
-		fmt.Sprintf("  %-20s %-6s %8s  %s\n", "Service", "State", "Latency", "Detail")))
+		fmt.Sprintf("  %-20s %-6s %8s  %s", "Service", "State", "Latency", "Detail")) + "\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.BorderColor).Render(
-		"  " + strings.Repeat("─", cw-4) + "\n"))
+		"  "+strings.Repeat("─", cw-4)) + "\n")
 
 	for _, s := range hv.Health.Services {
 		var dot, state lipgloss.Style

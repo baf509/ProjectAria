@@ -99,13 +99,13 @@ func (mb *MemoryBrowser) refreshContent() {
 	var b strings.Builder
 
 	if len(mb.Memories) == 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("\n  No memories found."))
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Muted).Render("  No memories found."))
 		mb.Viewport.SetContent(b.String())
 		return
 	}
 
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render(
-		fmt.Sprintf("  %d memories\n\n", len(mb.Memories))))
+		fmt.Sprintf("  %d memories", len(mb.Memories))) + "\n\n")
 
 	for i, mem := range mb.Memories {
 		selected := i == mb.Cursor

@@ -170,7 +170,11 @@ type Agent struct {
 	ModeCategory string `json:"mode_category"`
 	Greeting     string `json:"greeting,omitempty"`
 	IsDefault    bool   `json:"is_default"`
-	LLM          struct {
+	// Defaults true server-side for any doc predating this field; a caller
+	// that only reads Enabled on an unmarshaled zero-value Agent{} would see
+	// false, so always populate this from a real ListAgents() response.
+	Enabled bool `json:"enabled"`
+	LLM     struct {
 		Backend string `json:"backend"`
 		Model   string `json:"model"`
 	} `json:"llm"`
@@ -189,14 +193,15 @@ func (c *Client) ListAgents() ([]Agent, error) {
 // ---------- Coding Sessions ----------
 
 type CodingSession struct {
-	ID        string `json:"id"`
-	Backend   string `json:"backend"`
+	ID      string `json:"id"`
+	Backend string `json:"backend"`
 	// LLM-adapter name for pi-code sessions (llamacpp/agentic/ridge/...) --
 	// a DIFFERENT vocabulary from Backend. Needed to tell a Ridge-backed
 	// pi-code session apart from a local one; both share Backend="pi-code".
 	LLM         string     `json:"llm,omitempty"`
 	Model       string     `json:"model,omitempty"`
 	Workspace   string     `json:"workspace"`
+	SourceRepo  string     `json:"source_repo,omitempty"` // set when Workspace is an auto-created worktree
 	Prompt      string     `json:"prompt"`
 	Branch      string     `json:"branch,omitempty"`
 	PID         *int       `json:"pid,omitempty"`
@@ -223,12 +228,55 @@ func (c *Client) ListCodingSessions(status string) ([]CodingSession, error) {
 	return sessions, json.NewDecoder(resp.Body).Decode(&sessions)
 }
 
+// CreateCodingSessionRequest mirrors the web UI's coding-session creation
+// call (see ui/src/lib/api-client.ts createCodingSession) — one request
+// shape whether the caller pins a raw backend (claude_code/codex) or a
+// named db.agents specialist (subagent_profile, e.g. pi-coding/pi-coding-ridge).
+type CreateCodingSessionRequest struct {
+	Workspace       string `json:"workspace"`
+	Prompt          string `json:"prompt"`
+	Backend         string `json:"backend,omitempty"`
+	SubagentProfile string `json:"subagent_profile,omitempty"`
+	CreateWorktree  bool   `json:"create_worktree,omitempty"`
+	WorktreeName    string `json:"worktree_name,omitempty"`
+}
+
+// CreateCodingSession starts a real coding session (the watched-shell
+// substrate, same as any other session) — POST /api/v1/coding/sessions.
+// Unlike most of this file's helpers, this one surfaces the response body's
+// `detail` field on failure: worktree/git errors carry a real reason there
+// (e.g. "Could not provision a worktree at ...: ..."), and a bare status
+// code isn't actionable inside a modal.
+func (c *Client) CreateCodingSession(req CreateCodingSessionRequest) (*CodingSession, error) {
+	b, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.post(c.Base+"/api/v1/coding/sessions", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody struct {
+			Detail string `json:"detail"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		if errBody.Detail != "" {
+			return nil, fmt.Errorf("%s", errBody.Detail)
+		}
+		return nil, fmt.Errorf("create session failed: HTTP %d", resp.StatusCode)
+	}
+	var session CodingSession
+	return &session, json.NewDecoder(resp.Body).Decode(&session)
+}
+
 // Shell is a watched tmux session (the fleet ARIA observes), from the
 // /shells/overview digest.
 type Shell struct {
-	Name          string `json:"name"`
-	ShortName     string `json:"short_name"`
-	Status        string `json:"status"`
+	Name      string `json:"name"`
+	ShortName string `json:"short_name"`
+	Status    string `json:"status"`
 	// ActivityState is a richer working/blocked/done/idle read on top of
 	// Status/AwaitingInput (herdr.dev-inspired; see fleet_overview()'s
 	// docstring server-side). "done" means this shell backs an ARIA coding
@@ -264,6 +312,73 @@ func (c *Client) ListShells() ([]Shell, error) {
 		return nil, err
 	}
 	return out.Shells, nil
+}
+
+// ShellRecord is the raw shells-collection document, from GET /shells --
+// distinct from Shell (the /shells/overview digest, active/idle only, with
+// computed fields like ActivityState). ShellRecord covers every shell
+// regardless of status, which is what a history browser needs.
+type ShellRecord struct {
+	Name           string    `json:"name"`
+	ShortName      string    `json:"short_name"`
+	ProjectDir     string    `json:"project_dir"`
+	Host           string    `json:"host"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+	LineCount      int       `json:"line_count"`
+	Tags           []string  `json:"tags"`
+}
+
+type shellListResp struct {
+	Shells []ShellRecord `json:"shells"`
+}
+
+// ListAllShells returns every watched shell regardless of status -- the full
+// history, not just the active/idle digest ListShells() returns.
+func (c *Client) ListAllShells() ([]ShellRecord, error) {
+	resp, err := c.get(c.Base + "/api/v1/shells")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out shellListResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Shells, nil
+}
+
+// ShellEventRecord is one captured line from a shell's stored scrollback.
+type ShellEventRecord struct {
+	LineNumber int       `json:"line_number"`
+	Kind       string    `json:"kind"`
+	TextClean  string    `json:"text_clean"`
+	TS         time.Time `json:"ts"`
+}
+
+type shellEventsResp struct {
+	Events  []ShellEventRecord `json:"events"`
+	HasMore bool               `json:"has_more"`
+}
+
+// GetShellEvents fetches stored scrollback for a shell -- works for stopped
+// shells too, since it reads shell_events directly rather than a live tmux
+// pane. sinceLine (0 = from the start) selects the window; the caller is
+// expected to derive it from the shell's line_count for a "tail" view, since
+// the server has no "last N" shorthand.
+func (c *Client) GetShellEvents(name string, sinceLine, limit int) ([]ShellEventRecord, error) {
+	url := fmt.Sprintf("%s/api/v1/shells/%s/events?limit=%d&since_line=%d", c.Base, name, limit, sinceLine)
+	resp, err := c.get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out shellEventsResp
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
 }
 
 func (c *Client) GetCodingOutput(sessionID string, lines int) (string, error) {
@@ -307,6 +422,33 @@ func (c *Client) StopCodingSession(sessionID string) error {
 	return nil
 }
 
+// DeleteCodingSession permanently removes a coding_sessions record (DELETE
+// /api/v1/coding/sessions/{id}). The server 409s with a `detail` explaining
+// why on a still-running/queued session (stop it first) -- surface that
+// message rather than a bare status code, same reasoning as CreateCodingSession.
+func (c *Client) DeleteCodingSession(sessionID string) error {
+	req, err := http.NewRequest("DELETE", fmt.Sprintf("%s/api/v1/coding/sessions/%s", c.Base, sessionID), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody struct {
+			Detail string `json:"detail"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&errBody)
+		if errBody.Detail != "" {
+			return fmt.Errorf("%s", errBody.Detail)
+		}
+		return fmt.Errorf("delete session failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // ToggleCodingLoop enables or disables the Ralph loop on a session (server
 // defaults fill in the loop config when enabling).
 func (c *Client) ToggleCodingLoop(sessionID string, enabled bool) error {
@@ -330,7 +472,6 @@ type Memory struct {
 	ContentType string    `json:"content_type"`
 	Categories  []string  `json:"categories"`
 	Confidence  float64   `json:"confidence"`
-	Source      string    `json:"source,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 

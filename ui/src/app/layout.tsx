@@ -26,6 +26,13 @@ export const viewport: Viewport = {
   themeColor: '#0f172a',
   width: 'device-width',
   initialScale: 1,
+  // Without a floor, pinch-zooming out past 1x shrinks the rendered content
+  // but the visual viewport keeps growing — the browser fills the gap with
+  // blank canvas beyond the page, which reads as "half the screen is white
+  // space". Zooming IN is left uncapped (no maximumScale) so this doesn't
+  // regress accessibility (WCAG 1.4.4 requires zoom up to 200% to stay
+  // available) — only the useless zoom-out direction is floored.
+  minimumScale: 1,
   viewportFit: 'cover',
 }
 

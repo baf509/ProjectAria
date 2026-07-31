@@ -73,7 +73,7 @@ func (tb *ToolsBrowser) refreshContent() {
 	b.WriteString("\n\n")
 
 	if len(builtins) == 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  No built-in tools registered\n"))
+		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  No built-in tools registered") + "\n")
 	} else {
 		for _, t := range builtins {
 			icon := lipgloss.NewStyle().Foreground(styles.Secondary).Render("⚙")

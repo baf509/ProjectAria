@@ -22,6 +22,17 @@ Operational runbook for how ARIA reaches a model, after the day this host became
 > `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 — entries 11–13 (2026-07-26,
 > now partly superseded) and entries 14–23 (2026-07-28, the two-server split).
 
+> **2026-07-30 correction (supersedes the "Ridge is now the only backend any
+> pi-coding-family agent runs on" line above):** Ben's 1:1 rule — one
+> pi-coding instance per model — moved `pi-coding` (`db.agents` `backend`)
+> from `ridge` to **`agentic`, now `:8105` chadrockv2** (Chadrockv2 Qwen3.6-27B
+> ROCmFP6). `pi-coding-ridge` is unchanged, still on Ridge. So the two no
+> longer both crowd onto Ridge as they did after the 07-28 correction below —
+> everywhere §3/§3.1 says pi-coding-family agents "run on Ridge" or "no longer
+> backs anything named pi-coding" (laguna/chadrock), read that as
+> `pi-coding-ridge` only; `pi-coding` itself is local again, just on
+> chadrockv2 instead of laguna/chadrock.
+
 ---
 
 ## 1. There are TWO model servers (split 2026-07-28)
@@ -32,9 +43,9 @@ cache, which is the entire point.
 | endpoint | model | consumer | measured |
 |---|---|---|---|
 | `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan), `-c 131072` (unchanged, kept at max — see §10) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB; **unmonitored until §10** |
-| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan), `-c` trimmed **131072 → 100000** same evening (§10) | **Hermes main chat only** as of §10 — ARIA's default chat agent (`aria`) and Search Agent are both **disabled** (`enabled=false`), so despite `LLAMACPP_URL`/`AGENTIC_URL` still pointing here, neither sends real traffic today; Hermes's auxiliary tasks + 2 cron jobs moved off to `gemma-aux` (below) the same evening | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable). **Crashed once, §10** |
+| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan), `-c` trimmed **131072 → 100000** same evening (§10), then **bumped to 262144 = n_ctx_train on 2026-07-30** — see the 2026-07-30 note in §10 below | **Hermes main chat only** as of §10 — ARIA's default chat agent (`aria`) and Search Agent are both **disabled** (`enabled=false`), so despite `LLAMACPP_URL`/`AGENTIC_URL` still pointing here, neither sends real traffic today; Hermes's auxiliary tasks + 2 cron jobs moved off to `gemma-aux` (below) the same evening | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable). **Crashed once, §10 — but see the 2026-07-30 concurrent stress-test result there before assuming the ctx bump reopens that risk** |
 | `:8104` **gemma-aux** (new, 2026-07-28 evening) | Gemma 4 E4B, Q4_0 GGUF, **CPU-only** (`-ngl 0`) | Hermes's ~16 "auxiliary" side-tasks (title generation, compression, curator, approval, triage_specifier, mcp, etc.) + both cron jobs (alert triage, stock scanner) | see §10 for why CPU, the reasoning-mode gotcha, and real KV-cache sizing |
-| `:8105` **chadrockv2** (new, 2026-07-30) | Chadrockv2 Qwen3.6-27B **ROCmFP6** STRIX QUALITY, `-c 65536`, q8_0 KV, MTP draft, text-only | unbound — no consumer yet | **STOPPED** (wired + verified, start on demand). MEASURED ~30 GiB at 65536 ctx |
+| `:8105` **chadrockv2** (new, 2026-07-30) | Chadrockv2 Qwen3.6-27B **ROCmFP6** STRIX QUALITY, `-c 262144` (= n_ctx_train, bumped from 65536 same day), q8_0 KV, MTP draft, text-only | `pi-coding` (`backend=agentic`), bound same day per Ben's 1:1 rule | **STOPPED by default** (wired + verified, start on demand before driving pi-coding). MEASURED ~30 GiB at 65536 ctx, ~38.7 GiB at 262144 ctx |
 | `:8106` **qwythos** (new, 2026-07-30) | Qwythos-27B-v1 MTP Q8_0 + F16 vision projector, `-c 65536`, q8_0 KV | unbound — **the only vision-capable local model on this box** | **STOPPED** (wired + verified). MEASURED ~32 GiB |
 | `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
 | `:8092` `qwen3.6-35b-a3b-Q4` / `:8093` `qwen3.6-27b-Q8` (renamed 2026-07-29 from `qwen-chat`/`qwen-agentic`) | — | — | retired, containers not created. ⚠ `:8092` is additionally held by `ridge-llama-proxy` on the tailnet IP, so this service **cannot** be started there as-is |
@@ -127,7 +138,7 @@ without a consumer that needs one.
 | slug | backend | resolves to |
 |---|---|---|
 | `aria` | `llamacpp` | `:8103` qwen3.6-35b-a3b (was chadrock `:8102` for part of 2026-07-28; corrected same day) |
-| `pi-coding` | `ridge` | Ridge's RTX 3090 (was `agentic` → chadrock/laguna; corrected 2026-07-28 — see §3.1) |
+| `pi-coding` | `agentic` | `:8105` chadrockv2 (was `ridge` 2026-07-28 – 2026-07-30, then repointed local per Ben's 1:1 rule — see 2026-07-30 correction above) |
 | `pi-coding-ridge` | `ridge` | `:8092` → **Ridge's RTX 3090** (see §3.1) |
 | `search-agent` | `llamacpp` | `:8103` qwen3.6-35b-a3b — **was `context1`**, retired and down; repointed 2026-07-26, then moved off chadrock same-day as `aria` above |
 
@@ -161,23 +172,23 @@ Things that bite:
   GPU-resident, so Ridge's TTS (`:8890`) is disabled. See
   `infrastructure/endpoints.env`.
 
-`_start_pi_code_session()` resolves `db.agents` slug `pi-code` **or**
-`pi-coding` — we have `pi-coding`, on `ridge` (corrected 2026-07-28; was
-`agentic` → chadrock/laguna). So a bare `backend="pi-code"` session with no
-`subagent_profile` now runs on Ridge, same as `pi-coding-ridge` explicitly —
-they resolve to the same backend/model, differing only in that
-`pi-coding-ridge`'s system prompt documents the filesystem/shell tools and the
-wake-on-demand behavior explicitly.
+`CodingSessionManager` resolves `db.agents` slug `pi-coding` as an external Pi
+launch profile. A bare `backend="pi-code"` session therefore starts the real
+Pi executable against local Chadrockv2 on `:8105`; the explicit
+`pi-coding-ridge` profile selects Ridge instead. The profile system prompt is
+passed through Pi's native `--append-system-prompt`, while Pi owns the agent
+loop, tools, context files, and JSONL transcript. ARIA owns the watched tmux
+shell, concurrency, watchdog, worktree, review, and lifecycle.
 
 ### Hermes must spin pi-coding through ARIA
 `~/.hermes/config.yaml` `agent.environment_hint` now distinguishes:
 - `backend="claude_code"` — default for anything non-trivial.
-- `backend="pi"` — **only** on explicit request for the local model. Runs ARIA's
-  own agentic loop on Ridge (corrected 2026-07-28; was laguna) and still
-  inherits the watchdog, e-stop and concurrency limiter.
+- `backend="pi-code"` — **only** on explicit request for Pi/local inference.
+  Launches the real Pi TUI with an explicit provider/model and still inherits
+  ARIA's watchdog, e-stop and concurrency limiter.
 
-"Use the local model" means `backend="pi"` **through `create_coding_session`** —
-never a coding loop inside Hermes.
+"Use the local model" means `backend="pi-code"` **through
+`create_coding_session`** — never a coding loop inside Hermes.
 
 ---
 
@@ -397,3 +408,26 @@ pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total`** — not
    places the same endpoint can live in.
 
 **Design-level writeup:** `COHERENCE_DESIGN.md` §5 #24–28.
+
+**2026-07-30 follow-up — ctx bumped back to max, stress-tested against the
+actual trigger.** At Ben's request, qwen's `-c` was raised 100000 → 262144
+(`n_ctx_train`, full model capacity), reversing the trim in fix #2 above.
+Before trusting it, re-read what the root cause actually was: **not** total
+GTT capacity, and **not** anything specific to the Laguna model — it was two
+GPU-offloaded (Vulkan) processes issuing concurrent command submissions and
+colliding on the separate ~1 GiB VRAM aperture, while qwen was
+mid-long-context-prompt and chadrock was deep in an 87–95K token session *at
+the same moment*. That structural condition (two concurrent GPU processes)
+is still present today — chadrockv2 (:8105) plays chadrock's old role now.
+So this was tested against the real trigger, not just a solo clean load:
+fired ~64,500-token prompts at qwen and chadrockv2 **simultaneously**
+(comparable scale to the original 87–95K trigger). Result: both completed
+cleanly (285s / 492s respectively), zero container state changes, peak
+combined GTT 72.4 GiB, no `device.lost` or `ggml_rocm_init` errors beyond
+the expected benign ROCm-probe-falls-back-to-Vulkan line every start already
+has. qwen's own solo footprint at 262144 ctx measured ~29 GiB — barely above
+its 100000-ctx figure, well under the ~40 GiB conservative projection made
+before testing. The `-ctxcp 10` / `--cache-ram 2560` mitigations from fix #1
+were left unchanged. Not proof the failure mode can never recur — the
+original incident only needed one bad coincidence — but it no longer
+reproduces under a load comparable to what caused it the first time.

@@ -109,30 +109,42 @@ func TestEscPopsScreen(t *testing.T) {
 }
 
 // The sidebar keeps the same logical selection across a data refresh even when
-// the row order changes.
+// the row order changes -- using Claude Code sessions (2026-07-31 restructure:
+// bare conversations no longer render as selectable sidebar nodes at all, so
+// this now exercises the same guarantee against coding-session nodes instead).
 func TestSidebarPreservesSelectionAcrossRefresh(t *testing.T) {
 	sb := components.NewSidebar()
 	sb.SetSize(30, 20)
-	convs := []api.Conversation{
-		{ID: "c1", Title: "one", Status: "active"},
-		{ID: "c2", Title: "two", Status: "active"},
-		{ID: "c3", Title: "three", Status: "active"},
+	sessions := []api.CodingSession{
+		{ID: "c1", Backend: "claude_code", Status: "running"},
+		{ID: "c2", Backend: "claude_code", Status: "running"},
+		{ID: "c3", Backend: "claude_code", Status: "running"},
 	}
-	sb.SetData(nil, convs, nil, nil)
-	// Select c2.
-	for sb.Selected() != nil && sb.Selected().ID != "c2" {
+	sb.SetData(nil, nil, sessions, nil)
+	// Select c2. Bounded loop, not `for Selected()...Down()` unbounded -- a
+	// node genuinely not being reachable must fail loudly, not spin forever.
+	found := false
+	for i := 0; i < 50; i++ {
+		if sel := sb.Selected(); sel != nil && sel.ID == "c2" {
+			found = true
+			break
+		}
+		before := sb.Cursor
 		sb.Down()
+		if sb.Cursor == before {
+			break // hit the end of the list
+		}
 	}
-	if sb.Selected() == nil || sb.Selected().ID != "c2" {
+	if !found {
 		t.Fatalf("setup: could not select c2")
 	}
 	// Refresh with reordered list.
-	reordered := []api.Conversation{
-		{ID: "c3", Title: "three", Status: "active"},
-		{ID: "c2", Title: "two", Status: "active"},
-		{ID: "c1", Title: "one", Status: "active"},
+	reordered := []api.CodingSession{
+		{ID: "c3", Backend: "claude_code", Status: "running"},
+		{ID: "c2", Backend: "claude_code", Status: "running"},
+		{ID: "c1", Backend: "claude_code", Status: "running"},
 	}
-	sb.SetData(nil, reordered, nil, nil)
+	sb.SetData(nil, nil, reordered, nil)
 	if sel := sb.Selected(); sel == nil || sel.ID != "c2" {
 		t.Fatalf("selection not preserved: got %v", sel)
 	}
