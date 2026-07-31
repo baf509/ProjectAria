@@ -141,9 +141,9 @@ async def lifespan(app: FastAPI):
         tool_router.register_tool(DeepThinkTool())
         startup_logger.info("Claude Agent + Deep Think tools registered (CLI available)")
 
-    # Register Pi Coding Agent tool (uses local LLM via orchestrator)
-    tool_router.register_tool(PiCodingAgentTool(db))
-    startup_logger.info("Pi Coding Agent tool registered")
+    # Compatibility delegation tool backed by the real external Pi CLI.
+    tool_router.register_tool(PiCodingAgentTool(coding_manager))
+    startup_logger.info("Pi Coding Agent shell tool registered")
 
     # Search Agent — context-1 agentic retrieval over memory/web/files
     ctx1_available, _ = llm_manager.is_backend_available("context1")
@@ -411,22 +411,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for web UI
-# Allow common development and deployment origins
-# For Docker: The UI service can access API via internal Docker network
-# For external access: Adjust these origins based on your deployment
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        *settings.cors_origins,
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_origin_regex=r"http://.*:(3000|1420)",  # Allow any host on port 3000 or 1420
-)
-
-
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
     """Assign a correlation ID to each request for end-to-end tracing."""
@@ -490,7 +474,9 @@ async def api_key_middleware(request: Request, call_next):
     if request.url.path == "/" or request.url.path.startswith(public_prefixes):
         return await call_next(request)
 
-    provided = request.headers.get("X-API-Key")
+    # Query-param fallback: browser EventSource cannot set custom headers, so
+    # SSE endpoints (e.g. /shells/{name}/stream) pass the key this way instead.
+    provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
     if not settings.api_key or not hmac.compare_digest(provided or "", settings.api_key):
         # Best-effort audit — a DB failure must NOT turn the intended 401 into a 500.
         try:
@@ -511,6 +497,32 @@ async def api_key_middleware(request: Request, call_next):
             )
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
     return await call_next(request)
+
+
+# CORS middleware for web UI — added LAST so it is OUTERMOST in the stack
+# (Starlette's add_middleware() makes the most-recently-added middleware wrap
+# everything registered before it). It must wrap correlation_id/rate_limit/
+# api_key_middleware, not sit inside them: those three can short-circuit with
+# a direct JSONResponse (401/429) that skips call_next entirely, and a
+# response built inside CORSMiddleware never passes back out through it — the
+# browser then sees a headerless response and reports a CORS failure instead
+# of the real 401/429. This bit a real feature: the shells live-stream page
+# uses a browser EventSource, which cannot set the X-API-Key header, so every
+# such connection hit exactly this — a 401 with no CORS headers, surfaced to
+# users as an opaque "blocked by CORS policy" error.
+# Allow common development and deployment origins
+# For Docker: The UI service can access API via internal Docker network
+# For external access: Adjust these origins based on your deployment
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        *settings.cors_origins,
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_origin_regex=r"http://.*:(3000|1420)",  # Allow any host on port 3000 or 1420
+)
 
 # Include routers
 app.include_router(health.router, prefix="/api/v1", tags=["health"])

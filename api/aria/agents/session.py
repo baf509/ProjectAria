@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
-import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
@@ -27,6 +26,8 @@ from aria.agents.checkpoint import (
 )
 from aria.agents.mail import AgentMailbox, MessageType
 from aria.agents.subprocess_mgr import CodingSubprocessManager
+from aria.infrastructure.git_worktree import WorktreeError
+from aria.infrastructure.git_worktree import create_worktree as _create_worktree
 from aria.shells.service import ShellService
 from aria.config import settings
 from aria.notifications.service import NotificationService
@@ -227,6 +228,8 @@ class CodingSessionManager:
         loop: Optional[dict] = None,
         host: Optional[str] = None,
         subagent_profile: Optional[str] = None,
+        create_worktree: bool = False,
+        worktree_name: Optional[str] = None,
     ) -> dict:
         # Safety gates: refuse to spawn an autonomous coding agent while the
         # manual killswitch or the automated emergency stop is engaged.
@@ -240,11 +243,33 @@ class CodingSessionManager:
                 f"Emergency stop active — coding session start blocked. Reason: {state.reason}"
             )
 
+        # Worktree provisioning: `workspace` as given names the SOURCE repo,
+        # not where the session actually runs. Everything downstream (complexity
+        # routing, StartParams, the pi-code/tmux/subprocess dispatches) only
+        # ever sees `workspace` post-substitution, so this is the one place
+        # that needs to know the distinction. Runs in a thread since it shells
+        # out to git and this is an async def.
+        source_repo = None
+        worktree_branch = None
+        if create_worktree:
+            source_repo = os.path.abspath(workspace)
+            try:
+                worktree_path, worktree_branch, _ = await asyncio.to_thread(
+                    _create_worktree, source_repo, worktree_name
+                )
+            except WorktreeError as exc:
+                raise ValueError(f"Could not provision a worktree at {source_repo!r}: {exc}") from exc
+            workspace = worktree_path
+            if branch is None:
+                branch = worktree_branch
+
         # Declarative specialist profile (Pi-Flow subagents parity): resolve a
         # named `db.agents` row and apply it — its llm pins backend/model (an
         # explicit arg still wins), and its system_prompt becomes the role
         # preamble to the task. A profile-pinned model skips complexity routing,
         # since choosing the specialist IS choosing its model.
+        profile = None
+        profile_role = None
         if subagent_profile:
             profile = await self.db.agents.find_one({"slug": subagent_profile}) or \
                 await self.db.agents.find_one({"name": subagent_profile})
@@ -253,15 +278,10 @@ class CodingSessionManager:
             pllm = profile.get("llm", {}) or {}
             profile_backend = pllm.get("backend")
             if backend is None:
-                # profile_backend is an LLM-adapter name (llamacpp, agentic,
-                # ridge, anthropic, ...) — a DIFFERENT vocabulary from the
-                # coding-session substrate (claude_code/codex/pi-code/pool).
-                # Only adopt it as the session `backend` if it happens to also
-                # be a registered substrate; otherwise it's an LLM pin for the
-                # in-process pi-code substrate. Without this check, a profile
-                # like pi-coding-ridge (llm.backend="ridge") set backend="ridge"
-                # and start_session raised "Unknown coding backend: ridge"
-                # before ever reaching the pi-code dispatch.
+                # profile_backend is a Pi provider/LLM-adapter name (llamacpp,
+                # agentic, ridge, ...) — a different vocabulary from the
+                # coding-session process backend. Non-process backends select
+                # the real external Pi CLI plus its explicit provider.
                 if self.registry.is_registered(profile_backend):
                     backend = profile_backend
                 else:
@@ -271,7 +291,7 @@ class CodingSessionManager:
                 model = pllm.get("model")
             role = profile.get("system_prompt")
             if role:
-                prompt = f"{role}\n\n---\n\nTask:\n{prompt}"
+                profile_role = role
 
         # Complexity routing: with no model pinned, classify the task and run it
         # on the tier's model — planning/design on Opus, scoped work on Sonnet.
@@ -323,32 +343,47 @@ class CodingSessionManager:
         selected_backend = self.registry.get(backend_name)
         workspace_path = os.path.abspath(workspace)
 
-        # pi-code: run ARIA's own agentic loop against a pinned LLM, inside a
-        # real tmux pane (aria pi-code run) -- same shell substrate as every
-        # other backend, just with launch sequencing that needs a conversation
-        # created first, hence the custom dispatch instead of start_command().
-        if getattr(selected_backend, "needs_custom_launch", False) is True:
-            return await self._start_pi_code_session(
-                workspace=workspace_path,
-                prompt=prompt,
-                llm=llm,
-                model=model,
-                branch=branch,
-                conversation_id=conversation_id,
-                routing=routing_meta,
-            )
+        # A bare pi-code request inherits the local Pi profile. Named profiles
+        # already supplied these fields above. The db.agents row is launch
+        # configuration only here: no ARIA conversation/orchestrator loop is
+        # created; the external Pi process owns its own transcript and tools.
+        if backend_name == "pi-code" and (not llm or not model):
+            pi_profile = profile or await self.db.agents.find_one({"slug": "pi-coding"})
+            if not pi_profile:
+                raise RuntimeError("Pi coding profile not found (slug='pi-coding'); run migrations.")
+            pi_llm = pi_profile.get("llm", {}) or {}
+            llm = llm or pi_llm.get("backend")
+            model = model or pi_llm.get("model")
+        if backend_name == "pi-code" and (not llm or not model):
+            raise ValueError("pi-code requires a configured provider and model")
 
-        params = StartParams(workspace=workspace_path, prompt=prompt, model=model, branch=branch)
-        command = selected_backend.start_command(params)
+        # Non-Pi coding backends historically received a specialist role as a
+        # preamble to the task. Pi has a native system-prompt append flag, so
+        # keep role instructions in the correct message channel there.
+        if profile_role and backend_name != "pi-code":
+            prompt = f"{profile_role}\n\n---\n\nTask:\n{prompt}"
+
         session_id = str(uuid4())
+        params = StartParams(
+            workspace=workspace_path,
+            prompt=prompt,
+            model=model,
+            branch=branch,
+            provider=llm if backend_name == "pi-code" else None,
+            append_system_prompt=profile_role if backend_name == "pi-code" else None,
+            session_id=session_id if backend_name == "pi-code" else None,
+        )
+        command = selected_backend.start_command(params)
         now = datetime.now(timezone.utc)
 
         loop_config = self._normalize_loop_config(loop) if loop else None
         doc = {
             "_id": session_id,
             "backend": backend_name,
+            "llm": llm if backend_name == "pi-code" else None,
             "model": model,
             "workspace": workspace_path,
+            "source_repo": source_repo,
             "prompt": prompt,
             "branch": branch,
             "conversation_id": conversation_id,
@@ -380,7 +415,8 @@ class CodingSessionManager:
         # Concurrency gate: hold a slot for the session's active life. If one is
         # free now, launch inline (unchanged fast path). Otherwise leave the doc
         # `queued` and launch from a background waiter when a slot frees.
-        if await self._try_acquire_slot_nowait(session_id, backend_name):
+        resource_backend = llm if backend_name == "pi-code" else backend_name
+        if await self._try_acquire_slot_nowait(session_id, resource_backend):
             try:
                 return await self._launch_substrate(
                     session_id, command, backend_name, workspace_path, visible, host, prompt
@@ -407,7 +443,8 @@ class CodingSessionManager:
                 )
         self._watch_tasks[session_id] = asyncio.create_task(
             self._deferred_launch(
-                session_id, command, backend_name, workspace_path, visible, host, prompt
+                session_id, command, backend_name, resource_backend,
+                workspace_path, visible, host, prompt
             )
         )
         logger.info(
@@ -417,14 +454,15 @@ class CodingSessionManager:
         return await self.get_session(session_id)
 
     async def _deferred_launch(
-        self, session_id, command, backend_name, workspace_path, visible, host, prompt
+        self, session_id, command, backend_name, resource_backend,
+        workspace_path, visible, host, prompt
     ) -> None:
         """Background waiter for a queued session: block for a slot, re-check the
         safety gates (a stop may have engaged while queued — fail closed), then
         launch the substrate. `_launch_substrate` installs the real watch task,
         which owns the slot release."""
         try:
-            await self._acquire_slot(session_id, backend_name)
+            await self._acquire_slot(session_id, resource_backend)
             from aria.api.deps import get_killswitch, resolve_estop_manager
             try:
                 get_killswitch().check_or_raise("queued coding session start")
@@ -618,200 +656,6 @@ class CodingSessionManager:
         )
         return await self.get_session(session_id)
 
-    async def _launch_pi_code_shell(
-        self, session_id: str, agent_conv_id: str, prompt: str, workspace: str
-    ) -> None:
-        """Spawn the tmux-backed pi-code shell for an already-persisted,
-        slot-holding session doc. Same shell substrate every other backend
-        uses (`shell_service.create_shell` + `_watch_shell_session`), so a
-        pi-code session is a real watched shell: auto-captured, drivable via
-        the generic send_input/get_output/stop_session paths, and reachable
-        by Hermes's shell-level MCP tools with no special-casing.
-
-        The prompt goes to a temp file rather than the launch command string,
-        to avoid shell-escaping a large/multiline prompt; `aria pi-code run`
-        reads it once at startup and sends it as the conversation's first
-        turn, then drops into an interactive loop reading further turns from
-        stdin (i.e. from send_input, same as any other coding-session shell).
-        """
-        fd, prompt_path = tempfile.mkstemp(prefix=f"pi-code-{session_id[:8]}-", suffix=".txt")
-        with os.fdopen(fd, "w") as f:
-            f.write(prompt)
-        # Explicit ARIA_API_URL/ARIA_API_KEY: a tmux pane inherits the tmux
-        # SERVER's environment (owned by aria-tmux.service), not aria-api's --
-        # can't assume the API key is already there. Same reasoning other
-        # backends' command.env prefixing already relies on.
-        env_prefix = (
-            f"ARIA_API_URL={shlex.quote(f'http://localhost:{settings.api_port}')} "
-            f"ARIA_API_KEY={shlex.quote(settings.api_key)}"
-        )
-        launch = (
-            f"{env_prefix} aria pi-code run --conversation {shlex.quote(agent_conv_id)} "
-            f"--prompt-file {shlex.quote(prompt_path)}"
-        )
-        shell_name = None
-        try:
-            shell = await self.shell_service.create_shell(
-                name=f"coding-{session_id[:8]}",
-                workdir=workspace,
-                launch_command=launch,
-            )
-            shell_name = shell.name
-        except Exception as exc:
-            logger.warning("pi-code shell-substrate spawn failed for %s (%s)", session_id, exc)
-        now = datetime.now(timezone.utc)
-        if shell_name:
-            await self.db.coding_sessions.update_one(
-                {"_id": session_id},
-                {"$set": {"status": "running", "shell_name": shell_name, "updated_at": now}},
-            )
-            self._watch_tasks[session_id] = asyncio.create_task(
-                self._watch_shell_session(session_id)
-            )
-            logger.info("Started pi-code session %s on shell %s", session_id, shell_name)
-        else:
-            await self.db.coding_sessions.update_one(
-                {"_id": session_id},
-                {"$set": {
-                    "status": "failed",
-                    "error": "pi-code shell-substrate spawn failed",
-                    "updated_at": now,
-                    "completed_at": now,
-                }},
-            )
-            await self._release_slot(session_id)
-
-    async def _start_pi_code_session(
-        self,
-        *,
-        workspace: str,
-        prompt: str,
-        llm: Optional[str],
-        model: Optional[str],
-        branch: Optional[str],
-        conversation_id: Optional[str],
-        routing: Optional[dict] = None,
-    ) -> dict:
-        """Spawn a pi-code coding session: a working conversation pinned to the
-        chosen LLM, driven interactively via `aria pi-code run` inside a tmux
-        pane — the same shell substrate as every other backend."""
-        agent = (
-            await self.db.agents.find_one({"slug": "pi-code"})
-            or await self.db.agents.find_one({"slug": "pi-coding"})
-        )
-        if not agent:
-            raise RuntimeError(
-                "pi-code agent not found (slug 'pi-code' or 'pi-coding'); run migrations."
-            )
-        llm_backend = llm or agent["llm"]["backend"]
-        llm_model = model or agent["llm"]["model"]
-
-        # Validate the LLM backend HERE, at spawn, rather than letting the first
-        # generation inside the background task discover it. `llm` was written
-        # straight into llm_config, so an unusable value (unknown backend, or a
-        # cloud backend whose key isn't configured) returned 201 "running" and
-        # then the session died asynchronously — the caller saw a healthy spawn
-        # followed by status="failed". get_adapter raises ValueError, which the
-        # route now turns into a 400 naming the problem.
-        from aria.llm.manager import llm_manager
-        llm_manager.get_adapter(llm_backend, llm_model)
-
-        session_id = str(uuid4())
-        now = datetime.now(timezone.utc)
-
-        # Working conversation for the agentic loop. The model is PINNED via
-        # llm_config_override, which the orchestrator treats as authoritative
-        # and fallback-free — so a session keeps the model the user chose.
-        conv = {
-            "agent_id": agent["_id"],
-            "active_agent_id": None,
-            "title": f"pi-code: {prompt[:60]}",
-            "summary": None,
-            "status": "active",
-            "created_at": now,
-            "updated_at": now,
-            "llm_config": {
-                "backend": llm_backend,
-                "model": llm_model,
-                "temperature": agent["llm"].get("temperature", 0.3),
-            },
-            "llm_config_override": {"backend": llm_backend, "model": llm_model},
-            "messages": [],
-            "tags": ["pi-code"],
-            "pinned": False,
-            "private": False,
-            "stats": {"message_count": 0, "total_tokens": 0, "tool_calls": 0},
-        }
-        res = await self.db.conversations.insert_one(conv)
-        agent_conv_id = str(res.inserted_id)
-
-        doc = {
-            "_id": session_id,
-            "backend": "pi-code",
-            "llm": llm_backend,
-            "model": llm_model,
-            "workspace": workspace,
-            "prompt": prompt,
-            "branch": branch,
-            "conversation_id": conversation_id,        # the spawning conversation (may be None)
-            "agent_conversation_id": agent_conv_id,    # the loop's own conversation
-            "routing": routing,                        # how the model was chosen
-            "visible": False,
-            # `queued` until a concurrency slot is acquired (same gate as the
-            # CLI/shell substrates); the driver flips it to `running`.
-            "status": "queued",
-            "pid": None,
-            "tmux_pane_id": None,
-            "shell_name": None,
-            "created_at": now,
-            "updated_at": now,
-            "completed_at": None,
-        }
-        await self.db.coding_sessions.insert_one(doc)
-        # Pass llm_backend, not "pi-code" -- for the pi-code substrate, the
-        # thing that determines backend-family concurrency limiting (does
-        # this hit Ridge? laguna?) is the resolved LLM adapter, not the
-        # coding-session substrate name (see _limited_backend/_backend_limits).
-        if await self._try_acquire_slot_nowait(session_id, llm_backend):
-            await self._launch_pi_code_shell(session_id, agent_conv_id, prompt, workspace)
-            logger.info(
-                "Started pi-code session %s (llm=%s model=%s)", session_id, llm_backend, llm_model
-            )
-        else:
-            self._watch_tasks[session_id] = asyncio.create_task(
-                self._deferred_pi_code(session_id, agent_conv_id, prompt, llm_backend, workspace)
-            )
-            logger.info(
-                "Queued pi-code session %s (limit=%s, active=%s)",
-                session_id, self._slot_limit, self._active,
-            )
-        return await self.get_session(session_id)
-
-    async def _deferred_pi_code(
-        self,
-        session_id: str,
-        conversation_id: str,
-        prompt: str,
-        llm_backend: Optional[str] = None,
-        workspace: Optional[str] = None,
-    ) -> None:
-        """Background waiter for a queued pi-code session: block for a slot,
-        then launch the shell. `_watch_shell_session` (installed by
-        `_launch_pi_code_shell`) releases the slot on finalize."""
-        try:
-            await self._acquire_slot(session_id, llm_backend)
-            cur = await self.get_session(session_id)
-            if not cur or cur.get("status") != "queued":
-                await self._release_slot(session_id)
-                return
-            await self._launch_pi_code_shell(session_id, conversation_id, prompt, workspace)
-        except asyncio.CancelledError:
-            await self._release_slot(session_id)
-            raise
-        except Exception as exc:
-            logger.warning("deferred pi-code launch failed for %s: %s", session_id, exc)
-            await self._release_slot(session_id)
-
     async def stop_session(self, session_id: str) -> bool:
         session = await self.get_session(session_id)
         if not session:
@@ -864,6 +708,28 @@ class CodingSessionManager:
 
     async def get_session(self, session_id: str) -> Optional[dict]:
         return await self.db.coding_sessions.find_one({"_id": session_id})
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Permanently remove a coding_sessions record — for cleaning up
+        finished/stale history, not a substitute for stop_session. Refuses a
+        session still marked "running"/"queued" so a caller doesn't delete
+        live state out from under an active process; call stop_session first
+        (or wait for it to finish) if that's really the intent. Does not
+        touch the underlying shell/shell_events — those are owned by the
+        watched-shell subsystem's own retention (shells/prune.py), not this
+        manager, and a deleted coding_sessions row shouldn't silently take a
+        shell's still-useful scrollback with it.
+        """
+        session = await self.get_session(session_id)
+        if not session:
+            return False
+        if session.get("status") in ("running", "queued"):
+            raise ValueError(
+                f"Refusing to delete session {session_id} while status={session['status']!r} "
+                "-- stop it first."
+            )
+        result = await self.db.coding_sessions.delete_one({"_id": session_id})
+        return result.deleted_count > 0
 
     async def wait_for_session(
         self, session_id: str, timeout: Optional[float] = None, poll_interval: float = 1.0
@@ -926,15 +792,10 @@ class CodingSessionManager:
 
     async def send_input(self, session_id: str, text: str) -> bool:
         session = await self.get_session(session_id)
-        # Shell-substrate sessions (pi-code included): send_input is a plain
-        # tmux send-keys equivalent -- the pane's `aria pi-code run` process
-        # reads it as the next line of stdin, same mechanism as any other
-        # coding-session shell. The killswitch/e-stop gates that mattered for
-        # the old in-process-turn-per-message design are irrelevant now: the
-        # pi-code process is already running continuously (slot already
-        # held for its whole life, same as claude_code/codex/pool), so
-        # there's no new turn to gate here -- only start_session/the Ralph
-        # loop spin up new work, and both already check these gates.
+        # Shell-substrate sessions (including the real Pi TUI): input is plain
+        # tmux send-keys, exactly like Claude Code/Codex. The process is already
+        # running continuously, so start_session and Ralph-loop nudges are the
+        # places where new-work safety gates apply.
         if session and session.get("shell_name") and self.shell_service:
             try:
                 line, _screen = await self.shell_service.send_input(session["shell_name"], text)

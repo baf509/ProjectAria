@@ -18,10 +18,10 @@ type UsageMonitor struct {
 	Height   int
 	Focused  bool
 
-	Summary    *api.UsageSummary
-	ByAgent    []api.AgentUsage
-	ByModel    []api.ModelUsage
-	LLMStatus  []api.LLMBackendStatus
+	Summary   *api.UsageSummary
+	ByAgent   []api.AgentUsage
+	ByModel   []api.ModelUsage
+	LLMStatus []api.LLMBackendStatus
 }
 
 func NewUsageMonitor() *UsageMonitor {
@@ -39,8 +39,8 @@ func (um *UsageMonitor) SetSize(w, h int) {
 	}
 }
 
-func (um *UsageMonitor) Focus()                                { um.Focused = true }
-func (um *UsageMonitor) Blur()                                 { um.Focused = false }
+func (um *UsageMonitor) Focus() { um.Focused = true }
+func (um *UsageMonitor) Blur()  { um.Focused = false }
 
 func (um *UsageMonitor) SetData(summary *api.UsageSummary, byAgent []api.AgentUsage, byModel []api.ModelUsage, llm []api.LLMBackendStatus) {
 	um.Summary = summary
@@ -75,7 +75,7 @@ func (um *UsageMonitor) refreshContent() {
 		b.WriteString(um.row("  Output", formatTokensLong(um.Summary.TotalOutputTokens), cw))
 		b.WriteString(um.row("  Total", formatTokensLong(total), cw))
 	} else {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  No usage data available\n"))
+		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  No usage data available") + "\n")
 	}
 
 	// ---- By Agent ----

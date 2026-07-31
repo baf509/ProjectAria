@@ -184,7 +184,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         slug="ROCmFP4-qwen3.6-35b-a3b",
         description="Qwen3.6-35B-A3B-MTP, embF16/headQ6 mix, on the charlie12345 "
         "ROCmFPX Vulkan runtime. Currently the active Hermes/ARIA chat backend. "
-        "Confirmed to coexist with Chadrock-Laguna-S-2.1 in RAM (~89.4 GiB combined).",
+        "ctx bumped 100000 -> 262144 (n_ctx_train) on 2026-07-30 at Ben's request; "
+        "see the compose file's -c comment for the crash history this reverses "
+        "and why concurrent GPU load (not ctx size) was the real trigger.",
         runtime_repo="https://github.com/charlie12345/ROCmFPX.git",
         runtime_ref="branch main (build-strix-rocmfp4-mtp.sh; needs a HIP toolchain to "
         "build even though it serves on Vulkan0)",
@@ -194,6 +196,14 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         compose_file="qwen3.6-35b-a3b/docker-compose.yml",
         service_name="qwen3.6-35b-a3b",
         container_name="qwen3.6-35b-a3b",
+        # MEASURED 2026-07-30: ~29 GiB solo at 262144 ctx (n_ctx_train) —
+        # barely different from the prior 100000-ctx figure (24.7-29 GiB).
+        # Real growth was far below the ~40 GiB projection; f16 KV apparently
+        # doesn't scale as steeply here as the sublinear-but-still-present
+        # curve chadrockv2 showed. Also stress-tested: concurrent 64.5K-token
+        # prompts fired at qwen and chadrockv2 simultaneously (comparable
+        # scale to the 2026-07-28 crash's 87-95K trigger) — both completed
+        # cleanly, zero container state changes, peak 72.4 GiB combined.
         resident_gib=29,
         exclusive_with=_exclusive_with("ROCmFP4-qwen3.6-35b-a3b"),
         consumers_note="Hermes main chat + ARIA default/search chat agents (both "
@@ -288,7 +298,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="Chadrock-ROCmFP6-qwen3.6-27b",
         description="Chadrockv2 Qwen3.6-27B ROCmFP6 STRIX QUALITY (Q6_0_ROCMFPX bulk "
-        "+ Q8 attention/FFN bands), text-only, MTP draft speculation, 65536 ctx. "
+        "+ Q8 attention/FFN bands), text-only, MTP draft speculation, 262144 ctx "
+        "(= n_ctx_train, bumped from 65536 on 2026-07-30 at Ben's request). "
         "Runs on the EXISTING ciru-ai ROCmFPX Vulkan image — its bundled profile's "
         "claim of needing a HIP build was an artifact of the author's own machine "
         "path; verified loading and generating on Vulkan0 2026-07-30.",
@@ -302,9 +313,14 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         compose_file="chadrockv2/docker-compose.yml",
         service_name="chadrockv2",
         container_name="chadrockv2",
-        # MEASURED 27 GiB at 4096 ctx (2026-07-30); budgeted for the larger
-        # q8_0 KV at the configured 65536 ctx.
-        resident_gib=34,
+        # MEASURED 27 GiB at 4096 ctx, 30.69 GiB at 65536 ctx, 38.68 GiB at
+        # 262144 ctx = n_ctx_train (all 2026-07-30). Loaded clean, no
+        # warnings, verified generating correctly at the new ctx. The linear
+        # KV-scaling projection (~52-60 GiB) overshot the real number —
+        # actual overhead growth was sublinear past 65536, likely because
+        # part of the fixed compute-buffer/graph overhead doesn't scale with
+        # ctx. Padded modestly above measured for headroom.
+        resident_gib=42,
         exclusive_with=_exclusive_with("Chadrock-ROCmFP6-qwen3.6-27b"),
     ),
     ModelServerSpec(

@@ -330,6 +330,13 @@ class CodingSessionCreate(BaseModel):
     loop: Optional[CodingLoopConfig] = None  # opt-in Ralph loop; absent = one-shot
     host: Optional[str] = None  # run on a remote node (aria-node id); None = this host
     subagent_profile: Optional[str] = None  # named db.agents specialist (backend/model + role)
+    # When true, `workspace` names a SOURCE repo (not a run directory): a new
+    # git worktree + branch is created under <workspace>/.worktrees/ and the
+    # session runs there instead. `workspace` is initialized as a git repo
+    # first if it isn't one already. `branch`, if set, names the new branch;
+    # otherwise one is auto-generated from worktree_name/timestamp.
+    create_worktree: bool = False
+    worktree_name: Optional[str] = None  # slug hint for the worktree dir + branch name
 
 
 class CodingSessionInput(BaseModel):
@@ -347,6 +354,7 @@ class CodingSessionResponse(BaseModel):
     llm: Optional[str] = None
     model: Optional[str] = None
     workspace: str
+    source_repo: Optional[str] = None  # set when workspace is an auto-created worktree
     prompt: str
     branch: Optional[str] = None
     pid: Optional[int] = None

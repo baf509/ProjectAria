@@ -58,8 +58,8 @@ func (ov *ObservationsView) refreshContent() {
 	var b strings.Builder
 
 	if len(ov.Observations) == 0 {
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("\n  No observations recorded yet.\n"))
-		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  Awareness sensors monitor git, filesystem, and system state.\n"))
+		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Muted).Render("  No observations recorded yet.") + "\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(styles.Muted).Render("  Awareness sensors monitor git, filesystem, and system state.") + "\n")
 		ov.Viewport.SetContent(b.String())
 		return
 	}

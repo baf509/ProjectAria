@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Iterable, Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import ValidationError
 
 from aria.config import settings
 from aria.shells.ansi import matches_prompt, parse_prompt_patterns, strip_ansi
@@ -122,7 +123,15 @@ class ShellService:
         out: list[Shell] = []
         async for doc in cursor:
             doc.pop("_id", None)
-            out.append(Shell(**doc))
+            try:
+                out.append(Shell(**doc))
+            except ValidationError:
+                # One malformed doc (e.g. an interrupted registration missing
+                # last_activity_at) must not 500 the whole fleet view for
+                # every other shell -- skip it rather than let it crash the
+                # cursor mid-iteration.
+                logger.warning("Skipping malformed shell doc: %s", doc.get("name"))
+                continue
         return out
 
     async def get_shell(self, name: str) -> Optional[Shell]:

@@ -68,6 +68,7 @@ def serialize_session(doc: dict) -> dict:
         "llm": doc.get("llm"),
         "model": doc.get("model"),
         "workspace": doc["workspace"],
+        "source_repo": doc.get("source_repo"),
         "prompt": doc["prompt"],
         "branch": doc.get("branch"),
         "pid": doc.get("pid"),
@@ -103,6 +104,8 @@ async def start_coding_session(
             loop=body.loop.model_dump(exclude_none=True) if body.loop else None,
             host=body.host,
             subagent_profile=body.subagent_profile,
+            create_worktree=body.create_worktree,
+            worktree_name=body.worktree_name,
         )
     except RuntimeError as exc:
         # start_session also raises RuntimeError for caller-visible refusals:
@@ -209,6 +212,20 @@ async def stop_coding_session(
     if not success:
         raise HTTPException(status_code=404, detail="Coding session not found")
     return {"session_id": session_id, "stopped": True}
+
+
+@router.delete("/{session_id}")
+async def delete_coding_session(
+    session_id: str,
+    manager: CodingSessionManager = Depends(get_coding_session_manager),
+):
+    try:
+        success = await manager.delete_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not success:
+        raise HTTPException(status_code=404, detail="Coding session not found")
+    return {"session_id": session_id, "deleted": True}
 
 
 @router.get("/{session_id}/diff")

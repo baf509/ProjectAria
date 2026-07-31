@@ -2,6 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { shellsApi, type Shell, type ShellEvent } from '@/lib/api-client-shells'
+import { apiClient } from '@/lib/api-client'
+
+// Coding-agent choices for the New Session form. `backend` maps straight to
+// start_coding_session's substrate; `subagent_profile` resolves a db.agents
+// specialist (backend/model + role prompt) instead of pinning one directly —
+// see agents/session.py's subagent_profile resolution.
+const CODING_AGENTS: Array<{ key: string; label: string; backend?: string; subagent_profile?: string }> = [
+  { key: 'claude_code', label: 'Claude Code', backend: 'claude_code' },
+  { key: 'pi-coding', label: 'Pi Coding Agent', subagent_profile: 'pi-coding' },
+  { key: 'pi-coding-ridge', label: 'Pi Coding Agent (Ridge)', subagent_profile: 'pi-coding-ridge' },
+  { key: 'codex', label: 'Codex', backend: 'codex' },
+]
 
 type ViewMode = 'snapshot' | 'stream'
 
@@ -112,6 +124,18 @@ export default function ShellsDashboardPage() {
   const sseRef = useRef<EventSource | null>(null)
   const atBottomRef = useRef<boolean>(true)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const shellButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
+
+  // New Coding Session form (creates a real start_coding_session — the same
+  // watched-shell substrate claude_code already uses — not a chat conversation).
+  const [showNewSession, setShowNewSession] = useState(false)
+  const [newRepo, setNewRepo] = useState('')
+  const [newPrompt, setNewPrompt] = useState('')
+  const [newAgentKey, setNewAgentKey] = useState(CODING_AGENTS[0].key)
+  const [newUseWorktree, setNewUseWorktree] = useState(true)
+  const [newWorktreeName, setNewWorktreeName] = useState('')
+  const [creatingSession, setCreatingSession] = useState(false)
+  const [createSessionError, setCreateSessionError] = useState<string | null>(null)
 
   const refreshShells = useCallback(async () => {
     try {
@@ -246,6 +270,63 @@ export default function ShellsDashboardPage() {
     })
   }, [shells, filterText, statusFilter])
 
+  // Arrow-key list navigation. Plain <button> siblings have no native
+  // up/down relationship — without this, Up/Down do nothing and Enter just
+  // re-confirms whatever was already selected, which reads as "opening a
+  // shell does nothing" (reported behavior: arrow keys to highlight a row,
+  // Enter, no effect). Moves selection immediately on Up/Down (same as a
+  // click — this list has no separate highlight-vs-select step elsewhere),
+  // Home/End jump to the ends. Enter/Space still work via the button's
+  // native activation, now on whichever row Up/Down last moved to.
+  function handleListKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return
+    if (filteredShells.length === 0) return
+    e.preventDefault()
+
+    const currentIndex = filteredShells.findIndex((s) => s.name === selected)
+    let nextIndex: number
+    if (e.key === 'Home') nextIndex = 0
+    else if (e.key === 'End') nextIndex = filteredShells.length - 1
+    else if (e.key === 'ArrowDown') nextIndex = Math.min(currentIndex + 1, filteredShells.length - 1)
+    else nextIndex = Math.max(currentIndex - 1, 0)
+    if (currentIndex === -1) nextIndex = 0
+
+    const next = filteredShells[nextIndex]
+    setSelected(next.name)
+    shellButtonRefs.current[next.name]?.focus()
+    shellButtonRefs.current[next.name]?.scrollIntoView({ block: 'nearest' })
+  }
+
+  async function handleCreateSession() {
+    if (!newRepo.trim() || !newPrompt.trim() || creatingSession) return
+    setCreatingSession(true)
+    setCreateSessionError(null)
+    try {
+      const agent = CODING_AGENTS.find((a) => a.key === newAgentKey) || CODING_AGENTS[0]
+      await apiClient.createCodingSession({
+        workspace: newRepo.trim(),
+        prompt: newPrompt.trim(),
+        backend: agent.backend,
+        subagent_profile: agent.subagent_profile,
+        create_worktree: newUseWorktree,
+        worktree_name: newWorktreeName.trim() || undefined,
+      })
+      // The session lands on the watched-shell substrate but the shell doc
+      // (and its name) only exists once the launch actually completes, so
+      // there's nothing to select by name yet — refresh and let the normal
+      // 10s poll (or the user) find it once it's up, same as any new shell.
+      setShowNewSession(false)
+      setNewRepo('')
+      setNewPrompt('')
+      setNewWorktreeName('')
+      await refreshShells()
+    } catch (e: any) {
+      setCreateSessionError(e?.message || 'Failed to create session')
+    } finally {
+      setCreatingSession(false)
+    }
+  }
+
   const counts = useMemo(() => {
     const c = { all: shells.length, active: 0, idle: 0, stopped: 0, unknown: 0 }
     for (const s of shells) c[s.status as keyof typeof c] = (c[s.status as keyof typeof c] || 0) + 1
@@ -268,12 +349,120 @@ export default function ShellsDashboardPage() {
               <span className="text-stone-200 font-semibold">{counts.idle}</span> idle ·{' '}
               <span className="text-stone-200 font-semibold">{counts.stopped}</span> stopped
             </span>
+            <button
+              onClick={() => setShowNewSession(true)}
+              className="shrink-0 rounded-md border border-fuchsia-700 bg-fuchsia-500/20 px-3 py-1.5 text-sm text-fuchsia-200 hover:bg-fuchsia-500/30"
+            >
+              + New Session
+            </button>
             <a href="/dashboard" className="-my-2 shrink-0 py-2 text-stone-400 hover:text-stone-200">
               ← Dashboard
             </a>
           </div>
         </div>
       </header>
+
+      {showNewSession && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => !creatingSession && setShowNewSession(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-stone-800 bg-stone-950 p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="mb-1 text-lg font-semibold text-stone-100">New Coding Session</h2>
+            <p className="mb-4 text-xs text-stone-500">
+              Starts a real ARIA coding session — appears as a watched shell in this list,
+              same as claude_code — not a chat conversation.
+            </p>
+
+            <label className="mb-3 block text-sm">
+              <span className="mb-1 block text-stone-400">Repo path</span>
+              <input
+                type="text"
+                value={newRepo}
+                onChange={(e) => setNewRepo(e.target.value)}
+                placeholder="/home/ben/Development/ProjectAria"
+                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+              />
+            </label>
+
+            <label className="mb-3 block text-sm">
+              <span className="mb-1 block text-stone-400">Agent</span>
+              <select
+                value={newAgentKey}
+                onChange={(e) => setNewAgentKey(e.target.value)}
+                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 focus:outline-none focus:border-fuchsia-500"
+              >
+                {CODING_AGENTS.map((a) => (
+                  <option key={a.key} value={a.key}>{a.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="mb-3 block text-sm">
+              <span className="mb-1 block text-stone-400">Task</span>
+              <textarea
+                value={newPrompt}
+                onChange={(e) => setNewPrompt(e.target.value)}
+                rows={3}
+                placeholder="What should the agent do?"
+                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+              />
+            </label>
+
+            <label className="mb-3 flex items-center gap-2 text-sm text-stone-300">
+              <input
+                type="checkbox"
+                checked={newUseWorktree}
+                onChange={(e) => setNewUseWorktree(e.target.checked)}
+                className="h-4 w-4 rounded border-stone-700 bg-stone-900"
+              />
+              Create an isolated git worktree for this session
+            </label>
+            {newUseWorktree && (
+              <label className="mb-4 block text-sm">
+                <span className="mb-1 block text-stone-400">Worktree name (optional)</span>
+                <input
+                  type="text"
+                  value={newWorktreeName}
+                  onChange={(e) => setNewWorktreeName(e.target.value)}
+                  placeholder="e.g. fix-login-bug"
+                  className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+                />
+                <span className="mt-1 block text-[11px] text-stone-600">
+                  If the repo path isn&apos;t a git repo yet, it&apos;s initialized first, then the
+                  worktree is created on a new branch under &lt;repo&gt;/.worktrees/.
+                </span>
+              </label>
+            )}
+
+            {createSessionError && (
+              <div className="mb-3 rounded-md border border-red-900 bg-red-950/60 px-3 py-2 text-xs text-red-200 break-words">
+                {createSessionError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowNewSession(false)}
+                disabled={creatingSession}
+                className="rounded-md border border-stone-800 px-3 py-1.5 text-sm text-stone-300 hover:border-stone-700 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateSession}
+                disabled={creatingSession || !newRepo.trim() || !newPrompt.trim()}
+                className="rounded-md border border-fuchsia-700 bg-fuchsia-500/20 px-3 py-1.5 text-sm text-fuchsia-200 hover:bg-fuchsia-500/30 disabled:opacity-40"
+              >
+                {creatingSession ? 'Starting…' : 'Start Session'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-950/60 border-b border-red-900 px-4 py-2 text-sm text-red-200 break-words sm:px-6" role="alert">
@@ -324,7 +513,12 @@ export default function ShellsDashboardPage() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto">
+          <div
+            className="flex-1 min-h-0 overflow-y-auto"
+            role="listbox"
+            aria-label="Watched shells"
+            onKeyDown={handleListKeyDown}
+          >
             {filteredShells.length === 0 && (
               <div className="p-6 text-sm text-stone-500">
                 {shells.length === 0 ? (
@@ -349,7 +543,16 @@ export default function ShellsDashboardPage() {
               return (
                 <button
                   key={s.name}
+                  ref={(el) => { shellButtonRefs.current[s.name] = el }}
                   onClick={() => setSelected(s.name)}
+                  role="option"
+                  aria-selected={active}
+                  // Roving tabindex: only the selected row is a Tab stop, so
+                  // entering the list from outside lands on it directly —
+                  // Up/Down/Home/End then move both focus and selection
+                  // (handleListKeyDown), same as a click, not a separate
+                  // highlight-then-confirm step.
+                  tabIndex={active ? 0 : -1}
                   className={`w-full text-left px-4 py-3 border-b border-stone-900 transition relative ${
                     active
                       ? 'bg-stone-900 border-l-2 border-l-fuchsia-500'

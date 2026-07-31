@@ -110,7 +110,12 @@ export const shellsApi = {
   },
 
   streamUrl(name: string, sinceLine?: number): string {
-    const qs = sinceLine != null ? `?since_line=${sinceLine}` : ''
-    return `${API_URL}/api/v1/shells/${encodeURIComponent(name)}/stream${qs}`
+    // Browser EventSource can't set custom headers, so the API key travels
+    // as a query param here — the API's auth middleware accepts either.
+    const params = new URLSearchParams()
+    if (sinceLine != null) params.set('since_line', String(sinceLine))
+    if (API_KEY) params.set('api_key', API_KEY)
+    const qs = params.toString()
+    return `${API_URL}/api/v1/shells/${encodeURIComponent(name)}/stream${qs ? `?${qs}` : ''}`
   },
 }

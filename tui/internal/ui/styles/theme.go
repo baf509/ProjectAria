@@ -6,18 +6,18 @@ import "github.com/charmbracelet/lipgloss"
 
 var (
 	// Core semantic colors
-	Primary    = lipgloss.Color("#7c3aed") // Purple — top panels, main accent
-	Secondary  = lipgloss.Color("#22c55e") // Green  — bottom panels, success
-	Accent     = lipgloss.Color("#38bdf8") // Sky blue — titles, highlights
-	Muted      = lipgloss.Color("#6b7280") // Gray — secondary text
-	Danger     = lipgloss.Color("#ef4444") // Red — errors, failures
-	Warning    = lipgloss.Color("#f59e0b") // Amber — warnings, paused
-	Info       = lipgloss.Color("#38bdf8") // Sky blue — info observations
-	Surface    = lipgloss.Color("#1e1e2e") // Dark surface
-	Surface1   = lipgloss.Color("#313244") // Lighter surface
-	Text       = lipgloss.Color("#cdd6f4") // Primary text
-	SubText    = lipgloss.Color("#a6adc8") // Muted text
-	Overlay    = lipgloss.Color("#585b70") // Subtle borders/dividers
+	Primary   = lipgloss.Color("#7c3aed") // Purple — top panels, main accent
+	Secondary = lipgloss.Color("#22c55e") // Green  — bottom panels, success
+	Accent    = lipgloss.Color("#38bdf8") // Sky blue — titles, highlights
+	Muted     = lipgloss.Color("#6b7280") // Gray — secondary text
+	Danger    = lipgloss.Color("#ef4444") // Red — errors, failures
+	Warning   = lipgloss.Color("#f59e0b") // Amber — warnings, paused
+	Info      = lipgloss.Color("#38bdf8") // Sky blue — info observations
+	Surface   = lipgloss.Color("#1e1e2e") // Dark surface
+	Surface1  = lipgloss.Color("#313244") // Lighter surface
+	Text      = lipgloss.Color("#cdd6f4") // Primary text
+	SubText   = lipgloss.Color("#a6adc8") // Muted text
+	Overlay   = lipgloss.Color("#585b70") // Subtle borders/dividers
 
 	// Border colors
 	BorderColor  = lipgloss.Color("#45475a") // General border/divider color
@@ -118,7 +118,7 @@ var (
 		Bold(true)
 
 	HelpDesc = lipgloss.NewStyle().
-		Foreground(Muted)
+			Foreground(Muted)
 
 	// ---- Spinner ----
 	SpinnerStyle = lipgloss.NewStyle().

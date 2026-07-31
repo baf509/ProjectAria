@@ -1261,68 +1261,55 @@ class TestPiCodingAgentTool:
 
     @pytest.mark.asyncio
     async def test_properties(self):
-        db = self._make_mock_db()
+        manager = MagicMock()
         from aria.tools.builtin.pi_coding import PiCodingAgentTool
-        tool = PiCodingAgentTool(db)
+        tool = PiCodingAgentTool(manager)
         assert tool.name == "pi_coding_agent"
         assert tool.type == ToolType.BUILTIN
 
     @pytest.mark.asyncio
     async def test_empty_task_error(self):
-        db = self._make_mock_db()
+        manager = MagicMock()
         from aria.tools.builtin.pi_coding import PiCodingAgentTool
-        tool = PiCodingAgentTool(db)
+        tool = PiCodingAgentTool(manager)
         result = await tool.execute({"task": ""})
         assert result.status == ToolStatus.ERROR
         assert "required" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_agent_not_found(self):
-        db = self._make_mock_db()
-        db.agents.find_one = AsyncMock(return_value=None)
+    async def test_workspace_required(self):
+        manager = MagicMock()
         from aria.tools.builtin.pi_coding import PiCodingAgentTool
-        tool = PiCodingAgentTool(db)
+        tool = PiCodingAgentTool(manager)
         result = await tool.execute({"task": "Build a REST API"})
         assert result.status == ToolStatus.ERROR
-        assert "not found" in result.error.lower()
+        assert "workspace" in result.error.lower()
 
     @pytest.mark.asyncio
     async def test_success(self):
-        from bson import ObjectId
-        db = self._make_mock_db()
-        agent_id = ObjectId()
-        db.agents.find_one = AsyncMock(return_value={
-            "_id": agent_id,
-            "name": "Pi Coder",
-            "slug": "pi-coding",
-            "llm": {"backend": "llamacpp", "model": "qwen3", "temperature": 0.7},
+        manager = MagicMock()
+        manager.start_session = AsyncMock(return_value={
+            "_id": "session-1",
+            "status": "running",
+            "shell_name": "claude-coding-session",
+            "workspace": "/tmp/project",
+            "model": "chadrockv2-qwen36-27b-fp6",
         })
-        db.conversations.insert_one = AsyncMock(
-            return_value=MagicMock(inserted_id=ObjectId())
-        )
-
-        # Mock the orchestrator
-        async def fake_process_message(*args, **kwargs):
-            from aria.llm.base import StreamChunk
-            yield StreamChunk(type="text", content="Here's the solution...")
-            yield StreamChunk(type="done", usage={})
-
-        mock_orchestrator = MagicMock()
-        mock_orchestrator.process_message = fake_process_message
-
         from aria.tools.builtin.pi_coding import PiCodingAgentTool
-        tool = PiCodingAgentTool(db)
-
-        with patch("aria.core.orchestrator.Orchestrator", return_value=mock_orchestrator), \
-             patch("aria.api.deps.get_tool_router", return_value=MagicMock()), \
-             patch("aria.api.deps.get_task_runner", new_callable=AsyncMock, return_value=MagicMock()), \
-             patch("aria.api.deps.get_coding_session_manager", new_callable=AsyncMock, return_value=MagicMock()):
-
-            result = await tool.execute({"task": "Build a REST API"})
+        tool = PiCodingAgentTool(manager)
+        result = await tool.execute({
+            "task": "Build a REST API",
+            "workspace": "/tmp/project",
+        })
 
         assert result.status == ToolStatus.SUCCESS
-        assert "solution" in result.output["response"]
-        assert result.output["agent"] == "Pi Coder"
+        assert result.output["session_id"] == "session-1"
+        manager.start_session.assert_awaited_once_with(
+            workspace="/tmp/project",
+            backend=None,
+            prompt="Build a REST API",
+            subagent_profile="pi-coding",
+        )
 
 
 # ============================================================================

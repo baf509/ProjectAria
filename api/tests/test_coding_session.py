@@ -353,9 +353,9 @@ async def test_watch_session_real_crash_still_writes_checkpoint():
 
 
 # ---------------------------------------------------------------------------
-# send_input on a pi-code session now routes through the generic shell path
-# (pi-code runs on the shell substrate as of 2026-07-30, same as every other
-# backend) -- it's plain tmux send-keys, not a new orchestrator turn, so it
+# send_input on a pi-code session routes through the generic shell path
+# (the real Pi executable runs in tmux like every other backend). It is plain
+# tmux send-keys, not a new ARIA orchestrator turn, so it
 # does NOT re-check the killswitch/e-stop per call (those gate start_session
 # and the Ralph loop's per-nudge check, same as claude_code/codex/pool).
 # ---------------------------------------------------------------------------
@@ -369,7 +369,6 @@ async def test_send_input_pi_code_routes_through_shell_substrate():
         "_id": "sess-pi",
         "status": "running",
         "backend": "pi-code",
-        "agent_conversation_id": "conv-1",
         "shell_name": "claude-coding-sess-pi",
     })
     mgr = _make_manager(db=db)
@@ -387,8 +386,8 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
     """A specialist profile's llm.backend is an LLM-adapter name (llamacpp,
     agentic, ridge, ...) — a different vocabulary from the coding-session
     substrate (claude_code/codex/pi-code/pool). It must be routed through
-    pi-code with that name pinned as `llm`, not adopted as the session
-    `backend` itself.
+    the external pi-code process with that name pinned as its provider, not
+    adopted as the session `backend` itself.
 
     Regression test for subagent_profile="pi-coding-ridge" (llm.backend=
     "ridge"): before the fix this set backend="ridge" and start_session raised
@@ -412,12 +411,12 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
 
     with patch("aria.api.deps.get_killswitch") as mock_get_ks, \
          patch("aria.api.deps.resolve_estop_manager", new_callable=AsyncMock) as mock_resolve_estop, \
-         patch.object(mgr, "_start_pi_code_session", new_callable=AsyncMock) as mock_start_pi:
+         patch.object(mgr, "_launch_substrate", new_callable=AsyncMock) as mock_launch:
         mock_get_ks.return_value.check_or_raise = MagicMock()
         mock_estop = MagicMock()
         mock_estop.is_active = AsyncMock(return_value=False)
         mock_resolve_estop.return_value = mock_estop
-        mock_start_pi.return_value = {"_id": "sess-ridge", "status": "queued"}
+        mock_launch.return_value = {"_id": "sess-ridge", "status": "running"}
 
         await mgr.start_session(
             workspace="/tmp/ws",
@@ -426,10 +425,15 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
             subagent_profile="pi-coding-ridge",
         )
 
-    mock_start_pi.assert_awaited_once()
-    kwargs = mock_start_pi.call_args.kwargs
-    assert kwargs["llm"] == "ridge"
-    assert kwargs["model"] == "qwen3.6-35b-a3b"
+    mock_launch.assert_awaited_once()
+    command = mock_launch.call_args.args[1]
+    assert command.argv[1:5] == [
+        "--provider", "ridge", "--model", "qwen3.6-35b-a3b",
+    ]
+    inserted = db.coding_sessions.insert_one.call_args.args[0]
+    assert inserted["backend"] == "pi-code"
+    assert inserted["llm"] == "ridge"
+    assert "agent_conversation_id" not in inserted
 
 
 @pytest.mark.asyncio
@@ -464,7 +468,6 @@ async def test_send_input_pi_code_without_shell_falls_back_to_process_manager():
         "_id": "sess-pi",
         "status": "running",
         "backend": "pi-code",
-        "agent_conversation_id": "conv-1",
         "shell_name": None,
     })
     mgr = _make_manager(db=db)
