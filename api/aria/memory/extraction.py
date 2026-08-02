@@ -255,6 +255,8 @@ class MemoryExtractor:
         text: str,
         llm_backend: str = "llamacpp",
         llm_model: str = "default",
+        force_local: bool = False,
+        claude_model: Optional[str] = None,
     ) -> list[dict]:
         """
         Extract memories from arbitrary text.
@@ -263,6 +265,17 @@ class MemoryExtractor:
             text: Text to extract from
             llm_backend: LLM backend
             llm_model: LLM model
+            force_local: Skip the Claude CLI runner even when
+                settings.use_claude_runner is on, and go straight to
+                llm_backend/llm_model. For a large one-off local backfill
+                where burning Claude subscription/API calls per chunk isn't
+                worth it and $0 local compute is an acceptable trade.
+            claude_model: Passed to ClaudeRunner's --model flag. Unset means
+                no --model flag at all, i.e. the CLI's own (flagship) default
+                — that's what every prior call here has silently used. A
+                simple "pull out JSON facts" extraction task doesn't need
+                that; passing a cheaper model (e.g. Haiku) for a bulk backfill
+                cuts real per-chunk cost without touching local infra.
 
         Returns:
             List of extracted memory data
@@ -270,8 +283,8 @@ class MemoryExtractor:
         prompt = load_prompt("extraction", messages=f"USER: {text}")
 
         try:
-            if settings.use_claude_runner and ClaudeRunner.is_available():
-                runner = ClaudeRunner(timeout_seconds=settings.claude_runner_timeout_seconds)
+            if not force_local and settings.use_claude_runner and ClaudeRunner.is_available():
+                runner = ClaudeRunner(model=claude_model, timeout_seconds=settings.claude_runner_timeout_seconds)
                 response = await runner.run(prompt)
                 if not response:
                     response = await self._extract_via_api(prompt, llm_backend, llm_model)
