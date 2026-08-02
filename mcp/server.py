@@ -342,6 +342,26 @@ async def project_cockpit(slug: str) -> dict:
 
 
 @mcp.tool()
+async def publish_to_obsidian(
+    content: str,
+    title: str,
+    doc_type: str = "Analysis",
+    project: Optional[str] = None,
+) -> dict:
+    """Publish long-form markdown (an analysis, design draft, research
+    report) into Ben's Obsidian vault, where it syncs to all his devices.
+    doc_type picks the subfolder: Design, Specs, Analysis, Research, or
+    Planning. project is a repo path or vault folder name (e.g.
+    '/home/ben/Development/ProjectAria' or 'ProjectAria'); omit it for
+    ARIA's general folder. Writes are atomic and never overwrite a doc a
+    human recently edited. Returns the vault path written."""
+    body: dict[str, Any] = {"content": content, "title": title, "doc_type": doc_type}
+    if project is not None:
+        body["project"] = project
+    return await _request("POST", "/api/v1/obsidian/publish", json=body)
+
+
+@mcp.tool()
 async def set_active_project(slug: Optional[str] = None) -> dict:
     """Set (or clear, with no slug) the server-side active project — the
     shared focus the cockpit, TUI, CLI and Hermes all agree on."""

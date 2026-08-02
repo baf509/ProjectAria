@@ -249,6 +249,18 @@ class ResearchService:
                     metadata={"research_id": research_id, "learnings_count": len(run_state["learnings"])},
                     result=result,
                 )
+            # Coherence C6: auto-publish the finished report into the Obsidian
+            # vault (decision log #5 — auto for research). Best-effort: a vault
+            # problem never fails a completed run.
+            if settings.obsidian_auto_publish_research and report_text:
+                from aria.integrations.obsidian import ObsidianWriter
+                published = await ObsidianWriter().publish(
+                    report_text, title=config.query, doc_type="Research"
+                )
+                if published:
+                    await self._update_run(
+                        research_id, extra_updates={"vault_path": published}
+                    )
             return result
         except Exception:
             logger.exception("Research run failed", extra={"research_id": research_id})

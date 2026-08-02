@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge
+from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -554,6 +554,7 @@ app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
 app.include_router(shell_nudge.router, prefix="/api/v1", tags=["shells"])
+app.include_router(obsidian.router, prefix="/api/v1", tags=["obsidian"])
 app.include_router(nodes.router, prefix="/api/v1", tags=["nodes"])
 # digest MUST register before planning: its literal /projects/{overview,active}
 # paths would otherwise be captured by planning's /projects/{project_id}.
