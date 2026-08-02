@@ -29,6 +29,32 @@ def test_project_roots_dedup_and_normalize():
     assert project_roots(p) == ["/tmp/demo", "/tmp/other"]
 
 
+def test_path_index_most_specific_project_wins():
+    """Regression: a coarse parent project (e.g. a row for ~/Development
+    itself) must NOT swallow activity that belongs to a child project."""
+    from aria.api.routes.digest import PathIndex
+
+    parent = _make_project("PP", slug="development").model_copy(
+        update={"path": "/home/ben/Development", "relevant_paths": []}
+    )
+    child = _make_project("PC", slug="aria").model_copy(
+        update={"path": "/home/ben/Development/ProjectAria", "relevant_paths": []}
+    )
+    idx = PathIndex([parent, child])
+    assert idx.owner("/home/ben/Development/ProjectAria/api") == "PC"
+    assert idx.owner("/home/ben/Development/ProjectAria") == "PC"
+    assert idx.owner("/home/ben/Development/scratch.txt".rsplit("/", 1)[0]) == "PP"
+    assert idx.owner("/home/ben/Development/other-repo") == "PP"
+    assert idx.owner("/elsewhere") is None
+    # Session fallback: workspace outside any root -> source_repo attributes.
+    assert (
+        idx.session_owner(
+            {"workspace": "/tmp/worktree-x", "source_repo": "/home/ben/Development/ProjectAria"}
+        )
+        == "PC"
+    )
+
+
 def test_attention_score_weights_blocked_highest():
     blocked = attention_score({"blocked_shells": 1})
     gate = attention_score({"gate_failed_sessions": 1})
@@ -165,6 +191,21 @@ async def test_overview_counts_gate_failures_and_sessions(cockpit_client):
     att = resp.json()["projects"][0]["attention"]
     assert att["running_sessions"] == 1
     assert att["gate_failed_sessions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_overview_parent_project_does_not_swallow_child(cockpit_client):
+    _seed_project(cockpit_client, slug="development", path="/tmp/dev", pid="PP")
+    _seed_project(cockpit_client, slug="child", path="/tmp/dev/child", pid="PC")
+    cockpit_client.shells._shells = [
+        {"name": "claude-c", "project_dir": "/tmp/dev/child", "activity_state": "blocked",
+         "awaiting_input": True},
+    ]
+    resp = await cockpit_client.get("/api/v1/projects/overview")
+    rows = {r["slug"]: r for r in resp.json()["projects"]}
+    assert rows["child"]["attention"]["blocked_shells"] == 1
+    assert rows["development"]["attention"]["blocked_shells"] == 0
+    assert rows["development"]["attention_score"] == 0
 
 
 # ------------------------------------------------------------- active focus

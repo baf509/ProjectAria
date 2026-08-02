@@ -63,6 +63,37 @@ def path_in_project(candidate: Optional[str], roots: list[str]) -> bool:
     return any(c == r or c.startswith(r + "/") for r in roots)
 
 
+class PathIndex:
+    """Most-specific-project ownership over filesystem paths.
+
+    A path belongs to the project owning the LONGEST matching root — plain
+    prefix matching let a coarse parent project (e.g. the harvested row for
+    ~/Development itself) swallow every child project's shells, sessions,
+    memories and alerts, and top the switcher ranking with other projects'
+    activity."""
+
+    def __init__(self, projects: list[Project]):
+        self._entries: list[tuple[str, str]] = []
+        for p in projects:
+            for r in project_roots(p):
+                self._entries.append((r, p.id))
+        self._entries.sort(key=lambda e: len(e[0]), reverse=True)
+
+    def owner(self, candidate: Optional[str]) -> Optional[str]:
+        c = _norm_path(candidate)
+        if not c:
+            return None
+        for root, pid in self._entries:
+            if c == root or c.startswith(root + "/"):
+                return pid
+        return None
+
+    def session_owner(self, session: dict) -> Optional[str]:
+        return self.owner(session.get("workspace")) or self.owner(
+            session.get("source_repo")
+        )
+
+
 def attention_score(att: dict) -> int:
     """Rank projects by what needs a human: blocked agents first, then failed
     verification, unacked alerts, stale tasks, live activity."""
@@ -72,12 +103,6 @@ def attention_score(att: dict) -> int:
         + 2 * att.get("unacked_alerts", 0)
         + min(att.get("stale_tasks", 0), 5)
         + att.get("running_sessions", 0)
-    )
-
-
-def _session_matches(session: dict, roots: list[str]) -> bool:
-    return path_in_project(session.get("workspace"), roots) or path_in_project(
-        session.get("source_repo"), roots
     )
 
 
@@ -109,11 +134,10 @@ async def _gather_context(db, shell_service: ShellService) -> dict:
 
 
 def _project_attention(
-    project: Project, ctx: dict, open_tasks: list, now: datetime
+    project: Project, ctx: dict, open_tasks: list, now: datetime, index: PathIndex
 ) -> dict:
-    roots = project_roots(project)
-    shells = [s for s in ctx["shells"] if path_in_project(s.get("project_dir"), roots)]
-    sessions = [s for s in ctx["sessions"] if _session_matches(s, roots)]
+    shells = [s for s in ctx["shells"] if index.owner(s.get("project_dir")) == project.id]
+    sessions = [s for s in ctx["sessions"] if index.session_owner(s) == project.id]
     stale_cutoff = now - timedelta(days=_STALE_TASK_DAYS)
 
     def _stale(t) -> bool:
@@ -135,7 +159,7 @@ def _project_attention(
         "unacked_alerts": sum(
             1
             for a in ctx["alerts"]
-            if path_in_project(a.get("project_path"), roots)
+            if index.owner(a.get("project_path")) == project.id
         ),
         "open_tasks": len(open_tasks),
         "stale_tasks": sum(1 for t in open_tasks if _stale(t)),
@@ -173,9 +197,10 @@ async def projects_overview(
         if t.project_id:
             tasks_by_project.setdefault(t.project_id, []).append(t)
 
+    index = PathIndex(projects)
     rows = []
     for p in projects:
-        att = _project_attention(p, ctx, tasks_by_project.get(p.id, []), ctx["now"])
+        att = _project_attention(p, ctx, tasks_by_project.get(p.id, []), ctx["now"], index)
         rows.append(
             {
                 "id": p.id,
@@ -293,20 +318,29 @@ async def project_cockpit(
     ctx = await _gather_context(db, shell_service)
     now = ctx["now"]
 
+    # Ownership must consider every project's roots, or a path claimed by a
+    # more specific sibling/child project would also show up here.
+    all_projects = await planning.list_projects()
+    if project.id not in {p.id for p in all_projects}:
+        all_projects.append(project)
+    index = PathIndex(all_projects)
+
     shells = [
-        s for s in ctx["shells"] if path_in_project(s.get("project_dir"), roots)
+        s for s in ctx["shells"] if index.owner(s.get("project_dir")) == project.id
     ]
     shells.sort(
         key=lambda s: (
             0 if (s.get("activity_state") == "blocked" or s.get("awaiting_input")) else 1,
         )
     )
-    sessions = [s for s in ctx["sessions"] if _session_matches(s, roots)][:25]
+    sessions = [
+        s for s in ctx["sessions"] if index.session_owner(s) == project.id
+    ][:25]
     open_tasks = await planning.list_tasks(
         status=["proposed", "active"], project_id=project.id, limit=200
     )
     alerts = [
-        a for a in ctx["alerts"] if path_in_project(a.get("project_path"), roots)
+        a for a in ctx["alerts"] if index.owner(a.get("project_path")) == project.id
     ]
     memories = []
     if roots:
@@ -339,7 +373,7 @@ async def project_cockpit(
         budget["total_tokens"] += row.get("total_tokens", 0)
         budget["sessions_priced"] += 1
 
-    att = _project_attention(project, ctx, open_tasks, now)
+    att = _project_attention(project, ctx, open_tasks, now, index)
     stale_cutoff = now - timedelta(days=_STALE_TASK_DAYS)
 
     def _task_row(t) -> dict:
