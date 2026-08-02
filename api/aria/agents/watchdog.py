@@ -451,14 +451,12 @@ class CodingWatchdog:
     async def _run_gate_check(self, session: dict) -> tuple[bool, str] | None:
         """Resolve and run the verification-gate check command for a session
         that just signaled done. Returns (passed, output_tail), or None if the
-        gate should be skipped entirely (disabled; a remote-node session —
-        C8's run_command isn't wired to this yet, so we don't run the check on
-        the wrong machine; or no check command resolves at all for this
-        project — "missing check -> skip, don't block", never trap the loop).
+        gate should be skipped entirely (disabled, or no check command
+        resolves at all for this project — "missing check -> skip, don't
+        block", never trap the loop). A remote-node session's check runs ON
+        the node via run_command (C8), same (exit_code, tail) contract.
         """
         if not settings.coding_gate_enabled:
-            return None
-        if session.get("host"):
             return None
 
         loop = session.get("loop_config") or {}
@@ -475,6 +473,12 @@ class CodingWatchdog:
             return None
 
         timeout = int(loop.get("gate_timeout") or settings.coding_gate_timeout_seconds)
+
+        host = session.get("host")
+        from aria.nodes import is_remote_host
+        if is_remote_host(host):
+            return await self._run_remote_gate_check(host, command, session, timeout)
+
         proc = None
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -499,6 +503,34 @@ class CodingWatchdog:
             return (False, f"gate command timed out after {timeout}s: {command}")
         except Exception as exc:
             return (False, f"gate command errored: {exc}")
+
+    async def _run_remote_gate_check(
+        self, host: str, command: str, session: dict, timeout: int
+    ) -> tuple[bool, str] | None:
+        """C8: run the gate check on the session's remote node, where the
+        workspace actually lives. An unreachable node / lost result counts as
+        a FAILURE, not a skip — "verify, don't assume": we can't confirm the
+        work, so we don't promote it. The retry cap + alert in
+        _verify_session_done still bound how long that can loop."""
+        shell_service = getattr(self.session_manager, "shell_service", None)
+        if shell_service is None:
+            return (False, f"remote gate could not run: shell substrate disabled (host={host})")
+        result = await shell_service.run_node_command(
+            host, command, cwd=session.get("workspace"), timeout_seconds=timeout
+        )
+        if result is None:
+            return (
+                False,
+                f"remote gate could not run: node '{host}' offline or result timed out",
+            )
+        text = str(result.get("output_tail") or "")
+        if self._GATE_NO_TARGET_RE.search(text):
+            return None  # no check configured on the node's workspace either
+        try:
+            exit_code = int(result.get("exit_code"))
+        except (TypeError, ValueError):
+            return (False, f"remote gate returned no exit code: {result!r}")
+        return (exit_code == 0, text[-2000:])
 
     async def _verify_session_done(self, session: dict, state: dict) -> bool:
         """Run the C1 gate for a session that just emitted its done token.

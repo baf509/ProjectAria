@@ -85,7 +85,7 @@ class NodeAgent:
                 "hostname": socket.gethostname(),
                 "os": platform.system(),
                 "arch": platform.machine(),
-                "capabilities": ["shells", "coding"],
+                "capabilities": ["shells", "coding", "run_command"],
                 "agent_version": AGENT_VERSION,
             },
         )
@@ -248,6 +248,36 @@ class NodeAgent:
         if kind == "stop":
             await self.tmux.kill_session(args["name"])
             return {"ok": True}
+
+        if kind == "run_command":
+            # Server-internal primitive (C8): run an operator-configured check
+            # or fixed git command in a workspace on THIS node and report the
+            # exit code — the contract the C1 verification gate needs. Never
+            # exposed as an agent tool; the queue only carries commands the
+            # central server's trusted code paths enqueue.
+            command = args["command"]
+            cwd = args.get("cwd") or None
+            timeout = float(args.get("timeout_seconds") or 300)
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                return {
+                    "exit_code": -1,
+                    "output_tail": f"command timed out after {int(timeout)}s: {command}",
+                    "timed_out": True,
+                }
+            text = stdout.decode("utf-8", errors="replace")
+            return {"exit_code": proc.returncode, "output_tail": text[-4000:]}
 
         if kind == "start_session":
             name = args["shell_name"]

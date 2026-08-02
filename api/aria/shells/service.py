@@ -97,6 +97,37 @@ class ShellService:
             return None
         return doc.get("result") or {}
 
+    async def run_node_command(
+        self,
+        node_id: str,
+        command: str,
+        *,
+        cwd: Optional[str] = None,
+        timeout_seconds: int = 300,
+    ) -> Optional[dict]:
+        """Run a command on a remote node and return {exit_code, output_tail}
+        (C8). Server-internal only — callers are trusted code paths (the C1
+        gate's operator-configured check command, fixed git commands), never
+        agent-chosen input. Returns None if the node is offline or the result
+        never arrives; the queue TTL is stretched to cover the command's own
+        timeout so a slow check isn't expired mid-run."""
+        from aria.nodes import commands
+        if not await self._node_online(node_id):
+            return None
+        cmd_id = await commands.enqueue_command(
+            self.db,
+            node_id,
+            "run_command",
+            {"command": command, "cwd": cwd, "timeout_seconds": timeout_seconds},
+            ttl_seconds=timeout_seconds + 60,
+        )
+        doc = await commands.await_result(
+            self.db, cmd_id, timeout_seconds=timeout_seconds + 30
+        )
+        if not doc or doc.get("status") != "done":
+            return None
+        return doc.get("result") or {}
+
     async def session_alive(self, name: str) -> bool:
         """Host-aware liveness: local → tmux has_session; remote → node online
         and the shell not marked stopped."""
