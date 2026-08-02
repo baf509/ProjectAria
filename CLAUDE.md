@@ -22,7 +22,7 @@ chats with directly.
 default chat agent was disabled):**
 - **Hermes** (a separate agent, its own service) is the sole conversational/
   orchestrating agent between a human and ARIA. It reaches ARIA entirely
-  through the **MCP server** (`mcp/server.py`) — ~35 tools wrapping `/api/v1`.
+  through the **MCP server** (`mcp/server.py`) — ~40 tools wrapping `/api/v1`.
   When ARIA needs a new capability exposed to Hermes, add the MCP tool here
   and restart `hermes-gateway.service`; the `aria` MCP connection in Hermes's
   config has no per-tool whitelist, so a new tool becomes available on that
@@ -134,13 +134,69 @@ One `projects` collection fed by **two** extractors: the ambient LLM
 `activity_status` (active/idle). To-dos live in `tasks`. Routes: `/api/v1/todos`,
 `/api/v1/projects/{id|slug}`.
 
+### Coherence Layer (implemented 2026-07-29 → 2026-08-02; design: `vault/ProjectAria/Design/COHERENCE_DESIGN.md`)
+
+The work-coherence components hung off existing seams — "the bottleneck moved
+from producing to maintaining coherence." All shipped except C5 (experiment
+surface, deliberately deferred pending its own design conversation):
+
+- **C1 Verification Gate** (`agents/watchdog.py` `_verify_session_done`/
+  `_run_gate_check`): a Ralph-looped session's `RALPH_DONE` is checked by
+  running `loop_config.gate_command` → `projects.check_command` → global
+  `coding_gate_command` (`make check`) in the workspace before the loop ends;
+  failure re-nudges with the check output (cap `coding_gate_max_retries` →
+  alert `coding:gate`). Missing check → skip, never trap. Remote sessions run
+  the check ON their node (C8). **`coding_gate_enabled=False` — deliberate
+  opt-in default.** `gate_runs` history on the session doc.
+- **C2 Repo-Change → Memory** (`shared/scan.py` `GitChangeEmitter`, on the S2
+  scan worker): new commits since a per-repo cursor → `machine_scan` memories
+  (private, LLM-free). **Enabled 2026-08-02** (`SHARED_SCAN_ENABLED=true`).
+- **C3 Linear Reconciliation** (`planning/linear_sync.py`): mirrors mapped
+  projects' open issues into `tasks` (read cache; Linear authoritative), LLM
+  judge auto-resolves clearly-done tickets (≥0.9 conf + cited evidence,
+  commented + reversible) or proposes (≥0.75); keep/kill/do-now routes under
+  `/api/v1/linear/*`. **Dormant** until `LINEAR_ENABLED` + `LINEAR_API_KEY` +
+  `linear_project_map` land; hand-verify the first live sync (GraphQL shapes
+  are unexercised against the real API).
+- **C4 Project Switcher + Cockpit** (`api/routes/digest.py`; web
+  `/cockpit`; TUI `screenProjects`): `GET /projects/overview` ranks projects
+  by attention (4·blocked + 3·gate-failed + 2·alerts + stale + running);
+  `GET /projects/{slug}/cockpit` is the one-call per-project aggregate; the
+  server-side active project lives in the fixed-`_id` `app_state` doc
+  (`GET/PUT /projects/active`). Path→project attribution is
+  **most-specific-root wins** (`PathIndex`) — never re-introduce plain prefix
+  matching (a coarse parent row swallows children). Alerts carry an optional
+  `project_path` for scoping.
+- **C6 Obsidian** (`integrations/obsidian.py` `ObsidianWriter`): atomic,
+  never-clobber, human-edit-guarded markdown into
+  `vault/<RepoName>/<DocType>/`; research reports auto-publish; agents publish
+  via `POST /api/v1/obsidian/publish`. Enabled (`OBSIDIAN_ENABLED=true`).
+- **C8 Remote-node run_command** (`node/agent.py`, `ShellService.
+  run_node_command`): `{exit_code, output_tail}` over the node command queue —
+  server-internal only, never an agent tool. Live MacBook end-to-end
+  verification still pending.
+- **C9 Idle-Session Reaper** (`shells/reaper.py`): capture-then-reap ALL
+  watched shells idle > `shells_reap_idle_days`, with **verified** save
+  (HANDOFF.md modified after the prompt — a self-report is a claim, not a
+  confirmation); unconfirmed save → skip-and-alert, never reap-anyway.
+  Default OFF (`shells_reap_enabled`).
+- **Nudge-paused-shells** (`api/routes/shell_nudge.py` +
+  `POST /shells/{name}/nudge`): wakes a shell blocked at a prompt; attempts
+  persist on the shell doc so the Hermes cron sweep ("ARIA paused-shell
+  nudger", */15) gets three-strikes-across-runs; 3rd failure → alert
+  `shells:nudge` → the triage cron relays a reply/STOP/IGNORE menu to Signal.
+  Guards: killswitch/e-stop, `no-nudge` tag, 5-min min-paused, 10-min
+  debounce. The did-it-work check is the NEXT sweep by design (the injected
+  text resets the idle clock).
+
 ### MCP Server (`mcp/server.py`) — Hermes bridge
 
 ProjectAria exposes an MCP server (FastMCP, run via `~/.local/share/aria-mcp/`,
 launched by Hermes from `~/.hermes/config.yaml`). It surfaces **all of ARIA** to
 Hermes — this is Hermes's *only* path to ARIA's capabilities (see *Architecture
-Overview*) — ~35 tools wrapping `/api/v1`:
-- **Fleet** — fleet_status, get_shell_screen, send_shell_input, create/delete/tag/resize, search.
+Overview*) — ~40 tools wrapping `/api/v1`:
+- **Fleet** — fleet_status, get_shell_screen, send_shell_input, create/delete/tag/resize, search, **nudge_paused_shell** (wake a blocked shell; three-strikes across calls → alert — see *Coherence Layer*).
+- **Cockpit** — projects_overview (attention-ranked switcher), project_cockpit (per-project aggregate), set_active_project (shared focus).
 - **Chat / agents** — chat (drive a non-default ARIA agent, e.g. pi-coding; the default `aria` agent is disabled), list/read conversations, list_agents, **update_agent** (enable/disable, repoint backend/model — addressed by slug).
 - **Memory** — search_memory, add_memory.
 - **Coding sub-agents** — list/create/get_output/send_to/stop coding sessions.
@@ -148,6 +204,7 @@ Overview*) — ~35 tools wrapping `/api/v1`:
 - **Alerts** — list_alerts, ack_alert.
 - **Health / cost** — aria_health (quick, config-presence only), **health_services** (real per-backend reachability probes), **get_usage_cost** (spend by model/backend).
 - **Model servers** — list_model_servers, start_model_server, stop_model_server, bind_model_server, unbind_model_server (the local LLM control plane — see *LLM Adapter Pattern* above).
+- **Long-form / trackers** — publish_to_obsidian (guarded markdown into the vault, C6), create_linear_ticket (Signal → Hermes → Linear capture path, C3; 409 while Linear is disabled).
 
 After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset —
 the `aria` MCP connection has no per-tool whitelist on Hermes's side, so this
@@ -199,6 +256,10 @@ walk lists too). Routes under `/api/v1/workflows`; exposed to Hermes as MCP
 `list_workflows`/`create_workflow`/`run_workflow`/`get_workflow_status`. Together
 these give Pi-Flow-style parallel research, multi-model review, staged pipelines,
 and synthesized results on ARIA's existing session + mailbox primitives.
+**Standing design decision (Pi-Flow parity, 2026-07-25):** extend this
+declarative JSON engine rather than embed a JS/sandbox workflow runtime —
+reuses persistence/recovery/REST/TUI and honors the no-framework rule. Revisit
+only if declarative proves too limiting.
 
 ### Complexity Routing (`api/aria/agents/routing.py`)
 
@@ -483,7 +544,9 @@ Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB 
 
 ### Memory HTTP API (cross-machine, Shared Services S1)
 
-`POST /api/v1/memory/recall {query,k}` and `POST /api/v1/memory/store {content,type,...}` wrap `LongTermMemory` and embed server-side, so thin clients on other machines can recall/store without a local venv. Both require the global `X-API-Key`. Machine-state scanning (S2, `shared_scan_enabled`) and the review surface (`/api/v1/shared/review`, S3) live under `api/aria/shared/`.
+`POST /api/v1/memory/recall {query,k}` and `POST /api/v1/memory/store {content,type,...}` wrap `LongTermMemory` and embed server-side, so thin clients on other machines can recall/store without a local venv. Both require the global `X-API-Key`. Machine-state + git scanning (S2 — **enabled 2026-08-02**, `SHARED_SCAN_ENABLED=true`, emitters `MachineScanMemoryEmitter` + `GitChangeEmitter`) and the review surface (`/api/v1/shared/review`, S3) live under `api/aria/shared/`.
+
+**S3 ownership convention (applies everywhere hybrid human/machine data meets):** workers write only structural/derived fields and never overwrite human/agent-curated ones; on contradiction, propose-for-review (`merge_owned`, `shared/ownership.py`) rather than clobber; vanished things go `stale`, never deleted. The ObsidianWriter's human-edit guard and C3's propose-don't-clobber are the same rule. *(The `SHARED_SERVICES_DESIGN.md` vault doc was retired 2026-08-02 — S1–S5 all shipped; this section and the code docstrings are its surviving record.)*
 
 ### Shared Infrastructure
 
@@ -492,6 +555,7 @@ Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB 
 - **Connection string** — Must include `directConnection=true&replicaSet=rs0`
 - **Shared Docker network** — Services use `shared-infra` network; use container names (e.g., `mongod`, `embeddings`) not `localhost` in Docker contexts
 - **Stopping infra affects AgentBenchPlatform** — both projects share these services
+- **Security posture (S4, deliberate):** Mongo (`27017`) and `:8200` are bound to `0.0.0.0` with no per-service auth — safe only because this box lives on a closed tailnet. Writes are gated by the global `X-API-Key`; deeper hardening (re-binding off `0.0.0.0`) was explicitly ruled out of scope because existing tailnet clients hit Mongo directly. Don't "fix" this without Ben.
 
 ### When Making Changes
 

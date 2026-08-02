@@ -63,6 +63,13 @@ export default function Home() {
               <div className="text-xl font-semibold text-stone-50 sm:text-2xl">Open Conversation UI</div>
             </button>
             <button
+              onClick={() => router.push('/cockpit')}
+              className="rounded-3xl border border-stone-800 bg-stone-900 p-5 text-left transition hover:border-amber-400 sm:p-6"
+            >
+              <div className="mb-3 text-sm uppercase tracking-wide text-amber-400">Cockpit</div>
+              <div className="text-xl font-semibold text-stone-50 sm:text-2xl">Coherence Project Cockpit</div>
+            </button>
+            <button
               onClick={() => router.push('/dashboard')}
               className="rounded-3xl border border-stone-800 bg-stone-900 p-5 text-left transition hover:border-sky-400 sm:p-6"
             >

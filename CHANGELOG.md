@@ -2,6 +2,96 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-02] - Docs cleanup: completed plans merged + retired
+
+### Changed
+- **Fully-implemented plan docs retired from the vault**, their durable content
+  merged into the standard docs first: `SHARED_SERVICES_DESIGN.md` (S1–S5 all
+  live; S3 ownership convention + S4 security posture + S2 status now in
+  CLAUDE.md; open follow-ons → BACKLOG) and `PiFlow_Parity_Plan.md` (the
+  "declarative engine, not a JS runtime" decision now in CLAUDE.md's Workflows
+  section; open follow-ons → BACKLOG "Salvaged from retired plans"). Also
+  deleted: the empty `Task Router.md` and two stale `COHERENCE_DESIGN.md.bak-*`
+  backups (the vault has its own git-backed snapshots).
+- **CLAUDE.md gained a "Coherence Layer" section** — the operational summary of
+  C1/C2/C3/C4/C6/C8/C9 + nudge-paused-shells (seams, flags, and the
+  most-specific-root attribution rule) — and the MCP tool list now includes the
+  cockpit/obsidian/linear/nudge tools (~40 tools).
+- Vault `ARCHITECTURE.md` got a status note (it predates the 2026-07-28
+  Hermes-front-door clarification); `COHERENCE_DESIGN.md` /
+  `ONTOLOGY_MEMORY_DESIGN.md` Related-links updated for the retired sibling.
+  Kept as living docs: COHERENCE (C5 + C8 verify open), MULTI_MACHINE_FLEET
+  (B2 live-verify open), ONTOLOGY (unbuilt), ARCHITECTURE, SPECIFICATION.
+
+## [2026-08-02] - Coherence design completed (C8, C4, C6, C3) + nudge-paused-shells
+
+### Added
+- **C8 — Remote-node `run_command` + host-aware verification gate.** The
+  `aria-node` agent gains a `run_command` op (subprocess in a given cwd,
+  timeout-bounded, returns `{exit_code, output_tail}`; advertised in node
+  capabilities); `ShellService.run_node_command()` dispatches it over the
+  existing `shell_commands` queue with the TTL stretched to cover the command's
+  own timeout. The C1 gate no longer skips remote sessions — the check runs ON
+  the node via `watchdog._run_remote_gate_check()`; an unreachable node counts
+  as a gate *failure* (verify, don't assume), bounded by the existing retry cap.
+  Live end-to-end verification on the MacBook is still pending (needs
+  `aria-node` running there).
+- **C4 — Project Switcher + Per-Project Cockpit** on all three surfaces:
+  - API (`api/routes/digest.py`): `GET /projects/overview` (attention-ranked:
+    4×blocked shells + 3×gate-failed sessions + 2×unacked alerts + stale tasks
+    + running sessions), `GET /projects/{slug}/cockpit` (git live+harvested,
+    scoped shells/sessions with `gate_runs`, open+stale tasks, `machine_scan`
+    what-changed memories, scoped alerts, Linear read cache, priced spend,
+    vault folder), `GET/PUT /projects/active` (server-side focus in a
+    fixed-`_id` `app_state` doc). Registered *before* the planning router so
+    the literal paths beat `/projects/{project_id}`. Alerts gained optional
+    `project_path` attribution.
+  - Web (`ui/src/app/cockpit/`): switcher card grid + per-project panels,
+    10s resilient polling; Cockpit card on the landing page.
+  - TUI: `screenProjects` + `screenProjectCockpit` (Tools menu "Projects" /
+    `j`), `f` sets the shared active project.
+  - MCP: `projects_overview`, `project_cockpit`, `set_active_project`.
+- **C6 — Obsidian long-form surface** (`integrations/obsidian.py`):
+  `ObsidianWriter` — atomic temp+rename writes into
+  `vault/<RepoName>/{Design,Specs,Analysis,Research,Planning}/`, never-clobber
+  (timestamp-suffixed sibling), human-edit guard on co-drafted appends,
+  write-only by design. Research runs auto-publish finished reports
+  (best-effort, `vault_path` recorded on the run). `POST /obsidian/publish` +
+  MCP `publish_to_obsidian`. Gated by `obsidian_enabled` (default off).
+- **C3 — Linear sync + backlog reconciliation** (`planning/linear_sync.py`):
+  per-project opt-in via `linear_project_map`; mirrors open issues into
+  `tasks` (`source.type="import"`, Linear authoritative; upstream-closed →
+  done); LLM judge audits tickets against local evidence (project activity,
+  machine_scan memories, git, vault docs) — ≥0.9 confidence *with cited
+  evidence* auto-resolves in Linear (+ evidence comment + alert, reversible),
+  ≥0.75 proposes for one-tap confirm, else leaves open; human "keep" pauses
+  re-judging 7 days. Routes `/linear/tickets` +
+  `/linear/issues/{id}/{resolve,keep,do-now}` (do-now spawns a coding session
+  in the project workspace); MCP `create_linear_ticket`. Fully dormant until
+  `linear_enabled=true` + an API key land in `.env`.
+- **Nudge-paused-shells** (Ben's request, outside the original design):
+  `POST /shells/{name}/nudge` + MCP `nudge_paused_shell` — wakes a shell
+  paused at a prompt (bare Enter at safe "press enter" prompts, else a
+  configurable continue instruction). Attempts persist on the shell doc, so
+  the new Hermes cron sweep (`ARIA paused-shell nudger`, */15, in
+  `~/.hermes/cron/jobs.json`) gets three-strikes semantics across runs; after
+  3 consecutive failed nudges an alert (`source="shells:nudge"`) rides the
+  alerts → Hermes triage → Signal path, where the triage prompt now
+  special-cases it into a reply/STOP/IGNORE confirm menu (no diagnostic agent
+  spawn). Guards: killswitch/e-stop, `no-nudge` tag, min-paused threshold,
+  per-shell debounce.
+
+### Fixed
+- **The C1 gate's give-up alert was silently dropped**: `notify()` classifies
+  every `coding:*` source as informational, which swallowed
+  `source="coding:gate"` — the one alert the gate design depends on. Carved
+  out; the gate alert also now carries its workspace as `project_path`.
+
+### Verified
+- 1033 API tests pass (was 988; +45 covering the C8 gate branches, node
+  run_command, cockpit read models, nudge endpoint, ObsidianWriter, Linear
+  worker thresholds). `next build` clean; Go build/vet/test clean.
+
 ## [2026-07-31] - Pi Coding corrected to launch upstream Pi
 
 ### Changed

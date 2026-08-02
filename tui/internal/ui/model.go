@@ -31,6 +31,8 @@ const (
 	screenNewSession
 	screenHistory
 	screenHistoryDetail
+	screenProjects
+	screenProjectCockpit
 )
 
 // Which quadrant has focus on the dashboard
@@ -98,6 +100,8 @@ type historyEventsLoaded struct {
 	shell  *api.ShellRecord
 	events []api.ShellEventRecord
 }
+type projectsLoaded struct{ overview api.ProjectsOverview }
+type projectCockpitLoaded struct{ cockpit api.ProjectCockpit }
 type errMsg struct{ err error }
 
 // ---- Main Model ----
@@ -122,6 +126,12 @@ type Model struct {
 	newSession    *components.NewSessionModal
 	historyView   *components.HistoryView
 	historyDetail *components.HistoryDetail
+	projectsView  *components.ProjectsView
+	cockpitView   *components.ProjectCockpitView
+
+	// cockpitSlug is the project the cockpit screen currently shows -- kept on
+	// the model so 'r' (refresh) knows what to re-fetch.
+	cockpitSlug string
 
 	// Navigation
 	screen     screen
@@ -175,6 +185,8 @@ func NewModel(client *api.Client) Model {
 		newSession:    components.NewNewSessionModal(),
 		historyView:   components.NewHistoryView(),
 		historyDetail: components.NewHistoryDetail(),
+		projectsView:  components.NewProjectsView(),
+		cockpitView:   components.NewProjectCockpitView(),
 		screen:        screenDashboard,
 		quad:          quadTopLeft,
 		headerH:       1,
@@ -349,6 +361,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case historyEventsLoaded:
 		m.historyDetail.SetEvents(msg.shell, msg.events)
 
+	case projectsLoaded:
+		m.projectsView.SetData(msg.overview)
+
+	case projectCockpitLoaded:
+		m.cockpitView.SetData(msg.cockpit)
+
 	case searchResultLoaded:
 		errStr := ""
 		if msg.err != nil {
@@ -427,6 +445,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	} else if m.screen == screenHistoryDetail {
 		var cmd tea.Cmd
 		m.historyDetail, cmd = m.historyDetail.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenProjects {
+		var cmd tea.Cmd
+		m.projectsView, cmd = m.projectsView.Update(msg)
+		cmds = append(cmds, cmd)
+	} else if m.screen == screenProjectCockpit {
+		var cmd tea.Cmd
+		m.cockpitView, cmd = m.cockpitView.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -586,6 +612,9 @@ func (m *Model) openHotkey(key string) tea.Cmd {
 	case "y":
 		m.pushScreen(screenHistory)
 		return loadHistory(m.client)
+	case "j":
+		m.pushScreen(screenProjects)
+		return loadProjects(m.client)
 	}
 	return nil
 }
@@ -603,6 +632,16 @@ func (m *Model) openHistoryDetail(shell api.ShellRecord) tea.Cmd {
 	m.historyView.Blur()
 	m.pushScreen(screenHistoryDetail)
 	return loadHistoryEvents(m.client, shell)
+}
+
+// openProjectCockpit shows one project's cockpit. Same two-level shape as
+// history -> history detail: blur the parent list, push, load -- esc from the
+// cockpit then pops back to the projects list.
+func (m *Model) openProjectCockpit(slug string) tea.Cmd {
+	m.cockpitSlug = slug
+	m.projectsView.Blur()
+	m.pushScreen(screenProjectCockpit)
+	return loadProjectCockpit(m.client, slug)
 }
 
 func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
@@ -739,6 +778,34 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			m.historyView.MoveCursor(1)
 			return nil, true
 		}
+	case screenProjects:
+		switch key {
+		case "enter":
+			if p := m.projectsView.SelectedProject(); p != nil {
+				return m.openProjectCockpit(p.Slug), true
+			}
+			return nil, true
+		case "f":
+			if p := m.projectsView.SelectedProject(); p != nil {
+				return setActiveProject(m.client, p.Slug), true
+			}
+			return nil, true
+		case "r":
+			return loadProjects(m.client), true
+		case "up", "k":
+			m.projectsView.MoveCursor(-1)
+			return nil, true
+		case "down", "j":
+			m.projectsView.MoveCursor(1)
+			return nil, true
+		}
+	case screenProjectCockpit:
+		if key == "r" {
+			if m.cockpitSlug != "" {
+				return loadProjectCockpit(m.client, m.cockpitSlug), true
+			}
+			return nil, true
+		}
 	case screenNewSession:
 		submit, consumed := m.newSession.HandleKey(key)
 		if !consumed {
@@ -866,6 +933,10 @@ func (m *Model) pushScreen(s screen) {
 		m.historyView.Focus()
 	} else if s == screenHistoryDetail {
 		m.historyDetail.Focus()
+	} else if s == screenProjects {
+		m.projectsView.Focus()
+	} else if s == screenProjectCockpit {
+		m.cockpitView.Focus()
 	}
 }
 
@@ -877,6 +948,8 @@ func (m *Model) popScreen() {
 	m.searchView.Blur()
 	m.historyView.Blur()
 	m.historyDetail.Blur()
+	m.projectsView.Blur()
+	m.cockpitView.Blur()
 	m.screen = m.prevScreen
 	m.prevScreen = screenDashboard
 	m.lastErr = ""
@@ -1002,6 +1075,8 @@ func (m *Model) layout() {
 	m.newSession.SetSize(m.width, bodyH)
 	m.historyView.SetSize(m.width, bodyH)
 	m.historyDetail.SetSize(m.width, bodyH)
+	m.projectsView.SetSize(m.width, bodyH)
+	m.cockpitView.SetSize(m.width, bodyH)
 
 	m.sidebar.SetSize(m.leftW, m.topH)
 	m.vitals.SetSize(m.rightW, m.botH)
@@ -1073,6 +1148,7 @@ func (m Model) renderHeader() string {
 			screenDB: "database", screenFleet: "fleet", screenHealth: "health",
 			screenSearch: "search", screenNewSession: "new session",
 			screenHistory: "history", screenHistoryDetail: "history › scrollback",
+			screenProjects: "projects", screenProjectCockpit: "projects › cockpit",
 		}
 		screenLabel = " › " + labels[m.screen]
 	}
@@ -1112,6 +1188,9 @@ func (m Model) renderFooter() string {
 			hk("^r", "refresh") + " " + hk("esc", "back")
 	} else if m.screen == screenMemory {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
+	} else if m.screen == screenProjects {
+		hints = hk("⏎", "cockpit") + " " + hk("f", "focus") + " " +
+			hk("r", "refresh") + " " + hk("esc", "back")
 	} else if m.screen == screenDB {
 		hints = hk("↑↓", "nav") + " " + hk("⏎", "select") + " " +
 			hk("⌫", "back") + " " + hk("/", "filter") + " " +
@@ -1216,6 +1295,12 @@ func (m Model) renderSubScreen() string {
 	case screenHistoryDetail:
 		m.historyDetail.SetSize(m.width, bodyH)
 		return m.historyDetail.View()
+	case screenProjects:
+		m.projectsView.SetSize(m.width, bodyH)
+		return m.projectsView.View()
+	case screenProjectCockpit:
+		m.cockpitView.SetSize(m.width, bodyH)
+		return m.cockpitView.View()
 	}
 	return ""
 }
@@ -1465,6 +1550,41 @@ func loadHistoryEvents(client *api.Client, shell api.ShellRecord) tea.Cmd {
 			return errMsg{err}
 		}
 		return historyEventsLoaded{shell: &shell, events: events}
+	}
+}
+
+func loadProjects(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		overview, err := client.GetProjectsOverview()
+		if err != nil {
+			return errMsg{err}
+		}
+		return projectsLoaded{overview: *overview}
+	}
+}
+
+func loadProjectCockpit(client *api.Client, slug string) tea.Cmd {
+	return func() tea.Msg {
+		cockpit, err := client.GetProjectCockpit(slug)
+		if err != nil {
+			return errMsg{err}
+		}
+		return projectCockpitLoaded{cockpit: *cockpit}
+	}
+}
+
+// setActiveProject persists the server-side focus, then reloads the overview
+// so the ★ marker reflects the new state.
+func setActiveProject(client *api.Client, slug string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.SetActiveProject(slug); err != nil {
+			return errMsg{err}
+		}
+		overview, err := client.GetProjectsOverview()
+		if err != nil {
+			return errMsg{err}
+		}
+		return projectsLoaded{overview: *overview}
 	}
 }
 

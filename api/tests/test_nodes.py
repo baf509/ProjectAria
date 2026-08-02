@@ -337,6 +337,27 @@ async def test_agent_exec_stop_and_start():
 
 
 @pytest.mark.asyncio
+async def test_agent_exec_run_command_exit_code_and_tail():
+    a = _agent()
+    out = await a._exec("run_command", {"command": "echo hello && exit 3", "cwd": "/tmp"})
+    assert out["exit_code"] == 3
+    assert "hello" in out["output_tail"]
+
+    out = await a._exec("run_command", {"command": "true"})
+    assert out["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_exec_run_command_timeout():
+    a = _agent()
+    out = await a._exec(
+        "run_command", {"command": "sleep 5", "timeout_seconds": 0.2}
+    )
+    assert out["exit_code"] == -1
+    assert out.get("timed_out") is True
+
+
+@pytest.mark.asyncio
 async def test_agent_exec_unknown_kind_raises():
     a = _agent()
     with pytest.raises(ValueError):

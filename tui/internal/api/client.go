@@ -868,6 +868,211 @@ func (c *Client) GetDocument(collection, docID string) (map[string]interface{}, 
 	return doc, json.NewDecoder(resp.Body).Decode(&doc)
 }
 
+// ---------- Projects (Coherence C4) ----------
+
+// ProjectAttention is the per-project "what needs a human" tally, shared by the
+// overview rows and the cockpit.
+type ProjectAttention struct {
+	Shells             int `json:"shells"`
+	BlockedShells      int `json:"blocked_shells"`
+	WorkingShells      int `json:"working_shells"`
+	RunningSessions    int `json:"running_sessions"`
+	GateFailedSessions int `json:"gate_failed_sessions"`
+	UnackedAlerts      int `json:"unacked_alerts"`
+	OpenTasks          int `json:"open_tasks"`
+	StaleTasks         int `json:"stale_tasks"`
+}
+
+// ProjectGit is the harvested git snapshot stored on a project doc.
+type ProjectGit struct {
+	Branch            string    `json:"branch"`
+	LastCommitAt      time.Time `json:"last_commit_at"`
+	LastCommitSubject string    `json:"last_commit_subject"`
+}
+
+// ProjectOverviewRow is one project in the switcher, pre-ranked server-side by
+// attention score (most-needs-attention first).
+type ProjectOverviewRow struct {
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	Slug           string           `json:"slug"`
+	Summary        string           `json:"summary"`
+	Status         string           `json:"status"`
+	ActivityStatus string           `json:"activity_status"`
+	LastActivityAt time.Time        `json:"last_activity_at"`
+	Path           string           `json:"path"`
+	Git            *ProjectGit      `json:"git"`
+	NextSteps      []string         `json:"next_steps"`
+	Attention      ProjectAttention `json:"attention"`
+	AttentionScore int              `json:"attention_score"`
+}
+
+type ProjectsOverview struct {
+	Projects           []ProjectOverviewRow `json:"projects"`
+	ActiveProject      string               `json:"active_project"`
+	UnackedAlertsTotal int                  `json:"unacked_alerts_total"`
+}
+
+// GetProjectsOverview returns every project ranked by what needs attention
+// (the C4 Project Switcher read model).
+func (c *Client) GetProjectsOverview() (*ProjectsOverview, error) {
+	resp, err := c.get(c.Base + "/api/v1/projects/overview")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var out ProjectsOverview
+	return &out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+// LiveGit is a live `git status` read (branch + dirty count) taken server-side
+// when the cockpit is assembled; nil when the project path isn't a local repo.
+type LiveGit struct {
+	Branch     string `json:"branch"`
+	DirtyFiles int    `json:"dirty_files"`
+}
+
+type CockpitGit struct {
+	Harvested *ProjectGit `json:"harvested"`
+	Live      *LiveGit    `json:"live"`
+}
+
+// GateRun is one verification-gate result recorded on a coding session.
+type GateRun struct {
+	At     time.Time `json:"at"`
+	Passed bool      `json:"passed"`
+	Tail   string    `json:"tail"`
+}
+
+// CockpitSession is the cockpit's trimmed view of a coding session -- distinct
+// from CodingSession (it carries gate runs + looping, not the full doc).
+type CockpitSession struct {
+	ID            string    `json:"id"`
+	Backend       string    `json:"backend"`
+	Model         string    `json:"model"`
+	Status        string    `json:"status"`
+	Host          string    `json:"host"`
+	ShellName     string    `json:"shell_name"`
+	Workspace     string    `json:"workspace"`
+	Looping       bool      `json:"looping"`
+	ResultSummary string    `json:"result_summary"`
+	GateRuns      []GateRun `json:"gate_runs"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+type CockpitTask struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	Stale  bool   `json:"stale"`
+}
+
+type CockpitAlert struct {
+	ID        string    `json:"id"`
+	Source    string    `json:"source"`
+	EventType string    `json:"event_type"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CockpitChange is one recent "what changed" memory (machine-scan sourced).
+type CockpitChange struct {
+	Content   string    `json:"content"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type CockpitLinear struct {
+	ID                  string    `json:"id"`
+	Title               string    `json:"title"`
+	Status              string    `json:"status"`
+	ProposedDisposition string    `json:"proposed_disposition"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+type CockpitBudget struct {
+	Cost           float64 `json:"cost"`
+	TotalTokens    int     `json:"total_tokens"`
+	SessionsPriced int     `json:"sessions_priced"`
+}
+
+// CockpitProject is the subset of the project doc the cockpit view needs;
+// extra server fields are ignored on decode.
+type CockpitProject struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Slug           string `json:"slug"`
+	Summary        string `json:"summary"`
+	Status         string `json:"status"`
+	ActivityStatus string `json:"activity_status"`
+	Path           string `json:"path"`
+}
+
+// ProjectCockpit is the one-call per-project aggregate (C4).
+type ProjectCockpit struct {
+	Project        CockpitProject   `json:"project"`
+	Attention      ProjectAttention `json:"attention"`
+	AttentionScore int              `json:"attention_score"`
+	Git            CockpitGit       `json:"git"`
+	Shells         []Shell          `json:"shells"`
+	Sessions       []CockpitSession `json:"sessions"`
+	Tasks          []CockpitTask    `json:"tasks"`
+	Alerts         []CockpitAlert   `json:"alerts"`
+	Changed        []CockpitChange  `json:"changed"`
+	Linear         []CockpitLinear  `json:"linear"`
+	Budget         CockpitBudget    `json:"budget"`
+	VaultFolder    string           `json:"vault_folder"`
+}
+
+// GetProjectCockpit returns everything about one project (by slug or id).
+func (c *Client) GetProjectCockpit(ident string) (*ProjectCockpit, error) {
+	resp, err := c.get(c.Base + "/api/v1/projects/" + ident + "/cockpit")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, body)
+	}
+	var out ProjectCockpit
+	return &out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
+// SetActiveProject persists the server-side project focus (shared by
+// web/TUI/CLI/Hermes). An empty slug clears the focus.
+func (c *Client) SetActiveProject(slug string) error {
+	var payload struct {
+		Slug *string `json:"slug"`
+	}
+	if slug != "" {
+		payload.Slug = &slug
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("PUT", c.Base+"/api/v1/projects/active", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, respBody)
+	}
+	return nil
+}
+
 // ---------- Dashboard Snapshot ----------
 // Batch fetch for efficiency (like ABP's DashboardSnapshot pattern)
 

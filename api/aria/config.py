@@ -576,6 +576,21 @@ class Settings(BaseSettings):
     shells_reap_done_token: str = "REAP_SAVED"
     shells_reap_protected_tag: str = "keep"
 
+    # Nudge-paused-shells: POST /shells/{name}/nudge wakes a watched shell
+    # sitting at a prompt (activity_state=blocked). Attempts persist on the
+    # shell doc across calls; after max_attempts consecutive failed nudges the
+    # endpoint raises an alert (source="shells:nudge") that rides the normal
+    # Hermes triage -> Signal confirm path. Driven by a Hermes cron sweep.
+    shells_nudge_default_text: str = (
+        "You appear to be paused. If your task isn't finished, continue "
+        "working on it now; if it is finished, print a brief status summary."
+    )
+    shells_nudge_max_attempts: int = 3
+    shells_nudge_wait_ms: int = 4000
+    shells_nudge_min_idle_seconds: int = 300   # never nudge a freshly-paused shell
+    shells_nudge_min_interval_minutes: int = 10  # debounce between nudges of one shell
+    shells_nudge_protected_tag: str = "no-nudge"
+
     # Pre-seed Claude Code's folder-trust flag before launching a shell so the
     # blocking "Do you trust the files in this folder?" dialog never appears.
     shells_claude_autotrust: bool = True
@@ -610,6 +625,34 @@ class Settings(BaseSettings):
     git_scan_enabled: bool = True
     git_scan_roots: list[str] = []
     git_scan_min_change_lines: int = 10
+
+    # Coherence C6: Obsidian vault as the long-form human⇄agent surface.
+    # ARIA writes plain markdown under vault/<RepoName>/{Design,Specs,Analysis,
+    # Research,Planning}/; the LiveSync bridge propagates to every device.
+    # Write-only by default — ARIA never reads Ben's own notes into memory
+    # unless explicitly pointed at a folder.
+    obsidian_enabled: bool = False
+    obsidian_vault_path: str = "/home/ben/Obsidian/vault"
+    # Skip (don't overwrite) a vault file a human touched within this window —
+    # the ObsidianWriter's conflict guard for co-drafted docs.
+    obsidian_human_edit_guard_minutes: int = 10
+    # Auto-publish finished research reports into vault/<folder>/Research/
+    # (decision log #5: auto for research/analysis). Requires obsidian_enabled.
+    obsidian_auto_publish_research: bool = True
+    # Folder for outputs not attributable to a project's repo.
+    obsidian_default_folder: str = "ARIA"
+
+    # Coherence C3: Linear backlog reconciliation. Per-project OPT-IN — only
+    # repo/project slugs mapped here are synced/reconciled (map value = Linear
+    # project id). Auto-resolve is threshold-gated to clearly-done tickets
+    # (cited evidence, logged + reversible); ambiguous ones surface proposals.
+    linear_enabled: bool = False
+    linear_api_key: str = ""
+    linear_sync_interval_minutes: int = 30
+    linear_project_map: dict[str, str] = {}
+    linear_reconcile_auto_resolve: bool = True
+    linear_reconcile_propose_confidence: float = 0.75
+    linear_reconcile_auto_confidence: float = 0.9
 
     # Self-monitoring: periodically verify DB / LLM / embeddings / extraction
     # and raise an alert (with cooldown) when something silently broke.

@@ -81,12 +81,18 @@ class ShellExtractionWorker:
         for shell in shells:
             await self._process_shell(shell, state_coll)
 
-    async def _process_shell(self, shell, state_coll) -> int:
+    async def _process_shell(self, shell, state_coll, *, force_local: bool = False, claude_model: Optional[str] = None) -> int:
         """Extract one chunk (<=1000 events) from a single shell's unextracted
         tail. Returns the number of events consumed (0 if skipped: cursor
         already caught up, or fewer than the min-events threshold available).
         Shared by the periodic tick (one chunk per shell per interval) and
-        backfill() (loops this per shell until caught up)."""
+        backfill() (loops this per shell until caught up).
+
+        force_local routes extraction to the local "agentic" model
+        (chadrockv2, ARIA's own dedicated coding-model server) instead of the
+        Claude CLI runner -- deliberately NOT "llamacpp" (that's Hermes's own
+        chat model, qwen3.6-35b-a3b; using it here would contend with live
+        Hermes chat traffic on the same server)."""
         min_events = int(settings.shells_extraction_min_events or 20)
         state = await state_coll.find_one({"shell_name": shell.name}) or {}
         since_line = int(state.get("last_line_extracted", 0))
@@ -128,7 +134,12 @@ class ShellExtractionWorker:
             # unbounded llama.cpp request). On timeout we skip this shell and
             # retry it next tick — the cursor only advances on success.
             extracted = await asyncio.wait_for(
-                self.memory_extractor.extract_from_text(text),
+                self.memory_extractor.extract_from_text(
+                    text,
+                    llm_backend="agentic",
+                    force_local=force_local,
+                    claude_model=claude_model,
+                ),
                 timeout=settings.shells_extraction_timeout_seconds,
             )
             logger.info(
@@ -181,7 +192,7 @@ class ShellExtractionWorker:
         )
         return len(events)
 
-    async def backfill(self) -> dict:
+    async def backfill(self, *, force_local: bool = False, claude_model: Optional[str] = None) -> dict:
         """Drain every STOPPED shell's unextracted backlog to completion, not
         just the one chunk-per-tick the periodic worker does. For a shell
         with tens of thousands of events, waiting on the 1000-event-per-tick,
@@ -215,7 +226,7 @@ class ShellExtractionWorker:
             processed_this_shell = False
             chunks_this_shell = 0
             while chunks_this_shell < max_chunks_per_shell:
-                consumed = await self._process_shell(shell, state_coll)
+                consumed = await self._process_shell(shell, state_coll, force_local=force_local, claude_model=claude_model)
                 if consumed == 0:
                     break
                 processed_this_shell = True

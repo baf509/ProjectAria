@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared
+from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -306,6 +306,14 @@ async def lifespan(app: FastAPI):
             await shell_adopter.start()
             app.state.shell_adopter = shell_adopter
 
+    # Coherence C3: Linear backlog sync + reconciliation (per-project opt-in
+    # via linear_project_map; auto-resolve threshold-gated, logged, reversible).
+    if settings.linear_enabled and settings.linear_api_key:
+        from aria.planning.linear_sync import LinearSyncWorker
+        linear_sync = LinearSyncWorker(db, get_notification_service())
+        await linear_sync.start()
+        app.state.linear_sync = linear_sync
+
     # Planning subsystem (tasks + projects) — index bootstrap. Cheap, idempotent.
     try:
         await db.tasks.create_index([("status", 1), ("updated_at", -1)])
@@ -369,7 +377,7 @@ async def lifespan(app: FastAPI):
     for attr in (
         "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",
         "project_harvester", "scan_worker", "selfcheck", "report_worker",
-        "shell_adopter", "shell_worker",
+        "shell_adopter", "shell_worker", "linear_sync",
     ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
@@ -553,7 +561,13 @@ app.include_router(heartbeat.router, prefix="/api/v1", tags=["heartbeat"])
 app.include_router(dreams.router, prefix="/api/v1", tags=["dreams"])
 app.include_router(awareness.router, prefix="/api/v1", tags=["awareness"])
 app.include_router(shells.router, prefix="/api/v1", tags=["shells"])
+app.include_router(shell_nudge.router, prefix="/api/v1", tags=["shells"])
+app.include_router(obsidian.router, prefix="/api/v1", tags=["obsidian"])
+app.include_router(linear.router, prefix="/api/v1", tags=["linear"])
 app.include_router(nodes.router, prefix="/api/v1", tags=["nodes"])
+# digest MUST register before planning: its literal /projects/{overview,active}
+# paths would otherwise be captured by planning's /projects/{project_id}.
+app.include_router(digest.router, prefix="/api/v1", tags=["cockpit"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
 

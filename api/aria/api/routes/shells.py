@@ -166,7 +166,17 @@ async def shells_overview(
 
 
 @router.post("/shells/extraction/backfill")
-async def backfill_shell_extraction(request: Request):
+async def backfill_shell_extraction(
+    request: Request,
+    local: bool = Query(
+        default=False,
+        description="Use the local 'agentic' model instead of the Claude CLI runner -- $0 cost, at the expense of quality/nuance. For a large one-off catch-up where per-chunk Claude usage isn't worth it.",
+    ),
+    claude_model: Optional[str] = Query(
+        default=None,
+        description="Passed to the Claude CLI's --model flag (ignored if local=true). Unset uses the CLI's own flagship default, same as every extraction call before this existed. Pass a cheaper model (e.g. claude-haiku-4-5-20251001) to cut per-chunk cost for a bulk backfill.",
+    ),
+):
     """One-time (re-runnable) catch-up: drain every watched shell's
     unextracted event backlog to completion, not just the single chunk per
     shell per tick the periodic worker does. Synchronous — a full backfill
@@ -179,7 +189,7 @@ async def backfill_shell_extraction(request: Request):
             status_code=409,
             detail="Shell extraction worker is not running (shells_extraction_enabled is false)",
         )
-    return await worker.backfill()
+    return await worker.backfill(force_local=local, claude_model=claude_model)
 
 
 @router.get("/shells/search")
