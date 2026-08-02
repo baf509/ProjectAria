@@ -2,6 +2,27 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-02] - Docs cleanup: completed plans merged + retired
+
+### Changed
+- **Fully-implemented plan docs retired from the vault**, their durable content
+  merged into the standard docs first: `SHARED_SERVICES_DESIGN.md` (S1–S5 all
+  live; S3 ownership convention + S4 security posture + S2 status now in
+  CLAUDE.md; open follow-ons → BACKLOG) and `PiFlow_Parity_Plan.md` (the
+  "declarative engine, not a JS runtime" decision now in CLAUDE.md's Workflows
+  section; open follow-ons → BACKLOG "Salvaged from retired plans"). Also
+  deleted: the empty `Task Router.md` and two stale `COHERENCE_DESIGN.md.bak-*`
+  backups (the vault has its own git-backed snapshots).
+- **CLAUDE.md gained a "Coherence Layer" section** — the operational summary of
+  C1/C2/C3/C4/C6/C8/C9 + nudge-paused-shells (seams, flags, and the
+  most-specific-root attribution rule) — and the MCP tool list now includes the
+  cockpit/obsidian/linear/nudge tools (~40 tools).
+- Vault `ARCHITECTURE.md` got a status note (it predates the 2026-07-28
+  Hermes-front-door clarification); `COHERENCE_DESIGN.md` /
+  `ONTOLOGY_MEMORY_DESIGN.md` Related-links updated for the retired sibling.
+  Kept as living docs: COHERENCE (C5 + C8 verify open), MULTI_MACHINE_FLEET
+  (B2 live-verify open), ONTOLOGY (unbuilt), ARCHITECTURE, SPECIFICATION.
+
 ## [2026-08-02] - Coherence design completed (C8, C4, C6, C3) + nudge-paused-shells
 
 ### Added

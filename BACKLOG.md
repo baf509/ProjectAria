@@ -471,6 +471,27 @@ different backend/model without telling the caller.
 
 ---
 
+## Salvaged from retired plans (2026-08-02 doc cleanup)
+
+Open follow-on ideas preserved when the fully-implemented
+`SHARED_SERVICES_DESIGN.md` and `PiFlow_Parity_Plan.md` vault docs were
+retired:
+
+- **Vector quantization experiment (S5 follow-on):** `Binary.from_vector` also
+  supports INT8 and PACKED_BIT — scalar/binary quantization could cut vector
+  storage ~4–32× and speed search at some recall cost. Keep FLOAT32 until
+  measured.
+- **Ralph-loop slot release between nudges:** a looping session holds a
+  concurrency slot for its whole life (intended backpressure); a refinement
+  could release the slot while idle between nudges.
+- **`judge`/`vote` workflow action:** score N fan-out candidates and return a
+  winner (beyond `synthesize`'s merge) — was explicitly "not required for
+  parity."
+- **File-based specialist profiles:** a loader importing `*.md`
+  (frontmatter + body) into `db.agents` for file-authored specialists.
+
+---
+
 ## Recently shipped (moved out of the backlog)
 
 These were on the vision/investigation lists and are now implemented — see
