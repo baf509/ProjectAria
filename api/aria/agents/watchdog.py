@@ -571,6 +571,7 @@ class CodingWatchdog:
                     detail=f"Session {session_id} emitted done but failed verification "
                             f"{gate_failures}x: {tail[-300:]}",
                     cooldown_seconds=30,
+                    project_path=session.get("workspace"),
                 )
             except Exception:
                 pass

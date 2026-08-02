@@ -236,6 +236,24 @@ async def send_shell_input(
 
 
 @mcp.tool()
+async def nudge_paused_shell(
+    name: str, text: Optional[str] = None, force: bool = False
+) -> dict:
+    """Nudge a watched shell that is paused at a prompt (activity_state
+    'blocked' in fleet_status). Sends a wake-up (bare Enter at a safe
+    'press enter' prompt, else a continue instruction) and tracks attempts on
+    the shell across calls: after 3 consecutive failed nudges it raises an
+    alert for the human. Safe to call on every sweep — a shell that is not
+    paused, was nudged recently, or paused only moments ago is left alone
+    (the response's `reason` says why). Pass text to override the nudge
+    message; force=true skips the freshly-paused and debounce guards."""
+    body: dict[str, Any] = {"force": force}
+    if text is not None:
+        body["text"] = text
+    return await _request("POST", f"/api/v1/shells/{name}/nudge", json=body)
+
+
+@mcp.tool()
 async def create_shell(
     name: str,
     workdir: Optional[str] = None,
@@ -300,6 +318,34 @@ async def get_project(slug: str) -> dict:
         td = await _request("GET", f"/api/v1/projects/{pid}/tasks")
         tasks = td.get("tasks", []) if isinstance(td, dict) else []
     return {"project": proj, "tasks": tasks}
+
+
+@mcp.tool()
+async def projects_overview(include_archived: bool = False) -> dict:
+    """Coherence C4 Project Switcher: every project ranked by what needs a
+    human — blocked agents, failed verification gates, unacked alerts, stale
+    tasks. The one-call answer to "where is everything, and what needs me?".
+    Also returns the persisted active (focused) project."""
+    return await _request(
+        "GET", "/api/v1/projects/overview",
+        params={"include_archived": include_archived},
+    )
+
+
+@mcp.tool()
+async def project_cockpit(slug: str) -> dict:
+    """Coherence C4 Per-Project Cockpit: the full focused picture for one
+    project (by slug or id) — live git status, its agents/shells (blocked
+    first), coding sessions with verification gate_runs, open+stale tasks,
+    what-changed memories, scoped alerts, Linear tickets, and priced spend."""
+    return await _request("GET", f"/api/v1/projects/{slug}/cockpit")
+
+
+@mcp.tool()
+async def set_active_project(slug: Optional[str] = None) -> dict:
+    """Set (or clear, with no slug) the server-side active project — the
+    shared focus the cockpit, TUI, CLI and Hermes all agree on."""
+    return await _request("PUT", "/api/v1/projects/active", json={"slug": slug})
 
 
 @mcp.tool()

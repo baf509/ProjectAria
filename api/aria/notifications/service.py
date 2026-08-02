@@ -53,6 +53,7 @@ class NotificationService:
         detail: str,
         recipient: Optional[str] = None,  # accepted for compat; unused
         cooldown_seconds: int = 60,
+        project_path: Optional[str] = None,
     ) -> dict:
         """Enqueue an alert for relay. Returns {queued: bool, ...}. Honors the
         per-(source, event_type) cooldown so repeats within the window are
@@ -70,8 +71,13 @@ class NotificationService:
         # the coding:*/task test above and reopened exactly that loop. TASK_DONE
         # and generic mail are lifecycle notices, so drop them too; agent_error
         # and agent_handoff stay alertable because those do want triage.
+        # Exception: a C1 verification-gate exhaustion (a session claimed done
+        # but failed its check gate_max_retries times) is a real degradation
+        # that wants triage, not a lifecycle notice — without this carve-out
+        # the gate's give-up alert was silently dropped by the coding:* filter.
         if (
             source.startswith("coding:")
+            and source != "coding:gate"
             or source == "task"
             or (source == "agents" and event_type in ("agent_task_done", "agent_mail"))
         ):
@@ -90,6 +96,9 @@ class NotificationService:
             "acked": False,
             "created_at": now,
             "acked_at": None,
+            # Optional attribution to a project workspace (C4 cockpit filter);
+            # older alerts simply lack the field.
+            "project_path": project_path,
         }
         try:
             from aria.db.mongodb import get_database
