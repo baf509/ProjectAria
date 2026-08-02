@@ -342,6 +342,21 @@ async def project_cockpit(slug: str) -> dict:
 
 
 @mcp.tool()
+async def create_linear_ticket(
+    title: str, description: str = "", project: Optional[str] = None
+) -> dict:
+    """Create a Linear ticket (the Signal → Hermes → Linear capture path).
+    project is an ARIA project slug from the configured linear_project_map;
+    omit it when only one project is mapped. Returns the created issue's
+    identifier and url. Fails with 409 when the Linear integration is
+    disabled."""
+    body: dict[str, Any] = {"title": title, "description": description}
+    if project is not None:
+        body["project"] = project
+    return await _request("POST", "/api/v1/linear/tickets", json=body)
+
+
+@mcp.tool()
 async def publish_to_obsidian(
     content: str,
     title: str,
