@@ -1,13 +1,15 @@
 # ARIA Project Status
 
-**Last Updated:** 2026-07-31 (real external Pi coding backend)
-**Updated By:** Codex
+**Last Updated:** 2026-08-02 (Coherence design completed)
+**Updated By:** Claude Code
 
 This is a living "current state" page. For the full shipped history (what shipped, when), see `CHANGELOG.md`.
 
 ---
 
 ## Current Focus / Next Actions
+
+000000000. **Coherence design completed — C8, C4, C6, C3 implemented in one pass (2026-08-02), closing every remaining component of `vault/ProjectAria/Design/COHERENCE_DESIGN.md` except the deliberately-deferred C5.** C8: `aria-node` gained `run_command` (exit code + output tail) and the C1 verification gate now runs its check ON a remote session's node instead of skipping it — an unreachable node counts as gate failure, not a pass. C4: the Project Switcher + Per-Project Cockpit shipped on all three surfaces — `GET /projects/overview` (attention-ranked) + `GET /projects/{slug}/cockpit` + server-side active project; web `/cockpit` + `/cockpit/[slug]`; TUI `screenProjects`/`screenProjectCockpit`; MCP `projects_overview`/`project_cockpit`/`set_active_project`. C6: `ObsidianWriter` (atomic, never-clobber, human-edit guard) + research auto-publish + `POST /obsidian/publish`/MCP `publish_to_obsidian` (gated `obsidian_enabled`, default off). C3: Linear sync + reconciliation worker (mirror → LLM judge → auto-resolve ≥0.9 w/ cited evidence, propose ≥0.75; keep/kill/do-now routes; MCP `create_linear_ticket`) — dormant until `LINEAR_ENABLED` + `LINEAR_API_KEY` land in `.env` and `linear_project_map` maps a project. Also shipped same pass at Ben's request: **nudge-paused-shells** (`POST /shells/{name}/nudge` + MCP tool + a Hermes */15 cron sweep; 3 failed nudges → alert → Signal confirm menu via the triage job), and a real C1 bug fix (the gate's give-up alert was silently swallowed by the `coding:*` informational filter in `notify()`). 1033 tests pass; web + TUI builds clean. **Open follow-ups:** (1) live-verify C8 end-to-end by running `aria-node` on the MacBook (also closes item 4 below); (2) when Linear is wanted: add the key + map `war-audio-game`; (3) flip `obsidian_enabled=true` to start auto-publishing research; (4) C5 (experiment surface) remains deliberately unbuilt pending its design conversation.
 
 00000000. **Pi Coding now launches the real upstream `pi` executable (2026-07-31).** The prior `pi-code` backend ran ARIA's own orchestrator—first in-process, then hidden behind an `aria pi-code run` tmux wrapper—which looked shell-like but was not Pi. Replaced it with a normal external CLI backend parallel to Claude Code/Codex: explicit Pi provider/model, interactive positional prompt, watched tmux shell, native Pi tools/context/session transcript, and the existing ARIA worktree/fleet/watchdog/review/Ralph supervision. The compatibility `pi_coding_agent` tool now starts this coding session instead of creating an ARIA conversation. Local profile → Chadrockv2 `:8105`; Ridge profile → wake proxy/Ridge. **Done.**
 
