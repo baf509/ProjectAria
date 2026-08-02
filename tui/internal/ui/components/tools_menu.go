@@ -30,6 +30,7 @@ func NewToolsMenu() *ToolsMenu {
 		Items: []MenuItem{
 			{Key: "c", Label: "ARIA Chat", Desc: "Talk to ARIA"},
 			{Key: "f", Label: "Fleet", Desc: "Coding sessions & shells"},
+			{Key: "j", Label: "Projects", Desc: "Project switcher & cockpit"},
 			{Key: "m", Label: "Memories", Desc: "Search & browse memories"},
 			{Key: "u", Label: "Usage", Desc: "Token usage & LLM status"},
 			{Key: "t", Label: "Tools", Desc: "Registered tools & MCP"},
