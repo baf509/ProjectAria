@@ -109,6 +109,12 @@ class ModelServerSpec:
     # port-derivable — e.g. Ridge, reached ONLY via the tailnet-bound proxy
     # (localhost:8092 is connection-refused, a repeatedly-misdiagnosed gotcha).
     endpoint_override: Optional[str] = None
+    # systemd --user unit, for servers that are NOT docker containers. The
+    # DS4 runtime is a sealed host bundle whose unit verifies
+    # `sha256sum -c manifest/bundle.sha256` on every start, so containerising
+    # it would break that provenance chain. When set, start/stop/_inspect use
+    # systemctl and container_name/compose_file are not required.
+    systemd_unit: Optional[str] = None
 
 
 # Only the pairs that ALWAYS overflow the box, per the compose-file headers
@@ -129,6 +135,16 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("Laguna-S-2.1", "ROCmFP4-qwen3.6-35b-a3b"),      # 87+29 SWAG > margin; never validated together
     ("Laguna-S-2.1", "Chadrock-ROCmFP6-qwen3.6-27b"), # 87+30 > margin
     ("Laguna-S-2.1", "Qwythos-27b-Q8"),               # 87+35 > margin
+    # DS4 at ~86.5 GiB behaves like Laguna: it cannot share the GTT pool with
+    # any other resident GPU model. Measured 86.42 GiB at -c 131072 on
+    # 2026-08-05, leaving ~27 GiB under the 114 GiB margin.
+    ("DS4-0731-ROCMFPX-affine-128k", "Laguna-S-2.1"),
+    ("DS4-0731-ROCMFPX-affine-128k", "Chadrock-Laguna-S-2.1"),
+    ("DS4-0731-ROCMFPX-affine-128k", "ROCmFP4-qwen3.6-35b-a3b"),
+    ("DS4-0731-ROCMFPX-affine-128k", "qwen3.6-35b-a3b-Q4"),
+    ("DS4-0731-ROCMFPX-affine-128k", "qwen3.6-27b-Q8"),
+    ("DS4-0731-ROCMFPX-affine-128k", "Chadrock-ROCmFP6-qwen3.6-27b"),
+    ("DS4-0731-ROCMFPX-affine-128k", "Qwythos-27b-Q8"),
 )
 
 
@@ -141,6 +157,30 @@ def _exclusive_with(slug: str) -> tuple[str, ...]:
 
 
 REGISTRY: tuple[ModelServerSpec, ...] = (
+    ModelServerSpec(
+        slug="DS4-0731-ROCMFPX-affine-128k",
+        description="DeepSeek V4 Flash 0731, ROCmFPX affine 2.58 BPW (85.26 GiB), "
+        "served at 128K context. The accepted, manifest-pinned target artifact of "
+        "the DS4 master plan; deployed 2026-08-05. NOT a docker container: it runs "
+        "as the systemd --user unit deepseek-v4-quality-128k.service from a sealed "
+        "runtime bundle. A 32K rollback profile (deepseek-v4-quality-32k.service, "
+        "same bundle, -c 32768) stays installed but disabled.",
+        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
+        runtime_ref="branch decode-fusion (sealed bundle o5-release-86f0056d-20260803T231500-0400)",
+        backend_device="ROCm0 (gfx1151)",
+        model_file="models/llm/DS4-0731-ROCMFPX-affine.gguf",
+        port=8107,
+        systemd_unit="deepseek-v4-quality-128k.service",
+        resident_gib=86.5,  # measured 2026-08-05: 86.42 GiB GTT at -c 131072
+        exclusive_with=_exclusive_with("DS4-0731-ROCMFPX-affine-128k"),
+        consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
+        # Binds the TAILNET IP ONLY - there is no localhost listener, so the
+        # port-derived default would hand consumers a dead URL. Same gotcha as
+        # Ridge. Note :8107 is also claimed by the stopped qwen3.6-35b-a3b-Q4
+        # entry on localhost; see endpoints.env.
+        # _TAILNET_IP is defined below REGISTRY, so hardcode as Ridge does.
+        endpoint_override="http://100.123.245.84:8107/v1",
+    ),
     ModelServerSpec(
         slug="Laguna-S-2.1",
         description="poolside 118B-A8B MoE coding model. Retired 2026-07-28 in "
@@ -418,6 +458,28 @@ async def _run(*args: str) -> tuple[int, str, str]:
 _INSPECT_FMT = '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.project"}}'
 
 
+async def _systemd_inspect(unit: str) -> tuple[str, bool]:
+    """(state, compose_managed) for a systemd --user unit.
+
+    States are normalised into the same vocabulary docker reports so the GTT
+    gate, exclusivity checks and _MEMORY_HOLDING_STATES all work unchanged:
+    active -> running, failed -> dead, everything else -> exited. Returns
+    "not_created" when the unit file is absent.
+    """
+    rc, out, _ = await _run("systemctl", "--user", "list-unit-files", unit)
+    if rc != 0 or unit not in out:
+        return "not_created", False
+    _, out, _ = await _run("systemctl", "--user", "is-active", unit)
+    state = out.strip()
+    if state == "active":
+        return "running", False
+    if state == "failed":
+        return "dead", False
+    if state in ("activating", "reloading"):
+        return "restarting", False
+    return "exited", False
+
+
 async def _container_inspect(container_name: str) -> Optional[tuple[str, bool]]:
     """(docker State.Status, compose_managed) — or None if the container
     doesn't exist. A docker-daemon failure raises ModelServerError instead of
@@ -530,6 +592,8 @@ class ModelServerManager:
         configured), not_created (container doesn't exist)."""
         if not spec.onbox:
             return "external", False
+        if spec.systemd_unit:
+            return await _systemd_inspect(spec.systemd_unit)
         if not spec.container_name:
             return "unwired", False
         info = await _container_inspect(spec.container_name)
@@ -639,6 +703,23 @@ class ModelServerManager:
                         )
 
             note = None
+            if spec.systemd_unit:
+                rc, out, err = await _run(
+                    "systemctl", "--user", "start", spec.systemd_unit
+                )
+                if rc != 0:
+                    raise ModelServerError(
+                        f"Failed to start {slug}: {(err or out).strip()}"
+                    )
+                return {
+                    "slug": slug, "state": "starting", "action": "started",
+                    "output": (out + err)[-2000:],
+                    "note": (
+                        "systemd unit; the sealed bundle manifest is verified by "
+                        "ExecStartPre on every start. Model load takes ~2-3 min "
+                        "before /health reports ok."
+                    ),
+                }
             container_exists = spec.container_name and state not in ("not_created", "unwired")
             if container_exists and not compose_managed:
                 # Hand-run container: `compose up` would hit a name conflict
@@ -675,6 +756,19 @@ class ModelServerManager:
         spec = await self.resolve_spec(slug, db)
         if not spec.onbox:
             raise ModelServerSafetyError(f"{slug} is off-box — ARIA cannot stop it directly.")
+        if spec.systemd_unit:
+            async with self._lock:
+                state, _ = await self._inspect(spec)
+                if state in ("not_created", "exited", "dead"):
+                    return {"slug": slug, "state": state, "action": "noop"}
+                rc, out, err = await _run(
+                    "systemctl", "--user", "stop", spec.systemd_unit
+                )
+                if rc != 0:
+                    raise ModelServerError(
+                        f"Failed to stop {slug}: {(err or out).strip()}"
+                    )
+                return {"slug": slug, "state": "stopped", "action": "stopped"}
         if not spec.container_name:
             return {"slug": slug, "state": "unwired", "action": "noop"}
 
