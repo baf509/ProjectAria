@@ -16,6 +16,15 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
 from aria.api.deps import get_db, get_model_pull_service, get_model_server_manager
+from aria.infrastructure.llm_route import (
+    backend_model_id as _backend_model_id,
+    base_url_for,
+    is_servable,
+    match_requested,
+    read_pin,
+    select,
+    write_pin,
+)
 from aria.infrastructure.model_pull import RUNTIME_TEMPLATES, ModelPullService
 from aria.infrastructure.model_servers import (
     ModelServerBindingConflict,
@@ -48,6 +57,107 @@ class PullRequest(BaseModel):
     runtime: str = Field(description=f"One of {sorted(RUNTIME_TEMPLATES)}")
     port: Optional[int] = Field(default=None, description="Host port; auto-allocated from 8105+ if omitted")
     ctx: int = Field(default=32768, ge=512, le=1048576, description="--ctx-size for the generated service")
+
+
+class LlmRouteRequest(BaseModel):
+    slug: Optional[str] = Field(
+        default=None,
+        description="Server to serve as the local model; null/'auto' follows whichever is resident",
+    )
+
+
+@router.get("/llm-route")
+async def get_llm_route(
+    manager: ModelServerManager = Depends(get_model_server_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Who currently answers as 'the local model', and whether that is pinned.
+
+    This is the read side of the knob that decides what `LLAMACPP_URL` — and
+    therefore Hermes, which follows the same passthrough — actually talks to
+    when more than one server is resident.
+
+    Also answers the identity question "what model am I actually running on?".
+    Consumers configured against the passthrough see only the synthetic id
+    `aria-resident`, so asked what they are they will describe their *config*
+    ("aria-resident on a custom provider") rather than the model. `model_id`
+    here is the loaded model as the backend itself reports it — ground truth,
+    read live from the server rather than from this registry — and `summary`
+    is a ready-to-say sentence built from it.
+    """
+    servers = await manager.status(db)
+    pin = await read_pin(db)
+    chosen, reason, _ = select(servers, pin=pin)
+
+    model_id = await _backend_model_id(base_url_for(chosen) or "") if chosen else None
+    slug = chosen.get("slug") if chosen else None
+
+    if slug:
+        # Prefer the backend's own answer; fall back to the registry's filename
+        # if the server is up but /v1/models did not answer.
+        name = model_id or (chosen.get("model_file") or "").rsplit("/", 1)[-1] or slug
+        summary = (
+            f"Running on {name} (ARIA registry slug '{slug}', "
+            f"{chosen.get('backend_device') or 'local'}), served locally through "
+            f"ARIA's /llm/v1 passthrough. 'aria-resident' is the routing alias, "
+            f"not the model."
+        )
+    else:
+        summary = "No local model server is currently resident."
+
+    return {
+        "pinned": pin,
+        "serving": slug,
+        # Ground truth from the backend, for "which model am I?".
+        "model_id": model_id,
+        "model_file": chosen.get("model_file") if chosen else None,
+        "backend_device": chosen.get("backend_device") if chosen else None,
+        "summary": summary,
+        "reason": reason,
+        "loaded": [
+            {
+                "slug": s["slug"],
+                "resident_gib": s.get("resident_gib_estimate"),
+                "backend_device": s.get("backend_device"),
+            }
+            for s in servers
+            if is_servable(s)
+        ],
+    }
+
+
+@router.put("/llm-route")
+async def set_llm_route(
+    body: LlmRouteRequest,
+    manager: ModelServerManager = Depends(get_model_server_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Pin the local-model route to one server, or clear it back to auto.
+
+    Pinning a *stopped* server is refused: silently accepting it would leave
+    every consumer on a different model than the one the UI claims is selected.
+    """
+    slug = (body.slug or "").strip() or None
+    if slug and slug.lower() in {"auto", "aria-resident"}:
+        slug = None
+
+    if slug is not None:
+        servers = await manager.status(db)
+        chosen, stopped = match_requested(servers, slug)
+        if chosen is None:
+            known = sorted(s["slug"] for s in servers)
+            raise HTTPException(
+                status_code=409 if stopped else 404,
+                detail=(
+                    f"{slug} is not running — start it before pinning."
+                    if stopped
+                    else f"unknown model server '{slug}' (known: {', '.join(known)})"
+                ),
+            )
+        slug = chosen["slug"]
+
+    await write_pin(db, slug)
+    return await get_llm_route(manager=manager, db=db)
 
 
 @router.get("/model-servers")

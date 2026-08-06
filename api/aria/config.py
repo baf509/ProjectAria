@@ -24,9 +24,44 @@ class Settings(BaseSettings):
     # Default corrected 2026-07-30: was :8092, which is now the ridge-llama-proxy
     # (Wake-on-LAN). A missing/incomplete .env would therefore have pointed
     # ARIA's PRIMARY chat backend at Ridge and woken a sleeping gaming PC on
-    # every call. :8103 is the real local chat server (Qwen3.6-35B-A3B-MTP
-    # ROCmFP4), which is also what .env sets.
-    llamacpp_url: str = "http://localhost:8103/v1"
+    # every call. :8103 was then the real local chat server (Qwen3.6-35B-A3B-MTP
+    # ROCmFP4).
+    #
+    # 2026-08-05: no longer a hardcoded model port at all — it points at ARIA's
+    # own `/llm/v1` passthrough (api/routes/llm_proxy.py), which resolves to
+    # whichever on-box server is currently resident. Pinning a port here is what
+    # broke this every time the resident model changed: DS4-0731 (:8107) landed
+    # earlier today and is RAM-exclusive with :8103, so :8103 went permanently
+    # down and `selfcheck` paged "llm (ConnectError)" every 10 minutes into the
+    # Hermes alert-triage cron. The proxy makes that drift structurally
+    # impossible. Auth is the global ARIA api_key (the middleware accepts it as
+    # `Authorization: Bearer`, which is all an OpenAI client can send) —
+    # LLAMACPP_API_KEY must therefore equal API_KEY.
+    llamacpp_url: str = "http://localhost:8200/llm/v1"
+    # Same proxy, plus one injected system line naming the model actually
+    # serving the request. Conversational agents use this so that asked "what
+    # model are you?" they can answer with the model rather than with
+    # `aria-resident`, which is a routing alias and names nothing.
+    #
+    # Deliberately NOT the same as llamacpp_url: that one is LLAMACPP_URL, used
+    # by health probes and by evalstack/benchmark targets, and it must keep
+    # forwarding request bodies verbatim so measurements aren't taken against a
+    # prompt ARIA silently edited.
+    llamacpp_identified_url: str = "http://localhost:8200/llm/v1-identified"
+    # When a request NAMES a registered model that isn't resident, start it —
+    # stopping whatever it is RAM-exclusive with first. This is what lets a
+    # consumer treat ARIA like an ordinary provider: pick a model, use it.
+    #
+    # It has real teeth: satisfying the request can evict a running model and
+    # block the request for the couple of minutes a load takes. It fires ONLY on
+    # an explicitly named model, never on the `aria-resident` alias. Set false to
+    # go back to a 409 telling the caller to start it themselves.
+    llm_proxy_autostart: bool = True
+    # How long to hold a request open while an autostarted backend maps its
+    # weights. Ling Q5_K_M takes ~110s from cold; DS4 similar. Past this the
+    # request is forwarded anyway so the caller sees the backend's own error
+    # rather than a silent hang. Hermes' gateway_timeout is 1800s.
+    llm_proxy_autostart_timeout: float = 300.0
     llamacpp_api_key: str = ""
     # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
     # busy/half-open local server wedge a caller for ~10min; a hang never raises
@@ -595,6 +630,7 @@ class Settings(BaseSettings):
     # blocking "Do you trust the files in this folder?" dialog never appears.
     shells_claude_autotrust: bool = True
     shells_claude_config_path: str = ""  # defaults to ~/.claude.json if empty
+    shells_codex_config_path: str = ""   # defaults to ~/.codex/config.toml if empty
 
     # Auto-adopt: discover externally-started claude-* tmux sessions and watch
     # them without an explicit create_shell call. Hook-based in real time (see

@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear
+from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -484,7 +484,17 @@ async def api_key_middleware(request: Request, call_next):
 
     # Query-param fallback: browser EventSource cannot set custom headers, so
     # SSE endpoints (e.g. /shells/{name}/stream) pass the key this way instead.
+    #
+    # Bearer fallback (2026-08-05): the /llm/v1 OpenAI-compatible proxy is meant
+    # to be usable by stock OpenAI clients, which only know how to send
+    # `Authorization: Bearer <key>` — they cannot set X-API-Key. Accepting the
+    # same key either way keeps auth on (this app binds 0.0.0.0:8200) while
+    # letting a caller just set its api_key to the ARIA key.
     provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if not provided:
+        auth_header = request.headers.get("Authorization") or ""
+        if auth_header.lower().startswith("bearer "):
+            provided = auth_header[7:].strip()
     if not settings.api_key or not hmac.compare_digest(provided or "", settings.api_key):
         # Best-effort audit — a DB failure must NOT turn the intended 401 into a 500.
         try:
@@ -547,10 +557,20 @@ app.include_router(research.router, prefix="/api/v1", tags=["research"])
 app.include_router(coding_sessions.router, prefix="/api/v1", tags=["coding"])
 app.include_router(routing.router, prefix="/api/v1", tags=["routing"])
 app.include_router(infrastructure.router, prefix="/api/v1", tags=["infrastructure"])
+app.include_router(benchmarks.router, prefix="/api/v1", tags=["benchmarks"])
 app.include_router(workflows.router, prefix="/api/v1", tags=["workflows"])
 app.include_router(schedules.router, prefix="/api/v1", tags=["schedules"])
 app.include_router(admin.router, prefix="/api/v1", tags=["admin"])
 app.include_router(tools.router, prefix="/api/v1", tags=["tools"])
+# Mounted at the ROOT, not /api/v1, so the path ends in a bare `/v1` and any
+# stock OpenAI client works against http://<host>:8200/llm/v1 unmodified.
+# This is what LLAMACPP_URL points at, so "the local model" resolves through
+# ARIA's registry instead of a hardcoded port that goes stale.
+app.include_router(llm_proxy.router, tags=["llm-proxy"])
+# Same proxy plus a system line naming the resident model. Deliberately a
+# separate base_url so /llm/v1 (= LLAMACPP_URL, which evalstack and the
+# benchmark routes use) keeps forwarding request bodies verbatim.
+app.include_router(llm_proxy.identified_router, tags=["llm-proxy"])
 app.include_router(tts.router, prefix="/api/v1", tags=["tts"])
 app.include_router(stt.router, prefix="/api/v1", tags=["stt"])
 app.include_router(killswitch.router, prefix="/api/v1", tags=["killswitch"])

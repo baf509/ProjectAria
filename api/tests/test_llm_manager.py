@@ -125,7 +125,13 @@ def test_get_adapter_caches(manager):
 
 @patch("aria.llm.manager.settings")
 def test_get_adapter_llamacpp(mock_settings, manager):
+    """No explicit base_url routes through the IDENTIFIED proxy.
+
+    "The local model, whatever it is" is exactly the case where the agent cannot
+    name its own model, so it goes via the proxy that injects the identity line.
+    """
     mock_settings.llamacpp_url = "http://localhost:8080/v1"
+    mock_settings.llamacpp_identified_url = "http://localhost:8080/v1-identified"
     mock_settings.llamacpp_api_key = ""
 
     fake_adapter = MagicMock()
@@ -137,7 +143,31 @@ def test_get_adapter_llamacpp(mock_settings, manager):
 
     assert adapter is fake_adapter
     fake_module.LlamaCppAdapter.assert_called_once_with(
-        base_url="http://localhost:8080/v1",
+        base_url="http://localhost:8080/v1-identified",
+        model="local-model",
+        api_key="",
+    )
+
+
+@patch("aria.llm.manager.settings")
+def test_get_adapter_llamacpp_explicit_base_url_is_untouched(mock_settings, manager):
+    """An agent bound to a specific server goes direct, not via either proxy."""
+    mock_settings.llamacpp_url = "http://localhost:8080/v1"
+    mock_settings.llamacpp_identified_url = "http://localhost:8080/v1-identified"
+    mock_settings.llamacpp_api_key = ""
+
+    fake_adapter = MagicMock()
+    fake_module = MagicMock()
+    fake_module.LlamaCppAdapter.return_value = fake_adapter
+
+    with patch.dict("sys.modules", {"aria.llm.llamacpp": fake_module}):
+        adapter = manager.get_adapter(
+            "llamacpp", "local-model", base_url="http://localhost:8108/v1"
+        )
+
+    assert adapter is fake_adapter
+    fake_module.LlamaCppAdapter.assert_called_once_with(
+        base_url="http://localhost:8108/v1",
         model="local-model",
         api_key="",
     )

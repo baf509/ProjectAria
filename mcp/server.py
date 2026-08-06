@@ -589,6 +589,48 @@ async def list_model_servers() -> Any:
 
 
 @mcp.tool()
+async def which_model_am_i() -> Any:
+    """What model is generating your replies right now. CALL THIS whenever you
+    are asked what model / LLM / AI you are, what you are running on, or what is
+    backing this conversation — do NOT answer from your own configuration.
+
+    Your configured model id is the synthetic alias `aria-resident`, which is a
+    ROUTING alias, not a model: it means "whatever ARIA currently has resident".
+    Answering from config yields "I'm aria-resident on a custom provider", which
+    is true of the plumbing and tells the user nothing about the actual model.
+
+    This returns `model_id` — the loaded model as the backend itself reports it,
+    read live — plus `serving` (ARIA registry slug) and `summary`, a
+    ready-to-say sentence. Quote `model_id`."""
+    return await _request("GET", "/api/v1/infrastructure/llm-route")
+
+
+@mcp.tool()
+async def get_llm_route() -> Any:
+    """Which local model currently answers as 'the local model', and whether
+    that is pinned or auto-selected. Same payload as which_model_am_i() — this
+    name is the infrastructure-facing alias; use which_model_am_i() for the
+    "what model are you?" question.
+
+    This is the model YOU are most likely running on: Hermes's default provider
+    is ARIA's /llm/v1 passthrough, so whatever this reports as `serving` is what
+    is generating your replies. `loaded` lists every resident server — more than
+    one can be up, and you can address a specific one by name."""
+    return await _request("GET", "/api/v1/infrastructure/llm-route")
+
+
+@mcp.tool()
+async def set_llm_route(slug: Optional[str] = None) -> dict:
+    """Pin 'the local model' to one server, or pass slug=None for auto (follow
+    whichever is resident, largest first).
+
+    Because Hermes follows the same passthrough, this changes the model backing
+    your own replies from the next turn onward — no gateway restart. Refuses
+    (409) if the named server is not running."""
+    return await _request("PUT", "/api/v1/infrastructure/llm-route", json={"slug": slug})
+
+
+@mcp.tool()
 async def start_model_server(slug: str, force: bool = False) -> dict:
     """Start a model server by its registry slug (e.g. 'gemma-4-e4b-Q4').
     Refuses (409) if a RAM-exclusive server is already running or the live GTT

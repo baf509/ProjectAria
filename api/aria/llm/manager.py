@@ -94,8 +94,13 @@ class LLMManager:
             if backend == "llamacpp":
                 try:
                     from aria.llm.llamacpp import LlamaCppAdapter
+                    # No explicit base_url = "the local model, whatever it is",
+                    # which is exactly the case where the agent cannot name its
+                    # own model — so route it through the identified proxy. An
+                    # agent bound to a specific server passes base_url and goes
+                    # direct, unchanged (and unidentified: it already knows).
                     self.adapters[key] = LlamaCppAdapter(
-                        base_url=base_url or settings.llamacpp_url,
+                        base_url=base_url or settings.llamacpp_identified_url,
                         model=model,
                         api_key=settings.llamacpp_api_key,
                     )
