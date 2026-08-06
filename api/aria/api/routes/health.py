@@ -8,15 +8,21 @@ Related Spec Sections:
 - Section 5.1: REST Endpoints
 """
 
+import logging
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
-from aria.api.deps import get_db
+from aria.api.deps import get_db, get_model_server_manager
 from aria.config import settings
+from aria.infrastructure.model_servers import ModelServerManager
 from aria.db.models import HealthResponse
 from aria.llm.manager import llm_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -152,7 +158,10 @@ async def llm_health_check():
 
 
 @router.get("/health/services")
-async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
+async def services_health(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    model_servers: ModelServerManager = Depends(get_model_server_manager),
+):
     """Concurrently probe every backing service and report per-service health.
 
     Powers the TUI/web health page: mongod, mongot, the three local llama.cpp
@@ -208,17 +217,60 @@ async def services_health(db: AsyncIOMotorDatabase = Depends(get_db)):
     # Only services that are actually meant to be up are probed. A disabled or
     # unconfigured backend is not a degraded one, so it is left out entirely
     # rather than counted against `healthy`.
+    # A model server that is *deliberately stopped* is not a degraded one. The
+    # big on-box servers are mutually RAM-exclusive, so at most one of them can
+    # be up at a time and the rest are stopped ON PURPOSE — probing them
+    # unconditionally paints the health screen red forever and, worse, feeds the
+    # Hermes alert-triage cron incidents that have no fix. Same reasoning (and
+    # same wording) as the `pool_enabled` skip in shells/selfcheck.py.
+    # Consult the registry so the probe can tell "stopped on purpose" apart from
+    # "should be up and isn't"; a registry failure just degrades to probing.
+    stopped_on_purpose: dict[int, str] = {}
+    try:
+        for s in await model_servers.status(db):
+            if s.get("onbox") and s.get("port") and s.get("state") != "running":
+                stopped_on_purpose[int(s["port"])] = s["slug"]
+    except Exception as e:  # registry is advisory here, never fatal to health
+        logger.debug("services_health: model-server registry unavailable: %s", e)
+
+    def _port_of(url: str) -> int | None:
+        try:
+            return urlparse(url).port
+        except ValueError:
+            return None
+
+    async def llm_ping(name: str, url: str) -> dict:
+        """Probe a local-LLM slot, tolerating a deliberately-stopped server.
+
+        Sends the ARIA key because llamacpp_url now points at this app's own
+        /llm/v1 passthrough (see config.llamacpp_url), which sits behind
+        api_key_middleware — without it the probe 401s and reads as unhealthy.
+        A real llama.cpp server ignores the extra header.
+        """
+        slug = stopped_on_purpose.get(_port_of(url) or -1)
+        if slug:
+            return {
+                "name": name,
+                "ok": True,
+                "latency_ms": 0,
+                "detail": f"{slug} stopped (start on demand)",
+            }
+        headers = {"X-API-Key": settings.api_key} if settings.api_key else None
+        return await http_ping(name, f"{url.rstrip('/')}/models", headers=headers)
+
     tasks = [
         mongo_ping(),
         mongot_ping(),
         # Labels describe the ROLE, not a specific model. These probe whatever
-        # llamacpp_url / agentic_url currently point at — since 2026-07-23 that
-        # is laguna on :8095 (via the slot proxy for the orchestrator), NOT the
-        # retired qwen containers. They were previously labelled "qwen-chat" /
-        # "qwen-agentic", which made the TUI health screen and every consumer of
-        # this endpoint report a model that has not run here in months.
-        http_ping("local-llm (orchestrator)", f"{settings.llamacpp_url.rstrip('/')}/models"),
-        http_ping("local-llm (coding)", f"{settings.agentic_url.rstrip('/')}/models"),
+        # llamacpp_url / agentic_url currently point at. Since 2026-08-05
+        # llamacpp_url is ARIA's own /llm/v1 passthrough rather than a fixed
+        # model port, so "orchestrator" follows the resident model automatically;
+        # agentic_url still names the on-demand local coding server (:8105).
+        # They were previously labelled "qwen-chat" / "qwen-agentic", which made
+        # the TUI health screen and every consumer of this endpoint report a
+        # model that has not run here in months.
+        llm_ping("local-llm (orchestrator)", settings.llamacpp_url),
+        llm_ping("local-llm (coding)", settings.agentic_url),
         # NOTE: ridge (:8092 -> Ridge's RTX 3090) is deliberately NOT probed here.
         # Ridge sleeps when idle, so a probe would either report it DOWN when it
         # is merely asleep, or send a Wake-on-LAN on every health tick and keep a

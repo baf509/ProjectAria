@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { cockpitApi, type ProjectCockpit } from '@/lib/api-client-cockpit'
+import { AppShell } from '@/components/AppShell'
 
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '—'
@@ -23,21 +24,21 @@ function relativeTime(iso: string | null | undefined): string {
 function activityBadge(state: string): string {
   switch (state) {
     case 'blocked':
-      return 'border-rose-900 bg-rose-950/60 text-rose-300'
+      return 'border-gone bg-gone/60 text-gone'
     case 'working':
-      return 'border-emerald-900 bg-emerald-950/60 text-emerald-300'
+      return 'border-live bg-live/60 text-live'
     case 'done':
-      return 'border-sky-900 bg-sky-950/60 text-sky-300'
+      return 'border-accent bg-accent/10 text-accent'
     case 'idle':
     default:
-      return 'border-stone-800 bg-stone-900 text-stone-400'
+      return 'border-line bg-panel text-ink-dim'
   }
 }
 
 function Panel({
   title,
   children,
-  tone = 'border-stone-800 bg-stone-900',
+  tone = 'border-line bg-panel',
   className = '',
 }: {
   title: string
@@ -47,14 +48,14 @@ function Panel({
 }) {
   return (
     <section className={`rounded-3xl border p-5 sm:p-6 ${tone} ${className}`}>
-      <h2 className="mb-4 text-xs uppercase tracking-[0.3em] text-amber-400">{title}</h2>
+      <h2 className="mb-4 text-xs uppercase tracking-[0.3em] text-accent">{title}</h2>
       {children}
     </section>
   )
 }
 
 function Empty({ text }: { text: string }) {
-  return <p className="text-sm text-stone-500">{text}</p>
+  return <p className="text-sm text-ink-faint">{text}</p>
 }
 
 export default function ProjectCockpitPage() {
@@ -91,43 +92,43 @@ export default function ProjectCockpitPage() {
   const c = cockpit
 
   return (
-    <main className="min-h-screen bg-stone-950 text-stone-100">
+    <AppShell area="Supervise">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
         <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div className="min-w-0">
-            <p className="mb-2 text-xs uppercase tracking-[0.3em] text-amber-400">Project Cockpit</p>
-            <h1 className="truncate font-serif text-3xl tracking-tight text-stone-50 sm:text-4xl">
+            <p className="mb-2 text-xs uppercase tracking-[0.3em] text-accent">Project Cockpit</p>
+            <h1 className="truncate font-serif text-3xl tracking-tight text-ink sm:text-4xl">
               {c?.project?.name || slug}
             </h1>
             {c?.project?.summary && (
-              <p className="mt-2 max-w-3xl text-sm text-stone-400">{c.project.summary}</p>
+              <p className="mt-2 max-w-3xl text-sm text-ink-dim">{c.project.summary}</p>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             {stale && (
               <span
-                className="rounded-full border border-amber-900 bg-amber-950/60 px-2.5 py-1 text-[10px] uppercase tracking-wider text-amber-300"
+                className="rounded-full border border-accent bg-accent/60 px-2.5 py-1 text-[10px] uppercase tracking-wider text-accent"
                 title="The last refresh failed — showing the previous data."
               >
                 stale
               </span>
             )}
-            <a href="/cockpit" className="text-sm text-stone-400 hover:text-stone-200">
+            <a href="/cockpit" className="text-sm text-ink-dim hover:text-ink">
               ← All projects
             </a>
           </div>
         </header>
 
         {error && !c && (
-          <div className="rounded-3xl border border-rose-900 bg-rose-950/40 p-6 text-sm text-rose-200">
+          <div className="rounded-3xl border border-gone bg-gone/40 p-6 text-sm text-gone">
             <p className="mb-1 font-semibold">Cannot load this project&apos;s cockpit.</p>
-            <p className="break-words text-rose-300/80">{error}</p>
+            <p className="break-words text-gone/80">{error}</p>
           </div>
         )}
 
         {!error && !c && (
-          <div className="flex items-center gap-3 text-sm text-stone-400">
-            <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-amber-400" />
+          <div className="flex items-center gap-3 text-sm text-ink-dim">
+            <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-accent" />
             Loading cockpit…
           </div>
         )}
@@ -136,21 +137,21 @@ export default function ProjectCockpitPage() {
           <>
             {/* Budget stat row */}
             <div className="mb-6 grid grid-cols-3 gap-4">
-              <div className="rounded-3xl border border-stone-800 bg-stone-900 px-5 py-4">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-stone-500">Spend</p>
-                <p className="mt-1 font-serif text-2xl text-stone-50">
+              <div className="rounded-3xl border border-line bg-panel px-5 py-4">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-ink-faint">Spend</p>
+                <p className="mt-1 font-serif text-2xl text-ink">
                   ${(c.budget?.cost ?? 0).toFixed(4)}
                 </p>
               </div>
-              <div className="rounded-3xl border border-stone-800 bg-stone-900 px-5 py-4">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-stone-500">Tokens</p>
-                <p className="mt-1 font-serif text-2xl text-stone-50">
+              <div className="rounded-3xl border border-line bg-panel px-5 py-4">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-ink-faint">Tokens</p>
+                <p className="mt-1 font-serif text-2xl text-ink">
                   {(c.budget?.total_tokens ?? 0).toLocaleString()}
                 </p>
               </div>
-              <div className="rounded-3xl border border-stone-800 bg-stone-900 px-5 py-4">
-                <p className="text-[10px] uppercase tracking-[0.25em] text-stone-500">Sessions priced</p>
-                <p className="mt-1 font-serif text-2xl text-stone-50">{c.budget?.sessions_priced ?? 0}</p>
+              <div className="rounded-3xl border border-line bg-panel px-5 py-4">
+                <p className="text-[10px] uppercase tracking-[0.25em] text-ink-faint">Sessions priced</p>
+                <p className="mt-1 font-serif text-2xl text-ink">{c.budget?.sessions_priced ?? 0}</p>
               </div>
             </div>
 
@@ -163,22 +164,22 @@ export default function ProjectCockpitPage() {
                   <div className="space-y-3 text-sm">
                     {c.git.live && (
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full border border-stone-800 bg-stone-950 px-2.5 py-0.5 font-mono text-xs text-stone-200">
+                        <span className="rounded-full border border-line bg-ground px-2.5 py-0.5 font-mono text-xs text-ink">
                           {c.git.live.branch || 'detached'}
                         </span>
                         {c.git.live.dirty_files > 0 ? (
-                          <span className="rounded-full border border-amber-900 bg-amber-950/60 px-2.5 py-0.5 text-xs text-amber-300">
+                          <span className="rounded-full border border-accent bg-accent/60 px-2.5 py-0.5 text-xs text-accent">
                             {c.git.live.dirty_files} dirty file{c.git.live.dirty_files === 1 ? '' : 's'}
                           </span>
                         ) : (
-                          <span className="text-xs text-stone-500">clean</span>
+                          <span className="text-xs text-ink-faint">clean</span>
                         )}
                       </div>
                     )}
                     {c.git.harvested && (
-                      <div className="text-stone-300">
+                      <div className="text-ink-dim">
                         <p className="break-words">{c.git.harvested.last_commit_subject || '—'}</p>
-                        <p className="mt-1 text-xs text-stone-500">
+                        <p className="mt-1 text-xs text-ink-faint">
                           last commit {relativeTime(c.git.harvested.last_commit_at)}
                           {c.git.harvested.branch && !c.git.live ? (
                             <>
@@ -189,7 +190,7 @@ export default function ProjectCockpitPage() {
                       </div>
                     )}
                     {c.project?.path && (
-                      <p className="break-all font-mono text-[11px] text-stone-600">{c.project.path}</p>
+                      <p className="break-all font-mono text-[11px] text-ink-faint">{c.project.path}</p>
                     )}
                   </div>
                 )}
@@ -202,9 +203,9 @@ export default function ProjectCockpitPage() {
                 ) : (
                   <ul className="space-y-3">
                     {c.shells.map((s) => (
-                      <li key={s.name} className="rounded-2xl border border-stone-800 bg-stone-950 px-4 py-3">
+                      <li key={s.name} className="rounded-2xl border border-line bg-ground px-4 py-3">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate font-mono text-sm font-semibold text-stone-100">
+                          <span className="truncate font-mono text-sm font-semibold text-ink">
                             {s.short_name}
                           </span>
                           <span
@@ -215,9 +216,9 @@ export default function ProjectCockpitPage() {
                             {s.activity_state}
                           </span>
                           {s.host && (
-                            <span className="text-[10px] text-stone-500">@{s.host}</span>
+                            <span className="text-[10px] text-ink-faint">@{s.host}</span>
                           )}
-                          <span className="ml-auto shrink-0 text-[10px] text-stone-500">
+                          <span className="ml-auto shrink-0 text-[10px] text-ink-faint">
                             {s.idle_seconds != null && s.idle_seconds >= 5
                               ? `idle ${
                                   s.idle_seconds < 60
@@ -230,12 +231,12 @@ export default function ProjectCockpitPage() {
                           </span>
                         </div>
                         {s.activity_state === 'blocked' && s.prompt_line && (
-                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-rose-900/50 bg-rose-950/30 px-2.5 py-1.5 font-mono text-xs text-rose-200">
+                          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-gone/50 bg-gone/30 px-2.5 py-1.5 font-mono text-xs text-gone">
                             {s.prompt_line}
                           </pre>
                         )}
                         {s.activity_state !== 'blocked' && s.last_line && (
-                          <p className="mt-1.5 truncate font-mono text-xs text-stone-500">{s.last_line}</p>
+                          <p className="mt-1.5 truncate font-mono text-xs text-ink-faint">{s.last_line}</p>
                         )}
                       </li>
                     ))}
@@ -250,26 +251,26 @@ export default function ProjectCockpitPage() {
                 ) : (
                   <ul className="space-y-3">
                     {c.sessions.map((sess) => (
-                      <li key={sess.id} className="rounded-2xl border border-stone-800 bg-stone-950 px-4 py-3">
+                      <li key={sess.id} className="rounded-2xl border border-line bg-ground px-4 py-3">
                         <div className="flex flex-wrap items-center gap-2 text-sm">
-                          <span className="font-mono text-stone-100">{sess.backend}</span>
+                          <span className="font-mono text-ink">{sess.backend}</span>
                           {sess.model && (
-                            <span className="truncate font-mono text-xs text-stone-500">{sess.model}</span>
+                            <span className="truncate font-mono text-xs text-ink-faint">{sess.model}</span>
                           )}
-                          <span className="rounded border border-stone-800 bg-stone-900 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-stone-400">
+                          <span className="rounded border border-line bg-panel px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-ink-dim">
                             {sess.status}
                           </span>
                           {sess.looping && (
-                            <span className="rounded border border-amber-900 bg-amber-950/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-amber-300">
+                            <span className="rounded border border-accent bg-accent/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-accent">
                               loop
                             </span>
                           )}
-                          <span className="ml-auto shrink-0 text-[10px] text-stone-500">
+                          <span className="ml-auto shrink-0 text-[10px] text-ink-faint">
                             {relativeTime(sess.updated_at)}
                           </span>
                         </div>
                         {sess.result_summary && (
-                          <p className="mt-1.5 text-xs text-stone-400 line-clamp-2">{sess.result_summary}</p>
+                          <p className="mt-1.5 text-xs text-ink-dim line-clamp-2">{sess.result_summary}</p>
                         )}
                         {sess.gate_runs && sess.gate_runs.length > 0 && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -280,14 +281,14 @@ export default function ProjectCockpitPage() {
                                     <summary
                                       className={`cursor-pointer list-none rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider ${
                                         g.passed
-                                          ? 'border-emerald-900 bg-emerald-950/60 text-emerald-300'
-                                          : 'border-rose-900 bg-rose-950/60 text-rose-300'
+                                          ? 'border-live bg-live/60 text-live'
+                                          : 'border-gone bg-gone/60 text-gone'
                                       }`}
                                       title={new Date(g.at).toLocaleString()}
                                     >
                                       {g.passed ? 'pass' : 'fail'}
                                     </summary>
-                                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-stone-800 bg-black px-2.5 py-2 font-mono text-[11px] text-stone-300">
+                                    <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-line bg-ground px-2.5 py-2 font-mono text-[11px] text-ink-dim">
                                       {g.tail}
                                     </pre>
                                   </details>
@@ -295,8 +296,8 @@ export default function ProjectCockpitPage() {
                                   <span
                                     className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wider ${
                                       g.passed
-                                        ? 'border-emerald-900 bg-emerald-950/60 text-emerald-300'
-                                        : 'border-rose-900 bg-rose-950/60 text-rose-300'
+                                        ? 'border-live bg-live/60 text-live'
+                                        : 'border-gone bg-gone/60 text-gone'
                                     }`}
                                     title={new Date(g.at).toLocaleString()}
                                   >
@@ -321,10 +322,10 @@ export default function ProjectCockpitPage() {
                   <ul className="space-y-2">
                     {c.tasks.map((t) => (
                       <li key={t.id} className="flex items-start gap-2 text-sm">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-stone-600" />
-                        <span className="min-w-0 flex-1 break-words text-stone-200">{t.title}</span>
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-panel-2" />
+                        <span className="min-w-0 flex-1 break-words text-ink">{t.title}</span>
                         {t.stale && (
-                          <span className="shrink-0 rounded-full border border-stone-800 bg-stone-900 px-2 py-0.5 text-[10px] uppercase tracking-wider text-stone-500">
+                          <span className="shrink-0 rounded-full border border-line bg-panel px-2 py-0.5 text-[10px] uppercase tracking-wider text-ink-faint">
                             stale
                           </span>
                         )}
@@ -341,9 +342,9 @@ export default function ProjectCockpitPage() {
                 ) : (
                   <ul className="space-y-2">
                     {c.changed.map((ch, i) => (
-                      <li key={i} className="font-mono text-xs text-stone-400">
-                        <span className="mr-2 text-stone-600">{relativeTime(ch.created_at)}</span>
-                        <span className="break-words text-stone-300">{ch.content}</span>
+                      <li key={i} className="font-mono text-xs text-ink-dim">
+                        <span className="mr-2 text-ink-faint">{relativeTime(ch.created_at)}</span>
+                        <span className="break-words text-ink-dim">{ch.content}</span>
                       </li>
                     ))}
                   </ul>
@@ -357,8 +358,8 @@ export default function ProjectCockpitPage() {
                 ) : (
                   <ul className="space-y-2">
                     {c.project.next_steps.map((step, i) => (
-                      <li key={i} className="flex items-start gap-2 text-sm text-stone-300">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400/70" />
+                      <li key={i} className="flex items-start gap-2 text-sm text-ink-dim">
+                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent/70" />
                         <span className="break-words">{step}</span>
                       </li>
                     ))}
@@ -368,20 +369,20 @@ export default function ProjectCockpitPage() {
 
               {/* Alerts — only when non-empty */}
               {c.alerts.length > 0 && (
-                <Panel title="Alerts" tone="border-rose-900/60 bg-rose-950/20">
+                <Panel title="Alerts" tone="border-gone/60 bg-gone/20">
                   <ul className="space-y-3">
                     {c.alerts.map((al) => (
                       <li key={al.id} className="text-sm">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded border border-rose-900 bg-rose-950/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-rose-300">
+                          <span className="rounded border border-gone bg-gone/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-gone">
                             {al.event_type}
                           </span>
-                          <span className="text-[10px] text-stone-500">{al.source}</span>
-                          <span className="ml-auto shrink-0 text-[10px] text-stone-500">
+                          <span className="text-[10px] text-ink-faint">{al.source}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-ink-faint">
                             {relativeTime(al.created_at)}
                           </span>
                         </div>
-                        <p className="mt-1 break-words text-rose-100/90">{al.message}</p>
+                        <p className="mt-1 break-words text-gone">{al.message}</p>
                       </li>
                     ))}
                   </ul>
@@ -394,17 +395,17 @@ export default function ProjectCockpitPage() {
                   <ul className="space-y-2">
                     {c.linear.map((li) => (
                       <li key={li.id} className="flex flex-wrap items-center gap-2 text-sm">
-                        <span className="min-w-0 flex-1 break-words text-stone-200">{li.title}</span>
-                        <span className="shrink-0 rounded border border-stone-800 bg-stone-950 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-stone-400">
+                        <span className="min-w-0 flex-1 break-words text-ink">{li.title}</span>
+                        <span className="shrink-0 rounded border border-line bg-ground px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-ink-dim">
                           {li.status}
                         </span>
                         {li.proposed_disposition && (
-                          <span className="shrink-0 rounded border border-sky-900 bg-sky-950/60 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-sky-300">
+                          <span className="shrink-0 rounded border border-accent bg-accent/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wider text-accent">
                             {li.proposed_disposition}
                           </span>
                         )}
                         {li.external_ref && (
-                          <span className="shrink-0 font-mono text-[10px] text-stone-600">{li.external_ref}</span>
+                          <span className="shrink-0 font-mono text-[10px] text-ink-faint">{li.external_ref}</span>
                         )}
                       </li>
                     ))}
@@ -413,12 +414,12 @@ export default function ProjectCockpitPage() {
               )}
             </div>
 
-            <p className="mt-6 text-right text-[10px] text-stone-600">
+            <p className="mt-6 text-right text-[10px] text-ink-faint">
               generated {relativeTime(c.generated_at)}
             </p>
           </>
         )}
       </div>
-    </main>
+    </AppShell>
   )
 }

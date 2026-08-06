@@ -19,12 +19,18 @@ from aria.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def _check_http(url: str, timeout: float = 4.0) -> tuple[bool, str]:
+async def _check_http(
+    url: str, timeout: float = 4.0, headers: dict | None = None
+) -> tuple[bool, str]:
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
-            r = await c.get(url)
-        # <500 means the service is up and answering (404 on a probe path is fine)
-        return (r.status_code < 500, f"HTTP {r.status_code}")
+            r = await c.get(url, headers=headers or {})
+        # <500 means the service is up and answering (404 on a probe path is fine).
+        # 401/403 is NOT healthy though: the service answered but rejected our
+        # credential, which is a real misconfiguration that would otherwise pass
+        # silently — matching how /health/services grades the same statuses.
+        ok = r.status_code < 500 and r.status_code not in (401, 403)
+        return (ok, f"HTTP {r.status_code}")
     except Exception as exc:
         return (False, type(exc).__name__)
 
@@ -68,8 +74,23 @@ async def run_checks(db) -> list[dict]:
     except Exception as exc:
         checks.append({"name": "mongodb", "ok": False, "detail": str(exc)[:120]})
 
-    # Local LLM (OpenAI-compatible /models) — the endpoint that was dead before
-    ok, detail = await _check_http(settings.llamacpp_url.rstrip("/") + "/models")
+    # Local LLM (OpenAI-compatible /models) — the endpoint that was dead before.
+    #
+    # Since 2026-08-05 llamacpp_url is ARIA's own /llm/v1 passthrough, not a
+    # fixed model port, so this check now means "is SOME local model resident
+    # and serving" instead of "is one specific server up". That is the question
+    # worth paging about: the previous form pointed at :8103, which DS4-0731
+    # displaced (they are RAM-exclusive), so it reported ConnectError every 10
+    # minutes about a server that was stopped on purpose — each one waking the
+    # Hermes alert-triage cron to diagnose a non-incident. The proxy answers 503
+    # when genuinely nothing is resident, which is still a real alert.
+    #
+    # The key is required because the proxy sits behind api_key_middleware; it
+    # is harmlessly ignored if llamacpp_url is ever repointed at a raw server.
+    ok, detail = await _check_http(
+        settings.llamacpp_url.rstrip("/") + "/models",
+        headers={"X-API-Key": settings.api_key} if settings.api_key else None,
+    )
     checks.append({"name": "llm", "ok": ok, "detail": detail})
 
     # Chadrock (pool_api_url) — the pool-cli coding backend. Added 2026-07-28:

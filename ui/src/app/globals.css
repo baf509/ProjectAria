@@ -2,59 +2,126 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens (added 2026-08-05 with the Operate redesign).
+
+   Every colour is a token so both themes are defined once and components never
+   branch on theme. The viewer's OS preference arrives via prefers-color-scheme;
+   an explicit choice stamps data-theme on <html> and must win in BOTH
+   directions, which is why the two data-theme blocks below redefine the full
+   set rather than only the dark one.
+
+   Accent (amber) is reserved for interaction and selection ONLY. State colours
+   deliberately avoid amber — a warning hue that doubles as the brand hue can't
+   signal anything. Hence emerald/slate/rose for running/stopped/absent.
+--------------------------------------------------------------------------- */
 :root {
-  --foreground-rgb: 15, 23, 42;
-  --background-start-rgb: 255, 255, 255;
-  --background-end-rgb: 248, 250, 252;
+  --ground: #0e1014;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --line: #262b35;
+  --ink: #e6e9ef;
+  --ink-dim: #8c94a3;
+  --ink-faint: #5c6472;
+  --accent: #f2a93b;
+  --accent-ink: #0e1014;
+  --live: #3dd68c;
+  --idle: #5a6478;
+  --gone: #e0576b;
+  --track: #20252f;
+
+  --foreground-rgb: 230, 233, 239;
+  --background-start-rgb: 14, 16, 20;
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-color-scheme: light) {
   :root {
-    --foreground-rgb: 241, 245, 249;
-    --background-start-rgb: 15, 23, 42;
-    --background-end-rgb: 30, 41, 59;
+    --ground: #f4f6f9;
+    --panel: #ffffff;
+    --panel-2: #edf0f5;
+    --line: #d8dee7;
+    --ink: #14171d;
+    --ink-dim: #5a6474;
+    --ink-faint: #8892a2;
+    --accent: #b87411;
+    --accent-ink: #ffffff;
+    --live: #12885a;
+    --idle: #78828f;
+    --gone: #c0334a;
+    --track: #dde3eb;
+
+    --foreground-rgb: 20, 23, 29;
+    --background-start-rgb: 244, 246, 249;
   }
+}
+
+:root[data-theme='dark'] {
+  --ground: #0e1014;
+  --panel: #171a21;
+  --panel-2: #1e222b;
+  --line: #262b35;
+  --ink: #e6e9ef;
+  --ink-dim: #8c94a3;
+  --ink-faint: #5c6472;
+  --accent: #f2a93b;
+  --accent-ink: #0e1014;
+  --live: #3dd68c;
+  --idle: #5a6478;
+  --gone: #e0576b;
+  --track: #20252f;
+  --foreground-rgb: 230, 233, 239;
+  --background-start-rgb: 14, 16, 20;
+}
+
+:root[data-theme='light'] {
+  --ground: #f4f6f9;
+  --panel: #ffffff;
+  --panel-2: #edf0f5;
+  --line: #d8dee7;
+  --ink: #14171d;
+  --ink-dim: #5a6474;
+  --ink-faint: #8892a2;
+  --accent: #b87411;
+  --accent-ink: #ffffff;
+  --live: #12885a;
+  --idle: #78828f;
+  --gone: #c0334a;
+  --track: #dde3eb;
+  --foreground-rgb: 20, 23, 29;
+  --background-start-rgb: 244, 246, 249;
 }
 
 body {
   color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-      to bottom,
-      transparent,
-      rgb(var(--background-end-rgb))
-    )
-    rgb(var(--background-start-rgb));
+  background: rgb(var(--background-start-rgb));
 }
 
-/* Custom scrollbar */
+/* Numbers that stack in columns must not jitter as they update. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
+  background: var(--ground);
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #888;
+  background: var(--line);
   border-radius: 4px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: var(--ink-faint);
 }
 
-/* Dark mode scrollbar */
-@media (prefers-color-scheme: dark) {
-  ::-webkit-scrollbar-track {
-    background: #1e293b;
-  }
-
-  ::-webkit-scrollbar-thumb {
-    background: #475569;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    background: #64748b;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

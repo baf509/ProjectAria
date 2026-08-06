@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from aria.config import settings
 from aria.shells.ansi import matches_prompt, parse_prompt_patterns, strip_ansi
 from aria.shells.claude_trust import ensure_trusted
+from aria.shells.codex_trust import ensure_codex_trusted
 from aria.shells.models import Shell, ShellEvent, ShellSnapshot
 from aria.shells.tmux import TmuxClient, TmuxError, TmuxSessionNotFoundError
 
@@ -338,10 +339,15 @@ class ShellService:
         else:
             command = None
         if command and settings.shells_claude_autotrust:
-            # Pre-trust the workdir so Claude Code's blocking folder-trust
-            # dialog doesn't hang the detached session. Best-effort, off the
-            # event loop; failure just falls back to the old (dialog) behaviour.
-            await asyncio.to_thread(ensure_trusted, workdir or None)
+            # Pre-trust the workdir so the CLI's blocking folder-trust dialog
+            # doesn't hang the detached session. Best-effort, off the event
+            # loop; failure just falls back to the old (dialog) behaviour.
+            # Codex has its own trust store (~/.codex/config.toml), so pick
+            # the writer by which CLI the command launches.
+            if "codex" in command:
+                await asyncio.to_thread(ensure_codex_trusted, workdir or None)
+            else:
+                await asyncio.to_thread(ensure_trusted, workdir or None)
         effective_cols = cols or settings.shells_default_cols
         effective_rows = rows or settings.shells_default_rows
         await self.tmux.new_session(

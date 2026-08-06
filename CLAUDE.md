@@ -292,7 +292,11 @@ workflow — has no single task to classify and can't be dynamically re-routed
 mid-session. Auto-routing the desk path was tried and reverted: it fit awkwardly,
 and the primary habit (`claude --dangerously-skip-permissions`) bypassed it
 anyway. So bare `claude` on corsair is just the saved-state per-directory shell
-attach (`claude()` in `~/.bashrc`); you choose the model. Routing lives **only on
+attach (`claude()` in `~/.bashrc`); you choose the model. Since 2026-08-02,
+`codex` gets the same treatment: a `codex()` wrapper in `~/.bashrc` spawns a
+persisted watched session named `claude-codex-<dir>` via `POST /api/v1/shells`
+with `launch_command` → `scripts/aria-codex-launch` (resume-aware,
+`codex resume --last` is cwd-filtered, always `--yolo`). Routing lives **only on
 the automated spawn path** (`start_session()` — Hermes/MCP/TUI create), where one
 task genuinely is one session.
 
@@ -338,10 +342,43 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 > (`laguna-rocm:latest`) is the one actually serving traffic; the
 > `qwen-rocmfp4/` compose project (`qwen-chat` / `qwen-agentic` / `context1`,
 > image `qwen-rocmfp4:latest`) is defined but down. The old single `llamacpp` on
-> `:8080` is **retired** (behind the compose `legacy` profile). To swap which
-> model backs a backend, change `LLAMACPP_URL` / `AGENTIC_URL` in `.env` and
-> restart `aria-api`; to add/restart a qwen model, edit
-> `qwen-rocmfp4/docker-compose.yml` and `docker compose up -d <service>`.
+> `:8080` is **retired** (behind the compose `legacy` profile). To add/restart a
+> qwen model, edit `qwen-rocmfp4/docker-compose.yml` and
+> `docker compose up -d <service>`.
+>
+> **⚠️ Do NOT "fix" `LLAMACPP_URL` back to a model port (2026-08-05).** It is
+> deliberately `http://localhost:8200/llm/v1` — ARIA's own OpenAI-compatible
+> passthrough (`api/routes/llm_proxy.py`), which forwards to whichever on-box
+> server is currently resident (largest `resident_gib` wins). Pinning a port
+> here broke four times running (qwen → laguna → chadrock → DS4): the big
+> servers are mutually RAM-exclusive, so the named one goes down the moment
+> another starts, and `selfcheck` then pages `llm (ConnectError)` every 10
+> minutes into the Hermes alert-triage cron. `LLAMACPP_API_KEY` must equal
+> `API_KEY` (the middleware accepts it as `Authorization: Bearer`). To swap the
+> *resident* model, start/stop servers through the model-server registry — the
+> `llamacpp` backend follows automatically. `AGENTIC_URL` still names a specific
+> port (`:8105`) because it is the on-demand local coding server.
+>
+> **Hermes follows the same passthrough (2026-08-05).** `~/.hermes/config.yaml`
+> no longer names a model: `model.default: aria-resident` /
+> `model.provider: custom:aria` → `base_url: http://localhost:8200/llm/v1`. So
+> **starting a model in ARIA is the whole swap** — no Hermes config edit, no
+> gateway restart. Don't "fix" that base_url to a model port; it is ARIA on
+> :8200, and ARIA is the only thing that knows whether the resident server is
+> loopback- or tailnet-bound. Reverting to a fixed model means restoring
+> `provider: custom:ds4` (see `config.yaml.bak-aria-follow-*`).
+>
+> **Which model serves, when several are resident.** More than one can be up
+> (gemma is CPU-only and coexists; chadrock+qwen is a deliberate pair), so the
+> proxy resolves in order: the request's `model` field when it names a running
+> server → an operator pin → largest `resident_gib`. llama.cpp ignores unknown
+> `model` values, which is what frees the field to act as a selector. Naming a
+> *stopped* server is a 503; a *stale pin* degrades to auto (and says so). Set
+> the pin on the web `/operate` "Local model route" panel, via
+> `GET`/`PUT /api/v1/infrastructure/llm-route`, or MCP
+> `get_llm_route`/`set_llm_route`. `GET /llm/v1/models` lists everything loaded
+> with each model's real `n_ctx`. Selection logic + its tests:
+> `infrastructure/llm_route.py`, `tests/test_llm_route.py`.
 
 ```bash
 # Start shared infra first

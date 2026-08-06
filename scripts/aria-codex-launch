@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# ARIA - resume-aware Codex launch for watched shells
+#
+# Codex counterpart to aria-claude-launch: the launch command the `codex()`
+# desk wrapper passes to POST /api/v1/shells as `launch_command`. Tries to
+# resume the most recent Codex session for this directory (`codex resume
+# --last` is cwd-filtered by default) so a respawned shell (reboot, crash,
+# killed tmux server) doesn't silently drop you into an empty conversation.
+#
+# Unlike Claude Code, Codex gives no cheap way to ask "is there history for
+# this cwd?" (session cwd lives inside ~/.codex/sessions rollout files), so
+# instead of probing first we always try to resume and treat a fast non-zero
+# exit as "nothing to resume" — same fallback pattern aria-claude-launch uses
+# for a corrupt history.
+set -uo pipefail
+
+# Long form of --yolo; spelled out so the intent survives grep.
+CODEX_ARGS=(--dangerously-bypass-approvals-and-sandbox)
+
+started=$SECONDS
+codex resume --last "${CODEX_ARGS[@]}"
+rc=$?
+# A non-zero exit within a few seconds means resume could not start (no
+# session for this cwd, corrupt rollout) rather than a session you used and
+# quit, so start a fresh one instead of leaving a dead pane behind.
+if [ "$rc" -ne 0 ] && [ $((SECONDS - started)) -lt 5 ]; then
+    echo "aria: codex resume --last failed (exit $rc) — starting a fresh session" >&2
+    exec codex "${CODEX_ARGS[@]}"
+fi
+exit "$rc"

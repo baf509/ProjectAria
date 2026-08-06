@@ -116,13 +116,16 @@ async def create_shell(
 
     The session name is prefixed with the configured shells prefix
     (e.g. `claude-`) if not already. By default Claude Code is launched
-    inside the new session; pass `launch_claude: false` for a plain shell.
+    inside the new session; pass `launch_claude: false` for a plain shell,
+    or `launch_command` to run an arbitrary command instead (takes
+    precedence over `launch_claude` — e.g. the codex desk wrapper).
     """
     try:
         shell = await service.create_shell(
             body.name,
             workdir=body.workdir or "",
             launch_claude=body.launch_claude,
+            launch_command=body.launch_command,
             cols=body.cols,
             rows=body.rows,
         )

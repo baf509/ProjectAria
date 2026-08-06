@@ -58,7 +58,10 @@ class FakeShellService:
         if name in self.shells:
             self.shells[name].tags = list(tags)
 
-    async def create_shell(self, name, *, workdir="", launch_claude=True, cols=None, rows=None):
+    async def create_shell(
+        self, name, *, workdir="", launch_claude=True, launch_command=None, cols=None, rows=None
+    ):
+        self.last_launch_command = launch_command
         full_name = name if name.startswith("claude-") else f"claude-{name}"
         existing = self.shells.get(full_name)
         if existing is not None:
@@ -345,6 +348,22 @@ async def test_create_shell_passes_geometry(client):
     )
     assert resp.status_code == 201
     assert client.fake_service.last_geometry == (100, 30)
+
+
+@pytest.mark.asyncio
+async def test_create_shell_passes_launch_command(client):
+    resp = await client.post(
+        "/api/v1/shells",
+        json={
+            "name": "codex-proj",
+            "launch_command": "bash -lc '~/.local/bin/aria-codex-launch'",
+        },
+    )
+    assert resp.status_code == 201
+    assert (
+        client.fake_service.last_launch_command
+        == "bash -lc '~/.local/bin/aria-codex-launch'"
+    )
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { apiClient } from '@/lib/api-client'
 import type { Agent, Conversation, Message as MessageType } from '@/types'
 import { Send, Loader2 } from 'lucide-react'
+import { AppShell } from '@/components/AppShell'
 
 export default function ChatPage() {
   const [agents, setAgents] = useState<Agent[]>([])
@@ -166,17 +167,17 @@ export default function ChatPage() {
   // h-[100dvh] rather than h-screen: on mobile, 100vh exceeds the visible area
   // (browser chrome), which would push the composer off-screen.
   return (
-    <div className="flex h-[100dvh] bg-gray-50 dark:bg-gray-900">
-      {/* Sidebar — desktop only; below md the header carries a conversation picker */}
-      <div className="hidden w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 md:flex md:flex-col">
-        <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-          <h1 className="text-xl font-bold">ARIA</h1>
-        </div>
+    <AppShell area="Converse" flush>
+      {/* Fills whatever the shell leaves; the shell owns the viewport height,
+          so this stays correct on mobile where the nav stacks above. */}
+      <div className="flex h-full min-h-0 bg-ground">
+      {/* Conversation list — desktop only; below md the header carries a picker */}
+      <div className="hidden w-64 bg-panel border-r border-line md:flex md:flex-col">
 
         <div className="flex-1 overflow-y-auto p-2">
           <button
             onClick={createNewConversation}
-            className="w-full px-4 py-2 mb-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            className="w-full px-4 py-2 mb-2 bg-accent text-ink rounded hover:bg-accent"
           >
             + New Chat
           </button>
@@ -186,9 +187,9 @@ export default function ChatPage() {
               <button
                 key={convo.id}
                 onClick={() => loadConversation(convo.id)}
-                className={`w-full px-4 py-2 text-left rounded hover:bg-gray-100 dark:hover:bg-gray-700 truncate ${
+                className={`w-full px-4 py-2 text-left rounded hover:bg-panel-2 dark:hover:bg-panel-2 truncate ${
                   currentConversation?.id === convo.id
-                    ? 'bg-gray-100 dark:bg-gray-700'
+                    ? 'bg-panel-2 dark:bg-panel-2'
                     : ''
                 }`}
               >
@@ -201,18 +202,18 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 sm:px-6">
+        <div className="border-b border-line bg-panel px-4 py-3 sm:px-6">
           <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-4">
             <div className="min-w-0 flex-1">
-              <h2 className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+              <h2 className="truncate text-sm font-semibold text-ink">
                 {currentConversation?.title || 'Conversation'}
               </h2>
-              <p className="truncate text-xs text-gray-500 dark:text-gray-400">
+              <p className="truncate text-xs text-ink-dim">
                 Active mode: {agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon ? `${agents.find(agent => agent.id === selectedAgentId)?.mode_metadata?.icon} ` : ''}{agents.find(agent => agent.id === selectedAgentId)?.name || 'Default'}
               </p>
             </div>
 
-            <label className="flex min-w-0 items-center gap-2 text-sm text-gray-600 dark:text-gray-300 sm:w-auto">
+            <label className="flex min-w-0 items-center gap-2 text-sm text-ink-dim sm:w-auto">
               <span className="shrink-0">Mode</span>
               <select
                 value={selectedAgentId}
@@ -223,7 +224,7 @@ export default function ChatPage() {
                   }
                 }}
                 disabled={!currentConversation || isStreaming || agents.length === 0}
-                className="min-w-0 flex-1 truncate rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 sm:max-w-[16rem]"
+                className="min-w-0 flex-1 truncate rounded border border-line bg-panel px-3 py-2 text-sm text-ink dark:bg-panel-2 sm:max-w-[16rem]"
               >
                 {agents.map(agent => (
                   <option key={agent.id} value={agent.id}>
@@ -244,7 +245,7 @@ export default function ChatPage() {
                 }
               }}
               disabled={isStreaming}
-              className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+              className="min-w-0 flex-1 rounded border border-line bg-panel px-3 py-2 text-sm text-ink dark:bg-panel-2"
             >
               {/* A freshly created conversation is prepended to `conversations`, but
                   guard anyway so the picker never shows an unrelated title */}
@@ -259,7 +260,7 @@ export default function ChatPage() {
             </select>
             <button
               onClick={createNewConversation}
-              className="shrink-0 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700"
+              className="shrink-0 rounded bg-accent px-4 py-2 text-sm text-ink hover:bg-accent"
             >
               + New
             </button>
@@ -268,7 +269,7 @@ export default function ChatPage() {
 
         {/* Connection error banner */}
         {connectionError && (
-          <div className="px-4 py-2 sm:px-6 bg-yellow-900/50 border-b border-yellow-700 text-yellow-200 text-sm text-center">
+          <div className="px-4 py-2 sm:px-6 bg-accent/10 border-b border-accent text-accent text-sm text-center">
             {connectionError}
           </div>
         )}
@@ -283,8 +284,8 @@ export default function ChatPage() {
               <div
                 className={`max-w-[85%] sm:max-w-2xl px-4 py-2 rounded-lg ${
                   msg.role === 'user'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
+                    ? 'bg-accent text-ink'
+                    : 'bg-panel dark:bg-panel border border-line dark:border-line'
                 }`}
               >
                 <div className="whitespace-pre-wrap break-words">{msg.content}</div>
@@ -300,7 +301,7 @@ export default function ChatPage() {
           {/* Streaming message */}
           {isStreaming && streamingContent && (
             <div className="flex justify-start">
-              <div className="max-w-[85%] sm:max-w-2xl px-4 py-2 rounded-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+              <div className="max-w-[85%] sm:max-w-2xl px-4 py-2 rounded-lg bg-panel border border-line">
                 <div className="whitespace-pre-wrap break-words">{streamingContent}</div>
                 <div className="mt-2 flex items-center gap-2 text-sm opacity-75">
                   <Loader2 className="w-4 h-4 animate-spin" />
@@ -314,21 +315,21 @@ export default function ChatPage() {
         </div>
 
         {/* Input */}
-        <div className="border-t border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+        <div className="border-t border-line p-4 bg-panel">
           <div className="max-w-4xl mx-auto flex gap-2">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyPress}
               placeholder="Type your message..."
-              className="flex-1 min-w-0 px-4 py-3 sm:py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 dark:bg-gray-700 resize-none"
+              className="flex-1 min-w-0 px-4 py-3 sm:py-2 border border-line rounded-lg focus:outline-none focus:ring-2 focus:ring-accent dark:bg-panel-2 resize-none"
               rows={1}
               disabled={isStreaming}
             />
             <button
               onClick={handleSendMessage}
               disabled={!input.trim() || isStreaming}
-              className="shrink-0 px-5 py-3 sm:px-6 sm:py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="shrink-0 px-5 py-3 sm:px-6 sm:py-2 bg-accent text-ink rounded-lg hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isStreaming ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
@@ -339,6 +340,7 @@ export default function ChatPage() {
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </AppShell>
   )
 }

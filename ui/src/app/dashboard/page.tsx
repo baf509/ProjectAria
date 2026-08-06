@@ -4,11 +4,28 @@ import { startTransition, useEffect, useMemo, useState } from 'react'
 import { apiClient } from '@/lib/api-client'
 import { ConfirmButton } from '@/components/ConfirmButton'
 import type { Agent, Conversation, Memory, PlanningProject, PlanningTask, ResearchRun, Workflow } from '@/types'
+import { AppShell } from '@/components/AppShell'
 
 type Tab = 'agents' | 'memories' | 'tasks' | 'research' | 'usage' | 'conversations' | 'workflows' | 'settings'
 
 export default function DashboardPage() {
-  const [tab, setTab] = useState<Tab>('agents')
+  const [tab, setTabState] = useState<Tab>('agents')
+
+  // Deep-linkable tabs, so other areas can point at a specific one (e.g. the
+  // Overview links straight to ?tab=memories). Read from location rather than
+  // useSearchParams to avoid forcing a Suspense boundary on this client page.
+  useEffect(() => {
+    const t = new URLSearchParams(window.location.search).get('tab') as Tab | null
+    const valid: Tab[] = ['agents', 'memories', 'tasks', 'research', 'usage', 'conversations', 'workflows', 'settings']
+    if (t && valid.includes(t)) setTabState(t)
+  }, [])
+
+  const setTab = (next: Tab) => {
+    setTabState(next)
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', next)
+    window.history.replaceState(null, '', url.toString())
+  }
   const [statusMessage, setStatusMessage] = useState<string>('')
   const [agents, setAgents] = useState<Agent[]>([])
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null)
@@ -319,19 +336,19 @@ export default function DashboardPage() {
   }, [conversations, conversationQuery])
 
   return (
-    <main className="min-h-screen bg-stone-950 text-stone-100">
+    <AppShell area="Know">
       <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
         <div className="mb-6 flex flex-wrap items-end justify-between gap-4 sm:mb-8 sm:gap-6">
           <div>
-            <p className="mb-2 text-xs uppercase tracking-[0.3em] text-amber-400">Operations Console</p>
-            <h1 className="font-serif text-3xl text-stone-50 sm:text-5xl">ARIA Dashboard</h1>
-            <p className="mt-3 max-w-2xl text-sm text-stone-400">
+            <p className="mb-2 text-xs uppercase tracking-[0.3em] text-accent">Operations Console</p>
+            <h1 className="font-serif text-3xl text-ink sm:text-5xl">ARIA Dashboard</h1>
+            <p className="mt-3 max-w-2xl text-sm text-ink-dim">
               Modes, memory, research, task health, and runtime settings in one place.
             </p>
           </div>
         </div>
         {statusMessage ? (
-          <div className="mb-6 rounded-2xl border border-emerald-800 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+          <div className="mb-6 rounded-2xl border border-live bg-live/40 px-4 py-3 text-sm text-live">
             {statusMessage}
           </div>
         ) : null}
@@ -343,8 +360,8 @@ export default function DashboardPage() {
               onClick={() => setTab(item)}
               className={`shrink-0 rounded-full border px-4 py-2 text-sm capitalize transition ${
                 tab === item
-                  ? 'border-amber-400 bg-amber-400 text-stone-950'
-                  : 'border-stone-700 bg-stone-900 text-stone-300 hover:border-stone-500'
+                  ? 'border-accent bg-accent text-accent-ink'
+                  : 'border-line bg-panel text-ink-dim hover:border-line'
               }`}
             >
               {item}
@@ -352,9 +369,15 @@ export default function DashboardPage() {
           ))}
           <a
             href="/dashboard/shells"
-            className="rounded-full border border-stone-700 bg-stone-900 px-4 py-2 text-sm capitalize text-stone-300 transition hover:border-stone-500"
+            className="rounded-full border border-line bg-panel px-4 py-2 text-sm capitalize text-ink-dim transition hover:border-line"
           >
             shells
+          </a>
+          <a
+            href="/dashboard/benchmarks"
+            className="rounded-full border border-line bg-panel px-4 py-2 text-sm capitalize text-ink-dim transition hover:border-line"
+          >
+            benchmarks
           </a>
         </div>
 
@@ -369,7 +392,7 @@ export default function DashboardPage() {
                 return (
                   <article
                     key={agent.id}
-                    className={`min-w-0 rounded-3xl border bg-stone-900 p-4 sm:p-5 ${enabled ? 'border-stone-800' : 'border-stone-800/60 opacity-60'}`}
+                    className={`min-w-0 rounded-3xl border bg-panel p-4 sm:p-5 ${enabled ? 'border-line' : 'border-line/60 opacity-60'}`}
                   >
                     <div className="mb-3 flex items-center justify-between gap-2">
                       <div className="min-w-0 truncate text-lg font-semibold">
@@ -383,29 +406,29 @@ export default function DashboardPage() {
                         {agent.name}
                       </div>
                       <span className={`shrink-0 rounded-full px-3 py-1 text-xs uppercase ${
-                        enabled ? 'bg-emerald-950 text-emerald-300' : 'bg-stone-800 text-stone-500'
+                        enabled ? 'bg-live/10 text-live' : 'bg-panel-2 text-ink-faint'
                       }`}>
                         {enabled ? 'enabled' : 'disabled'}
                       </span>
                     </div>
-                    <p className="mb-3 break-words text-sm text-stone-400">{agent.description}</p>
-                    <p className="mb-1 text-xs text-stone-500">Model</p>
-                    <p className="text-sm text-stone-200">{agent.llm.backend}/{agent.llm.model}</p>
-                    <p className="mb-1 mt-3 text-xs text-stone-500">Model server</p>
+                    <p className="mb-3 break-words text-sm text-ink-dim">{agent.description}</p>
+                    <p className="mb-1 text-xs text-ink-faint">Model</p>
+                    <p className="text-sm text-ink">{agent.llm.backend}/{agent.llm.model}</p>
+                    <p className="mb-1 mt-3 text-xs text-ink-faint">Model server</p>
                     {agent.model_server ? (
                       <div className="flex flex-wrap items-center gap-2 text-sm">
                         {server && !server.onbox ? (
                           // Off-box (Ridge): pinned to its own hardware, not a choice.
-                          <span className="min-w-0 truncate text-stone-200">
+                          <span className="min-w-0 truncate text-ink">
                             {agent.model_server}
-                            <span className="ml-1 text-xs text-stone-500">(pinned — off-box)</span>
+                            <span className="ml-1 text-xs text-ink-faint">(pinned — off-box)</span>
                           </span>
                         ) : (
                           <select
                             value={agent.model_server}
                             disabled={serverBusy !== null}
                             onChange={(e) => void handleRebindAgent(agent, e.target.value)}
-                            className="min-w-0 flex-1 rounded-lg border border-stone-700 bg-stone-950 px-2 py-2.5 text-sm text-stone-100 focus:border-amber-400 focus:outline-none disabled:opacity-40 sm:py-1"
+                            className="min-w-0 flex-1 rounded-lg border border-line bg-ground px-2 py-2.5 text-sm text-ink focus:border-accent focus:outline-none disabled:opacity-40 sm:py-1"
                           >
                             {models
                               .filter((m) => m.onbox && m.startable)
@@ -416,7 +439,7 @@ export default function DashboardPage() {
                               ))}
                           </select>
                         )}
-                        <span className={server?.state === 'running' ? 'text-emerald-400' : 'text-stone-500'}>
+                        <span className={server?.state === 'running' ? 'text-live' : 'text-ink-faint'}>
                           {server?.state || 'unknown'}
                         </span>
                         {serverActive && server?.onbox && (
@@ -425,7 +448,7 @@ export default function DashboardPage() {
                             confirmLabel="Confirm stop"
                             disabled={serverBusy !== null}
                             onConfirm={() => void handleServerAction(server.slug, 'stop')}
-                            className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
+                            className="rounded-lg border border-gone bg-gone/40 px-3 py-2 text-sm text-gone sm:px-2 sm:py-0.5 sm:text-xs hover:bg-gone/70 disabled:opacity-40"
                           />
                         )}
                         {server?.can_sleep && (
@@ -434,23 +457,23 @@ export default function DashboardPage() {
                             confirmLabel="Confirm sleep"
                             disabled={serverBusy !== null}
                             onConfirm={() => void handleServerAction(server.slug, 'sleep')}
-                            className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-0.5 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
+                            className="rounded-lg border border-accent bg-accent/10 px-3 py-2 text-sm text-accent sm:px-2 sm:py-0.5 sm:text-xs hover:bg-accent/10 disabled:opacity-40"
                           />
                         )}
                       </div>
                     ) : (
-                      <p className="text-sm text-stone-500">
+                      <p className="text-sm text-ink-faint">
                         not bound — bind one via POST /infrastructure/model-servers/&#123;slug&#125;/bind
                       </p>
                     )}
                     {serverError && serverError.slug === agent.slug && (
-                      <div className="mt-2 rounded-xl border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+                      <div className="mt-2 rounded-xl border border-accent/60 bg-accent/30 p-2 text-xs text-accent">
                         {serverError.message}
                         {serverError.message.includes('force=True') && (
                           <button
                             disabled={serverBusy !== null}
                             onClick={() => void handleToggleAgent(agent, true)}
-                            className="ml-2 rounded-lg border border-amber-600 bg-amber-900/50 px-3 py-1.5 text-amber-100 sm:px-2 sm:py-0.5 hover:bg-amber-900/80 disabled:opacity-40"
+                            className="ml-2 rounded-lg border border-accent bg-accent/50 px-3 py-1.5 text-accent sm:px-2 sm:py-0.5 hover:bg-accent/80 disabled:opacity-40"
                           >
                             Force enable
                           </button>
@@ -463,15 +486,15 @@ export default function DashboardPage() {
                         onClick={() => void handleToggleAgent(agent)}
                         className={`rounded-full border px-4 py-2 text-sm disabled:opacity-40 sm:px-3 sm:py-1 sm:text-xs ${
                           enabled
-                            ? 'border-stone-700 text-stone-300 hover:border-stone-500'
-                            : 'border-emerald-700 bg-emerald-900/40 text-emerald-200 hover:bg-emerald-900/70'
+                            ? 'border-line text-ink-dim hover:border-line'
+                            : 'border-live bg-live/40 text-live hover:bg-live/70'
                         }`}
                       >
                         {serverBusy === agent.slug ? 'Working…' : enabled ? 'Disable' : 'Enable'}
                       </button>
                       <button
                         onClick={() => loadAgentIntoForm(agent)}
-                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                        className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                       >
                         Edit
                       </button>
@@ -480,7 +503,7 @@ export default function DashboardPage() {
                 )
               })}
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Model Servers</h2>
               <div className="space-y-3">
                 {models.map((server) => {
@@ -488,18 +511,18 @@ export default function DashboardPage() {
                   const canStart = server.onbox && server.startable && !active
                   const canStop = server.onbox && active
                   return (
-                    <div key={server.slug} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
-                      <div className="mb-1 flex items-center justify-between gap-3 text-stone-100">
+                    <div key={server.slug} className="rounded-2xl border border-line bg-ground p-4 text-sm">
+                      <div className="mb-1 flex items-center justify-between gap-3 text-ink">
                         <span className="min-w-0 truncate">{server.slug}</span>
                         <div className="flex shrink-0 items-center gap-2">
-                          <span className={server.state === 'running' ? 'text-emerald-400' : 'text-stone-500'}>
+                          <span className={server.state === 'running' ? 'text-live' : 'text-ink-faint'}>
                             {server.state}
                           </span>
                           {canStart && (
                             <button
                               disabled={serverBusy !== null}
                               onClick={() => void handleServerAction(server.slug, 'start')}
-                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70 disabled:opacity-40"
+                              className="rounded-lg border border-live bg-live/40 px-3 py-2 text-sm text-live sm:px-2 sm:py-1 sm:text-xs hover:bg-live/70 disabled:opacity-40"
                             >
                               {serverBusy === server.slug ? 'Starting…' : 'Start'}
                             </button>
@@ -510,7 +533,7 @@ export default function DashboardPage() {
                               confirmLabel="Confirm stop"
                               disabled={serverBusy !== null}
                               onConfirm={() => void handleServerAction(server.slug, 'stop')}
-                              className="rounded-lg border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-rose-950/70 disabled:opacity-40"
+                              className="rounded-lg border border-gone bg-gone/40 px-3 py-2 text-sm text-gone sm:px-2 sm:py-1 sm:text-xs hover:bg-gone/70 disabled:opacity-40"
                             />
                           )}
                           {server.can_sleep && (
@@ -519,12 +542,12 @@ export default function DashboardPage() {
                               confirmLabel="Confirm sleep"
                               disabled={serverBusy !== null}
                               onConfirm={() => void handleServerAction(server.slug, 'sleep')}
-                              className="rounded-lg border border-indigo-800 bg-indigo-950/40 px-3 py-2 text-sm text-indigo-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-indigo-950/70 disabled:opacity-40"
+                              className="rounded-lg border border-accent bg-accent/10 px-3 py-2 text-sm text-accent sm:px-2 sm:py-1 sm:text-xs hover:bg-accent/10 disabled:opacity-40"
                             />
                           )}
                         </div>
                       </div>
-                      <div className="text-stone-400">
+                      <div className="text-ink-dim">
                         {server.backend_device}
                         {server.port ? ` · :${server.port}` : ''}
                         {server.resident_gib_estimate ? ` · ~${server.resident_gib_estimate} GiB` : ''}
@@ -533,33 +556,33 @@ export default function DashboardPage() {
                       {server.consumers_note && (
                         // consumers_note covers consumers bind() can't express — e.g. Hermes,
                         // which isn't a db.agents row, so it never appears in bound_agents above.
-                        <div className="mt-1 text-xs text-stone-500">{server.consumers_note}</div>
+                        <div className="mt-1 text-xs text-ink-faint">{server.consumers_note}</div>
                       )}
                       {server.endpoints?.tailnet && (
                         <div className="mt-1 flex items-center gap-2">
-                          <code className="min-w-0 truncate font-mono text-xs text-stone-500">{server.endpoints.tailnet}</code>
+                          <code className="min-w-0 truncate font-mono text-xs text-ink-faint">{server.endpoints.tailnet}</code>
                           <button
                             onClick={() => {
                               void navigator.clipboard?.writeText(server.endpoints.tailnet)
                               setStatusMessage(`Copied ${server.endpoints.tailnet}`)
                             }}
-                            className="shrink-0 rounded border border-stone-700 px-3 py-2 text-[10px] uppercase tracking-wide text-stone-400 hover:border-stone-500 sm:px-2 sm:py-1"
+                            className="shrink-0 rounded border border-line px-3 py-2 text-[10px] uppercase tracking-wide text-ink-dim hover:border-line sm:px-2 sm:py-1"
                           >
                             copy
                           </button>
                         </div>
                       )}
                       {!server.startable && server.not_startable_reason && (
-                        <div className="mt-1 text-xs text-stone-500">{server.not_startable_reason}</div>
+                        <div className="mt-1 text-xs text-ink-faint">{server.not_startable_reason}</div>
                       )}
                       {serverError && serverError.slug === server.slug && (
-                        <div className="mt-2 rounded-xl border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+                        <div className="mt-2 rounded-xl border border-accent/60 bg-accent/30 p-2 text-xs text-accent">
                           {serverError.message}
                           {serverError.message.includes('force=True') && (
                             <button
                               disabled={serverBusy !== null}
                               onClick={() => void handleServerAction(server.slug, 'start', true)}
-                              className="ml-2 rounded-lg border border-amber-600 bg-amber-900/50 px-3 py-1.5 text-amber-100 sm:px-2 sm:py-0.5 hover:bg-amber-900/80 disabled:opacity-40"
+                              className="ml-2 rounded-lg border border-accent bg-accent/50 px-3 py-1.5 text-accent sm:px-2 sm:py-0.5 hover:bg-accent/80 disabled:opacity-40"
                             >
                               Force start
                             </button>
@@ -571,12 +594,12 @@ export default function DashboardPage() {
                 })}
               </div>
               {models.length > 0 && models[0].gtt_used_gib != null && (
-                <p className="mt-3 text-xs text-stone-500">
+                <p className="mt-3 text-xs text-ink-faint">
                   GPU unified memory (GTT): {models[0].gtt_used_gib} / {models[0].gtt_total_gib} GiB used
                 </p>
               )}
 
-              <h3 className="mb-2 mt-6 text-xs uppercase tracking-[0.2em] text-stone-400">
+              <h3 className="mb-2 mt-6 text-xs uppercase tracking-[0.2em] text-ink-dim">
                 Pull new model from Hugging Face
               </h3>
               <div className="space-y-2">
@@ -584,33 +607,33 @@ export default function DashboardPage() {
                   value={newPull.repo_id}
                   onChange={(e) => setNewPull({ ...newPull, repo_id: e.target.value })}
                   placeholder="Repo — e.g. unsloth/Qwen3.6-27B-MTP-GGUF"
-                  className="w-full rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                 />
                 <input
                   value={newPull.filename}
                   onChange={(e) => setNewPull({ ...newPull, filename: e.target.value })}
                   placeholder="GGUF filename — e.g. Qwen3.6-27B-MTP-Q4_K_M.gguf"
-                  className="w-full rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  className="w-full rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                 />
                 <div className="flex flex-wrap gap-2">
                   <input
                     value={newPull.name}
                     onChange={(e) => setNewPull({ ...newPull, name: e.target.value })}
                     placeholder="Server name (slug)"
-                    className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                    className="flex-1 rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                   />
                   <input
                     value={newPull.port}
                     onChange={(e) => setNewPull({ ...newPull, port: e.target.value })}
                     placeholder="Port (auto)"
-                    className="w-28 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                    className="w-28 rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                   />
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <select
                     value={newPull.runtime}
                     onChange={(e) => setNewPull({ ...newPull, runtime: e.target.value })}
-                    className="min-w-0 flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2.5 text-sm text-stone-100 focus:border-amber-400 focus:outline-none sm:py-2"
+                    className="min-w-0 flex-1 rounded-xl border border-line bg-ground px-3 py-2.5 text-sm text-ink focus:border-accent focus:outline-none sm:py-2"
                   >
                     {(runtimes.length ? runtimes : [{ slug: 'mainline-vulkan', description: 'mainline llama.cpp, Vulkan GPU' }]).map((r) => (
                       <option key={r.slug} value={r.slug}>
@@ -620,44 +643,44 @@ export default function DashboardPage() {
                   </select>
                   <button
                     onClick={() => void handlePullModel()}
-                    className="rounded-xl border border-amber-400 bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950 hover:bg-amber-300"
+                    className="rounded-xl border border-accent bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:bg-accent"
                   >
                     Pull
                   </button>
                 </div>
                 {pullError && (
-                  <div className="rounded-xl border border-rose-900/60 bg-rose-950/30 p-2 text-xs text-rose-200">
+                  <div className="rounded-xl border border-gone/60 bg-gone/30 p-2 text-xs text-gone">
                     {pullError}
                   </div>
                 )}
                 {pulls.filter((p) => !(p.status === 'completed' && p.stale === false)).slice(0, 5).map((p) => (
-                  <div key={p.job_id} className="rounded-xl border border-stone-800 bg-stone-950 p-2 text-xs">
-                    <div className="flex items-center justify-between text-stone-200">
+                  <div key={p.job_id} className="rounded-xl border border-line bg-ground p-2 text-xs">
+                    <div className="flex items-center justify-between text-ink">
                       <span>{p.slug} ← {p.repo_id}</span>
                       <span className={
-                        p.status === 'completed' ? 'text-emerald-400'
-                        : p.status === 'failed' || p.stale ? 'text-rose-400'
-                        : 'text-amber-300'
+                        p.status === 'completed' ? 'text-live'
+                        : p.status === 'failed' || p.stale ? 'text-gone'
+                        : 'text-accent'
                       }>
                         {p.stale && p.status !== 'completed' && p.status !== 'failed' ? 'stale (api restarted)' : p.status}
                       </span>
                     </div>
-                    {p.error && <div className="mt-1 text-rose-300">{p.error}</div>}
+                    {p.error && <div className="mt-1 text-gone">{p.error}</div>}
                     {!p.error && p.status === 'downloading' && p.log_tail && (
-                      <pre className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap break-all text-stone-500">{p.log_tail.slice(-300)}</pre>
+                      <pre className="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap break-all text-ink-faint">{p.log_tail.slice(-300)}</pre>
                     )}
                   </div>
                 ))}
               </div>
             </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">{editingAgentId ? 'Edit Agent' : 'Agent Creation Wizard'}</h2>
                 {editingAgentId ? (
                   <button
                     onClick={resetModeForm}
-                    className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                    className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                   >
                     New Agent
                   </button>
@@ -668,83 +691,83 @@ export default function DashboardPage() {
                   value={newMode.name}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, name: e.target.value }))}
                   placeholder="Agent name"
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <input
                   value={newMode.slug}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, slug: e.target.value }))}
                   placeholder="Slug"
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <textarea
                   value={newMode.description}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, description: e.target.value }))}
                   placeholder="Description"
                   rows={2}
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <textarea
                   value={newMode.system_prompt}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, system_prompt: e.target.value }))}
                   placeholder="System prompt"
                   rows={5}
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <input
                   value={newMode.greeting}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, greeting: e.target.value }))}
                   placeholder="Greeting"
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <textarea
                   value={newMode.context_instructions}
                   onChange={(e) => setNewMode((prev) => ({ ...prev, context_instructions: e.target.value }))}
                   placeholder="Context instructions"
                   rows={3}
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <div className="grid gap-3 md:grid-cols-2">
                   <input
                     value={newMode.mode_category}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, mode_category: e.target.value }))}
                     placeholder="Category"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.icon}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, icon: e.target.value }))}
                     placeholder="Icon"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.backend}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, backend: e.target.value }))}
                     placeholder="LLM backend"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.model}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, model: e.target.value }))}
                     placeholder="Model"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.temperature}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, temperature: e.target.value }))}
                     placeholder="Temperature"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.keywords}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, keywords: e.target.value }))}
                     placeholder="Keywords comma-separated"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                   <input
                     value={newMode.keyboard_shortcut}
                     onChange={(e) => setNewMode((prev) => ({ ...prev, keyboard_shortcut: e.target.value }))}
                     placeholder="Shortcut"
-                    className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                    className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   />
                 </div>
                 <div className="flex flex-wrap gap-3">
@@ -784,7 +807,7 @@ export default function DashboardPage() {
                       await refreshDashboard()
                       resetModeForm()
                     }}
-                    className="rounded-full bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950"
+                    className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-ink"
                   >
                     {editingAgentId ? 'Save Agent' : 'Create Agent'}
                   </button>
@@ -792,7 +815,7 @@ export default function DashboardPage() {
                     <>
                       <button
                         onClick={resetModeForm}
-                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 hover:border-stone-500"
+                        className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim hover:border-line"
                       >
                         Cancel
                       </button>
@@ -805,7 +828,7 @@ export default function DashboardPage() {
                           resetModeForm()
                           await refreshDashboard()
                         }}
-                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                        className="rounded-full border border-gone px-4 py-2 text-sm text-gone sm:px-3 sm:py-1 sm:text-xs hover:border-gone hover:bg-gone/10"
                       />
                     </>
                   ) : null}
@@ -816,28 +839,28 @@ export default function DashboardPage() {
         )}
 
         {tab === 'memories' && (
-          <section className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+          <section className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
               <h2 className="text-2xl font-semibold">Memory Browser</h2>
               <input
                 value={memoryQuery}
                 onChange={(e) => setMemoryQuery(e.target.value)}
                 placeholder="Search memories"
-                className="w-full min-w-0 rounded-full border border-stone-700 bg-stone-950 px-4 py-2 text-sm text-stone-100 outline-none sm:max-w-md"
+                className="w-full min-w-0 rounded-full border border-line bg-ground px-4 py-2 text-sm text-ink outline-none sm:max-w-md"
               />
             </div>
             <div className="space-y-3">
               {filteredMemories.map((memory) => (
-                <article key={memory.id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
-                  <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-stone-500">
+                <article key={memory.id} className="rounded-2xl border border-line bg-ground p-4">
+                  <div className="mb-2 flex items-center gap-2 text-xs uppercase tracking-wide text-ink-faint">
                     <span>{memory.content_type}</span>
                     <span>confidence {memory.confidence ?? 'n/a'}</span>
                   </div>
-                  <p className="break-words text-sm text-stone-100">{memory.content}</p>
+                  <p className="break-words text-sm text-ink">{memory.content}</p>
                   <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex flex-wrap gap-2">
                       {memory.categories.map((category) => (
-                        <span key={category} className="rounded-full bg-stone-800 px-2 py-1 text-xs text-stone-300">
+                        <span key={category} className="rounded-full bg-panel-2 px-2 py-1 text-xs text-ink-dim">
                           {category}
                         </span>
                       ))}
@@ -850,7 +873,7 @@ export default function DashboardPage() {
                         setStatusMessage('Memory deleted.')
                         await refreshDashboard()
                       }}
-                      className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                      className="rounded-full border border-gone px-4 py-2 text-sm text-gone sm:px-3 sm:py-1 sm:text-xs hover:border-gone hover:bg-gone/10"
                     />
                   </div>
                 </article>
@@ -862,10 +885,10 @@ export default function DashboardPage() {
         {tab === 'tasks' && (
           <section className="grid min-w-0 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
             {/* Todos column */}
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Todos</h2>
-                <span className="text-xs text-stone-500">
+                <span className="text-xs text-ink-faint">
                   {todos.filter((t) => t.status === 'proposed').length} proposed ·{' '}
                   {todos.filter((t) => t.status === 'active').length} active
                 </span>
@@ -876,11 +899,11 @@ export default function DashboardPage() {
                   onChange={(e) => setNewTodoTitle(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateTodo() }}
                   placeholder="Add a todo and press Enter…"
-                  className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  className="flex-1 rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                 />
                 <button
                   onClick={() => void handleCreateTodo()}
-                  className="rounded-xl border border-amber-400 bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950 hover:bg-amber-300"
+                  className="rounded-xl border border-accent bg-accent px-4 py-2 text-sm font-medium text-accent-ink hover:bg-accent"
                 >
                   Add
                 </button>
@@ -897,9 +920,9 @@ export default function DashboardPage() {
                       <article key={t.id} className="rounded-xl border border-fuchsia-900/50 bg-fuchsia-950/20 p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="text-sm text-stone-100">{t.title}</p>
-                            {t.notes && <p className="mt-1 text-xs text-stone-400">{t.notes}</p>}
-                            <p className="mt-1 text-[11px] text-stone-500">
+                            <p className="text-sm text-ink">{t.title}</p>
+                            {t.notes && <p className="mt-1 text-xs text-ink-dim">{t.notes}</p>}
+                            <p className="mt-1 text-[11px] text-ink-faint">
                               {t.source.type === 'conversation'
                                 ? `from conversation · confidence ${(t.source.confidence ?? 0).toFixed(2)}`
                                 : `from ${t.source.type}`}
@@ -908,13 +931,13 @@ export default function DashboardPage() {
                           <div className="flex shrink-0 flex-wrap justify-end gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'accept')}
-                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
+                              className="rounded-lg border border-live bg-live/40 px-3 py-2 text-sm text-live sm:px-2 sm:py-1 sm:text-xs hover:bg-live/70"
                             >
                               Accept
                             </button>
                             <button
                               onClick={() => void handleTodoAction(t.id, 'dismiss')}
-                              className="rounded-lg border border-stone-700 bg-stone-800 px-2 py-1 text-xs text-stone-400 hover:bg-stone-700"
+                              className="rounded-lg border border-line bg-panel-2 px-2 py-1 text-xs text-ink-dim hover:bg-panel-2"
                             >
                               Dismiss
                             </button>
@@ -928,25 +951,25 @@ export default function DashboardPage() {
 
               {/* Active */}
               <div>
-                <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-400">Active</h3>
+                <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-live">Active</h3>
                 {todos.filter((t) => t.status === 'active').length === 0 ? (
-                  <p className="text-sm text-stone-500">Nothing on the list. Add one above or accept a proposal.</p>
+                  <p className="text-sm text-ink-faint">Nothing on the list. Add one above or accept a proposal.</p>
                 ) : (
                   <div className="space-y-2">
                     {todos.filter((t) => t.status === 'active').map((t) => (
-                      <article key={t.id} className="rounded-xl border border-stone-800 bg-stone-950 p-3">
+                      <article key={t.id} className="rounded-xl border border-line bg-ground p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="text-sm text-stone-100">{t.title}</p>
-                            {t.notes && <p className="mt-1 text-xs text-stone-400">{t.notes}</p>}
+                            <p className="text-sm text-ink">{t.title}</p>
+                            {t.notes && <p className="mt-1 text-xs text-ink-dim">{t.notes}</p>}
                             {t.due_at && (
-                              <p className="mt-1 text-[11px] text-amber-400">due {t.due_at.slice(0, 10)}</p>
+                              <p className="mt-1 text-[11px] text-accent">due {t.due_at.slice(0, 10)}</p>
                             )}
                           </div>
                           <div className="flex shrink-0 flex-wrap justify-end gap-1">
                             <button
                               onClick={() => void handleTodoAction(t.id, 'done')}
-                              className="rounded-lg border border-emerald-700 bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200 sm:px-2 sm:py-1 sm:text-xs hover:bg-emerald-900/70"
+                              className="rounded-lg border border-live bg-live/40 px-3 py-2 text-sm text-live sm:px-2 sm:py-1 sm:text-xs hover:bg-live/70"
                             >
                               Done
                             </button>
@@ -954,7 +977,7 @@ export default function DashboardPage() {
                               label="Delete"
                               confirmLabel="Confirm delete"
                               onConfirm={() => void handleTodoAction(t.id, 'delete')}
-                              className="rounded-lg border border-stone-700 bg-stone-800 px-2 py-1 text-xs text-stone-500 hover:text-rose-300"
+                              className="rounded-lg border border-line bg-panel-2 px-2 py-1 text-xs text-ink-faint hover:text-gone"
                             />
                           </div>
                         </div>
@@ -966,10 +989,10 @@ export default function DashboardPage() {
             </div>
 
             {/* Projects column */}
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Projects</h2>
-                <span className="text-xs text-stone-500">{planningProjects.length} active</span>
+                <span className="text-xs text-ink-faint">{planningProjects.length} active</span>
               </div>
               <div className="mb-6 flex gap-2">
                 <input
@@ -977,57 +1000,57 @@ export default function DashboardPage() {
                   onChange={(e) => setNewProjectName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') void handleCreateProject() }}
                   placeholder="New project name…"
-                  className="flex-1 rounded-xl border border-stone-700 bg-stone-950 px-3 py-2 text-sm text-stone-100 placeholder-stone-600 focus:border-amber-400 focus:outline-none"
+                  className="flex-1 rounded-xl border border-line bg-ground px-3 py-2 text-sm text-ink placeholder-ink-faint focus:border-accent focus:outline-none"
                 />
                 <button
                   onClick={() => void handleCreateProject()}
-                  className="rounded-xl border border-stone-700 bg-stone-800 px-4 py-2 text-sm text-stone-200 hover:border-amber-400 hover:text-amber-300"
+                  className="rounded-xl border border-line bg-panel-2 px-4 py-2 text-sm text-ink hover:border-accent hover:text-accent"
                 >
                   Add
                 </button>
               </div>
 
               {planningProjects.length === 0 ? (
-                <p className="text-sm text-stone-500">
+                <p className="text-sm text-ink-faint">
                   No projects yet. Create one above so ARIA can attach todos and capture status updates against it.
                 </p>
               ) : (
                 <div className="space-y-3">
                   {planningProjects.map((p) => (
-                    <article key={p.id} className="rounded-xl border border-stone-800 bg-stone-950 p-4">
+                    <article key={p.id} className="rounded-xl border border-line bg-ground p-4">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h3 className="text-sm font-semibold text-stone-100">{p.name}</h3>
-                          <p className="text-[11px] text-stone-500">{p.slug}</p>
+                          <h3 className="text-sm font-semibold text-ink">{p.name}</h3>
+                          <p className="text-[11px] text-ink-faint">{p.slug}</p>
                         </div>
                         <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-widest ${
                           p.status === 'active'
-                            ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300'
+                            ? 'border-live bg-live/40 text-live'
                             : p.status === 'paused'
-                            ? 'border-amber-800 bg-amber-950/40 text-amber-300'
-                            : 'border-stone-700 bg-stone-800 text-stone-400'
+                            ? 'border-accent bg-accent/40 text-accent'
+                            : 'border-line bg-panel-2 text-ink-dim'
                         }`}>
                           {p.status}
                         </span>
                       </div>
-                      {p.summary && <p className="mt-2 text-xs text-stone-400">{p.summary}</p>}
+                      {p.summary && <p className="mt-2 text-xs text-ink-dim">{p.summary}</p>}
                       {p.next_steps.length > 0 && (
                         <div className="mt-3">
-                          <p className="text-[10px] uppercase tracking-widest text-stone-500">Next steps</p>
+                          <p className="text-[10px] uppercase tracking-widest text-ink-faint">Next steps</p>
                           <ul className="mt-1 space-y-0.5">
                             {p.next_steps.map((step, i) => (
-                              <li key={i} className="text-xs text-stone-300">• {step}</li>
+                              <li key={i} className="text-xs text-ink-dim">• {step}</li>
                             ))}
                           </ul>
                         </div>
                       )}
                       {p.recent_activity.length > 0 && (
                         <div className="mt-3">
-                          <p className="text-[10px] uppercase tracking-widest text-stone-500">Recent activity</p>
+                          <p className="text-[10px] uppercase tracking-widest text-ink-faint">Recent activity</p>
                           <ul className="mt-1 space-y-0.5">
                             {p.recent_activity.slice(-3).map((a, i) => (
-                              <li key={i} className="text-[11px] text-stone-400">
-                                <span className="text-stone-600">{a.at.slice(0, 16).replace('T', ' ')}</span> {a.note}
+                              <li key={i} className="text-[11px] text-ink-dim">
+                                <span className="text-ink-faint">{a.at.slice(0, 16).replace('T', ' ')}</span> {a.note}
                               </li>
                             ))}
                           </ul>
@@ -1043,18 +1066,18 @@ export default function DashboardPage() {
 
         {tab === 'research' && (
           <section className="grid min-w-0 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Research Runs</h2>
               <div className="space-y-3">
                 {researchRuns.map((run) => (
-                  <article key={run.id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
+                  <article key={run.id} className="rounded-2xl border border-line bg-ground p-4">
                     <div className="mb-2 flex items-center justify-between gap-4">
-                      <h3 className="font-medium text-stone-100">{run.query}</h3>
-                      <span className="rounded-full bg-stone-800 px-2 py-1 text-xs uppercase text-stone-300">
+                      <h3 className="font-medium text-ink">{run.query}</h3>
+                      <span className="rounded-full bg-panel-2 px-2 py-1 text-xs uppercase text-ink-dim">
                         {run.status}
                       </span>
                     </div>
-                    <p className="text-xs text-stone-500">
+                    <p className="text-xs text-ink-faint">
                       Depth {run.progress.current_depth}/{run.progress.max_depth} ·
                       Queries {run.progress.queries_completed}/{run.progress.queries_total} ·
                       Learnings {run.progress.learnings_count}
@@ -1063,17 +1086,17 @@ export default function DashboardPage() {
                 ))}
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Background Tasks</h2>
               <div className="space-y-3">
                 {tasks.slice(0, 10).map((task) => (
-                  <article key={task._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
+                  <article key={task._id} className="rounded-2xl border border-line bg-ground p-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="text-sm text-stone-100">{task.name}</div>
-                      <div className="text-xs uppercase text-stone-400">{task.status}</div>
+                      <div className="text-sm text-ink">{task.name}</div>
+                      <div className="text-xs uppercase text-ink-dim">{task.status}</div>
                     </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-stone-800">
-                      <div className="h-full bg-amber-400" style={{ width: `${task.progress || 0}%` }} />
+                    <div className="h-2 overflow-hidden rounded-full bg-panel-2">
+                      <div className="h-full bg-accent" style={{ width: `${task.progress || 0}%` }} />
                     </div>
                   </article>
                 ))}
@@ -1084,33 +1107,33 @@ export default function DashboardPage() {
 
         {tab === 'usage' && (
           <section className="grid min-w-0 gap-4 xl:grid-cols-[0.8fr_1.1fr_1.1fr]">
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Summary</h2>
-              <div className="space-y-3 text-sm text-stone-300">
+              <div className="space-y-3 text-sm text-ink-dim">
                 <div>Requests: {usage?.requests ?? 0}</div>
                 <div>Input tokens: {usage?.input_tokens ?? 0}</div>
                 <div>Output tokens: {usage?.output_tokens ?? 0}</div>
                 <div>Total tokens: {usage?.total_tokens ?? 0}</div>
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Agent</h2>
               <div className="space-y-3">
                 {usageByAgent.map((row) => (
-                  <div key={row._id || 'unknown'} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
-                    <div className="mb-1 text-stone-100">{row._id || 'unknown'}</div>
-                    <div className="text-stone-400">{row.total_tokens} tokens · {row.requests} requests</div>
+                  <div key={row._id || 'unknown'} className="rounded-2xl border border-line bg-ground p-4 text-sm">
+                    <div className="mb-1 text-ink">{row._id || 'unknown'}</div>
+                    <div className="text-ink-dim">{row.total_tokens} tokens · {row.requests} requests</div>
                   </div>
                 ))}
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">By Model</h2>
               <div className="space-y-3">
                 {usageByModel.map((row) => (
-                  <div key={row._id || 'unknown'} className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-sm">
-                    <div className="mb-1 text-stone-100">{row._id || 'unknown'}</div>
-                    <div className="text-stone-400">{row.total_tokens} tokens · {row.requests} requests</div>
+                  <div key={row._id || 'unknown'} className="rounded-2xl border border-line bg-ground p-4 text-sm">
+                    <div className="mb-1 text-ink">{row._id || 'unknown'}</div>
+                    <div className="text-ink-dim">{row.total_tokens} tokens · {row.requests} requests</div>
                   </div>
                 ))}
               </div>
@@ -1120,31 +1143,31 @@ export default function DashboardPage() {
 
         {tab === 'conversations' && (
           <section className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.8fr]">
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3 sm:gap-4">
                 <h2 className="text-2xl font-semibold">Conversation Management</h2>
                 <input
                   value={conversationQuery}
                   onChange={(e) => setConversationQuery(e.target.value)}
                   placeholder="Search conversations"
-                  className="w-full max-w-md rounded-full border border-stone-700 bg-stone-950 px-4 py-2 text-sm text-stone-100 outline-none"
+                  className="w-full max-w-md rounded-full border border-line bg-ground px-4 py-2 text-sm text-ink outline-none"
                 />
               </div>
               <div className="space-y-3">
                 {filteredConversations.map((conversation) => (
-                  <article key={conversation.id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
+                  <article key={conversation.id} className="rounded-2xl border border-line bg-ground p-4">
                     <div className="mb-2 flex items-center justify-between gap-4">
-                      <div className="font-medium text-stone-100">{conversation.title}</div>
-                      <div className="text-xs uppercase text-stone-500">{conversation.status}</div>
+                      <div className="font-medium text-ink">{conversation.title}</div>
+                      <div className="text-xs uppercase text-ink-faint">{conversation.status}</div>
                     </div>
-                    <p className="text-sm text-stone-400">{conversation.summary || 'No summary yet.'}</p>
+                    <p className="text-sm text-ink-dim">{conversation.summary || 'No summary yet.'}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <button
                         onClick={async () => {
                           const exported = await apiClient.exportConversation(conversation.id, 'markdown')
                           setSelectedConversationExport(exported.content || '')
                         }}
-                        className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                        className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                       >
                         Export Markdown
                       </button>
@@ -1156,16 +1179,16 @@ export default function DashboardPage() {
                           setStatusMessage(`Deleted conversation.`)
                           await refreshDashboard()
                         }}
-                        className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                        className="rounded-full border border-gone px-4 py-2 text-sm text-gone sm:px-3 sm:py-1 sm:text-xs hover:border-gone hover:bg-gone/10"
                       />
                     </div>
                   </article>
                 ))}
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Export Preview</h2>
-              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-stone-950 p-4 text-xs text-stone-300">
+              <pre className="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-ground p-4 text-xs text-ink-dim">
                 {selectedConversationExport || 'Select a conversation to preview exported markdown.'}
               </pre>
             </div>
@@ -1174,20 +1197,20 @@ export default function DashboardPage() {
 
         {tab === 'workflows' && (
           <section className="grid min-w-0 gap-4 xl:grid-cols-[1fr_0.9fr]">
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Workflow Library</h2>
               <div className="space-y-3">
                 {workflows.map((workflow) => (
-                  <article key={workflow._id} className="rounded-2xl border border-stone-800 bg-stone-950 p-4">
+                  <article key={workflow._id} className="rounded-2xl border border-line bg-ground p-4">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                      <div className="font-medium text-stone-100">{workflow.name}</div>
+                      <div className="font-medium text-ink">{workflow.name}</div>
                       <div className="flex flex-wrap gap-2">
                         <button
                           onClick={async () => {
                             const status = await apiClient.workflowStatus(workflow._id)
                             setWorkflowStatus(status)
                           }}
-                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                          className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                         >
                           Status
                         </button>
@@ -1197,7 +1220,7 @@ export default function DashboardPage() {
                             setStatusMessage(`Started dry run for ${workflow.name}.`)
                             setTasks(await apiClient.listTasks())
                           }}
-                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                          className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                         >
                           Dry Run
                         </button>
@@ -1207,7 +1230,7 @@ export default function DashboardPage() {
                             setStatusMessage(`Started workflow ${workflow.name}.`)
                             setTasks(await apiClient.listTasks())
                           }}
-                          className="rounded-full border border-stone-700 px-4 py-2 text-sm text-stone-300 sm:px-3 sm:py-1 sm:text-xs hover:border-stone-500"
+                          className="rounded-full border border-line px-4 py-2 text-sm text-ink-dim sm:px-3 sm:py-1 sm:text-xs hover:border-line"
                         >
                           Run
                         </button>
@@ -1219,41 +1242,41 @@ export default function DashboardPage() {
                             setStatusMessage(`Deleted workflow ${workflow.name}.`)
                             await refreshDashboard()
                           }}
-                          className="rounded-full border border-red-900 px-4 py-2 text-sm text-red-400 sm:px-3 sm:py-1 sm:text-xs hover:border-red-700 hover:bg-red-950"
+                          className="rounded-full border border-gone px-4 py-2 text-sm text-gone sm:px-3 sm:py-1 sm:text-xs hover:border-gone hover:bg-gone/10"
                         />
                       </div>
                     </div>
-                    <p className="break-words text-sm text-stone-400">{workflow.description}</p>
-                    <p className="mt-2 text-xs text-stone-500">{workflow.steps.length} steps</p>
+                    <p className="break-words text-sm text-ink-dim">{workflow.description}</p>
+                    <p className="mt-2 text-xs text-ink-faint">{workflow.steps.length} steps</p>
                   </article>
                 ))}
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Create Workflow</h2>
               <div className="space-y-3">
                 <input
                   value={newWorkflow.name}
                   onChange={(e) => setNewWorkflow((prev) => ({ ...prev, name: e.target.value }))}
                   placeholder="Workflow name"
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                 />
                 <textarea
                   value={newWorkflow.description}
                   onChange={(e) => setNewWorkflow((prev) => ({ ...prev, description: e.target.value }))}
                   placeholder="Description"
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 text-sm text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 text-sm text-ink outline-none"
                   rows={3}
                 />
                 <textarea
                   value={newWorkflow.stepsJson}
                   onChange={(e) => setNewWorkflow((prev) => ({ ...prev, stepsJson: e.target.value }))}
-                  className="w-full rounded-2xl border border-stone-700 bg-stone-950 px-4 py-3 font-mono text-xs text-stone-100 outline-none"
+                  className="w-full rounded-2xl border border-line bg-ground px-4 py-3 font-mono text-xs text-ink outline-none"
                   rows={10}
                 />
-                <p className="text-xs text-stone-500">
-                  Steps support <code className="rounded bg-stone-800 px-1 py-0.5">{'{{steps.0.response}}'}</code>, dependency arrays,
-                  and condition gates like <code className="rounded bg-stone-800 px-1 py-0.5">{'{"action":"condition","params":{"value":"{{steps.0.status}}","equals":"success"}}'}</code>.
+                <p className="text-xs text-ink-faint">
+                  Steps support <code className="rounded bg-panel-2 px-1 py-0.5">{'{{steps.0.response}}'}</code>, dependency arrays,
+                  and condition gates like <code className="rounded bg-panel-2 px-1 py-0.5">{'{"action":"condition","params":{"value":"{{steps.0.status}}","equals":"success"}}'}</code>.
                 </p>
                 <button
                   onClick={async () => {
@@ -1272,13 +1295,13 @@ export default function DashboardPage() {
                     setStatusMessage(`Created workflow ${newWorkflow.name}.`)
                     setWorkflows(await apiClient.listWorkflows())
                   }}
-                  className="rounded-full bg-amber-400 px-4 py-2 text-sm font-medium text-stone-950"
+                  className="rounded-full bg-accent px-4 py-2 text-sm font-medium text-accent-ink"
                 >
                   Create Workflow
                 </button>
                 {workflowStatus ? (
-                  <div className="rounded-2xl border border-stone-800 bg-stone-950 p-4 text-xs text-stone-300">
-                    <div className="mb-2 text-sm text-stone-100">{workflowStatus.workflow?.name || 'Workflow status'}</div>
+                  <div className="rounded-2xl border border-line bg-ground p-4 text-xs text-ink-dim">
+                    <div className="mb-2 text-sm text-ink">{workflowStatus.workflow?.name || 'Workflow status'}</div>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words">
                       {JSON.stringify(workflowStatus.runs?.slice(0, 3) || [], null, 2)}
                     </pre>
@@ -1291,29 +1314,29 @@ export default function DashboardPage() {
 
         {tab === 'settings' && (
           <section className="grid min-w-0 gap-4 md:grid-cols-2">
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Runtime Notes</h2>
-              <div className="space-y-3 text-sm text-stone-400">
+              <div className="space-y-3 text-sm text-ink-dim">
                 <p>Settings editing is still partial. This panel currently exposes runtime state for models and tasks.</p>
                 <p>API-key auth and configurable CORS are now backend-configurable via environment variables.</p>
                 <p>Use the chat UI for live mode switching, or the CLI for scripting and automation.</p>
               </div>
             </div>
-            <div className="min-w-0 rounded-3xl border border-stone-800 bg-stone-900 p-4 sm:p-6">
+            <div className="min-w-0 rounded-3xl border border-line bg-panel p-4 sm:p-6">
               <h2 className="mb-4 text-xl font-semibold sm:text-2xl">Cutover Readiness</h2>
-              <div className="space-y-3 text-sm text-stone-300">
-                <div className="rounded-2xl bg-stone-950 p-4">
-                  <div className="mb-2 text-stone-100">Ready: {cutover?.ready ? 'yes' : 'not yet'}</div>
+              <div className="space-y-3 text-sm text-ink-dim">
+                <div className="rounded-2xl bg-ground p-4">
+                  <div className="mb-2 text-ink">Ready: {cutover?.ready ? 'yes' : 'not yet'}</div>
                   {(cutover?.checklist || []).map((item: any) => (
-                    <div key={item.key} className="flex items-center justify-between border-t border-stone-800 py-2 first:border-t-0">
+                    <div key={item.key} className="flex items-center justify-between border-t border-line py-2 first:border-t-0">
                       <span>{item.label}</span>
-                      <span className="text-xs uppercase text-stone-400">{item.status}</span>
+                      <span className="text-xs uppercase text-ink-dim">{item.status}</span>
                     </div>
                   ))}
                 </div>
-                <div className="rounded-2xl bg-stone-950 p-4">
-                  <div className="mb-2 text-stone-100">Audit Summary</div>
-                  <div className="text-stone-400">
+                <div className="rounded-2xl bg-ground p-4">
+                  <div className="mb-2 text-ink">Audit Summary</div>
+                  <div className="text-ink-dim">
                     {(auditOverview?.summary?.events || []).length} grouped event buckets in the last {auditOverview?.summary?.hours || 24}h
                   </div>
                 </div>
@@ -1322,6 +1345,6 @@ export default function DashboardPage() {
           </section>
         )}
       </div>
-    </main>
+    </AppShell>
   )
 }

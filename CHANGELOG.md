@@ -2,6 +2,140 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-05] - Hermes follows ARIA's resident model; the passthrough learns to route
+
+### Added
+- **Hermes no longer names a model.** Its `model.default`/`model.provider` were
+  a hand-edited pair that had to change on every swap (qwen → laguna → chadrock
+  → DS4), and forgetting it left Hermes dialling a dead port. `~/.hermes/
+  config.yaml` now carries a `custom:aria` provider pointing at ARIA's
+  `/llm/v1` passthrough with the synthetic model id `aria-resident`, so
+  **starting a model in ARIA is the only step** — no config edit, no gateway
+  restart. `api_key: ${env:ARIA_API_KEY}` (already present in Hermes's `.env`
+  and equal to ARIA's `API_KEY`), so no secret is stored in the config file.
+  The edit was surgical: the file's ~36KB of load-bearing comments are intact,
+  unlike Hermes's own config writers, which round-trip through `yaml.dump` and
+  drop them. Pre-switch file: `config.yaml.bak-aria-follow-20260805T231323`.
+- **The passthrough now routes, not just forwards** (`infrastructure/
+  llm_route.py`, new). More than one model can be resident — gemma is CPU-only
+  and coexists with anything, and the chadrock+qwen split is a deliberate
+  ~89 GiB pair — so "the local model" was ambiguous. Precedence is now:
+  1. the request's own `model` field when it names a running server (by slug or
+     .gguf filename). llama.cpp ignores unknown `model` values entirely, so the
+     field was free to use as a selector; this is what lets a consumer pick
+     between loaded models with no restart;
+  2. an operator pin (`GET`/`PUT /api/v1/infrastructure/llm-route`, stored in
+     the fixed-`_id` `app_state` doc, same pattern as C4's active project);
+  3. auto — largest `resident_gib` among running on-box servers (prior sole
+     behaviour, unchanged as the default).
+- **`GET /llm/v1/models` is now a catalogue** of every loaded server plus the
+  synthetic `aria-resident` entry, with each model's real `n_ctx` read from its
+  own backend. The `aria-resident` entry advertises the *smallest* resident
+  context, since any loaded model may serve it and over-promising overflows the
+  moment the auto pick moves.
+- **`/operate` gained a "Local model route" panel** (auto / per-model pin, with
+  the resolved server and the reason), a `SERVING` status stat, and a "Serve
+  this" action on the model detail. Both ARIA and Hermes follow this one
+  control, so it is the single place to look instead of inferring the active
+  model from a completion.
+- **MCP `get_llm_route` / `set_llm_route`** — Hermes can see and change the
+  model backing its own replies. *Requires a `hermes-gateway.service` restart
+  to appear in the toolset.*
+
+### Notes
+- Naming a server that ARIA knows but that is **stopped** is a 503 with the
+  running/startable lists, not a silent downgrade to a different model. A
+  **stale pin** does the opposite and degrades to auto — one forgotten setting
+  must not take every consumer offline — but says so in `reason`.
+- `context_length` for `aria-resident` in Hermes's config is set to 100000: the
+  floor of the big models in the registry (qwen 100000, DS4 131072, chadrock
+  262144), so a static value stays safe across a swap while clearing Hermes's
+  hard 64,000 minimum. If only `gemma-4-e4b-Q4` (CPU, 65536) is resident this
+  over-promises — and in practice gemma cannot serve Hermes's main chat at all:
+  a ~26K-token system prompt takes minutes to prefill on CPU.
+
+## [2026-08-05] - `LLAMACPP_URL` follows the resident model (kills the recurring "llm (ConnectError)" page)
+
+### Fixed
+- **`selfcheck` paged `DEGRADED: llm (ConnectError)` every 10 minutes about a
+  server stopped on purpose.** DS4-0731 (`:8107`) became the resident big model
+  earlier today and is RAM-exclusive with `ROCmFP4-qwen3.6-35b-a3b` (`:8103`),
+  so `:8103` went permanently down — but `.env` still pointed `LLAMACPP_URL`
+  there. Each tick enqueued an alert that woke the Hermes alert-triage cron to
+  spawn a diagnostic coding agent for a non-incident. This is the *fourth*
+  instance of the same failure (qwen → laguna → chadrock → DS4), so the fix is
+  structural rather than another port edit: **`LLAMACPP_URL` now points at
+  ARIA's own `/llm/v1` passthrough** (`api/routes/llm_proxy.py`, added earlier
+  today), which resolves to whichever on-box server is actually resident. The
+  `config.py` default was moved in step so an incomplete `.env` can't disagree.
+  `LLAMACPP_API_KEY` must equal `API_KEY` — the proxy sits behind
+  `api_key_middleware`, which accepts the key as `Authorization: Bearer`.
+- **`GET /health/services` called deliberately-stopped servers unhealthy.** The
+  big on-box servers are mutually RAM-exclusive, so all but one are stopped by
+  design; the probe painted the TUI/web health screen permanently red. It now
+  consults the model-server registry and reports
+  `"<slug> stopped (start on demand)"` (ok) instead of `ConnectError` — the
+  same reasoning as the existing `pool_enabled` skip in `selfcheck.py`. A
+  registry failure degrades to probing, never to a 500.
+- **Both LLM probes now send the ARIA key**, since `llamacpp_url` resolves to
+  this app. Without it the probe 401s; a raw llama.cpp server ignores it.
+- **`selfcheck._check_http` counted `401`/`403` as healthy** (`< 500`). A
+  service that answers but rejects our credential is a real misconfiguration —
+  now graded unhealthy, matching `/health/services`.
+- **`test_port_allocation_skips_used_ports` asserted a literal port** (`8108`)
+  and broke the moment `Ling-3.0-flash-MXFP4` was registered there. It now
+  derives the expectation from `REGISTRY` and asserts the property (lowest free
+  port in range), so registering a server is no longer a spurious failure.
+
+### Known / not changed
+- Agent `pi-coding` still routes `backend=agentic` → `:8105`
+  (`Chadrock-ROCmFP6-qwen3.6-27b`), which is RAM-exclusive with DS4 and so
+  cannot serve while DS4 is resident, while the DS4 registry entry records the
+  pi coding agent as using provider `ds4`. Repointing an agent's model is a
+  routing decision, left for Ben.
+- `stt` (`:8003`) is down — the `shared-stt` container is not running. Not
+  probed by `selfcheck`, so it never paged; plausibly stopped on purpose to
+  free RAM for DS4 (86.5 of 124 GiB GTT).
+
+## [2026-08-02] - Codex desk-path parity: `codex` routes through ARIA Shells
+
+### Added
+- **`codex()` wrapper in `~/.bashrc`** — `codex` (however invoked, e.g.
+  `codex --yolo`) now gets the same ARIA Shells experience as `claude`: one
+  persisted, watched, per-directory tmux session (`claude-codex-<dir>` — the
+  `claude-` prefix keeps it inside the fleet's single adoption namespace),
+  attach-if-live, stale-session clearing, the same never-freeze curl + poll
+  contract, and `--no-aria` / `command codex` escape hatches.
+- **`scripts/aria-codex-launch`** (symlinked into `~/.local/bin`) — the
+  resume-aware launch shim: `codex resume --last` (cwd-filtered by default in
+  codex ≥0.146) with a fast-non-zero-exit fallback to a fresh session, always
+  under `--dangerously-bypass-approvals-and-sandbox` (--yolo).
+- **`launch_command` exposed on `POST /api/v1/shells`** — the service layer
+  already supported an arbitrary launch command (coding-session manager);
+  the HTTP route now passes it through (takes precedence over
+  `launch_claude`). Route test added.
+
+- **Codex autotrust (`shells/codex_trust.py`)** — codex 0.146 shows its
+  directory-trust dialog even under `--yolo`, which would hang a detached
+  spawn. `create_shell` now pre-seeds `[projects."<workdir>"]
+  trust_level = "trusted"` in `~/.codex/config.toml` (atomic append; refuses
+  corrupt TOML; never flips an explicit non-trusted entry) when the launch
+  command is codex, picking the right trust writer per CLI under the existing
+  `shells_claude_autotrust` flag. Override path via
+  `shells_codex_config_path`. Verified live: fresh spawn lands straight in
+  the composer, no dialog.
+
+### Fixed
+- **`codex()` wrapper hijacked codex subcommands** — `codex exec`/`login`/
+  `apply`/`resume` etc. from outside tmux were swallowed into a desk-session
+  attach; known subcommands and `-h/--help/-V/--version` now pass through to
+  the real binary.
+- **`codex` was invisible to login shells** — the binary lived only in
+  `~/.npm-global/bin`, which is added to PATH by an interactive-only line in
+  `.bashrc`, so `bash -lc` (what tmux launch commands run under) couldn't
+  find it. Symlinked `~/.local/bin/codex` → `~/.npm-global/bin/codex`,
+  matching how `claude` resolves.
+
 ## [2026-08-02] - Docs cleanup: completed plans merged + retired
 
 ### Changed

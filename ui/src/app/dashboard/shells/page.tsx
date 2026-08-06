@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { shellsApi, type Shell, type ShellEvent } from '@/lib/api-client-shells'
 import { apiClient } from '@/lib/api-client'
+import { AppShell } from '@/components/AppShell'
 
 // Coding-agent choices for the New Session form. `backend` maps straight to
 // start_coding_session's substrate; `subagent_profile` resolves a db.agents
@@ -45,26 +46,26 @@ function relativeTime(iso: string): string {
 function statusDot(status: Shell['status']): string {
   switch (status) {
     case 'active':
-      return 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]'
+      return 'bg-live shadow-[0_0_8px_rgba(52,211,153,0.6)]'
     case 'idle':
-      return 'bg-amber-400'
+      return 'bg-accent'
     case 'stopped':
-      return 'bg-stone-600'
+      return 'bg-panel-2'
     default:
-      return 'bg-stone-500'
+      return 'bg-panel-2'
   }
 }
 
 function statusBadge(status: Shell['status']): string {
   switch (status) {
     case 'active':
-      return 'text-emerald-300 bg-emerald-950/60 border-emerald-900'
+      return 'text-live bg-live/60 border-live'
     case 'idle':
-      return 'text-amber-300 bg-amber-950/60 border-amber-900'
+      return 'text-accent bg-accent/60 border-accent'
     case 'stopped':
-      return 'text-stone-400 bg-stone-900 border-stone-800'
+      return 'text-ink-dim bg-panel border-line'
     default:
-      return 'text-stone-400 bg-stone-900 border-stone-800'
+      return 'text-ink-dim bg-panel border-line'
   }
 }
 
@@ -336,18 +337,18 @@ export default function ShellsDashboardPage() {
   const currentShell = shells.find((s) => s.name === selected) || null
 
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-100">
-      <header className="border-b border-stone-800 bg-stone-950/80 backdrop-blur px-4 py-4 sm:px-6">
+    <AppShell area="Supervise">
+      <header className="border-b border-line bg-ground/80 backdrop-blur px-4 py-4 sm:px-6">
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.3em] text-fuchsia-400">Watched Shells</p>
-            <h1 className="text-xl font-semibold text-stone-50 sm:text-2xl">Terminal Sessions</h1>
+            <h1 className="text-xl font-semibold text-ink sm:text-2xl">Terminal Sessions</h1>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-            <span className="text-stone-400">
-              <span className="text-stone-200 font-semibold">{counts.active}</span> active ·{' '}
-              <span className="text-stone-200 font-semibold">{counts.idle}</span> idle ·{' '}
-              <span className="text-stone-200 font-semibold">{counts.stopped}</span> stopped
+            <span className="text-ink-dim">
+              <span className="text-ink font-semibold">{counts.active}</span> active ·{' '}
+              <span className="text-ink font-semibold">{counts.idle}</span> idle ·{' '}
+              <span className="text-ink font-semibold">{counts.stopped}</span> stopped
             </span>
             <button
               onClick={() => setShowNewSession(true)}
@@ -355,7 +356,7 @@ export default function ShellsDashboardPage() {
             >
               + New Session
             </button>
-            <a href="/dashboard" className="-my-2 shrink-0 py-2 text-stone-400 hover:text-stone-200">
+            <a href="/dashboard" className="-my-2 shrink-0 py-2 text-ink-dim hover:text-ink">
               ← Dashboard
             </a>
           </div>
@@ -364,36 +365,36 @@ export default function ShellsDashboardPage() {
 
       {showNewSession && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ground/70 p-4"
           onClick={() => !creatingSession && setShowNewSession(false)}
         >
           <div
-            className="w-full max-w-md rounded-2xl border border-stone-800 bg-stone-950 p-5"
+            className="w-full max-w-md rounded-2xl border border-line bg-ground p-5"
             onClick={(e) => e.stopPropagation()}
           >
-            <h2 className="mb-1 text-lg font-semibold text-stone-100">New Coding Session</h2>
-            <p className="mb-4 text-xs text-stone-500">
+            <h2 className="mb-1 text-lg font-semibold text-ink">New Coding Session</h2>
+            <p className="mb-4 text-xs text-ink-faint">
               Starts a real ARIA coding session — appears as a watched shell in this list,
               same as claude_code — not a chat conversation.
             </p>
 
             <label className="mb-3 block text-sm">
-              <span className="mb-1 block text-stone-400">Repo path</span>
+              <span className="mb-1 block text-ink-dim">Repo path</span>
               <input
                 type="text"
                 value={newRepo}
                 onChange={(e) => setNewRepo(e.target.value)}
                 placeholder="/home/ben/Development/ProjectAria"
-                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+                className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-fuchsia-500"
               />
             </label>
 
             <label className="mb-3 block text-sm">
-              <span className="mb-1 block text-stone-400">Agent</span>
+              <span className="mb-1 block text-ink-dim">Agent</span>
               <select
                 value={newAgentKey}
                 onChange={(e) => setNewAgentKey(e.target.value)}
-                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 focus:outline-none focus:border-fuchsia-500"
+                className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink focus:outline-none focus:border-fuchsia-500"
               >
                 {CODING_AGENTS.map((a) => (
                   <option key={a.key} value={a.key}>{a.label}</option>
@@ -402,36 +403,36 @@ export default function ShellsDashboardPage() {
             </label>
 
             <label className="mb-3 block text-sm">
-              <span className="mb-1 block text-stone-400">Task</span>
+              <span className="mb-1 block text-ink-dim">Task</span>
               <textarea
                 value={newPrompt}
                 onChange={(e) => setNewPrompt(e.target.value)}
                 rows={3}
                 placeholder="What should the agent do?"
-                className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+                className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-fuchsia-500"
               />
             </label>
 
-            <label className="mb-3 flex items-center gap-2 text-sm text-stone-300">
+            <label className="mb-3 flex items-center gap-2 text-sm text-ink-dim">
               <input
                 type="checkbox"
                 checked={newUseWorktree}
                 onChange={(e) => setNewUseWorktree(e.target.checked)}
-                className="h-4 w-4 rounded border-stone-700 bg-stone-900"
+                className="h-4 w-4 rounded border-line bg-panel"
               />
               Create an isolated git worktree for this session
             </label>
             {newUseWorktree && (
               <label className="mb-4 block text-sm">
-                <span className="mb-1 block text-stone-400">Worktree name (optional)</span>
+                <span className="mb-1 block text-ink-dim">Worktree name (optional)</span>
                 <input
                   type="text"
                   value={newWorktreeName}
                   onChange={(e) => setNewWorktreeName(e.target.value)}
                   placeholder="e.g. fix-login-bug"
-                  className="w-full rounded-md border border-stone-800 bg-stone-900 px-3 py-2 text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+                  className="w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:border-fuchsia-500"
                 />
-                <span className="mt-1 block text-[11px] text-stone-600">
+                <span className="mt-1 block text-[11px] text-ink-faint">
                   If the repo path isn&apos;t a git repo yet, it&apos;s initialized first, then the
                   worktree is created on a new branch under &lt;repo&gt;/.worktrees/.
                 </span>
@@ -439,7 +440,7 @@ export default function ShellsDashboardPage() {
             )}
 
             {createSessionError && (
-              <div className="mb-3 rounded-md border border-red-900 bg-red-950/60 px-3 py-2 text-xs text-red-200 break-words">
+              <div className="mb-3 rounded-md border border-gone bg-gone/60 px-3 py-2 text-xs text-gone break-words">
                 {createSessionError}
               </div>
             )}
@@ -448,7 +449,7 @@ export default function ShellsDashboardPage() {
               <button
                 onClick={() => setShowNewSession(false)}
                 disabled={creatingSession}
-                className="rounded-md border border-stone-800 px-3 py-1.5 text-sm text-stone-300 hover:border-stone-700 disabled:opacity-40"
+                className="rounded-md border border-line px-3 py-1.5 text-sm text-ink-dim hover:border-line disabled:opacity-40"
               >
                 Cancel
               </button>
@@ -465,10 +466,10 @@ export default function ShellsDashboardPage() {
       )}
 
       {error && (
-        <div className="bg-red-950/60 border-b border-red-900 px-4 py-2 text-sm text-red-200 break-words sm:px-6" role="alert">
+        <div className="bg-gone/60 border-b border-gone px-4 py-2 text-sm text-gone break-words sm:px-6" role="alert">
           {error}
           <button
-            className="ml-4 inline-block py-1 underline hover:text-red-100 sm:py-0"
+            className="ml-4 inline-block py-1 underline hover:text-gone sm:py-0"
             onClick={() => setError(null)}
           >
             dismiss
@@ -483,14 +484,14 @@ export default function ShellsDashboardPage() {
       */}
       <div className="flex flex-col md:h-[calc(100vh-72px)] md:flex-row">
         {/* Sidebar: shell list */}
-        <aside className="flex max-h-[40vh] flex-col border-b border-stone-800 md:max-h-none md:w-80 md:shrink-0 md:border-b-0 md:border-r">
-          <div className="p-3 border-b border-stone-800 space-y-2">
+        <aside className="flex max-h-[40vh] flex-col border-b border-line md:max-h-none md:w-80 md:shrink-0 md:border-b-0 md:border-r">
+          <div className="p-3 border-b border-line space-y-2">
             <input
               type="text"
               placeholder="Filter by name, project, tag…"
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
-              className="w-full bg-stone-900 border border-stone-800 rounded-md px-3 py-1.5 text-sm placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500"
+              className="w-full bg-panel border border-line rounded-md px-3 py-1.5 text-sm placeholder:text-ink-faint focus:outline-none focus:border-fuchsia-500"
             />
             <div className="flex gap-1 flex-wrap">
               {(['all', 'active', 'idle', 'stopped'] as const).map((s) => {
@@ -503,7 +504,7 @@ export default function ShellsDashboardPage() {
                     className={`px-3 py-1.5 text-sm sm:px-2 sm:py-0.5 sm:text-xs rounded-full border transition ${
                       active
                         ? 'bg-fuchsia-500/20 text-fuchsia-200 border-fuchsia-700'
-                        : 'bg-stone-900 text-stone-400 border-stone-800 hover:border-stone-700'
+                        : 'bg-panel text-ink-dim border-line hover:border-line'
                     }`}
                   >
                     {s} <span className="opacity-70">{count}</span>
@@ -520,16 +521,16 @@ export default function ShellsDashboardPage() {
             onKeyDown={handleListKeyDown}
           >
             {filteredShells.length === 0 && (
-              <div className="p-6 text-sm text-stone-500">
+              <div className="p-6 text-sm text-ink-faint">
                 {shells.length === 0 ? (
                   <>
-                    <p className="mb-2 text-stone-300 font-medium">No watched shells yet</p>
+                    <p className="mb-2 text-ink-dim font-medium">No watched shells yet</p>
                     <p>Start one with:</p>
-                    <code className="block mt-2 px-2 py-1 bg-stone-900 rounded text-xs text-fuchsia-300">
+                    <code className="block mt-2 px-2 py-1 bg-panel rounded text-xs text-fuchsia-300">
                       aria shells new
                     </code>
                     <p className="mt-2">or</p>
-                    <code className="block mt-2 px-2 py-1 bg-stone-900 rounded text-xs text-fuchsia-300">
+                    <code className="block mt-2 px-2 py-1 bg-panel rounded text-xs text-fuchsia-300">
                       ac projectaria
                     </code>
                   </>
@@ -553,22 +554,22 @@ export default function ShellsDashboardPage() {
                   // (handleListKeyDown), same as a click, not a separate
                   // highlight-then-confirm step.
                   tabIndex={active ? 0 : -1}
-                  className={`w-full text-left px-4 py-3 border-b border-stone-900 transition relative ${
+                  className={`w-full text-left px-4 py-3 border-b border-line transition relative ${
                     active
-                      ? 'bg-stone-900 border-l-2 border-l-fuchsia-500'
-                      : 'hover:bg-stone-900/60 border-l-2 border-l-transparent'
+                      ? 'bg-panel border-l-2 border-l-fuchsia-500'
+                      : 'hover:bg-panel/60 border-l-2 border-l-transparent'
                   }`}
                 >
                   <div className="flex items-center gap-2">
                     <span className={`w-2 h-2 rounded-full ${statusDot(s.status)}`} />
-                    <span className="font-mono font-semibold text-sm text-stone-100 truncate">
+                    <span className="font-mono font-semibold text-sm text-ink truncate">
                       {s.short_name}
                     </span>
-                    <span className="ml-auto text-[10px] text-stone-500 shrink-0">
+                    <span className="ml-auto text-[10px] text-ink-faint shrink-0">
                       {relativeTime(s.last_activity_at)}
                     </span>
                   </div>
-                  <div className="text-xs text-stone-400 mt-1 truncate" title={s.project_dir || s.name}>
+                  <div className="text-xs text-ink-dim mt-1 truncate" title={s.project_dir || s.name}>
                     {s.project_dir || s.name}
                   </div>
                   <div className="flex items-center gap-2 mt-1.5">
@@ -579,9 +580,9 @@ export default function ShellsDashboardPage() {
                     >
                       {s.status}
                     </span>
-                    <span className="text-[10px] text-stone-500">{s.line_count.toLocaleString()} lines</span>
+                    <span className="text-[10px] text-ink-faint">{s.line_count.toLocaleString()} lines</span>
                     {s.tags.length > 0 && (
-                      <span className="text-[10px] text-stone-500 truncate">· {s.tags.join(', ')}</span>
+                      <span className="text-[10px] text-ink-faint truncate">· {s.tags.join(', ')}</span>
                     )}
                   </div>
                 </button>
@@ -595,11 +596,11 @@ export default function ShellsDashboardPage() {
           {currentShell ? (
             <>
               {/* Detail header */}
-              <div className="px-4 py-3 border-b border-stone-800 flex items-center gap-3 text-sm flex-wrap">
+              <div className="px-4 py-3 border-b border-line flex items-center gap-3 text-sm flex-wrap">
                 <span className={`w-2.5 h-2.5 rounded-full ${statusDot(currentShell.status)}`} />
                 <div className="flex min-w-0 flex-col">
-                  <span className="font-mono font-semibold text-stone-100 truncate">{currentShell.short_name}</span>
-                  <span className="text-[10px] text-stone-500 truncate" title={currentShell.project_dir}>
+                  <span className="font-mono font-semibold text-ink truncate">{currentShell.short_name}</span>
+                  <span className="text-[10px] text-ink-faint truncate" title={currentShell.project_dir}>
                     {currentShell.project_dir || currentShell.name}
                   </span>
                 </div>
@@ -610,18 +611,18 @@ export default function ShellsDashboardPage() {
                 >
                   {currentShell.status}
                 </span>
-                <span className="text-stone-500 text-xs ml-auto">
+                <span className="text-ink-faint text-xs ml-auto">
                   last activity {relativeTime(currentShell.last_activity_at)}
                 </span>
 
                 {/* View mode toggle */}
-                <div className="inline-flex rounded-md border border-stone-800 bg-stone-900 overflow-hidden">
+                <div className="inline-flex rounded-md border border-line bg-panel overflow-hidden">
                   {(['snapshot', 'stream'] as const).map((m) => (
                     <button
                       key={m}
                       onClick={() => setViewMode(m)}
                       className={`px-4 py-2 text-xs uppercase tracking-wider sm:px-3 sm:py-1 ${
-                        viewMode === m ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'text-stone-400 hover:text-stone-200'
+                        viewMode === m ? 'bg-fuchsia-500/20 text-fuchsia-200' : 'text-ink-dim hover:text-ink'
                       }`}
                     >
                       {m}
@@ -629,7 +630,7 @@ export default function ShellsDashboardPage() {
                   ))}
                 </div>
                 {viewMode === 'stream' && (
-                  <label className="flex items-center gap-1.5 py-1.5 text-xs text-stone-400 cursor-pointer select-none sm:py-0">
+                  <label className="flex items-center gap-1.5 py-1.5 text-xs text-ink-dim cursor-pointer select-none sm:py-0">
                     <input
                       type="checkbox"
                       checked={hideNoise}
@@ -655,16 +656,16 @@ export default function ShellsDashboardPage() {
                   the box rather than widen the page.
                 */}
                 {viewMode === 'snapshot' ? (
-                  <div className="absolute inset-0 overflow-auto bg-black font-mono text-xs px-4 py-3">
+                  <div className="absolute inset-0 overflow-auto bg-ground font-mono text-xs px-4 py-3">
                     {snapshot ? (
                       <>
-                        <div className="text-stone-500 text-[10px] mb-2 uppercase tracking-widest">
+                        <div className="text-ink-faint text-[10px] mb-2 uppercase tracking-widest">
                           Rendered terminal · {relativeTime(snapshot.ts)}
                         </div>
-                        <pre className="whitespace-pre text-stone-200 leading-snug">{snapshot.content}</pre>
+                        <pre className="whitespace-pre text-ink leading-snug">{snapshot.content}</pre>
                       </>
                     ) : (
-                      <div className="text-stone-500 italic">
+                      <div className="text-ink-faint italic">
                         No snapshot available yet for this shell. Switch to Stream to see the raw scrollback.
                       </div>
                     )}
@@ -674,10 +675,10 @@ export default function ShellsDashboardPage() {
                     <div
                       ref={scrollRef}
                       onScroll={onScroll}
-                      className="absolute inset-0 overflow-auto bg-black font-mono text-xs px-4 py-2 whitespace-pre-wrap"
+                      className="absolute inset-0 overflow-auto bg-ground font-mono text-xs px-4 py-2 whitespace-pre-wrap"
                     >
                       {displayLines.length === 0 && (
-                        <div className="text-stone-600 italic">
+                        <div className="text-ink-faint italic">
                           {hideNoise
                             ? 'No content yet (noise filter is on — try toggling it off if expected output is missing).'
                             : 'No events yet for this shell.'}
@@ -688,10 +689,10 @@ export default function ShellsDashboardPage() {
                           key={l.key}
                           className={`flex items-start gap-2 ${
                             l.kind === 'input'
-                              ? 'text-emerald-300'
+                              ? 'text-live'
                               : l.kind === 'system'
-                              ? 'text-amber-300'
-                              : 'text-stone-200'
+                              ? 'text-accent'
+                              : 'text-ink'
                           }`}
                           title={new Date(l.ts).toLocaleString()}
                         >
@@ -700,7 +701,7 @@ export default function ShellsDashboardPage() {
                             {l.text || ' '}
                           </span>
                           {l.count > 1 && (
-                            <span className="text-[10px] text-stone-500 bg-stone-900 border border-stone-800 rounded px-1.5 py-0 shrink-0 mt-0.5">
+                            <span className="text-[10px] text-ink-faint bg-panel border border-line rounded px-1.5 py-0 shrink-0 mt-0.5">
                               ×{l.count}
                             </span>
                           )}
@@ -710,7 +711,7 @@ export default function ShellsDashboardPage() {
                     {showJumpToBottom && (
                       <button
                         onClick={jumpToBottom}
-                        className="absolute bottom-3 right-4 px-3 py-1.5 text-xs rounded-full bg-fuchsia-500 text-stone-950 font-semibold shadow-lg hover:bg-fuchsia-400"
+                        className="absolute bottom-3 right-4 px-3 py-1.5 text-xs rounded-full bg-fuchsia-500 text-accent-ink font-semibold shadow-lg hover:bg-fuchsia-400"
                       >
                         ↓ Jump to bottom
                       </button>
@@ -720,7 +721,7 @@ export default function ShellsDashboardPage() {
               </div>
 
               {/* Input */}
-              <div className="border-t border-stone-800 p-3 space-y-2 bg-stone-950">
+              <div className="border-t border-line p-3 space-y-2 bg-ground">
                 <form
                   onSubmit={(e) => {
                     e.preventDefault()
@@ -730,7 +731,7 @@ export default function ShellsDashboardPage() {
                 >
                   <input
                     ref={inputRef}
-                    className="flex-1 bg-stone-900 border border-stone-800 rounded-md px-3 py-2 font-mono text-sm placeholder:text-stone-600 focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
+                    className="flex-1 bg-panel border border-line rounded-md px-3 py-2 font-mono text-sm placeholder:text-ink-faint focus:outline-none focus:border-fuchsia-500 disabled:opacity-50"
                     placeholder={
                       currentShell.status === 'stopped'
                         ? 'Shell is stopped — input disabled'
@@ -744,7 +745,7 @@ export default function ShellsDashboardPage() {
                   <button
                     type="submit"
                     disabled={sending || !inputText || currentShell.status === 'stopped'}
-                    className="px-4 py-2 bg-fuchsia-500 hover:bg-fuchsia-400 rounded-md text-sm font-semibold text-stone-950 disabled:opacity-40"
+                    className="px-4 py-2 bg-fuchsia-500 hover:bg-fuchsia-400 rounded-md text-sm font-semibold text-accent-ink disabled:opacity-40"
                   >
                     Send
                   </button>
@@ -755,7 +756,7 @@ export default function ShellsDashboardPage() {
                       key={k.label}
                       onClick={() => handleSend(k.text, { literal: !!k.literal, appendEnter: !!k.appendEnter })}
                       disabled={sending || currentShell.status === 'stopped'}
-                      className="min-w-[2.75rem] px-3 py-2.5 text-sm sm:min-w-0 sm:px-2 sm:py-1 sm:text-[11px] font-mono bg-stone-900 hover:bg-stone-800 rounded border border-stone-800 hover:border-stone-700 disabled:opacity-40"
+                      className="min-w-[2.75rem] px-3 py-2.5 text-sm sm:min-w-0 sm:px-2 sm:py-1 sm:text-[11px] font-mono bg-panel hover:bg-panel-2 rounded border border-line hover:border-line disabled:opacity-40"
                     >
                       {k.label}
                     </button>
@@ -764,7 +765,7 @@ export default function ShellsDashboardPage() {
               </div>
             </>
           ) : (
-            <div className="flex-1 min-h-[40vh] md:min-h-0 flex items-center justify-center px-4 text-center text-stone-500">
+            <div className="flex-1 min-h-[40vh] md:min-h-0 flex items-center justify-center px-4 text-center text-ink-faint">
               {shells.length === 0
                 ? 'Start a watched shell with `aria shells new` to get started.'
                 : 'Select a shell to view its scrollback.'}
@@ -772,6 +773,6 @@ export default function ShellsDashboardPage() {
           )}
         </section>
       </div>
-    </div>
+    </AppShell>
   )
 }

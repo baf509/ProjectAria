@@ -277,6 +277,28 @@ export const apiClient = {
     return res.json()
   },
 
+  // Which server answers as "the local model" — what LLAMACPP_URL, and
+  // therefore Hermes, actually talks to when several are resident.
+  async getLlmRoute(): Promise<any> {
+    const res = await apiFetch('/infrastructure/llm-route')
+    return res.json()
+  },
+
+  // slug = null clears the pin back to auto (follow whichever is resident).
+  async setLlmRoute(slug: string | null): Promise<any> {
+    const res = await fetch(`${API_URL}/api/v1/infrastructure/llm-route`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      },
+      body: JSON.stringify({ slug }),
+    })
+    const data = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+    return data
+  },
+
   // Not via apiFetch: its error path discards the response body, but the
   // 409 refusals here carry the useful part (which server conflicts, RAM
   // projection, the force hint) in FastAPI's `detail`.

@@ -86,6 +86,11 @@ class ShellCreateRequest(BaseModel):
     )
     workdir: Optional[str] = None
     launch_claude: bool = True
+    # Arbitrary command to run in the new session instead of the default
+    # Claude launch (takes precedence over launch_claude, same as the service
+    # layer). Used by the codex desk wrapper; API-key-gated like everything
+    # else, and no more powerful than send_input already is.
+    launch_command: Optional[str] = Field(default=None, max_length=1024)
     cols: Optional[int] = Field(default=None, ge=20, le=500)
     rows: Optional[int] = Field(default=None, ge=10, le=200)
 
