@@ -529,7 +529,9 @@ from aria.infrastructure.model_pull import (  # noqa: E402
     RUNTIME_TEMPLATES,
     ModelPullService,
     _compose_yaml,
+    _PORT_RANGE,
 )
+from aria.infrastructure.model_servers import REGISTRY  # noqa: E402
 
 
 # model_servers/model_pulls now live on the base FakeDB; alias kept for the
@@ -644,9 +646,15 @@ class TestPullValidation:
         db = FakeDBWithServers()
         db.model_servers.docs.append(_dynamic_doc(slug="taken", port=8107))
         port = await svc._validate(db, "org/repo", "m.gguf", "ok-name", "mainline-cpu", None)
-        # 8105/8106 are static (chadrockv2, qwythos) and the dynamic fixture
-        # takes 8107, so allocation lands on the next free port.
-        assert port == 8108
+        # Assert the *property* (lowest free port in the range), not a literal.
+        # This used to assert 8108 and broke the moment a new static server was
+        # registered on that port — the assertion has to be derived from the
+        # registry, or every registration is a spurious test failure.
+        taken = {s.port for s in REGISTRY if s.port} | {8107}
+        assert port not in taken
+        assert all(p in taken for p in _PORT_RANGE if p < port), (
+            f"allocated {port} while a lower port in the range was free"
+        )
         with pytest.raises(ModelServerError, match="already assigned"):
             await svc._validate(db, "org/repo", "m.gguf", "ok-name", "mainline-cpu", 8103)  # static qwen port
 

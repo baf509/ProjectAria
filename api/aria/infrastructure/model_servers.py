@@ -145,6 +145,27 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("DS4-0731-ROCMFPX-affine-128k", "qwen3.6-27b-Q8"),
     ("DS4-0731-ROCMFPX-affine-128k", "Chadrock-ROCmFP6-qwen3.6-27b"),
     ("DS4-0731-ROCMFPX-affine-128k", "Qwythos-27b-Q8"),
+    # Ling-3.0-flash at ~70 GiB clears the 114 GiB margin against the small
+    # servers (qwen/chadrockv2/qwythos/context1 all fit) but not against the
+    # three big ones. Measured 64.81 GiB at -c 8192 on 2026-08-05; the entry's
+    # 70 budgets the MLA KV at the served -c 131072.
+    ("Ling-3.0-flash-MXFP4", "DS4-0731-ROCMFPX-affine-128k"),
+    ("Ling-3.0-flash-MXFP4", "Laguna-S-2.1"),
+    ("Ling-3.0-flash-MXFP4", "Chadrock-Laguna-S-2.1"),
+    # Ling Q5_K_M at ~88 GiB is the accuracy upgrade of the MXFP4 pair and is
+    # far less companionable: 88 + anything above 26 breaks the 114 GiB margin,
+    # so only context1 (88+16=104), CPU-only gemma and off-box Ridge survive.
+    # It also shares port 8108 with the MXFP4 entry, which alone makes that
+    # pair exclusive regardless of arithmetic.
+    ("Ling-3.0-flash-Q5_K_M", "Ling-3.0-flash-MXFP4"),
+    ("Ling-3.0-flash-Q5_K_M", "DS4-0731-ROCMFPX-affine-128k"),
+    ("Ling-3.0-flash-Q5_K_M", "Laguna-S-2.1"),
+    ("Ling-3.0-flash-Q5_K_M", "Chadrock-Laguna-S-2.1"),
+    ("Ling-3.0-flash-Q5_K_M", "ROCmFP4-qwen3.6-35b-a3b"),
+    ("Ling-3.0-flash-Q5_K_M", "qwen3.6-35b-a3b-Q4"),
+    ("Ling-3.0-flash-Q5_K_M", "qwen3.6-27b-Q8"),
+    ("Ling-3.0-flash-Q5_K_M", "Chadrock-ROCmFP6-qwen3.6-27b"),
+    ("Ling-3.0-flash-Q5_K_M", "Qwythos-27b-Q8"),
 )
 
 
@@ -168,6 +189,16 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
         runtime_ref="branch decode-fusion (sealed bundle o5-release-86f0056d-20260803T231500-0400)",
         backend_device="ROCm0 (gfx1151)",
+        # Production path, unchanged. Every on-box entry in this registry is also
+        # packaged as a model+runtime pair under ~/Development/model-distros/,
+        # one folder per slug, described by a pair.toml. Those are PUBLISHING
+        # artifacts, not live paths: each model/ is a hardlink to the production
+        # GGUF (same inode, no second copy) and each runtime/ is a copy. Moving
+        # or deleting a pair folder does not affect this service.
+        #
+        # The pair slug MUST equal this spec's slug — `pairs doctor` cross-checks
+        # model_file, port and systemd_unit between the two and fails on drift.
+        # Run it after editing either side.
         model_file="models/llm/DS4-0731-ROCMFPX-affine.gguf",
         port=8107,
         systemd_unit="deepseek-v4-quality-128k.service",
@@ -180,6 +211,69 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # entry on localhost; see endpoints.env.
         # _TAILNET_IP is defined below REGISTRY, so hardcode as Ridge does.
         endpoint_override="http://100.123.245.84:8107/v1",
+    ),
+    ModelServerSpec(
+        slug="Ling-3.0-flash-MXFP4",
+        description="inclusionAI Ling-3.0-flash, MXFP4_MOE (65.05 GiB) — a 124B-total/"
+        "5.1B-active hybrid-linear MoE: 35 KDA (Kimi Delta Attention) layers + 7 gated-MLA "
+        "layers, 512 routed experts top-8 + 1 shared, plus a bundled MTP block. Served at "
+        "131072 ctx (= the GGUF's context_length; the model card's 256K did NOT survive "
+        "the quant). Like DS4 this is NOT a docker container: it runs as the systemd --user "
+        "unit ling-3.0-flash.service from a runtime bundle, because its runtime is a "
+        "host-built HIP fork with no image. Added 2026-08-05.",
+        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
+        runtime_ref="branch bailingmoe3 (bundle bailingmoe3-89926145-20260805T115134-0400) — "
+        "rocmfpx main @ 2b21cfb04 + upstream PR ggml-org/llama.cpp#26608 cherry-picked and "
+        "its MTP/nextn + recurrent-layer API ported to this fork; PR still open upstream",
+        backend_device="ROCm0 (gfx1151)",
+        model_file="models/llm/Ling-3.0-flash-MXFP4_MOE/Ling-3.0-flash-MXFP4_MOE.gguf",
+        port=8108,
+        systemd_unit="ling-3.0-flash.service",
+        # MEASURED 64.81 GiB GTT at -c 8192 (2026-08-05), full offload, no
+        # --n-cpu-moe. Padded to 70 for the MLA KV at the served 131072 ctx:
+        # only the 7 MLA layers hold a real cache (~8 KB/token across all of
+        # them), and the 35 KDA layers keep a fixed-size recurrent state that
+        # does not grow with context — so the ctx cost here is ~1 GiB, far
+        # below what a same-size dense-attention model would need.
+        resident_gib=70,
+        exclusive_with=_exclusive_with("Ling-3.0-flash-MXFP4"),
+        consumers_note="unbound — new, not yet validated beyond a smoke test",
+        # Binds 127.0.0.1 only, so the port-derived localhost default is
+        # correct and no endpoint_override is needed. Deliberately NOT the
+        # tailnet bind DS4 uses: nothing off-box consumes this yet, and the
+        # tailnet-only bind is the repeatedly-misdiagnosed dead-localhost
+        # gotcha. To expose it, change --host in the unit AND add an override.
+    ),
+    ModelServerSpec(
+        slug="Ling-3.0-flash-Q5_K_M",
+        description="inclusionAI Ling-3.0-flash, Q5_K_M (85.20 GiB) — same 124B-total/"
+        "5.1B-active hybrid-linear MoE as the MXFP4 entry (35 KDA + 7 gated-MLA layers, "
+        "512 routed experts top-8 + 1 shared, bundled MTP block), at higher precision. "
+        "Shares port 8108 and the runtime bundle with Ling-3.0-flash-MXFP4, so the two "
+        "are mutually exclusive. Q6_K (98.26 GiB) was the original target and does NOT "
+        "fit: it reached 97 GiB GTT then paged while still loading. The binding budget "
+        "is ~94 GiB, not the 124 GiB aperture — this box holds 13-15 GiB of other "
+        "services' working set in swap, so MemAvailable overstates headroom. Measured "
+        "34.05 tok/s decode, FASTER than MXFP4's 31.55 despite being 31% larger: at "
+        "5.1B active only ~35% of memory bandwidth is in use, so kernel quality "
+        "dominates, not bytes-per-weight. Added 2026-08-06.",
+        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
+        runtime_ref="branch bailingmoe3 (bundle bailingmoe3-89926145-20260805T115134-0400) — "
+        "rocmfpx main @ 2b21cfb04 + upstream PR ggml-org/llama.cpp#26608 cherry-picked and "
+        "its MTP/nextn + recurrent-layer API ported to this fork; PR still open upstream",
+        backend_device="ROCm0 (gfx1151)",
+        model_file="models/llm/Ling-3.0-flash-Q5_K_M/Ling-3.0-flash-Q5_K_M.gguf",
+        port=8108,
+        systemd_unit="ling-3.0-flash-q5km.service",
+        # MEASURED 86 GiB GTT at the served -c 131072 (2026-08-06), full offload,
+        # no --n-cpu-moe. Padded to 88. Unlike a dense model of this size the ctx
+        # cost is ~1 GiB: only the 7 MLA layers hold a growing cache, the 35 KDA
+        # layers keep a fixed-size recurrent state.
+        resident_gib=88,
+        exclusive_with=_exclusive_with("Ling-3.0-flash-Q5_K_M"),
+        consumers_note="unbound — replaces the MXFP4 entry as the preferred Ling",
+        # Binds 127.0.0.1 only, so the port-derived localhost default is correct.
+        # To expose on the tailnet, change --host in the unit AND add an override.
     ),
     ModelServerSpec(
         slug="Laguna-S-2.1",
@@ -259,8 +353,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
         runtime_ref="branch mtp-rocmfp4-strix",
         backend_device="HIP (ROCm0)",
-        # NOT under models/llm/ — this compose project mounts its own ./models dir.
-        model_file="qwen-rocmfp4/models/Qwen3.6-35B-A3B-MTP/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+        # CORRECTED 2026-08-05: this used to read qwen-rocmfp4/models/... back when
+        # the compose project mounted its own ./models dir. That directory was
+        # deleted the same day and the GGUFs moved under models/llm/; the compose
+        # file was updated to mount models/llm but this pointer was not, so it
+        # dangled. Caught by `pairs doctor` (see ~/Development/model-distros).
+        model_file="models/llm/Qwen3.6-35B-A3B-MTP/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         # MOVED 8092 -> 8107 (2026-07-30): ridge-llama-proxy holds :8092 on the
         # tailnet IP, so this service could never bind there while the proxy runs.
         port=8107,
@@ -281,8 +379,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
         runtime_ref="branch mtp-rocmfp4-strix",
         backend_device="HIP (ROCm0)",
-        # NOT under models/llm/ — this compose project mounts its own ./models dir.
-        model_file="qwen-rocmfp4/models/Qwen3.6-27B/Qwen3.6-27B-Q8_0.gguf",
+        # CORRECTED 2026-08-05: same dangling-path fix as qwen3.6-35b-a3b-Q4 above.
+        model_file="models/llm/Qwen3.6-27B/Qwen3.6-27B-Q8_0.gguf",
         port=8093,
         compose_file="qwen-rocmfp4/docker-compose.yml",
         # renamed from qwen-agentic 2026-07-29 (service + container_name, safe
@@ -679,7 +777,15 @@ class ModelServerManager:
                 conflicts = []
                 for other_slug in spec.exclusive_with:
                     other = _BY_SLUG.get(other_slug)
-                    if other is None or not other.onbox or not other.container_name:
+                    # A systemd-bundle server has no container_name — gating on
+                    # it alone silently skipped every exclusivity pair among the
+                    # BIGGEST models on the box (DS4 and both Lings), leaving the
+                    # GTT projection below as the only thing standing between a
+                    # 93 GiB server and an 88 GiB one. _inspect() has handled
+                    # systemd since it was added; only this filter lagged.
+                    if other is None or not other.onbox:
+                        continue
+                    if not (other.container_name or other.systemd_unit):
                         continue
                     other_state, _ = await self._inspect(other)
                     if other_state in _MEMORY_HOLDING_STATES:
