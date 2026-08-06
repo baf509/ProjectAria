@@ -36,6 +36,10 @@ class SoulProposal(BaseModel):
     status: str
     created_at: datetime
     reviewed_at: Optional[datetime] = None
+    # Computed live against the current SOUL.md, not stored: whether the text
+    # this proposal edits still exists. Stale proposals need re-review.
+    stale: bool = False
+    stale_sections: list[str] = []
 
 
 class DreamStatusResponse(BaseModel):
@@ -110,32 +114,53 @@ async def list_soul_proposals(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """List soul evolution proposals from dream cycles."""
+    from aria.core.soul import preview_proposals, soul_manager
+
     proposals = await db.dream_soul_proposals.find(
         {"status": status},
     ).sort("created_at", -1).to_list(length=50)
 
-    return [
-        SoulProposal(
-            id=str(p["_id"]),
-            proposals=p.get("proposals", []),
-            status=p["status"],
-            created_at=p["created_at"],
-            reviewed_at=p.get("reviewed_at"),
+    current_soul = soul_manager.read() or ""
+
+    out = []
+    for p in proposals:
+        stale_sections = (
+            preview_proposals(current_soul, p.get("proposals", []))
+            if p["status"] == "pending"
+            else []
         )
-        for p in proposals
-    ]
+        out.append(
+            SoulProposal(
+                id=str(p["_id"]),
+                proposals=p.get("proposals", []),
+                status=p["status"],
+                created_at=p["created_at"],
+                reviewed_at=p.get("reviewed_at"),
+                stale=bool(stale_sections),
+                stale_sections=stale_sections,
+            )
+        )
+    return out
 
 
 @router.post("/dreams/soul-proposals/{proposal_id}/approve")
 async def approve_soul_proposal(
     proposal_id: str,
+    force: bool = Query(
+        False,
+        description="Apply a stale proposal anyway, merging it into the existing section.",
+    ),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """
     Approve a soul proposal — applies the proposed changes to SOUL.md.
     This requires explicit user action; dreams never auto-modify the soul.
+
+    All-or-nothing: if any change in the document is stale, nothing is written.
+    Partial application is what let a batch approval stack up duplicate
+    sections instead of editing the ones already there.
     """
-    from aria.core.soul import soul_manager
+    from aria.core.soul import StaleProposalError, apply_proposal, soul_manager
 
     try:
         oid = ObjectId(proposal_id)
@@ -154,19 +179,37 @@ async def approve_soul_proposal(
     updated_soul = current_soul
 
     applied = []
+    stale = []
     for prop in proposal_doc.get("proposals", []):
-        section = prop.get("section", "")
-        proposed = prop.get("proposed", "")
-        current = prop.get("current", "")
+        try:
+            updated_soul, mode = apply_proposal(updated_soul, prop, force=force)
+        except StaleProposalError as e:
+            stale.append(e.section)
+            continue
+        applied.append(f"{prop.get('section', '')} ({mode})")
 
-        # Try to find and replace the current text
-        if current and current in updated_soul:
-            updated_soul = updated_soul.replace(current, proposed, 1)
-            applied.append(section)
-        else:
-            # Append as a new section
-            updated_soul += f"\n\n## {section}\n\n{proposed}"
-            applied.append(f"{section} (appended)")
+    if stale:
+        # Leave status 'pending' so it stays in the inbox for re-review.
+        await db.dream_soul_proposals.update_one(
+            {"_id": oid},
+            {"$set": {
+                "stale_sections": stale,
+                "stale_checked_at": datetime.now(timezone.utc),
+            }},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "stale_proposal",
+                "message": (
+                    "This proposal edits text that is no longer in SOUL.md — it was "
+                    "written against an older version. Nothing was written. Re-run a "
+                    "dream to regenerate it, or approve with ?force=true to merge it "
+                    "into the existing section."
+                ),
+                "stale_sections": stale,
+            },
+        )
 
     soul_manager.write(updated_soul)
 
