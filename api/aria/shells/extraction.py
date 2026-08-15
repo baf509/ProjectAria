@@ -136,7 +136,8 @@ class ShellExtractionWorker:
             extracted = await asyncio.wait_for(
                 self.memory_extractor.extract_from_text(
                     text,
-                    llm_backend="agentic",
+                    llm_backend=settings.shells_extraction_backend,
+                    llm_model=settings.shells_extraction_model,
                     force_local=force_local,
                     claude_model=claude_model,
                 ),

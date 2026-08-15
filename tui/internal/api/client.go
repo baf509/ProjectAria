@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -621,6 +622,126 @@ func (c *Client) GetServicesHealth() (*ServicesHealth, error) {
 	defer resp.Body.Close()
 	var h ServicesHealth
 	return &h, json.NewDecoder(resp.Body).Decode(&h)
+}
+
+// ---------- Model servers (the local LLM control plane) ----------
+//
+// Two axes, and the cockpit needs both. WHICH model: one registry entry per
+// model+runtime+placement pair on the box. HOW it loads: the deployment's own
+// env knobs — device, context, KV type, drafter, slots — which ARIA applies as
+// a systemd drop-in. `Source` on each parameter says where its current value
+// came from, because "65536" means something different when ARIA set it than
+// when the deployment's serve.sh simply defaults to it.
+
+type LaunchChoice struct {
+	Value       string `json:"value"`
+	Description string `json:"description"`
+}
+
+type LaunchParam struct {
+	Name            string         `json:"name"`
+	Env             string         `json:"env"`
+	Label           string         `json:"label"`
+	Kind            string         `json:"kind"`
+	Description     string         `json:"description"`
+	DeclaredDefault string         `json:"declared_default"`
+	Choices         []LaunchChoice `json:"choices"`
+	Value           string         `json:"value"`
+	Source          string         `json:"source"`
+}
+
+type ModelServer struct {
+	Slug                string        `json:"slug"`
+	Description         string        `json:"description"`
+	State               string        `json:"state"`
+	Port                int           `json:"port"`
+	ModelFile           string        `json:"model_file"`
+	RuntimeRef          string        `json:"runtime_ref"`
+	BackendDevice       string        `json:"backend_device"`
+	Devices             []string      `json:"devices"`
+	MemoryPool          string        `json:"memory_pool"`
+	AlsoUses            []string      `json:"also_uses"`
+	Deployment          string        `json:"deployment"`
+	ResidentGiBEstimate float64       `json:"resident_gib_estimate"`
+	ResidentGiBMeasured *float64      `json:"resident_gib_measured"`
+	PoolUsedGiB         *float64      `json:"pool_used_gib"`
+	PoolTotalGiB        *float64      `json:"pool_total_gib"`
+	PoolSpilling        bool          `json:"pool_spilling"`
+	ServedCtx           *int          `json:"served_ctx"`
+	Slots               *int          `json:"slots"`
+	Onbox               bool          `json:"onbox"`
+	Startable           bool          `json:"startable"`
+	NotStartableReason  string        `json:"not_startable_reason"`
+	ConsumersNote       string        `json:"consumers_note"`
+	ExclusiveWith       []string      `json:"exclusive_with"`
+	Parameters          []LaunchParam `json:"parameters"`
+}
+
+func (c *Client) ListModelServers() ([]ModelServer, error) {
+	resp, err := c.get(c.Base + "/api/v1/infrastructure/model-servers")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Servers []ModelServer `json:"servers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Servers, nil
+}
+
+// StartModelServer starts a server, optionally choosing how it loads.
+//
+// A nil `overrides` is meaningful rather than merely absent: the API clears any
+// override ARIA applied on a previous start, so a plain start always means the
+// deployment's own defaults.
+func (c *Client) StartModelServer(slug string, overrides map[string]string) error {
+	body := map[string]interface{}{"force": false}
+	if len(overrides) > 0 {
+		body["overrides"] = overrides
+	}
+	b, _ := json.Marshal(body)
+	resp, err := c.post(
+		c.Base+"/api/v1/infrastructure/model-servers/"+url.PathEscape(slug)+"/start",
+		"application/json", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		// The 409 refusals carry the useful part — which server conflicts, the
+		// memory projection, the force hint — in FastAPI's `detail`.
+		var e struct {
+			Detail string `json:"detail"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Detail != "" {
+			return fmt.Errorf("%s", e.Detail)
+		}
+		return fmt.Errorf("start failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) StopModelServer(slug string) error {
+	resp, err := c.post(
+		c.Base+"/api/v1/infrastructure/model-servers/"+url.PathEscape(slug)+"/stop",
+		"application/json", bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		var e struct {
+			Detail string `json:"detail"`
+		}
+		if json.NewDecoder(resp.Body).Decode(&e) == nil && e.Detail != "" {
+			return fmt.Errorf("%s", e.Detail)
+		}
+		return fmt.Errorf("stop failed: HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // ---------- Tool Execution ----------

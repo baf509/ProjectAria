@@ -12,6 +12,7 @@ Related Spec Sections:
 import asyncio
 import hashlib
 import logging
+import re as _re
 import struct
 import time
 from datetime import datetime, timezone
@@ -21,9 +22,29 @@ from bson.binary import BinaryVectorDtype, VECTOR_SUBTYPE
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
+from aria.memory.capabilities import retrieval_capabilities
 from aria.memory.embeddings import embedding_service
 
 logger = logging.getLogger(__name__)
+
+# Words that carry no selectivity in the mongod-native fallback scan. The
+# fallback is a regex OR over content — a query like "what did I decide about
+# the R9700" must not match every memory containing "the".
+_FALLBACK_STOPWORDS = frozenset(
+    """a an and are as at be but by for from has have how i if in into is it its
+    me my of on or that the their there these they this to was were what when
+    where which who why will with you your""".split()
+)
+
+
+class SearchBranchUnavailable(Exception):
+    """A mongot-backed search branch could not answer.
+
+    Raised instead of returning [] so `search()` can tell "mongot answered and
+    nothing matched" apart from "mongot could not answer at all" — the second
+    is what justifies falling back to the mongod-native scan, and conflating
+    them is exactly how a dead mongot silently returned empty recall for days.
+    """
 
 
 class Memory:
@@ -185,6 +206,20 @@ class LongTermMemory:
         """
         Hybrid search: combines lexical (BM25) and semantic (vector) search.
 
+        Degrades by capability rather than failing (see memory/capabilities.py):
+
+        | embeddings | mongot | what runs                                     |
+        |------------|--------|-----------------------------------------------|
+        | on         | on     | $vectorSearch + $search, fused by RRF (normal)|
+        | off        | on     | $search (BM25) only — no query embedding      |
+        | on/off     | off    | mongod-native fallback scan                   |
+
+        The fallback also catches the *unplanned* case: if mongot is nominally
+        enabled but every branch errors out, recall degrades to the scan
+        instead of returning nothing. An empty result from a healthy mongot is
+        still an empty result — only a branch that could not answer at all
+        (SearchBranchUnavailable) triggers the fallback.
+
         Args:
             query: Search query
             limit: Maximum number of results
@@ -201,25 +236,59 @@ class LongTermMemory:
 
         t0 = time.monotonic()
 
-        # Generate embedding for query
-        query_embedding = await embedding_service.embed(query)
-
-        # Build filter for both searches
+        # Build filter for every branch, including the fallback
         base_filter = {"status": "active"}
         if filters:
             base_filter.update(filters)
 
-        # Run both searches in parallel
-        vector_results, lexical_results = await asyncio.gather(
-            self._vector_search(query_embedding, base_filter, limit * 2),
-            self._lexical_search(query, base_filter, limit * 2),
-        )
+        if not retrieval_capabilities.search_enabled:
+            # mongot is off on purpose — don't emit a stage it can't serve, and
+            # don't spend an embedding on a vector we have nowhere to send.
+            results = await self._fallback_search(query, base_filter, limit)
+            self._cache.put(query, limit, filters, results)
+            return results
+
+        # Query embedding — skipped entirely when embeddings are off, which
+        # turns the hybrid search into a BM25-only search rather than an error.
+        query_embedding = None
+        if retrieval_capabilities.embeddings_enabled:
+            query_embedding = await embedding_service.embed(query)
+
+        # Run the available branches in parallel
+        branches = [self._lexical_search(query, base_filter, limit * 2)]
+        if query_embedding is not None:
+            branches.insert(
+                0, self._vector_search(query_embedding, base_filter, limit * 2)
+            )
+        settled = await asyncio.gather(*branches, return_exceptions=True)
+
+        if query_embedding is not None:
+            vector_settled, lexical_settled = settled
+        else:
+            vector_settled, lexical_settled = [], settled[0]
+
+        vector_results = self._branch_results(vector_settled, "vector")
+        lexical_results = self._branch_results(lexical_settled, "lexical")
+        vector_down = isinstance(vector_settled, SearchBranchUnavailable)
+        lexical_down = isinstance(lexical_settled, SearchBranchUnavailable)
 
         elapsed_ms = (time.monotonic() - t0) * 1000
         logger.debug(
             "Memory search completed: vector=%d lexical=%d in %.1fms",
             len(vector_results), len(lexical_results), elapsed_ms,
         )
+
+        # Every branch that was supposed to answer failed → mongot is not
+        # serving, whatever the switch says. Degrade rather than return [].
+        if lexical_down and (vector_down or query_embedding is None):
+            logger.error(
+                "SEARCH UNAVAILABLE — every mongot branch failed; falling back to "
+                "the mongod-native scan. If mongot is down on purpose, switch the "
+                "'search' capability off so health stops paging."
+            )
+            results = await self._fallback_search(query, base_filter, limit)
+            self._cache.put(query, limit, filters, results)
+            return results
 
         # Combine with Reciprocal Rank Fusion
         fused = self._rrf_fusion(vector_results, lexical_results, k=60)
@@ -230,6 +299,16 @@ class LongTermMemory:
         self._cache.put(query, limit, filters, results)
 
         return results
+
+    @staticmethod
+    def _branch_results(settled, name: str) -> list[tuple["Memory", float]]:
+        """Unwrap one `asyncio.gather(..., return_exceptions=True)` slot."""
+        if isinstance(settled, SearchBranchUnavailable):
+            return []
+        if isinstance(settled, BaseException):
+            logger.error("Memory search %s branch raised unexpectedly: %s", name, settled)
+            return []
+        return settled
 
     async def _vector_search(
         self, embedding: list[float], filter: dict, limit: int
@@ -285,7 +364,7 @@ class LongTermMemory:
                 "VECTOR SEARCH FAILED — recall degraded to lexical-only "
                 "(check memory_vector_index / embedding encoding): %s", e,
             )
-            return []
+            raise SearchBranchUnavailable(str(e)) from e
 
     async def _lexical_search(
         self, query: str, filter: dict, limit: int
@@ -347,8 +426,70 @@ class LongTermMemory:
             return [(Memory.from_doc(r), r["score"]) for r in results]
         except Exception as e:
             logger.warning("Lexical search error: %s", e)
-            # Return empty results if lexical search fails
+            raise SearchBranchUnavailable(str(e)) from e
+
+    async def _fallback_search(
+        self, query: str, filter: dict, limit: int
+    ) -> list[Memory]:
+        """Recall with no mongot at all — a mongod-native scan.
+
+        This is the whole point of being able to switch mongot off: recall gets
+        worse, it does not stop. There is no BM25 and no vector here, so
+        ranking is a deliberately crude token-overlap score, broken by
+        importance and then recency:
+
+            score = matched_tokens + importance   (recency breaks ties)
+
+        Scanning is affordable because the candidate set is bounded by the
+        regex `$or` and a hard `$limit`, and because this path only runs while
+        a dependency is off. It is NOT a second-tier search engine — if these
+        results start mattering, turn mongot back on.
+        """
+        tokens = [
+            t
+            for t in _re.split(r"\W+", query.lower())
+            if len(t) > 2 and t not in _FALLBACK_STOPWORDS
+        ][:8]
+
+        mongo_query = dict(filter)
+        if tokens:
+            mongo_query["$or"] = [
+                {"content": {"$regex": _re.escape(t), "$options": "i"}} for t in tokens
+            ] + [{"categories": {"$in": tokens}}]
+
+        # Wide candidate window so the ranking below has something to choose
+        # from, capped so a stopword-only query can't scan the collection.
+        scan_limit = max(limit * 20, 200)
+        try:
+            docs = (
+                await self.db.memories.find(mongo_query)
+                .sort("created_at", -1)
+                .limit(scan_limit)
+                .to_list(length=scan_limit)
+            )
+        except Exception as e:  # noqa: BLE001 — mongod itself is the last resort
+            logger.error("Fallback memory scan failed (mongod unreachable?): %s", e)
             return []
+
+        scored: list[tuple[float, datetime, Memory]] = []
+        for doc in docs:
+            content = (doc.get("content") or "").lower()
+            hits = sum(1 for t in tokens if t in content) if tokens else 0
+            score = hits + float(doc.get("importance") or 0.0)
+            created = doc.get("created_at") or datetime.min.replace(tzinfo=timezone.utc)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            scored.append((score, created, Memory.from_doc(doc)))
+
+        scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        results = [m for _, _, m in scored[:limit]]
+        logger.info(
+            "Memory recall served by the fallback scan (mode=%s): %d/%d candidates",
+            retrieval_capabilities.retrieval_mode(),
+            len(results),
+            len(docs),
+        )
+        return results
 
     def _rrf_fusion(
         self,
@@ -471,17 +612,20 @@ class LongTermMemory:
         Returns:
             Created memory ID
         """
-        # Generate embedding — gracefully degrade if service is unavailable
+        # Generate embedding — gracefully degrade if the service is unavailable
+        # OR switched off. Either way the memory is still written; the
+        # embedding_pending flag below is the queue the backfill worker drains.
         embedding = await embedding_service.embed_or_none(content)
 
-        if embedding is not None:
+        dedup_filter = {"status": "active"}
+        if private:
+            dedup_filter["private"] = True
+        else:
+            dedup_filter["private"] = {"$ne": True}
+
+        if embedding is not None and retrieval_capabilities.search_enabled:
             # Deduplication: check for near-duplicates via vector search
             threshold = settings.memory_dedup_similarity_threshold
-            dedup_filter = {"status": "active"}
-            if private:
-                dedup_filter["private"] = True
-            else:
-                dedup_filter["private"] = {"$ne": True}
             try:
                 pipeline = [
                     {
@@ -512,11 +656,37 @@ class LongTermMemory:
             except Exception as e:
                 # Dedup is best-effort — don't block memory creation
                 logger.debug("Dedup check failed (non-fatal): %s", e)
+        else:
+            # No vector dedup available (embeddings and/or mongot off). Fall
+            # back to exact-content dedup so a degraded window doesn't fill the
+            # collection with literal duplicates — the emitters that write most
+            # memories (shell extraction, machine scan, git changes) re-emit
+            # identical text routinely, and the near-duplicate pass is the only
+            # thing that has ever absorbed that.
+            try:
+                twin = await self.db.memories.find_one(
+                    {**dedup_filter, "content": content}, {"_id": 1}
+                )
+                if twin:
+                    logger.info(
+                        "Skipping exact-duplicate memory (degraded dedup): %s", content[:80]
+                    )
+                    return str(twin["_id"])
+            except Exception as e:
+                logger.debug("Exact dedup check failed (non-fatal): %s", e)
 
+        if embedding is not None:
             embedding_binary = embedding_to_binary(embedding)
         else:
             embedding_binary = None
-            logger.warning("Storing memory without embedding (embedding_pending): %s", content[:80])
+            # Expected and quiet while the capability is off on purpose; a real
+            # outage still deserves the warning.
+            log = (
+                logger.debug
+                if not retrieval_capabilities.embeddings_enabled
+                else logger.warning
+            )
+            log("Storing memory without embedding (embedding_pending): %s", content[:80])
 
         # Create memory document
         memory_doc = {
@@ -543,6 +713,22 @@ class LongTermMemory:
 
         # Invalidate search cache after mutation
         self._cache.invalidate()
+
+        # Ontology cross-link (§7 phase 5c) — fire-and-forget so the LLM tier
+        # can never add latency to a memory write, and a cross-link failure can
+        # never cost a memory. The cheap path-category tier is deterministic;
+        # the LLM tier is gated behind ontology_extraction_enabled.
+        if settings.ontology_enabled:
+            try:
+                from aria.ontology.crosslink import link_new_memory
+
+                asyncio.create_task(
+                    link_new_memory(
+                        self.db, str(result.inserted_id), memory_doc["categories"]
+                    )
+                )
+            except Exception as e:  # noqa: BLE001 — never block memory creation
+                logger.debug("ontology cross-link scheduling failed: %s", e)
 
         return str(result.inserted_id)
 
@@ -572,9 +758,14 @@ class LongTermMemory:
                 updates["embedding_model"] = settings.embedding_model
                 updates["embedding_pending"] = False
             else:
-                logger.warning(
-                    "Embedding service unavailable; keeping existing embedding "
-                    "and marking stale for memory %s",
+                log = (
+                    logger.debug
+                    if not retrieval_capabilities.embeddings_enabled
+                    else logger.warning
+                )
+                log(
+                    "Embedding unavailable; keeping existing embedding and "
+                    "marking stale for memory %s (backfill will re-embed)",
                     memory_id,
                 )
                 updates["embedding_pending"] = True

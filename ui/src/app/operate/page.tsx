@@ -32,6 +32,25 @@ import {
 import { apiClient } from '@/lib/api-client'
 import { benchmarksApi, type BenchRun } from '@/lib/api-client-benchmarks'
 
+/**
+ * One knob of a model's launch configuration — device placement, context, KV
+ * type, drafter, slots. `source` is what makes this honest: the same value
+ * means something different depending on whether ARIA set it, Ben wrote a
+ * drop-in by hand, or the deployment's serve.sh simply defaults to it, and
+ * only the first is ARIA's to clear.
+ */
+type LaunchParam = {
+  name: string
+  env: string
+  label: string
+  kind: 'int' | 'enum' | 'path' | 'str'
+  description?: string
+  declared_default?: string | null
+  choices?: { value: string; description?: string }[]
+  value?: string | null
+  source?: 'aria_override' | 'unit_dropin' | 'script_default' | 'declared_default' | 'unset'
+}
+
 type Server = {
   slug: string
   description?: string
@@ -50,6 +69,36 @@ type Server = {
   endpoints?: { local?: string; tailnet?: string }
   gtt_used_gib?: number
   gtt_total_gib?: number
+  // Where it runs. Two GPUs with separate memory means entries in different
+  // pools can be resident simultaneously — the fleet list is not a queue.
+  memory_pool?: string
+  also_uses?: string[]
+  devices?: string[]
+  deployment?: string | null
+  pool_used_gib?: number | null
+  pool_total_gib?: number | null
+  pool_spilling?: boolean
+  // How it loads. An empty list means the configuration is frozen in the
+  // deployment's compose file or unit and cannot be chosen from here.
+  parameters?: LaunchParam[]
+  aria_overrides?: Record<string, string>
+  served_ctx?: number | null
+  slots?: number | null
+}
+
+const POOL_LABELS: Record<string, string> = {
+  'halo-gtt': 'Strix Halo',
+  'r9700-vram': 'R9700',
+  'host-ram': 'CPU',
+  remote: 'remote',
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  aria_override: 'set here',
+  unit_dropin: 'unit drop-in',
+  script_default: 'script default',
+  declared_default: 'default',
+  unset: 'unset',
 }
 
 /** CPU-only servers cost no GTT, which is why they can coexist with a big model. */
@@ -63,8 +112,64 @@ type Route = {
   loaded?: { slug: string; resident_gib?: number | null }[]
 }
 
+/**
+ * Live slot occupancy for one running server
+ * (GET /infrastructure/model-servers/utilization).
+ *
+ * The fleet list above reports how many slots a server *should* have (parsed
+ * from its unit file); this reports how many are busy right now. Note that
+ * every field can be null: a server launched without `--metrics` exposes
+ * `/slots` but not `/metrics`, so occupancy is readable while queue depth and
+ * throughput are not. Null means unknown here, never zero.
+ */
+type Util = {
+  slug: string
+  reachable?: boolean
+  busy_slots?: number | null
+  total_slots?: number | null
+  free_slots?: number | null
+  slot_utilisation?: number | null
+  ctx_per_slot?: number | null
+  declared_slots?: number | null
+  declared_ctx_per_slot?: number | null
+  saturated?: boolean | null
+  requests_processing?: number | null
+  requests_deferred?: number | null
+  prompt_tokens_per_second?: number | null
+  predicted_tokens_per_second?: number | null
+  metrics_available?: boolean
+  metrics_hint?: string | null
+}
+
+/**
+ * A non-LLM service (GET /infrastructure/services) — mongod, embeddings,
+ * hermes-gateway, signal-cli, samba, ...
+ *
+ * Deliberately a separate registry from the model servers above, and the
+ * difference that matters is `expected_state`: a stopped model server is
+ * NORMAL (they are mutually RAM-exclusive), whereas a stopped `always_up`
+ * service is an incident. `healthy` already encodes that rule server-side, so
+ * this panel renders the verdict rather than re-deriving it.
+ */
+type Service = {
+  slug: string
+  description?: string
+  kind?: string
+  state?: string
+  expected_state?: 'always_up' | 'on_demand'
+  healthy?: boolean
+  port?: number | null
+  manageable?: boolean
+  needs_review?: boolean
+  notes?: string | null
+  unit?: string | null
+  container?: string | null
+}
+
 export default function OperatePage() {
   const [servers, setServers] = useState<Server[]>([])
+  const [util, setUtil] = useState<Util[]>([])
+  const [services, setServices] = useState<Service[]>([])
   const [runs, setRuns] = useState<BenchRun[]>([])
   const [route, setRoute] = useState<Route | null>(null)
   const [sel, setSel] = useState<string | null>(null)
@@ -74,9 +179,16 @@ export default function OperatePage() {
 
   const load = useCallback(async () => {
     try {
-      const [data, r] = await Promise.all([
+      const [data, r, svc, u] = await Promise.all([
         apiClient.listModelServers(),
         apiClient.getLlmRoute().catch(() => null),
+        // Tolerated separately: the services registry going quiet must not
+        // blank the model-server view, which is the page's primary job.
+        apiClient.listServices().catch(() => null),
+        // Same reasoning, and more so: this one reaches out to each running
+        // llama.cpp, so a wedged server must degrade to "no slot data" rather
+        // than take the whole page down with it.
+        apiClient.modelServerUtilization().catch(() => null),
       ])
       const list: Server[] = data?.servers ?? []
       // Ranked by memory weight: weight is what decides what you can run, so it
@@ -84,6 +196,18 @@ export default function OperatePage() {
       list.sort((a, b) => (b.resident_gib_estimate ?? 0) - (a.resident_gib_estimate ?? 0))
       setServers(list)
       setRoute(r)
+      setUtil((u?.servers as Util[]) ?? [])
+      // Unhealthy first — this panel exists to answer "is anything wrong?",
+      // and a 19-row alphabetical list buries the one row that matters.
+      // Then always_up before on_demand, then by slug for stability.
+      setServices(
+        [...((svc?.services as Service[]) ?? [])].sort((a, b) => {
+          if (!!a.healthy !== !!b.healthy) return a.healthy ? 1 : -1
+          if (a.expected_state !== b.expected_state)
+            return a.expected_state === 'always_up' ? -1 : 1
+          return a.slug.localeCompare(b.slug)
+        }),
+      )
       setSel((cur) => cur ?? list.find((s) => normalizeState(s.state) === 'running')?.slug ?? list[0]?.slug ?? null)
       setError(null)
     } catch (e: any) {
@@ -130,11 +254,37 @@ export default function OperatePage() {
     return { used, total }
   }, [servers, residentGpu])
 
-  async function act(kind: 'start' | 'stop' | 'sleep', slug: string) {
+  /**
+   * The GPU pools, deduplicated from the server rows.
+   *
+   * Read from the rows rather than fetched separately so this survives the
+   * devices endpoint being unavailable — and the CPU pool is dropped because
+   * host RAM pressure is not what decides whether a model fits here.
+   */
+  const pools = useMemo(() => {
+    const out = new Map<string, { pool: string; used_gib: number; total_gib: number; spilling?: boolean }>()
+    for (const s of servers) {
+      if (!s.memory_pool || s.memory_pool === 'host-ram' || s.memory_pool === 'remote') continue
+      if (s.pool_total_gib == null || out.has(s.memory_pool)) continue
+      out.set(s.memory_pool, {
+        pool: s.memory_pool,
+        used_gib: s.pool_used_gib ?? 0,
+        total_gib: s.pool_total_gib,
+        spilling: s.pool_spilling,
+      })
+    }
+    return [...out.values()]
+  }, [servers])
+
+  async function act(
+    kind: 'start' | 'stop' | 'sleep',
+    slug: string,
+    overrides?: Record<string, string> | null,
+  ) {
     setBusy(slug + kind)
     setError(null)
     try {
-      if (kind === 'start') await apiClient.startModelServer(slug)
+      if (kind === 'start') await apiClient.startModelServer(slug, false, overrides)
       if (kind === 'stop') await apiClient.stopModelServer(slug)
       if (kind === 'sleep') await apiClient.sleepModelServer(slug)
       await load()
@@ -145,17 +295,61 @@ export default function OperatePage() {
     }
   }
 
+  async function actService(kind: 'start' | 'stop', slug: string) {
+    setBusy(slug + kind)
+    setError(null)
+    try {
+      if (kind === 'start') await apiClient.startService(slug)
+      else await apiClient.stopService(slug)
+      await load()
+    } catch (e: any) {
+      setError(typeof e?.message === 'string' ? e.message : 'Action failed')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const unhealthy = services.filter((s) => !s.healthy)
+  const needsReview = services.filter((s) => s.needs_review).length
+
+  // The status bar tracks the server that is actually answering, since that is
+  // the one whose slots you are competing for.
+  const servingUtil = util.find((u) => u.slug === route?.serving && u.reachable)
+
   const status = (
     <>
-      <StatusStat label="GTT">
-        {gtt.used.toFixed(1)} / {gtt.total.toFixed(1)} GiB
+      <StatusStat label="SERVICES">
+        {unhealthy.length > 0 ? `${unhealthy.length} down` : `${services.length} ok`}
       </StatusStat>
+      {/* Per device, not per box: this machine has two GPUs with separate
+          memory, so one combined figure would hide which of them is actually
+          full — and a model on the R9700 does not compete with one on the
+          Halo. */}
+      {pools.length > 0 ? (
+        pools.map((p) => (
+          <StatusStat key={p.pool} label={POOL_LABELS[p.pool] ?? p.pool}>
+            {p.used_gib.toFixed(1)} / {p.total_gib.toFixed(1)} GiB
+            {p.spilling ? ' · spilling' : ''}
+          </StatusStat>
+        ))
+      ) : (
+        <StatusStat label="GTT">
+          {gtt.used.toFixed(1)} / {gtt.total.toFixed(1)} GiB
+        </StatusStat>
+      )}
       <StatusStat label="RESIDENT">
         {onbox.filter((s) => normalizeState(s.state) === 'running').length} of {onbox.length}
       </StatusStat>
       <StatusStat label="SERVING">
         {route?.serving ?? '—'}
         {route?.pinned ? ' · pinned' : ''}
+      </StatusStat>
+      <StatusStat label="SLOTS">
+        {servingUtil
+          ? `${servingUtil.busy_slots ?? '?'} / ${servingUtil.total_slots ?? '?'}${
+              servingUtil.saturated ? ' · queuing' : ''
+            }`
+          : '—'}
       </StatusStat>
       <StatusStat label="HOST">corsair-ai · gfx1151</StatusStat>
     </>
@@ -213,6 +407,8 @@ export default function OperatePage() {
             route={route}
             onPin={setPin}
           />
+          <LaunchPanel server={selected} busy={busy} onAct={act} />
+          <SlotsPanel util={util} servers={servers} />
           <ServingPanel route={route} busy={busy} onPin={setPin} />
           <BenchPanel server={selected} runs={runs} />
         </div>
@@ -220,6 +416,12 @@ export default function OperatePage() {
         {/* -------------------------------------------------------- machine */}
         <div className="min-w-0">
           <BudgetPanel server={selected} gtt={gtt} residentGpu={residentGpu} />
+          <ServicesPanel
+            services={services}
+            busy={busy}
+            onAct={actService}
+            needsReview={needsReview}
+          />
         </div>
       </div>
     </AppShell>
@@ -274,7 +476,23 @@ function Detail({
         items={[
           { k: 'Resident', v: isGpu(server) ? `${(server.resident_gib_estimate ?? 0).toFixed(1)} GiB` : 'CPU only' },
           { k: 'Port', v: server.port ?? '—' },
-          { k: 'Device', v: server.backend_device ?? '—' },
+          { k: 'Device', v: server.devices?.join(' + ') || server.backend_device || '—' },
+          // Which pool it spends. Two models in DIFFERENT pools can be resident
+          // at the same time — that is the point of the second card, and the
+          // fleet list alone does not say it.
+          {
+            k: 'Memory',
+            v: [
+              POOL_LABELS[server.memory_pool ?? ''] ?? server.memory_pool ?? '—',
+              ...(server.also_uses ?? []).map((p) => `+ ${POOL_LABELS[p] ?? p}`),
+              server.pool_total_gib
+                ? `· ${(server.pool_used_gib ?? 0).toFixed(0)}/${server.pool_total_gib.toFixed(0)} GiB used`
+                : '',
+            ]
+              .filter(Boolean)
+              .join(' '),
+          },
+          { k: 'Serves', v: server.served_ctx ? `${server.served_ctx.toLocaleString()} ctx x ${server.slots ?? 1}` : '—' },
           { k: 'Endpoint', v: endpoint, title: endpoint },
           { k: 'Runtime', v: server.runtime_ref ?? server.runtime_repo ?? '—', title: server.runtime_ref ?? '' },
           { k: 'Weights', v: server.model_file ?? '—', title: server.model_file ?? '' },
@@ -326,6 +544,172 @@ function Detail({
 
       {server.startable === false && server.not_startable_reason && (
         <Notice tone="warn">{server.not_startable_reason}</Notice>
+      )}
+    </Card>
+  )
+}
+
+/**
+ * Launch configuration — how the selected model loads, not just whether it does.
+ *
+ * The knobs are the deployment's own env vars (its serve.sh is already written
+ * as `VAR="${VAR:-default}"`), so choosing here does exactly what Ben's
+ * hand-written drop-ins do — ARIA writes one more drop-in that sorts last. That
+ * matters for what this panel must show: a value can come from ARIA, from a
+ * hand-written drop-in, or from the script itself, and only the first is
+ * ARIA's to clear. Hence the `source` chip on every row rather than a bare box.
+ *
+ * "Start with defaults" is a real, distinct action, not a reset button: it
+ * clears ARIA's overrides AND starts, so a context size set for one experiment
+ * cannot silently outlive it.
+ */
+function LaunchPanel({
+  server,
+  busy,
+  onAct,
+}: {
+  server: Server | null
+  busy: string | null
+  onAct: (
+    k: 'start' | 'stop' | 'sleep',
+    slug: string,
+    overrides?: Record<string, string> | null,
+  ) => void
+}) {
+  const params = server?.parameters ?? []
+  const [draft, setDraft] = useState<Record<string, string>>({})
+
+  // Reset the form when the selection changes, so a value typed against one
+  // model is never submitted against another.
+  useEffect(() => {
+    setDraft({})
+  }, [server?.slug])
+
+  if (!server || server.onbox === false) return null
+
+  const st = normalizeState(server.state)
+  const running = st === 'running'
+  const effective = (p: LaunchParam) => draft[p.name] ?? p.value ?? ''
+  const changed = params.some((p) => draft[p.name] !== undefined && draft[p.name] !== p.value)
+  const overrides = Object.fromEntries(
+    params
+      .filter((p) => effective(p) !== '' && (draft[p.name] !== undefined || p.source === 'aria_override'))
+      .map((p) => [p.name, effective(p)]),
+  )
+
+  if (params.length === 0) {
+    return (
+      <Card title="Launch configuration">
+        <EmptyState>
+          Frozen in {server.deployment ? `${server.deployment}'s ` : ''}
+          {server.model_file || server.port ? 'compose file' : 'unit'} — this model has no
+          selectable launch parameters. Edit that file to change how it loads.
+        </EmptyState>
+      </Card>
+    )
+  }
+
+  return (
+    <Card
+      title="Launch configuration"
+      hint={running ? '· applies on next start' : `· ${params.length} parameters`}
+    >
+      <div className="flex flex-col gap-2.5">
+        {params.map((p) => (
+          <div key={p.name} className="grid grid-cols-[minmax(120px,150px)_1fr] items-start gap-2.5">
+            <div className="pt-1">
+              <div className="font-sans text-[12px] text-ink">{p.label}</div>
+              <div className="font-mono text-[10px] text-ink-faint">{p.env}</div>
+            </div>
+            <div className="min-w-0">
+              {p.kind === 'enum' && p.choices?.length ? (
+                <select
+                  value={effective(p)}
+                  onChange={(e) => setDraft((d) => ({ ...d, [p.name]: e.target.value }))}
+                  className="w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-[11px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                >
+                  {p.choices.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.value}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={effective(p)}
+                  inputMode={p.kind === 'int' ? 'numeric' : 'text'}
+                  list={p.choices?.length ? `${server.slug}-${p.name}-opts` : undefined}
+                  onChange={(e) => setDraft((d) => ({ ...d, [p.name]: e.target.value }))}
+                  className="w-full rounded border border-line bg-panel-2 px-2 py-1 font-mono text-[11px] text-ink focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                />
+              )}
+              {p.choices?.length && p.kind !== 'enum' ? (
+                <datalist id={`${server.slug}-${p.name}-opts`}>
+                  {p.choices.map((c) => (
+                    <option key={c.value} value={c.value} label={c.description} />
+                  ))}
+                </datalist>
+              ) : null}
+              <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2">
+                <span
+                  className={`font-sans text-[10px] uppercase tracking-wide ${
+                    p.source === 'aria_override' ? 'text-accent' : 'text-ink-faint'
+                  }`}
+                >
+                  {SOURCE_LABELS[p.source ?? 'unset'] ?? p.source}
+                </span>
+                {/* The chosen option's own explanation — these carry measured
+                    trade-offs (what fits, what costs decode), so they are worth
+                    the row rather than being hidden in a tooltip. */}
+                {p.choices?.find((c) => c.value === effective(p))?.description && (
+                  <span className="font-sans text-[10px] text-ink-dim">
+                    {p.choices.find((c) => c.value === effective(p))!.description}
+                  </span>
+                )}
+              </div>
+              {p.description && (
+                <p className="mt-1 max-w-[70ch] font-sans text-[10px] leading-relaxed text-ink-faint">
+                  {p.description}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3.5 flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          disabled={running || server.startable === false}
+          busy={busy === server.slug + 'start'}
+          onClick={() => onAct('start', server.slug, overrides)}
+          title={
+            running
+              ? 'Stop it first — llama.cpp cannot change these without a reload'
+              : 'Start with the settings above'
+          }
+        >
+          Start with these settings
+        </Button>
+        <Button
+          disabled={running || server.startable === false}
+          busy={busy === server.slug + 'start'}
+          onClick={() => {
+            setDraft({})
+            onAct('start', server.slug, null)
+          }}
+          title="Start with the deployment's own defaults, clearing any override ARIA set"
+        >
+          Start with defaults
+        </Button>
+        {changed && <span className="font-sans text-[11px] text-ink-dim">unsaved changes</span>}
+      </div>
+
+      {running && (
+        <Notice tone="warn">
+          Running with the configuration shown. These are load-time settings — stop and start
+          again to apply a change.
+        </Notice>
       )}
     </Card>
   )
@@ -396,6 +780,112 @@ function ServingPanel({
           )}
         </>
       )}
+    </Card>
+  )
+}
+
+/**
+ * Slot occupancy — the runtime counterpart to the memory budget.
+ *
+ * Memory decides which models can be loaded at all; slots decide whether the
+ * loaded one still feels fast. The design of this box is one slot per consumer
+ * (Hermes, the pi coding agent, its sub-agents, ARIA's workers), each holding
+ * its own prefix permanently, so:
+ *
+ * - Every slot busy is FINE and expected. Utilisation is not the alarm.
+ * - `saturated` IS the alarm: requests are queuing, and a queued request lands
+ *   in whichever slot frees first rather than the one holding its prefix. That
+ *   is how a warm cache silently decays into a cold prefill every turn, which
+ *   reads to a human as "the model got slow" with nothing in any log.
+ *
+ * Unknowns render as unknown. A server launched without `--metrics` serves
+ * `/slots` but not `/metrics`, so occupancy shows while queue depth and
+ * throughput stay blank — deliberately not drawn as zeroes, which would read as
+ * a confident "nothing is queuing".
+ */
+function SlotsPanel({ util, servers }: { util: Util[]; servers: Server[] }) {
+  const rows = util.filter((u) => u.reachable)
+  if (rows.length === 0) return null
+
+  return (
+    <Card title="Slots" className="mt-3.5" hint="· live, per running server">
+      <div className="flex flex-col gap-3.5">
+        {rows.map((u) => {
+          const total = u.total_slots ?? 0
+          const busy = u.busy_slots ?? 0
+          const pct = total > 0 ? (busy / total) * 100 : 0
+          // Declared comes from the unit file, live from the server itself, so
+          // they diverge exactly when a unit was edited without a restart.
+          const drift =
+            (u.declared_slots != null && u.total_slots != null && u.declared_slots !== u.total_slots) ||
+            (u.declared_ctx_per_slot != null &&
+              u.ctx_per_slot != null &&
+              u.declared_ctx_per_slot !== u.ctx_per_slot)
+          const cpu = !servers.find((s) => s.slug === u.slug && isGpu(s))
+
+          return (
+            <div key={u.slug}>
+              <div className="mb-1.5 flex items-baseline justify-between gap-2.5">
+                <span className="truncate text-xs text-ink" title={u.slug}>
+                  {u.slug}
+                </span>
+                <span className="tnum shrink-0 text-[11px] text-ink-dim">
+                  {busy} / {total || '?'} busy
+                  {u.ctx_per_slot ? ` · ${Math.round(u.ctx_per_slot / 1024)}K each` : ''}
+                </span>
+              </div>
+
+              <Meter
+                segments={[
+                  {
+                    key: 'busy',
+                    pct,
+                    // Full is normal; queuing is not. Colour follows the alarm,
+                    // not the fill level.
+                    color: u.saturated ? 'bg-gone' : cpu ? 'bg-ink-faint' : 'bg-live',
+                  },
+                ]}
+                left={
+                  u.metrics_available && u.predicted_tokens_per_second != null
+                    ? `${u.predicted_tokens_per_second.toFixed(1)} tok/s out · ${(
+                        u.prompt_tokens_per_second ?? 0
+                      ).toFixed(0)} tok/s prefill`
+                    : 'throughput unavailable'
+                }
+                right={
+                  u.requests_deferred != null && u.requests_deferred > 0
+                    ? `${u.requests_deferred} queued`
+                    : `${u.free_slots ?? Math.max(0, total - busy)} free`
+                }
+              />
+
+              {u.saturated && (
+                <Notice tone="warn">
+                  <b>Requests are queuing.</b> {u.requests_deferred} deferred — a queued request takes
+                  whichever slot frees first, not the one holding its prefix, so expect cold prefills
+                  until this clears. Reduce concurrent sessions, or raise <code>-np</code> in the unit
+                  (each extra slot costs a full <code>-c</code> worth of KV).
+                </Notice>
+              )}
+
+              {drift && (
+                <Notice tone="warn">
+                  <b>Unit and running server disagree.</b> Launch file declares{' '}
+                  {u.declared_slots ?? '?'} × {u.declared_ctx_per_slot ?? '?'}, the server reports{' '}
+                  {u.total_slots ?? '?'} × {u.ctx_per_slot ?? '?'} — it was edited but never restarted.
+                </Notice>
+              )}
+
+              {u.metrics_available === false && (
+                <p className="mt-1.5 font-sans text-[10px] leading-relaxed text-ink-faint">
+                  {u.metrics_hint ||
+                    'Started without --metrics: slot counts are live, queue depth and throughput are unreadable.'}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </Card>
   )
 }
@@ -555,5 +1045,119 @@ function BudgetPanel({
         </Card>
       )}
     </>
+  )
+}
+
+/**
+ * Services — the non-LLM half of "what is running on this box".
+ *
+ * The whole reason this is a separate registry from the fleet above is that
+ * "stopped" means opposite things on each side: a stopped model server is
+ * normal (they are mutually RAM-exclusive and only one big one fits), while a
+ * stopped mongod is an incident. That distinction lives in `expected_state`,
+ * and the server has already applied it to `healthy` — so this renders the
+ * verdict rather than second-guessing it from `state`.
+ */
+function ServicesPanel({
+  services,
+  busy,
+  onAct,
+  needsReview,
+}: {
+  services: Service[]
+  busy: string | null
+  onAct: (kind: 'start' | 'stop', slug: string) => void
+  needsReview: number
+}) {
+  const down = services.filter((s) => !s.healthy)
+
+  return (
+    <Card
+      title="Services"
+      className="mt-3.5"
+      hint={services.length ? `· ${services.length}` : undefined}
+      bodyClassName=""
+    >
+      {services.length === 0 ? (
+        <div className="p-3.5">
+          <EmptyState>No service registry — is aria-api up to date?</EmptyState>
+        </div>
+      ) : (
+        <>
+          {down.length > 0 && (
+            <div className="border-b border-line p-3.5">
+              <Notice tone="warn">
+                <b>
+                  {down.length} service{down.length === 1 ? '' : 's'} down.
+                </b>{' '}
+                {down.map((s) => s.slug).join(', ')} — expected to be running.
+              </Notice>
+            </div>
+          )}
+
+          <ul className="m-0 list-none p-0">
+            {services.map((s) => {
+              const st = normalizeState(s.state)
+              const stopped = st !== 'running'
+              const acting = busy === s.slug + 'start' || busy === s.slug + 'stop'
+              return (
+                <li
+                  key={s.slug}
+                  className="grid grid-cols-[8px_1fr_auto] items-center gap-2.5 border-b border-line px-2.5 py-2 last:border-b-0"
+                >
+                  {/* An on_demand service that is merely stopped is fine, so it
+                      must not show the same red dot as a downed mongod. */}
+                  <StatusDot state={s.healthy ? (stopped ? 'external' : 'running') : 'absent'} />
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="truncate text-xs text-ink" title={s.description || s.slug}>
+                        {s.slug}
+                      </span>
+                      {s.needs_review && (
+                        <span
+                          className="shrink-0 text-[10px] text-idle"
+                          title="expected_state was inferred, not confirmed — worth a look"
+                        >
+                          ⚠
+                        </span>
+                      )}
+                    </div>
+                    <div className="truncate text-[10px] text-ink-faint">
+                      {s.state}
+                      {s.expected_state === 'on_demand' ? ' · on demand' : ''}
+                      {s.port ? ` · :${s.port}` : ''}
+                    </div>
+                  </div>
+                  {s.manageable === false ? (
+                    <span
+                      className="shrink-0 text-[10px] text-ink-faint"
+                      title={s.notes || 'ARIA must not start/stop this one'}
+                    >
+                      locked
+                    </span>
+                  ) : (
+                    <Button
+                      busy={acting}
+                      onClick={() => onAct(stopped ? 'start' : 'stop', s.slug)}
+                      className="shrink-0"
+                    >
+                      {stopped ? 'start' : 'stop'}
+                    </Button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+
+          {needsReview > 0 && (
+            <div className="border-t border-line px-3.5 py-2 text-[10px] text-ink-faint">
+              {needsReview} marked ⚠ — their expected_state was inferred from
+              observed state, not confirmed. Until then an outage on those will
+              not alert.
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   )
 }

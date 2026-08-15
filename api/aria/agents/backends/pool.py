@@ -18,8 +18,10 @@ is NOT a CLI flag -- it comes from POOLSIDE_STANDALONE_MODEL -- and
 POOLSIDE_API_KEY must be set to something or pool falls back to
 credentials.json and tries to authenticate.
 
-Point `pool_api_url` at the slot-proxy port for the coding slot, not at :8095
-directly, so requests carry the id_slot that keeps this agent's prefix pinned.
+Point `pool_api_url` at a server whose ONLY consumer is pool (:8102, Chadrock,
+`--parallel 1`). That exclusivity is what keeps this agent's prefix warm. The
+laguna-slot-proxy id_slot scheme this note used to describe is retired and its
+ports (:8096-:8100) no longer listen.
 
 EXIT CODES (from `pool exec --help`)
   0  task completed

@@ -18,6 +18,23 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return res
 }
 
+/** start/stop one non-LLM service, preserving FastAPI's `detail` on refusal. */
+async function serviceAction(slug: string, action: 'start' | 'stop'): Promise<any> {
+  const res = await fetch(
+    `${API_URL}/api/v1/infrastructure/services/${encodeURIComponent(slug)}/${action}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
+      },
+    },
+  )
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
+  return data
+}
+
 export const apiClient = {
   async checkHealth(): Promise<HealthResponse> {
     const res = await apiFetch('/health')
@@ -277,6 +294,15 @@ export const apiClient = {
     return res.json()
   },
 
+  // Live slot occupancy, read from llama.cpp itself rather than from the launch
+  // file: listModelServers() says how many slots SHOULD exist, this says how
+  // many are busy. Probes only running on-box servers, so it is cheap enough to
+  // sit on the same poll as the rest of the page.
+  async modelServerUtilization(): Promise<any> {
+    const res = await apiFetch('/infrastructure/model-servers/utilization')
+    return res.json()
+  },
+
   // Which server answers as "the local model" — what LLAMACPP_URL, and
   // therefore Hermes, actually talks to when several are resident.
   async getLlmRoute(): Promise<any> {
@@ -299,10 +325,38 @@ export const apiClient = {
     return data
   },
 
+  // The NON-LLM services (mongod, embeddings, hermes-gateway, signal-cli,
+  // samba, ...). A deliberately separate registry from the model servers
+  // above — merging them would make "mongod is down" read as "stopped on
+  // purpose" and silence the alert. See api/aria/infrastructure/services.py.
+  async listServices(): Promise<any> {
+    const res = await apiFetch('/infrastructure/services')
+    return res.json()
+  },
+
+  // Same non-apiFetch reasoning as the model-server actions below: the 409
+  // refusal for an unmanageable service (aria-api restarting itself,
+  // aria-tmux taking every watched session with it) is the useful part.
+  async startService(slug: string): Promise<any> {
+    return serviceAction(slug, 'start')
+  },
+
+  async stopService(slug: string): Promise<any> {
+    return serviceAction(slug, 'stop')
+  },
+
   // Not via apiFetch: its error path discards the response body, but the
   // 409 refusals here carry the useful part (which server conflicts, RAM
   // projection, the force hint) in FastAPI's `detail`.
-  async startModelServer(slug: string, force = false): Promise<any> {
+  // `overrides` picks HOW the model loads (device, context, KV type, drafter,
+  // slots), keyed by the parameter names the server reports. Omitting it is
+  // meaningful, not just absent: the API clears any override a previous start
+  // applied, so a plain start always means the deployment's own defaults.
+  async startModelServer(
+    slug: string,
+    force = false,
+    overrides?: Record<string, string> | null,
+  ): Promise<any> {
     const res = await fetch(
       `${API_URL}/api/v1/infrastructure/model-servers/${encodeURIComponent(slug)}/start`,
       {
@@ -311,12 +365,19 @@ export const apiClient = {
           'Content-Type': 'application/json',
           ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
         },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify(
+          overrides && Object.keys(overrides).length ? { force, overrides } : { force },
+        ),
       },
     )
     const data = await res.json().catch(() => null)
     if (!res.ok) throw new Error(data?.detail || `API error ${res.status}`)
     return data
+  },
+
+  async gpuDevices(): Promise<any> {
+    const res = await apiFetch('/infrastructure/model-servers/devices')
+    return res
   },
 
   async stopModelServer(slug: string): Promise<any> {

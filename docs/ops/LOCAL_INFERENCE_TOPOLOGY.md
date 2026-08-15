@@ -1,4 +1,28 @@
-# Local inference topology (updated 2026-07-28 — two-server split, corrected same day, then a crash + a third server that evening)
+# Local inference topology (updated 2026-08-15 — two GPUs, two models, roles assigned)
+
+> ## ⚠️ READ §13 FIRST — §§1–12 are history
+>
+> As of **2026-08-15T16:35** the box runs **two models at once, one per GPU**:
+> **Qwen3.8-27B (ROCmFP4) on the R9700 `:8080` = Hermes's default**, served as
+> one 320K unified KV pool over 2 slots; and **DS4 Flash UD-IQ3_XXS on the Halo
+> `:8108` = the single-slot coding-agent (pi) model**, q8_0 KV, one 131K slot.
+> §11's "one big server, six slots" (affine `:8107`) and §12's first dual-serving
+> layout are superseded — see §13 for what is true today and where each number
+> comes from.
+>
+> *(Banner as of 2026-08-10, kept for the record:)* the box ran **affine DS4 Flash
+> (`:8107`, 6 slots, 64K per agent)** by default. `gemma-aux` remains the CPU-only helper but is stopped
+> while DS4 owns the large-model residency. IQ2_M+DSpark is an exclusive optional
+> throughput profile, not the quality default. The
+> two-server split narrated below, the `:8103`/`:8102`/`:8105` consumer
+> assignments in §§1/3, and the "point a worker at the server whose prompt
+> shape it matches" rule are **superseded** — there is only one big server now,
+> and consumers are separated by llama.cpp **slot**, not by server.
+>
+> §§1–10 are kept because the *reasoning* (why sharing a server hurts, what
+> evicts what, why docker can't see GPU memory, the retired-endpoint hazards)
+> is still exactly right and still explains the current design. Read them for
+> the why; read **§11** for what is true today.
 
 Operational runbook for how ARIA reaches a model, after the day this host became
 **local-only**. Companion docs: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
@@ -431,3 +455,365 @@ before testing. The `-ctxcp 10` / `--cache-ram 2560` mitigations from fix #1
 were left unchanged. Not proof the failure mode can never recur — the
 original incident only needed one bad coincidence — but it no longer
 reproduces under a load comparable to what caused it the first time.
+
+---
+
+## 11. Current topology (2026-08-10): one big server, six slots
+
+Supersedes §§1–3 for anything operational. §§4–10 still apply as written.
+
+### What runs
+
+| server | port | runs how | serves |
+|---|---|---|---|
+| **DS4-0731-ROCMFPX-affine-256k** | `:8107` | systemd `deepseek-v4-quality-256k.service` | Hermes main chat, the system pi-coding agent, every pi sub-agent, ARIA's background workers |
+| **gemma-4-e4b-Q4** (`gemma-aux`) | `:8104` | docker, **CPU-only** (`-ngl 0`) | Hermes's 16 auxiliary tasks + 3 crons, ARIA's shell-extraction and ontology-extraction workers |
+
+Everything else in the registry (`:8095`, `:8102`, `:8103`, `:8105`, `:8106`,
+`:8108`, `:8110`, `:8081`, `:8093`) is **stopped on purpose, not dead** —
+on-demand servers, RAM-exclusive with DS4. Start them through ARIA's registry,
+which stops DS4 first. Do not "clean up" references to them.
+
+⚠️ **DS4 binds the TAILNET IP ONLY** (`100.123.245.84:8107`). `localhost:8107`
+is connection-refused even with DS4 up. Same class of trap as `:8092`, and it
+has now bitten twice — Hermes's `qwen-chat` provider pointed at
+`localhost:8107` until 2026-08-08.
+
+### The slot budget — this is the part to keep consistent
+
+```
+-c 65536  -np 6  --kv-unified -ub 256  →  64K per agent, six slots
+```
+
+⚠️ **`-c` is PER SEQUENCE — it is NOT a total to divide by `-np`.** llama.cpp
+reports `n_ctx_seq == -c` and gives every slot its own full-size cache, so
+**total KV = `-c` × `-np`**. Verified on the live server 2026-08-10:
+
+```
+llama_context: n_ctx_seq (65536) < n_ctx_train (1048576)
+srv    load_model: initializing slots, n_slots = 6
+slot   load_model: id  0 | new slot, n_ctx = 65536      (x6)
+```
+
+> ⚠️ **Corrected 2026-08-15:** the 6,880 B/token figure below is specific to the
+> *affine sealed-O5 stack* it was measured on. On the stacks that serve today it is
+> wrong by an order of magnitude — **~90 KiB/token f16, ~45 KiB q8_0, ~22.5 KiB
+> q4_0 on DS4 (Nathan / mainline)**, and **~34 KiB/token q4_0 on Qwen3.8**, all
+> measured (`MEMORY_BUDGET_POLICY_20260814` §3, `phase7/SESSION-FINDINGS`, and the
+> Qwen state-size log). The "+1.26 GiB per +32K per agent" derivation and the
+> "2.52 GiB total KV" line below inherit the same error. Also: on the mainline and
+> Nathan stacks KV is allocated **lazily** for DS4 (a *filled* slot costs memory,
+> `-c` costs ~nothing at load) but **up front** for Qwen (`-c × -np` is paid at load).
+
+**KV costs 6880 bytes/token** *(on the affine stack — see the correction above)*, known exactly rather than estimated: a first
+attempt at `-c 1382400 -np 6` — built on the inverted assumption — tried to
+allocate 57,065,472,000 bytes and OOM'd, and `57065472000 / (1382400 * 6)`
+is 6880 on the nose. So total KV here is `65536 * 6 * 6880` = **2.52 GiB**.
+The registry's 103.4 GiB projection includes the measured 15.6 GiB peak buffer
+allowance; the independent live guard is authoritative for shared host memory.
+
+Raising context costs `+32768 * 6 * 6880` = **1.26 GiB per +32K per agent**.
+`n_ctx_train` is 1048576, so the ceiling is KV memory, not the model.
+
+| slot | consumer |
+|---|---|
+| 0 | Hermes main chat |
+| 1 | system pi-coding agent |
+| 2–4 | pi sub-agents (`coding_max_concurrent_pi_sessions = 3`) |
+| 5 | ARIA background workers (ambient capture, heartbeat, research, selfcheck) |
+
+**One slot per consumer is the whole cache design.** Each slot holds its
+agent's prefix permanently, so nobody evicts anybody and no restore path has to
+work. Over-subscribe the slots and you do not get an error — you get every
+agent cold-prefilling every turn, which reads as "the model got slow."
+`check_pi_slot_budget()` exists to make that noisy.
+
+**Do NOT design around the parked prompt cache.** `--cache-ram`/`--cache-disk`
+would in principle let many agents share few slots, but on DS4 it has **never
+restored once**: `loads=0` across every run, and the one time it was needed it
+logged `forcing full prompt re-processing due to lack of cache data (likely due
+to SWA or hybrid/recurrent memory)` at `n_swa = 128`. In-slot *context
+checkpoints* do work (measured: 22,091 tokens restored in ~0.5 s). `--cache-ram`
+is 1024 MiB and nothing depends on it. Re-check `loads=` before revisiting.
+
+`--cache-reuse` is not set and should not be: it is inert on sliding-window
+models (§5 of `infrastructure/laguna/LAGUNA_TUNING_20260726.md` — the server
+refuses the flag and logs `cache_reuse is not supported by this context`).
+
+### Served context is set in ONE place
+
+`deepseek-v4-quality-256k.service`'s `ExecStart`. **Nothing else declares it.**
+
+ARIA's `infrastructure/model_servers.py` parses `-c`/`-np` out of the unit
+(`read_launch_geometry()`) and computes the footprint from it
+(`effective_resident_gib()` = weights + KV(served `-c`) + buffers). So:
+
+- `GET /api/v1/infrastructure/model-servers` reports live `served_ctx`,
+  `slots`, `ctx_per_slot`;
+- the start-time GTT gate projects from the real `-c` — the 2026-08-05 failure
+  (declared 86.5 GiB while holding 94.08 after a `-c` change) cannot recur;
+- **to change context, edit the unit and restart. That is the whole change.**
+
+Two consumers still hold a *copy* of the number and must be updated by hand,
+because they are outside ARIA: Hermes's `ds4`/`ds4-fast` and pi's `ds4`
+provider (`context_length: 65536`). Read the truth from
+`GET :8200/api/v1/infrastructure/model-servers` (`ctx_per_slot`) or
+`GET :8107/v1/models` (`meta.n_ctx`) and match it. Too low silently truncates;
+too high overflows.
+
+### Monitoring slot utilisation
+
+`GET /api/v1/infrastructure/model-servers/utilization` — live occupancy and
+throughput for every running on-box server:
+
+```json
+{"slug":"DS4-0731-ROCMFPX-affine-256k","busy_slots":1,"total_slots":6,
+ "free_slots":5,"slot_utilisation":0.167,"ctx_per_slot":65536,
+ "declared_slots":6,"declared_ctx_per_slot":65536,
+ "saturated":false,"requests_deferred":0,
+ "prompt_tokens_per_second":142.3,"predicted_tokens_per_second":15.9}
+```
+
+Read `saturated` first. Full slots are fine; **queued** requests are not —
+`requests_deferred > 0` means a request waited, and a waiting request lands in
+whichever slot frees first rather than the one holding its prefix. Sustained
+saturation is how warm caches quietly decay into a cold prefill per turn. It is
+the runtime counterpart to `check_pi_slot_budget()`, which can only catch the
+static misconfiguration.
+
+`declared_*` vs the live values is a **drift check**: they disagree when the
+unit was edited without a restart.
+
+Sources: `/slots` (always available) and `/metrics` (**requires `--metrics` on
+the launch line**; a server without it reports `metrics_available: false` plus a
+hint rather than faking zeros). `saturated`/throughput are `null` without it.
+
+⚠️ **GTT is ~10 GiB higher loaded than idle.** DS4 measured 94.56 GiB right
+after load and **104.82 GiB** with one slot active — compute buffers for an
+in-flight batch. `overhead_gib` for DS4 is therefore 10.7, not the 2.1 default:
+the start-time gate must be sized for a loaded server, or it under-counts by
+~9 GiB whenever aria-api restarts while DS4 is stopped.
+
+### Routing — who reaches DS4 how
+
+| consumer | path |
+|---|---|
+| Hermes main | `custom:ds4` → `100.123.245.84:8107` **direct** (no autostart safety net; provider-level `chat_template_kwargs` is why it isn't on the passthrough) |
+| ARIA agents / workers | `LLAMACPP_URL` → `:8200/llm/v1` passthrough → resident server |
+| pi (ARIA-launched) | `pi --provider ds4`, from `PI_CODING_PROVIDER_LLAMACPP`/`_AGENTIC` |
+| pi (hand-run) | `~/.pi/agent/settings.json` `defaultProvider: ds4` |
+| shell extraction | `SHELLS_EXTRACTION_BACKEND=llamacpp` + `_MODEL=gemma-4-e4b-Q4` → gemma |
+
+**Two mapping layers, both of which have drifted before.** ARIA's
+`PI_CODING_PROVIDER_*` settings name a provider *inside pi's own*
+`~/.pi/agent/models.json`, which has its own base_urls. Changing ARIA's backend
+is not enough; check both. As of 2026-08-08 pi's `llama-cpp` (`:8103`) and
+`agentic` (`:8105`) entries still point at stopped servers — they are unused
+now that both settings name `ds4`, but fix them if you ever repoint back.
+
+### Fixed 2026-08-08
+
+- `AGENTIC_URL` `:8105` → `:8200` passthrough. It named a **stopped-by-default**
+  server, and the shell-extraction worker dialled it every 10 minutes.
+- `shells/extraction.py` no longer hardcodes `llm_backend="agentic"`.
+- Hermes `qwen-chat` `localhost:8107` → `:8103` (was DS4's tailnet-only port).
+- Hermes `ds4`/`ds4-fast` `context_length` 131072/262144 → both `230400`, then `204800` (2026-08-09).
+- pi `settings.json` default `llama-cpp`/`qwen35b-a3b-mtp` → `ds4`.
+- Stale `id_slot` prose removed from `config.py` and `agents/backends/pool.py`.
+
+### Open
+
+Both of the open items this section originally carried were **closed on
+2026-08-09 by the cutover itself**, one of them the hard way:
+
+- ~~The `-c ÷ -np` division is inferred~~ → **it was wrong.** `-c` is per
+  sequence; total KV multiplies by `-np`. The first start attempt OOM'd and
+  segfaulted. Confirmed correct now — 6 slots at `n_ctx = 204800`.
+- ~~The 11 KiB/token KV constant is derived, not measured~~ → **measured at
+  6880 bytes/token** from that OOM's exact allocation size. The old 11.0 figure
+  was wrong in magnitude *and* applied with the wrong multiplier.
+
+Still worth knowing:
+
+- **llama.cpp segfaults on the KV-allocation failure path** (`status=11/SEGV`
+  after `failed to allocate DeepSeek4 compressed KV cache buffer`). A bad `-c`
+  does not fail cleanly, and `Restart=on-failure` will retry it on a loop —
+  during the cutover an auto-restart of the *old* config raced an edit and
+  produced a confusing second failure. Stop the unit before editing `-c`.
+- **The prompt cache is still unproven on DS4** (`loads=0` historically). The
+  new run has `--cache-ram 1024` and the disk cache enabled; nothing depends on
+  either. Re-check `loads=` before designing around it.
+
+---
+
+## 12. Two GPUs (2026-08-14): pick the model, pick the placement
+
+An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB VRAM) now sits alongside
+the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). That
+turns one question into two — *which* model, and *where and how* it loads —
+and both are now answerable through ARIA.
+
+### The device map (read this before trusting any `-dev` flag)
+
+| DRM card | PCI | device | pool | capacity |
+|---|---|---|---|---|
+| `card0` | `0000:c6:00.0` | Radeon AI PRO R9700 (discrete) | `r9700-vram` | 31.9 GiB VRAM |
+| `card1` | `0000:c8:00.0` | Radeon 8060S / Strix Halo (integrated) | `halo-gtt` | 124 GiB GTT |
+
+Three inversions bite here, all of them measured, none of them guessable:
+
+1. **`card0` is the DISCRETE card.** Every historical read of
+   `/sys/class/drm/card0/device/mem_info_gtt_used` — ARIA's start-time gate and
+   `selfcheck.py` alike — was therefore reporting the dGPU's near-empty pool.
+   Verified live 2026-08-14: card0 GTT read 0.22 GiB while card1 held 97.8 GiB.
+   A gate reading that number would approve a second 100 GiB model onto a full
+   box. Fixed in `api/aria/infrastructure/gpu_devices.py`, which classifies
+   cards by VRAM size rather than enumeration order.
+2. **`Vulkan0` is the R9700; `Vulkan1` is the Halo.** Backwards from every
+   reference guide, because those machines have no dGPU. Omitting `-dev` on the
+   Halo deployment sends a 97 GiB model to a 32 GiB card and spills ~78 GiB
+   over OCuLink — it still answers, at **1.65 tok/s**.
+3. **`ROCm0`/`ROCm1` depend on the build.** The dual-arch HIP build enumerates
+   both (`ROCm1` = Halo, `ROCm0` = R9700); a gfx1151-only build such as the
+   sealed O5 runtime sees only the Halo, so its `ROCm0` is a different card.
+   Verify placement after any runtime change; do not port a `-dev` flag across
+   runtimes.
+
+### The pools are independent — that is the point
+
+A model in the R9700's own VRAM does not compete with one in the Halo's shared
+memory, so the standard deployment is **one of each**, both resident. ARIA
+gates each start against the pool that server actually draws from, and the
+exclusivity groups are per pool. Two couplings remain:
+
+- **`ds4-hybrid` spans both cards** (80/20 layer split), so it conflicts with
+  everything on either side.
+- **A dGPU model that does not fit its VRAM spills into GTT**, which is system
+  RAM — at which point it is competing with the Halo after all. That is what
+  `-fit off` prevents and what `pool.spilling` reports. A failed fit serves
+  correctly at ~0.4 tok/s, so **check decode speed after a restart, not just
+  `/health`**.
+- **Start the dGPU model FIRST.** It needs host RAM only transiently on its way
+  to VRAM; the Halo model takes and holds ~100 GiB. Reversed, loading Qwen
+  drove DS4's OOM guard under its floor and killed it 17 MiB short.
+
+### Measuring what a server actually holds
+
+`process_gpu_bytes()` reads amdgpu's per-fd `drm-resident-{gtt,vram}` from
+`/proc/<pid>/fdinfo`, grouped by `drm-pdev`. This replaced a KFD-tree read that
+only ever worked for HIP: a RADV Vulkan server has no KFD entry at all, so
+every Vulkan deployment measured as ~0 GiB while holding ~98. Live reading
+2026-08-14, both models up:
+
+```
+DS4-0731-IQ3_XXS-Halo-Vulkan   97.73 GiB  halo-gtt     (Vulkan, no KFD entry)
+Qwen3.8-27B-Q6_K-R9700-HIP     22.84 GiB  r9700-vram   (HIP)
+```
+
+### Choosing how a model loads
+
+Each live deployment is a folder under `infrastructure/` holding `model/`,
+`runtime/` and a `serve.sh` whose env knobs are the configuration surface:
+
+| deployment | device | knobs |
+|---|---|---|
+| `ds4-halo-xxs` | Halo (Vulkan1) | `KV`, `CTX`, `DRAFT`, `VER`, `DEV`, `CACHE_RAM`, `PORT` |
+| `ds4-hybrid` | Halo + R9700 (ROCm) | `PLACEMENT` (split/hybrid), `CTX`, `PORT` |
+| `ds4-affine` | Halo (sealed O5) | `CTX`, `NP`, `PORT` |
+| `qwen-r9700` | R9700 (ROCm0) | `MODEL`, `CTX`, `PORT` |
+| `qwen3.8-27b` | R9700 (Vulkan0) | none — compose-frozen |
+
+ARIA applies a choice as a systemd drop-in (`<unit>.d/zz-aria-overrides.conf`,
+which sorts last and therefore wins), **not** as a generated command line. That
+is deliberate: the ExecStartPre guards, `OOMScoreAdjust=900`, and the
+launcher's `DS4_MIN_START_KIB`/`DS4_MIN_RUN_KIB` floors all still run, and the
+override stays a file you can read or delete. Deployments with no unit of their
+own get an ARIA-generated `aria-model-<slug>.service`.
+
+```bash
+# what exists, where it runs, and how it is currently configured
+curl -sH "X-API-Key: $API_KEY" localhost:8200/api/v1/infrastructure/model-servers
+curl -sH "X-API-Key: $API_KEY" localhost:8200/api/v1/infrastructure/model-servers/devices
+
+# start with a chosen configuration
+curl -sH "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
+  -X POST localhost:8200/api/v1/infrastructure/model-servers/DS4-0731-IQ3_XXS-Halo-Vulkan/start \
+  -d '{"overrides": {"kv": "q8_0", "ctx": "131072", "draft": "none"}}'
+
+# start with the deployment's own defaults — ALSO clears any override ARIA set
+curl -sH "X-API-Key: $API_KEY" -X POST \
+  localhost:8200/api/v1/infrastructure/model-servers/DS4-0731-IQ3_XXS-Halo-Vulkan/start -d '{}'
+```
+
+Also on the web UI's `/operate` (Launch configuration panel), in the TUI under
+`g`, and via the MCP tools `start_model_server(overrides=…)` and
+`list_gpu_devices`.
+
+Every parameter reports a `source`, which is the field to read before changing
+anything: `aria_override` (ARIA set it, and a plain start clears it),
+`unit_dropin` (a hand-written drop-in — ARIA leaves it alone), `script_default`
+(the serve.sh fallback) or `declared_default`.
+
+### What the consolidation removed
+
+The 2026-08-11..14 reorganisation moved every runtime bundle into the
+deployment folders. Ling and Step kept their weights but **lost their runtimes**
+(`runtime-bundles/` no longer exists); the IQ2_M profile lost both; the
+Laguna/chadrockv2 GGUFs are gone. Those registry entries are kept with
+`startable=False` and a stated reason rather than deleted — the reason is the
+record of what happened, and deleting them invites re-adding a model that is
+already here.
+
+## 13. Current topology (2026-08-15): two GPUs, two models, roles assigned
+
+Supersedes §11 and the layout in §12 for anything operational. The *reasoning* in
+§§1–12 still holds; this is what is true today and where each number comes from.
+
+### What runs
+
+| server | port | registry slug | serves | geometry | measured |
+|---|---|---|---|---|---|
+| **Qwen3.8-27B ROCmFP4** on the **R9700** (ROCmFPX HIP gfx1201 build, `qwen-r9700.service`, ExecStart `serve-rocmfp4.sh` via drop-in) | `:8080` | `Qwen3.8-27B-R9700-HIP` (renamed 2026-08-15 from `…-Q6_K-…`) | **Hermes main chat + Hermes crons** (`~/.hermes/config.yaml` default `custom:qwen38-r9700`, declared 250000) | `-c 327680 -np 2 --kv-unified`, q4_0 KV — **one 320K KV pool**, each slot capped at the model's native 262144 (`/slots` → `n_ctx 262144 ×2`) | 23.7 GiB VRAM; 26.3 t/s short, 22.2 @13K, 852 t/s prefill; a 13K cold prefill on one slot pulls the other's decode to ~6 t/s while it runs |
+| **DS4 Flash 0731 UD-IQ3_XXS** on the **Strix Halo** (Nathan v0.6.1 Vulkan, `ds4-halo-xxs.service`, `-dev Vulkan1`) | `:8108` | `DS4-0731-IQ3_XXS-Halo-Vulkan` | **the coding agent (pi)** — pi provider `llama-cpp` → `:8108`, contextWindow 120000; Hermes keeps `ds4-halo` as a *non-default* provider | `-c 131072 -np 1`, **q8_0 KV**, ub2048, `--cache-ram 1024`, **no drafter** (`profile-flowz13.conf`) | 97.8 GiB GTT; 19.3 t/s short, 16.1 @23K, 250 t/s prefill; MemAvailable ~18 GiB fresh → ~15 after a 23K fill |
+| **gemma-4-e4b-Q4** (`gemma-aux`) | `:8104` | `gemma-4-e4b-Q4` | Hermes auxiliary side-tasks; ARIA shell/ontology extraction | CPU-only | coexists with anything |
+
+`LLAMACPP_URL`/`AGENTIC_URL` still point at ARIA's `:8200/llm/v1` passthrough,
+which resolves to the largest resident server (DS4) unless the request names a
+model or a pin is set — unchanged (§ CLAUDE.md).
+
+### The four facts that decided this layout (2026-08-15, all measured)
+
+1. **Qwen + DS4 co-reside easily** — Qwen costs the Halo budget 0.65 GiB. What does
+   *not* fit is DS4's DSpark **drafter** (~13 GiB of system RAM incl. its own KV),
+   with or without Qwen; and it cannot be pinned to the R9700 on Nathan v0.6.1
+   (the DSpark head shares the target's `output.weight` → aborts). Hence no drafter.
+2. **DS4 gets one slot on purpose.** MoE anti-scales under concurrent decode
+   (per-request 10/7/5.6 t/s at 2/4/6 slots), the parked prompt cache never restores
+   on DS4 (`loads=0`), and a *filled* 128K q8_0 slot ≈ 5.6 GiB against a 7 GiB
+   floor. One dedicated consumer keeps its prefix warm (4.2 s vs 39.5 s cold).
+3. **Qwen is dense, so slots are cheap** — but this build allocates KV up front
+   (`-c × -np`), so heterogeneous conversations need `--kv-unified`: one pool any
+   slot can grow into. 320K = 256K main + ~64K cron at ~34 KiB/token = 10.9 GiB;
+   the next step (384K, ~30.5 GiB) is too tight to run blind.
+4. **Hermes hard-requires a declared per-model `context_length` ≥ 64000** (journal
+   2026-08-14 20:08:42, verified) — on the *declared* value, not the served `-c`.
+
+### Where the numbers live
+
+- Residency + floors: `vault/infrastructure/Planning/MEMORY_BUDGET_POLICY_20260814.md` §7
+- The A-vs-B topology decision and every measurement behind it:
+  `vault/ProjectAria/Planning/HOUSE_AGENT_ARCHITECTURE_20260815.md` (Prime question)
+  — moved out of `vault/infrastructure/Planning/` on 2026-08-15: it is an
+  agent-architecture doc, and the topology is an input to it
+- Deployment folders: `infrastructure/ds4-halo-xxs/`, `infrastructure/qwen-r9700/`;
+  drop-ins under `~/.config/systemd/user/{ds4-halo-xxs,qwen-r9700}.service.d/`
+- Live truth: `GET /api/v1/infrastructure/model-servers/utilization` (`declared_*`
+  vs live is the drift check) — start/stop ONLY through the registry.
+
+### Fixed the same day (so nobody re-diagnoses them)
+
+- **Hermes's `aria` MCP had been dead ~24 h**: `mcp>=1.2` in `mcp/server.py`
+  resolved to mcp 2.0.0, which dropped `mcp.server.fastmcp`. Pinned `<2`.
+- `endpoints.env` had `LING3_FLASH_URL`→`:8108` (now DS4), `QWEN38_27B_URL`→`:8110`
+  (Qwen is `:8080`) and `DS4_URL`→`:18211` (not running) — corrected 2026-08-15.
+

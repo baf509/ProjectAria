@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy
+from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -83,18 +83,38 @@ async def lifespan(app: FastAPI):
     import httpx
     db = await get_database()
 
-    # Check embedding service
+    # Check embedding service. The persisted capability switch is loaded later
+    # in this lifespan (it needs the migrations to have run), so this early
+    # probe consults the *live* switch and falls back to the config default —
+    # either way, probing a service ARIA has been told not to use would only
+    # produce a startup warning nobody should act on.
+    from aria.memory.capabilities import COLLECTION as _CAPS_COLLECTION, DOC_ID as _CAPS_ID
+
+    _embeddings_wanted = settings.embeddings_enabled
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{settings.embedding_url.rstrip('/').replace('/v1', '')}/health"
-            )
-            if resp.status_code == 200:
-                startup_logger.info("Embedding service: connected")
-            else:
-                startup_logger.warning("Embedding service: returned HTTP %d (degraded mode)", resp.status_code)
-    except Exception as e:
-        startup_logger.warning("Embedding service: unreachable (%s) — memories will be stored without embeddings", e)
+        _persisted = await db[_CAPS_COLLECTION].find_one({"_id": _CAPS_ID})
+        if _persisted and "enabled" in (_persisted.get("embeddings") or {}):
+            _embeddings_wanted = bool(_persisted["embeddings"]["enabled"])
+    except Exception:  # noqa: BLE001 — the real load happens below
+        pass
+
+    if not _embeddings_wanted:
+        startup_logger.info(
+            "Embedding service: SKIPPED — embeddings capability is switched off "
+            "(memories store as embedding_pending; re-enable to backfill)"
+        )
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{settings.embedding_url.rstrip('/').replace('/v1', '')}/health"
+                )
+                if resp.status_code == 200:
+                    startup_logger.info("Embedding service: connected")
+                else:
+                    startup_logger.warning("Embedding service: returned HTTP %d (degraded mode)", resp.status_code)
+        except Exception as e:
+            startup_logger.warning("Embedding service: unreachable (%s) — memories will be stored without embeddings", e)
 
     # Check LLM backends
     from aria.llm.manager import llm_manager
@@ -182,6 +202,23 @@ async def lifespan(app: FastAPI):
     # Load killswitch state
     ks = get_killswitch()
     await ks.load_state(db)
+
+    # Retrieval capability switches (mongot / embeddings). Loaded from the
+    # persisted doc, NOT reset to the config defaults — a capability an
+    # operator switched off must stay off across a restart, or the alerts they
+    # silenced come straight back. See memory/capabilities.py.
+    from aria.memory.capabilities import retrieval_capabilities
+    await retrieval_capabilities.load_state(db)
+
+    if settings.embedding_backfill_enabled:
+        from aria.memory.backfill import EmbeddingBackfillWorker
+        embedding_backfill = EmbeddingBackfillWorker(db)
+        await embedding_backfill.start()
+        app.state.embedding_backfill = embedding_backfill
+        # This is what makes re-enabling self-healing: flipping the embeddings
+        # switch back on drains the embedding_pending backlog immediately,
+        # rather than waiting out the worker's interval.
+        retrieval_capabilities.set_backfill_trigger(embedding_backfill.kick)
 
     # Load installed skills
     skill_registry = await get_skill_registry(db, tool_router)
@@ -291,6 +328,15 @@ async def lifespan(app: FastAPI):
                 from aria.shells.harvest import DEFAULT_ROOTS, EXTRA_REPO_ROOTS
                 git_roots = settings.git_scan_roots or (DEFAULT_ROOTS + EXTRA_REPO_ROOTS)
                 emitters.append(GitChangeEmitter(git_roots, settings.git_scan_min_change_lines))
+            # Ontology projection (Phase 5a). Rides this worker rather than
+            # adding a second scanner; opts into always_run because its inputs
+            # (registries, db.projects) change without the machine snapshot
+            # changing. LLM-free, and embedding is off by default.
+            if settings.ontology_enabled:
+                from aria.ontology.emitter import OntologyProjectionEmitter
+                emitters.append(
+                    OntologyProjectionEmitter(embed=settings.ontology_projection_embed)
+                )
             scan_worker = ScanReconcileWorker(
                 db,
                 emitters=emitters,
@@ -377,7 +423,7 @@ async def lifespan(app: FastAPI):
     for attr in (
         "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",
         "project_harvester", "scan_worker", "selfcheck", "report_worker",
-        "shell_adopter", "shell_worker", "linear_sync",
+        "shell_adopter", "shell_worker", "linear_sync", "embedding_backfill",
     ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
@@ -548,6 +594,7 @@ app.include_router(conversations.router, prefix="/api/v1", tags=["conversations"
 app.include_router(agents.router, prefix="/api/v1", tags=["agents"])
 app.include_router(memories.router, prefix="/api/v1", tags=["memories"])
 app.include_router(memory_api.router, prefix="/api/v1", tags=["memory"])
+app.include_router(capabilities.router, prefix="/api/v1", tags=["capabilities"])
 app.include_router(shared.router, prefix="/api/v1", tags=["shared"])
 app.include_router(usage.router, prefix="/api/v1", tags=["usage"])
 app.include_router(signal.router, prefix="/api/v1", tags=["signal"])
@@ -557,6 +604,7 @@ app.include_router(research.router, prefix="/api/v1", tags=["research"])
 app.include_router(coding_sessions.router, prefix="/api/v1", tags=["coding"])
 app.include_router(routing.router, prefix="/api/v1", tags=["routing"])
 app.include_router(infrastructure.router, prefix="/api/v1", tags=["infrastructure"])
+app.include_router(ontology.router, prefix="/api/v1", tags=["ontology"])
 app.include_router(benchmarks.router, prefix="/api/v1", tags=["benchmarks"])
 app.include_router(workflows.router, prefix="/api/v1", tags=["workflows"])
 app.include_router(schedules.router, prefix="/api/v1", tags=["schedules"])

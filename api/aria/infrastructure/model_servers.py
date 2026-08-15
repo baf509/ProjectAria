@@ -52,16 +52,34 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import shlex
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
+import yaml
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
+from aria.infrastructure.gpu_devices import (
+    POOL_HALO,
+    POOL_HOST,
+    POOL_R9700,
+    POOL_REMOTE,
+    process_gpu_bytes,
+    process_uses_gpu,
+    read_pool,
+)
 
 logger = logging.getLogger(__name__)
+
+# Allowlist for free-form override values. Deliberately narrow: these are
+# interpolated into a systemd Environment= line and read by a shell script.
+_SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9._,:/\-+=]+$")
 
 
 class ModelServerError(Exception):
@@ -82,6 +100,72 @@ class ModelServerBindingConflict(ModelServerError):
 
 
 @dataclass(frozen=True)
+class LaunchParam:
+    """One knob of a deployment's launch configuration.
+
+    These are NOT invented by ARIA. Every serve.sh under infrastructure/ is
+    already written as `VAR="${VAR:-default}"`, and Ben already overrides them
+    by hand with systemd drop-ins (ds4-halo-xxs.service.d/context.conf sets
+    CTX, no-draft.conf sets DRAFT). A LaunchParam declares one of those
+    existing env knobs so the same override can be made through ARIA — with
+    validation, and visibly — instead of by editing a file.
+
+    `env` is the environment variable the launch script reads. `default` is
+    documentation of the script's own default, not something ARIA writes: an
+    unset override means "let the script decide", which keeps ARIA out of the
+    way of any hand-written drop-in.
+    """
+
+    name: str                 # stable API name, e.g. "ctx"
+    env: str                  # the env var the launch script reads, e.g. "CTX"
+    label: str
+    kind: str = "str"         # "int" | "enum" | "path" | "str"
+    default: Optional[str] = None
+    choices: tuple[tuple[str, str], ...] = ()  # (value, what it means)
+    description: str = ""
+
+    def validate(self, value: str) -> str:
+        """Return the normalised value, or raise ModelServerSafetyError.
+
+        Values end up inside a systemd `Environment=` line and are passed to a
+        shell script, so this is a security boundary as well as a typo check —
+        it is an allowlist, never an escape.
+        """
+        text = str(value).strip()
+        if not text:
+            raise ModelServerSafetyError(f"{self.name}: empty value")
+        if self.kind == "int":
+            if not text.isdigit():
+                raise ModelServerSafetyError(
+                    f"{self.name} must be a positive integer, got {text!r}"
+                )
+            return text
+        if self.kind == "enum":
+            allowed = [c for c, _ in self.choices]
+            if text not in allowed:
+                raise ModelServerSafetyError(
+                    f"{self.name} must be one of {', '.join(allowed)}, got {text!r}"
+                )
+            return text
+        if self.kind == "path":
+            # "none" is the documented sentinel every drafter knob accepts.
+            if text != "none" and not os.path.isabs(text):
+                raise ModelServerSafetyError(
+                    f"{self.name} must be an absolute path or 'none', got {text!r}"
+                )
+            if text != "none" and not os.path.exists(text):
+                raise ModelServerSafetyError(f"{self.name}: no such file: {text}")
+            if any(ch in text for ch in "\n\r"):
+                raise ModelServerSafetyError(f"{self.name}: illegal characters")
+            return text
+        if not _SAFE_VALUE_RE.match(text):
+            raise ModelServerSafetyError(
+                f"{self.name}: only letters, digits and .,_,-,/,: are allowed"
+            )
+        return text
+
+
+@dataclass(frozen=True)
 class ModelServerSpec:
     slug: str
     description: str
@@ -95,15 +179,50 @@ class ModelServerSpec:
     container_name: Optional[str] = None  # actual `docker ps` container name
     profile: Optional[str] = None  # docker compose --profile, if gated
     resident_gib: Optional[float] = None  # SWAG resident footprint; None = unmeasured
+    # The two -c-INVARIANT constants. Supply both and `resident_gib` stops being
+    # hand-maintained: effective_resident_gib() computes the footprint from the
+    # `-c` actually in the launch file, so changing context in the unit is the
+    # whole change. `resident_gib` above stays as the fallback for entries that
+    # have not been characterised this way.
+    weights_gib: Optional[float] = None      # model weights alone
+    kv_kib_per_token: Optional[float] = None # KV cost per token of served context
+    overhead_gib: float = 2.1                # compute buffers, allocator slack
     gtt_resident: bool = True  # False = CPU-only, allocations never hit the GTT pool
     exclusive_with: tuple[str, ...] = ()
     onbox: bool = True  # False = ARIA cannot start/stop it (e.g. Ridge)
     startable: bool = True  # False = no working runtime/compose service exists yet
     not_startable_reason: Optional[str] = None
     consumers_note: Optional[str] = None  # descriptive, e.g. "Hermes auxiliary tasks + cron"
-    # Off-box only: command that suspends the remote machine (its wake path is
-    # separate — e.g. Ridge's WoL proxy wakes it on the next inference request).
+    # Off-box only: command that suspends the remote machine.
     sleep_command: Optional[tuple[str, ...]] = None
+
+    # ── remote operate (added 2026-08-15) ─────────────────────────────────
+    # Off-box servers ARIA CAN drive. Historically `onbox=False` meant "ARIA
+    # refuses to touch it" and the only remote verb was sleep(); waking was an
+    # implicit side effect of an inference request hitting the wake proxy. That
+    # left a real hole: a box can be AWAKE with its model service STOPPED, and
+    # nothing could fix it — observed on RED 2026-08-15 (ssh up, RedLlmGateway
+    # "Ready", nothing on :8080). These fields close it.
+    #
+    # `onbox` keeps its original meaning (does the process run on corsair). The
+    # new capability is `remotely_operable` below, so nothing that reads
+    # `onbox` for accounting or gating changes behaviour.
+    #
+    # wake_command runs LOCALLY on corsair, never over ssh: Wake-on-LAN is an
+    # L2 broadcast, and corsair is the only always-on host on the GPU boxes'
+    # physical LAN. This mirrors wake-proxies/relay/wake_server.py.
+    wake_command: Optional[tuple[str, ...]] = None
+    # Commands run ON the remote host (ssh ...) to start/stop the model service.
+    remote_start_command: Optional[tuple[str, ...]] = None
+    remote_stop_command: Optional[tuple[str, ...]] = None
+    # Probed to decide "is it actually serving?" — the readiness oracle for
+    # remote start. Without this a remote start could only report "command
+    # sent", which is the kind of unverified success this codebase avoids.
+    remote_health_url: Optional[str] = None
+    # Seconds to get the box reachable after a wake (RED ~180, Ridge ~90 cold).
+    remote_wake_deadline: float = 240.0
+    # Seconds for the model service to answer health once the box is up.
+    remote_ready_deadline: float = 240.0
     # Consumer-facing OpenAI-compatible endpoint override. Default is computed
     # from `port` (localhost + tailnet variants); set this when the URI isn't
     # port-derivable — e.g. Ridge, reached ONLY via the tailnet-bound proxy
@@ -115,6 +234,55 @@ class ModelServerSpec:
     # it would break that provenance chain. When set, start/stop/_inspect use
     # systemctl and container_name/compose_file are not required.
     systemd_unit: Optional[str] = None
+
+    # ── placement & parameterized launch (added 2026-08-14) ───────────────
+    # Which physical memory pool this server draws from. The start-time gate
+    # reads THIS pool and no other — the whole point of the two-GPU topology
+    # is that a model on the R9700's own VRAM does not compete with one on the
+    # Halo's shared system memory, so accounting them together would forbid
+    # the dual-serving deployment that demonstrably works.
+    memory_pool: str = POOL_HALO
+    # Additional pools a split deployment also consumes (ds4-hybrid puts 20%
+    # of its layers on the R9700). Display + conflict detection only; the gate
+    # projects against `memory_pool`, which is where the bulk lands.
+    also_uses: tuple[str, ...] = ()
+    # Human-readable device placement, e.g. ("Strix Halo iGPU (Vulkan1)",).
+    devices: tuple[str, ...] = ()
+    # Deployment folder under infrastructure/ that owns model+runtime+serve.sh.
+    # Entries sharing one of these are variants of the same physical pair.
+    deployment: Optional[str] = None
+    # Launch script (relative to infrastructure_root). Its env knobs are what
+    # `parameters` declares; ARIA overrides them with a systemd drop-in rather
+    # than by rewriting the script or building its own command line.
+    launch_script: Optional[str] = None
+    parameters: tuple[LaunchParam, ...] = ()
+    # Which declared parameter carries the served context / slot count. Set
+    # these on script-launched entries so served_ctx and the KV projection
+    # still follow the effective configuration — `read_launch_geometry`
+    # cannot find `-c` in a shell script the way it finds it in an ExecStart.
+    ctx_param: Optional[str] = None
+    slots_param: Optional[str] = None
+    # Unit body for a deployment that has a serve.sh but no systemd unit of
+    # its own (ds4-affine, ds4-hybrid). ARIA materialises `aria-<slug>.service`
+    # from these, so the guard env stays explicit and reviewable here instead
+    # of being implied by the launcher's defaults.
+    unit_environment: tuple[tuple[str, str], ...] = ()
+    unit_exec_start_pre: tuple[str, ...] = ()
+    unit_oom_score_adjust: Optional[int] = 900
+
+    @property
+    def remotely_operable(self) -> bool:
+        """Off-box AND ARIA has a declared way to start/stop its model service.
+
+        Deliberately requires BOTH directions. A half-wired entry that could be
+        started but not stopped is worse than one that refuses both, because it
+        can strand a woken box holding VRAM with no way back.
+        """
+        return (
+            not self.onbox
+            and self.remote_start_command is not None
+            and self.remote_stop_command is not None
+        )
 
 
 # Only the pairs that ALWAYS overflow the box, per the compose-file headers
@@ -134,58 +302,600 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("Laguna-S-2.1", "qwen3.6-27b-Q8"),
     ("Laguna-S-2.1", "ROCmFP4-qwen3.6-35b-a3b"),      # 87+29 SWAG > margin; never validated together
     ("Laguna-S-2.1", "Chadrock-ROCmFP6-qwen3.6-27b"), # 87+30 > margin
-    ("Laguna-S-2.1", "Qwythos-27b-Q8"),               # 87+35 > margin
     # DS4 at ~86.5 GiB behaves like Laguna: it cannot share the GTT pool with
     # any other resident GPU model. Measured 86.42 GiB at -c 131072 on
     # 2026-08-05, leaving ~27 GiB under the 114 GiB margin.
-    ("DS4-0731-ROCMFPX-affine-128k", "Laguna-S-2.1"),
-    ("DS4-0731-ROCMFPX-affine-128k", "Chadrock-Laguna-S-2.1"),
-    ("DS4-0731-ROCMFPX-affine-128k", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-ROCMFPX-affine-128k", "qwen3.6-35b-a3b-Q4"),
-    ("DS4-0731-ROCMFPX-affine-128k", "qwen3.6-27b-Q8"),
-    ("DS4-0731-ROCMFPX-affine-128k", "Chadrock-ROCmFP6-qwen3.6-27b"),
-    ("DS4-0731-ROCMFPX-affine-128k", "Qwythos-27b-Q8"),
+    ("DS4-0731-ROCMFPX-affine-256k", "Laguna-S-2.1"),
+    ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-Laguna-S-2.1"),
+    ("DS4-0731-ROCMFPX-affine-256k", "ROCmFP4-qwen3.6-35b-a3b"),
+    ("DS4-0731-ROCMFPX-affine-256k", "qwen3.6-35b-a3b-Q4"),
+    ("DS4-0731-ROCMFPX-affine-256k", "qwen3.6-27b-Q8"),
+    ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-ROCmFP6-qwen3.6-27b"),
     # Ling-3.0-flash at ~70 GiB clears the 114 GiB margin against the small
-    # servers (qwen/chadrockv2/qwythos/context1 all fit) but not against the
+    # servers (qwen/chadrockv2/context1 all fit) but not against the
     # three big ones. Measured 64.81 GiB at -c 8192 on 2026-08-05; the entry's
     # 70 budgets the MLA KV at the served -c 131072.
-    ("Ling-3.0-flash-MXFP4", "DS4-0731-ROCMFPX-affine-128k"),
+    ("Ling-3.0-flash-MXFP4", "DS4-0731-ROCMFPX-affine-256k"),
     ("Ling-3.0-flash-MXFP4", "Laguna-S-2.1"),
     ("Ling-3.0-flash-MXFP4", "Chadrock-Laguna-S-2.1"),
-    # Ling Q5_K_M at ~88 GiB is the accuracy upgrade of the MXFP4 pair and is
-    # far less companionable: 88 + anything above 26 breaks the 114 GiB margin,
-    # so only context1 (88+16=104), CPU-only gemma and off-box Ridge survive.
-    # It also shares port 8108 with the MXFP4 entry, which alone makes that
-    # pair exclusive regardless of arithmetic.
-    ("Ling-3.0-flash-Q5_K_M", "Ling-3.0-flash-MXFP4"),
-    ("Ling-3.0-flash-Q5_K_M", "DS4-0731-ROCMFPX-affine-128k"),
-    ("Ling-3.0-flash-Q5_K_M", "Laguna-S-2.1"),
-    ("Ling-3.0-flash-Q5_K_M", "Chadrock-Laguna-S-2.1"),
-    ("Ling-3.0-flash-Q5_K_M", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("Ling-3.0-flash-Q5_K_M", "qwen3.6-35b-a3b-Q4"),
-    ("Ling-3.0-flash-Q5_K_M", "qwen3.6-27b-Q8"),
-    ("Ling-3.0-flash-Q5_K_M", "Chadrock-ROCmFP6-qwen3.6-27b"),
-    ("Ling-3.0-flash-Q5_K_M", "Qwythos-27b-Q8"),
+    # The ROCmFP4 Ling is 68 GiB — same class as the MXFP4 entry, so it clears
+    # the small servers and collides only with the big three plus its sibling
+    # Ling quants (which also share port 8108).
+    ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Ling-3.0-flash-MXFP4"),
+    ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "DS4-0731-ROCMFPX-affine-256k"),
+    ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Laguna-S-2.1"),
+    ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Chadrock-Laguna-S-2.1"),
+    # Optional DS4 throughput profile (2026-08-10): target + drafter occupy
+    # ~95.6 GiB GTT and left only ~15 GiB MemAvailable under six-way load.
+    # It is exclusive with every other large GPU model, including the affine
+    # DS4 fallback that shares its port.
+    ("DS4-0731-IQ2M-DSpark-64k", "DS4-0731-ROCMFPX-affine-256k"),
+    ("DS4-0731-IQ2M-DSpark-64k", "Laguna-S-2.1"),
+    ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-Laguna-S-2.1"),
+    ("DS4-0731-IQ2M-DSpark-64k", "ROCmFP4-qwen3.6-35b-a3b"),
+    ("DS4-0731-IQ2M-DSpark-64k", "qwen3.6-35b-a3b-Q4"),
+    ("DS4-0731-IQ2M-DSpark-64k", "qwen3.6-27b-Q8"),
+    ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-ROCmFP6-qwen3.6-27b"),
+    ("DS4-0731-IQ2M-DSpark-64k", "Ling-3.0-flash-MXFP4"),
+    ("DS4-0731-IQ2M-DSpark-64k", "Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
+    # Qualified dual-Vulkan IQ3_S production profile. It spans the Strix Halo
+    # iGPU and the OCuLink 9700, so the one-device GTT projection is not a
+    # meaningful safety instrument; its systemd unit carries the 108/12 GiB
+    # MemAvailable circuit breakers. Gemma is intentionally absent: its CPU
+    # container is hard-capped at 8 GiB and was co-residency tested.
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "DS4-0731-IQ2M-DSpark-64k"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "DS4-0731-ROCMFPX-affine-256k"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Laguna-S-2.1"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-Laguna-S-2.1"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "ROCmFP4-qwen3.6-35b-a3b"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "qwen3.6-35b-a3b-Q4"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "qwen3.6-27b-Q8"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-ROCmFP6-qwen3.6-27b"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Ling-3.0-flash-MXFP4"),
+    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
+)
+
+
+def _pairs_within(slugs: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    """Every combination inside a group that can only have one member up."""
+    return tuple(
+        (a, b) for i, a in enumerate(slugs) for b in slugs[i + 1:]
+    )
+
+
+def _pairs_between(
+    left: tuple[str, ...], right: tuple[str, ...]
+) -> tuple[tuple[str, str], ...]:
+    return tuple((a, b) for a in left for b in right if a != b)
+
+
+# Generated groups, added 2026-08-14 with the two-GPU topology. Writing these
+# out by hand is how the list above grew to 40 lines and still missed pairs;
+# the grouping states the actual reason for the conflict once.
+
+# One Halo-resident big model at a time — each of these takes 86-100 GiB of a
+# 124 GiB pool, so any two of them overflow it.
+_HALO_BIG = (
+    "DS4-0731-IQ3_XXS-Halo-Vulkan",
+    "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
+    "DS4-0731-ROCmFPX-Affine-Quality",
+    "DS4-0731-ROCMFPX-affine-256k",
+    "DS4-0731-IQ2M-DSpark-64k",
+    "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
+    "Laguna-S-2.1",
+    "Chadrock-Laguna-S-2.1",
+    "Ling-3.0-flash-MXFP4",
+    "Ling-3.0-flash-ROCmFP4-STRIX-MTP",
+    "Ling-3.0-flash-Q6_K",
+    "Step-3.7-Flash-APEX-I-Compact",
+    "Step-3.7-Flash-APEX-I-Quality",
+)
+
+# One model at a time on the R9700 — it has ONE 32 GiB pool and every entry
+# here claims most of it. Note these do NOT conflict with the Halo group:
+# separate cards, separate memory, and running one from each group at once is
+# the whole point of the dual-serving deployment.
+_R9700_RESIDENT = (
+    "Qwen3.8-27B-R9700-HIP",
+    "Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
+    "Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
+)
+
+_EXCLUSIVE_PAIRS = (
+    _EXCLUSIVE_PAIRS
+    + _pairs_within(_HALO_BIG)
+    + _pairs_within(_R9700_RESIDENT)
+    # The hybrid split is the one deployment that spans both cards: 80% of its
+    # layers on the Halo, the rest plus the drafter in the R9700's VRAM. So it
+    # is the single member of the Halo group that ALSO conflicts with every
+    # dGPU resident.
+    + _pairs_between(("DS4-0731-IQ3_S-Hybrid-ROCm-Dual",), _R9700_RESIDENT)
 )
 
 
 def _exclusive_with(slug: str) -> tuple[str, ...]:
     """Symmetric expansion of _EXCLUSIVE_PAIRS for one slug — start() only
-    consults the starting spec's own list, so both directions must be present."""
-    return tuple(
-        (b if a == slug else a) for a, b in _EXCLUSIVE_PAIRS if slug in (a, b)
-    )
+    consults the starting spec's own list, so both directions must be present.
+
+    Deduplicated: the hand-written pairs above and the generated groups below
+    legitimately overlap, and a slug repeated here would be reported twice in
+    the same conflict message."""
+    seen: dict[str, None] = {}
+    for a, b in _EXCLUSIVE_PAIRS:
+        if slug == a:
+            seen.setdefault(b, None)
+        elif slug == b:
+            seen.setdefault(a, None)
+    return tuple(seen)
+
+
+# ── shared parameter vocabularies ────────────────────────────────────────
+# Declared once so the same knob means the same thing in every deployment
+# that exposes it, and so the UI can render one control per concept.
+
+_PARAM_PORT = LaunchParam(
+    name="port", env="PORT", label="Port", kind="int",
+    description="Listening port. Changing it moves the endpoint consumers "
+                "dial, so only override this to run a second copy side by side.",
+)
+_PARAM_CTX = LaunchParam(
+    name="ctx", env="CTX", label="Context per slot", kind="int",
+    description="Tokens of context PER SEQUENCE, not a total to divide. Total "
+                "KV = ctx x slots.",
+)
 
 
 REGISTRY: tuple[ModelServerSpec, ...] = (
+    # ══════════════════════════════════════════════════════════════════════
+    # LIVE DEPLOYMENTS — the model+runtime+placement pairs that exist on this
+    # box today, one entry per self-contained folder under infrastructure/.
+    #
+    # Each folder owns model/, runtime/, and a serve.sh whose env knobs ARE
+    # the "how to load it" axis: device placement, KV type, context, drafter.
+    # Those knobs are declared as `parameters` below, so a start can choose
+    # them without editing a file. Entries further down are the historical
+    # frozen-unit and compose servers, most of which are now unstartable
+    # because the 2026-08-11..14 consolidation moved their runtimes into
+    # these folders.
+    # ══════════════════════════════════════════════════════════════════════
     ModelServerSpec(
-        slug="DS4-0731-ROCMFPX-affine-128k",
+        slug="DS4-0731-IQ3_XXS-Halo-Vulkan",
+        description="DeepSeek V4 Flash 0731 UD-IQ3_XXS (97 GiB) on the Strix Halo "
+        "iGPU ALONE, via Nathan's Vulkan fork — which implements the DeepSeek-V4 "
+        "kernels mainline Vulkan disables (lightning indexer + the three fused "
+        "hyper-connection ops) plus hand-tuned MoE shaders, and therefore beats "
+        "both mainline Vulkan and mainline ROCm on this hardware. The APU-only "
+        "profile: leaves the R9700 completely free, so it is the DS4 to pick when "
+        "a dGPU model should run alongside (see DUAL-SERVING.md). Standing profile "
+        "since 2026-08-15 (profile-flowz13.conf): q8_0 KV, ONE 131,072-token slot, "
+        "no drafter — the single-slot coding-agent (pi) model.",
+        runtime_repo="Nathan's Strix Halo llama.cpp Vulkan fork",
+        runtime_ref="runtime/nathan-v0.6.1 (validated line). v0.6.3-beta1 adds "
+        "sparse-attention prefill (+39% @32k, +78% @64k) but is NOT installed — "
+        "selecting it fails until the bundle is placed at runtime/nathan-v0.6.3-beta1/.",
+        backend_device="Vulkan1 (Strix Halo iGPU, gfx1151)",
+        devices=("Strix Halo iGPU (Vulkan1)",),
+        memory_pool=POOL_HALO,
+        deployment="ds4-halo-xxs",
+        model_file="ds4-halo-xxs/model/UD-IQ3_XXS/"
+        "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
+        port=8108,
+        systemd_unit="ds4-halo-xxs.service",
+        launch_script="ds4-halo-xxs/serve.sh",
+        # ⚠️ -dev Vulkan1 is MANDATORY and is why DEV is exposed but defaulted:
+        # the bundled RADV enumerates Vulkan0 as the R9700, so omitting the
+        # device sends a 97 GiB model to a 32 GiB card and spills ~78 GiB over
+        # OCuLink (measured 1.65 t/s).
+        parameters=(
+            LaunchParam(
+                name="kv", env="KV", label="KV cache type", kind="enum",
+                default="f16",
+                choices=(
+                    ("f16", "65,536 ctx default — best short-context decode, no quality tail"),
+                    ("q8_0", "131,072 ctx default — the standing profile since 2026-08-15 "
+                             "(Flow Z13 reference: KLD 0.0126 vs bf16, same-top-p 97.84%)"),
+                    ("q4_0", "smallest KV; never KL-gated on DSV4 — memory fallback only"),
+                ),
+                description="Also sets the script's default context: f16 -> 65536, "
+                            "q8_0 -> 131072. KV is allocated lazily (~45 KiB/token "
+                            "q8_0, ~90 KiB/token f16), so what costs memory is a "
+                            "FILLED slot, not -c.",
+            ),
+            LaunchParam(
+                name="ctx", env="CTX", label="Context per slot", kind="int",
+                description="Overrides the KV-derived default. The unit's "
+                            "profile-flowz13.conf drop-in serves 131072 (q8_0). "
+                            "Hermes refuses any model declaring under 64K.",
+            ),
+            LaunchParam(
+                name="draft", env="DRAFT", label="DSpark drafter", kind="path",
+                default="ds4-halo-xxs/draft/DSV4-Flash-DSpark-draft-bf16.gguf",
+                choices=(
+                    ("/home/ben/Development/infrastructure/ds4-halo-xxs/draft/"
+                     "DSV4-Flash-DSpark-draft-bf16.gguf", "bf16, 10.9 GB — script default"),
+                    ("/home/ben/Development/infrastructure/ds4-halo-xxs/draft/"
+                     "DSV4-Flash-DSpark-draft-Q2_K.gguf",
+                     "Q2_K (Q2K-Q8), 7.2 GB — the Flow Z13 reference's pick; on the "
+                     "Halo it is what trips the co-resident floor"),
+                    ("none", "no speculation — frees the whole drafter, costs DSpark's ~1.4x decode"),
+                ),
+                description="On the Halo the drafter is what does or doesn't fit: "
+                            "measured 2026-08-14 with Qwen resident and the full "
+                            "ARIA stack up, Q2_K on the Halo left 7.3 GiB and tripped "
+                            "the OOM guard 20 MiB short; DRAFT=none left 20.0 GiB. "
+                            "Since 2026-08-15 the drafter lives on the R9700 "
+                            "(draft_device=Vulkan0), where it is VRAM, not RAM.",
+            ),
+            LaunchParam(
+                name="draft_device", env="DRAFT_DEV", label="Drafter device", kind="enum",
+                default="Vulkan1",
+                choices=(
+                    ("Vulkan1", "Strix Halo — the target's device; the only placement "
+                                "that loads on Nathan v0.6.1. Costs the drafter's size "
+                                "in system RAM (tripped the co-resident floor 2026-08-14)."),
+                    ("Vulkan0", "R9700 — ABORTS on v0.6.1 while the target is on "
+                                "Vulkan1: the DSpark head shares the target's "
+                                "output.weight ('pre-allocated tensor (output.weight) "
+                                "in a buffer (Vulkan1) that cannot run the operation', "
+                                "measured 2026-08-15). Only meaningful once the target "
+                                "is itself split onto Vulkan0."),
+                ),
+                description="Where the DSpark drafter is loaded. Draft and target "
+                            "must share a device on this fork; the standing profile "
+                            "therefore runs with DRAFT=none rather than a "
+                            "drafter the Halo cannot afford beside Qwen.",
+            ),
+            LaunchParam(
+                name="runtime_version", env="VER", label="Runtime version", kind="enum",
+                default="v0.6.1",
+                choices=(
+                    ("v0.6.1", "validated line — the only bundle installed"),
+                    ("v0.6.3-beta1", "sparse-attention prefill; bundle NOT present on this box"),
+                ),
+            ),
+            LaunchParam(
+                name="device", env="DEV", label="Vulkan device", kind="enum",
+                default="Vulkan1",
+                choices=(
+                    ("Vulkan1", "Strix Halo iGPU — the only correct choice for a 97 GiB model"),
+                    ("Vulkan0", "R9700 (32 GiB) — will spill ~78 GiB over OCuLink; ~1.65 t/s"),
+                ),
+                description="RADV enumeration is INVERTED on this box relative to "
+                            "every reference guide, which is why this is explicit.",
+            ),
+            LaunchParam(
+                name="cache_ram", env="CACHE_RAM", label="Prompt cache (MiB)", kind="int",
+                default="1024",
+                description="Host-RAM prompt cache. llama.cpp's own default is "
+                            "8192 MiB, which drains headroom at ~0.37 GiB/min and "
+                            "trips the OOM guard — hence the 1024 floor here. Raise "
+                            "it only when the box is quiet.",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        # 97 GiB of weights, plus KV, plus whatever drafter is selected. The
+        # gate biases to the larger of this and the last measured value, and
+        # the launcher's own MemAvailable floor is the real backstop.
+        resident_gib=100,
+        exclusive_with=_exclusive_with("DS4-0731-IQ3_XXS-Halo-Vulkan"),
+        consumers_note="THE CODING-AGENT MODEL since 2026-08-15T16:35: pi provider "
+        "'llama-cpp' -> :8108 (contextWindow 120000). Hermes keeps 'ds4-halo' as a "
+        "NON-default provider (its default moved to Qwen3.8 on :8080); a Hermes turn "
+        "here evicts pi's warm prefix — one slot, one consumer by design.",
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
+        description="DeepSeek V4 Flash 0731 UD-IQ3_S (108 GiB) SPLIT ACROSS BOTH "
+        "GPUs — Strix Halo iGPU + Radeon AI PRO R9700 — on stock mainline llama.cpp "
+        "built dual-arch for gfx1151;gfx1201, with the compact DSpark drafter on the "
+        "dGPU. The higher-quality DS4 quant, bought by using both devices. Measured "
+        "2026-08-14: 28.88 t/s shallow / 17.95 t/s at ~10K depth, 184-242 t/s prefill, "
+        "adherence32 24/32, broad256 244/256.",
+        runtime_repo="https://github.com/ggml-org/llama.cpp.git",
+        runtime_ref="mainline pinned a94d563ed (build 10423), built dual-arch "
+        "gfx1151;gfx1201 at ds4-hybrid/runtime/mainline-hip-dualarch",
+        backend_device="ROCm1 (Strix Halo) + ROCm0 (R9700), HIP",
+        devices=("Strix Halo iGPU (ROCm1)", "R9700 dGPU (ROCm0)"),
+        memory_pool=POOL_HALO,
+        also_uses=(POOL_R9700,),
+        deployment="ds4-hybrid",
+        model_file="ds4-hybrid/model/UD-IQ3_S/"
+        "DeepSeek-V4-Flash-0731-UD-IQ3_S-00001-of-00004.gguf",
+        port=18211,
+        launch_script="ds4-hybrid/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="placement", env="PLACEMENT", label="Device placement", kind="enum",
+                default="split",
+                choices=(
+                    ("split", "80/20 layer split — better at depth, ~8 GiB more Halo "
+                              "headroom. Use for long-context and agentic work."),
+                    ("hybrid", "all non-routed weight + experts of layers 0-2 on the "
+                               "R9700 — best shallow decode (31.56 t/s), but puts 93% "
+                               "of the routed stack on the Halo and is NOT memory-safe "
+                               "for 16K+ prefills."),
+                ),
+                description="The optimum is depth-dependent; there is no single winner.",
+            ),
+            LaunchParam(
+                name="ctx", env="CTX", label="Context per slot", kind="int",
+                default="65536",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        # ~86 GiB of the 108 GiB model lands on the Halo at the default 80/20
+        # split; the remaining layers plus the 8.3 GiB drafter live in the
+        # R9700's own VRAM and are gated separately.
+        resident_gib=88,
+        exclusive_with=_exclusive_with("DS4-0731-IQ3_S-Hybrid-ROCm-Dual"),
+        consumers_note="unbound — the quality-per-speed DS4 option when the R9700 "
+        "is free. Known limit: a single ~16K-token prefill can hang (both GPUs "
+        "idle, CPU spinning); upstream PR #26592 is built but the A/B never ran.",
+        # No unit of its own — ARIA materialises one from the fields below.
+        unit_environment=(
+            ("DS4_GUARD_STATUS", "/run/user/%U/ds4-hybrid-guard.status"),
+            ("DS4_MIN_START_KIB", "113246208"),   # 108 GiB, the standard start floor
+            ("DS4_MIN_RUN_KIB", "12582912"),      # 12 GiB, the production live floor
+            ("DS4_MAX_IDLE_GTT_BYTES", "2147483648"),
+        ),
+        unit_exec_start_pre=(
+            # The R9700 must be awake — it resets to 'auto' every boot — and the
+            # TTM pool must already be capped, or it retains a whole model's
+            # pages after teardown (measured: 110 GiB held with GTT at 0.03).
+            "/usr/bin/bash -c 'test \"$(cat /sys/bus/pci/devices/0000:c6:00.0/power/control)\" = on'",
+            "/usr/bin/bash -c 'test \"$(cat /sys/module/ttm/parameters/page_pool_size)\" -le 1048576'",
+        ),
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-ROCmFPX-Affine-Quality",
+        description="DeepSeek V4 Flash 0731, Ben's hand-tuned ROCmFPX type-108 affine "
+        "quant (85.26 GiB, 2.58 BPW) on the sealed O5 runtime. The QUALITY reference: "
+        "238/256 broad and 24/24 long-context recall, the best long-recall of any DS4 "
+        "artifact here. It is slow (~19.5 t/s shallow, target-only, no drafter) and it "
+        "runs ONLY on the sealed O5 runtime — mainline llama.cpp cannot read type-108, "
+        "so it must not be pointed at the ds4-hybrid binaries.",
+        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
+        runtime_ref="sealed bundle o5-release (dr-xr-xr-x, permissions preserved on "
+        "relocation to ds4-affine/runtime/o5-release)",
+        backend_device="ROCm0, HIP",
+        # The sealed O5 runtime is a gfx1151-only build, so it does not
+        # enumerate the gfx1201 R9700 and its ROCm0 is the Halo. That is an
+        # inference from the build, not a measurement — hence the caveat the
+        # deployment README also carries.
+        devices=("Strix Halo iGPU (ROCm0 — gfx1151-only build; verify placement "
+                 "after any runtime change)",),
+        memory_pool=POOL_HALO,
+        deployment="ds4-affine",
+        model_file="ds4-affine/model/DS4-0731-ROCMFPX-affine.gguf",
+        port=8107,
+        launch_script="ds4-affine/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="CTX", label="Context per slot", kind="int",
+                default="65536",
+                description="PER SEQUENCE. Total KV = ctx x slots, so raising this "
+                            "with 6 slots costs six times what it looks like.",
+            ),
+            LaunchParam(
+                name="slots", env="NP", label="Slots (-np)", kind="int",
+                default="6",
+                description="One slot per concurrent consumer. Six is the qualified "
+                            "geometry: Hermes, system pi-coding, three pi sub-agents, "
+                            "ARIA's background workers.",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        # The -c-invariant constants, so the footprint follows the chosen ctx
+        # and slot count instead of a hand-maintained number. Measured basis is
+        # unchanged from the retired 256k unit; see that entry's comments.
+        resident_gib=86.5,
+        weights_gib=85.26,
+        kv_kib_per_token=6.71875,
+        overhead_gib=15.6,
+        exclusive_with=_exclusive_with("DS4-0731-ROCmFPX-Affine-Quality"),
+        consumers_note="the quality/long-recall reference; unbound by default",
+        unit_environment=(
+            ("DS4_GUARD_STATUS", "/run/user/%U/ds4-affine-guard.status"),
+            ("DS4_MIN_START_KIB", "113246208"),
+            ("DS4_MIN_RUN_KIB", "12582912"),
+            ("DS4_MAX_IDLE_GTT_BYTES", "2147483648"),
+        ),
+        unit_exec_start_pre=(
+            "/usr/bin/bash -c 'test \"$(cat /sys/module/ttm/parameters/page_pool_size)\" -le 1048576'",
+        ),
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-27B-R9700-HIP",
+        description="Qwen3.8-27B (dense, GDN hybrid) on the DISCRETE Radeon AI PRO "
+        "R9700 — `qwen-r9700.service`. Since 2026-08-15 the unit's ExecStart is "
+        "`serve-rocmfp4.sh` (drop-in `rocmfp4.conf`): the ROCmFPX HIP gfx1201 build "
+        "serving the AMD-native ROCmFP4 weights (16.5 GiB) with `-fit off`. Lives "
+        "entirely in the card's own 32 GiB of VRAM, so it runs CONCURRENTLY with a "
+        "Halo-resident DS4 — the dGPU half of the verified dual-serving deployment. "
+        "Standing geometry (2026-08-15T16:20, `context.conf`): ONE unified KV pool of "
+        "327,680 tokens shared by 2 slots — Hermes's main conversation up to the "
+        "model's native 262,144, a second slot for crons — measured 23.7 GiB VRAM. "
+        "(Slug renamed from Qwen3.8-27B-Q6_K-R9700-HIP 2026-08-15: the unit had been "
+        "swapped to ROCmFP4 by drop-in while the registry still said Q6_K.)",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="~/Development/rocmfpx-src build-rdna4-rocwmma (gfx1201-only HIP; "
+        "HIP_VISIBLE_DEVICES=0 is mandatory — it core-dumps on the gfx1151 iGPU)",
+        backend_device="ROCm0 (R9700, gfx1201), HIP",
+        devices=("R9700 dGPU (ROCm0)",),
+        memory_pool=POOL_R9700,
+        deployment="qwen-r9700",
+        model_file="models/llm/Qwen3.8-27B-ROCmFPX-GGUF/Qwen3.8-27B-ROCmFP4.gguf",
+        port=8080,
+        systemd_unit="qwen-r9700.service",
+        launch_script="qwen-r9700/serve-rocmfp4.sh",
+        parameters=(
+            LaunchParam(
+                name="model", env="MODEL", label="Model file", kind="path",
+                default="models/llm/Qwen3.8-27B-ROCmFPX-GGUF/Qwen3.8-27B-ROCmFP4.gguf",
+                choices=(
+                    ("/home/ben/Development/infrastructure/models/llm/"
+                     "Qwen3.8-27B-ROCmFPX-GGUF/Qwen3.8-27B-ROCmFP4.gguf",
+                     "ROCmFP4 (type 100, 4.50 bpw), 16.5 GiB — the standing default"),
+                    ("/home/ben/Development/infrastructure/models/llm/"
+                     "Qwen3.8-27B-GGUF/Qwen3.8-27B-Q6_K.gguf",
+                     "Q6_K, 21.3 GiB — the 2026-08-14 qualified quant; ~5 GiB less "
+                     "room for KV"),
+                ),
+                description="Any GGUF this ROCmFPX HIP build can read. Only ROCmFP4 "
+                            "has been run on this script; Q6_K was qualified on the "
+                            "mainline HIP `serve.sh` (still on disk, not the ExecStart).",
+            ),
+            LaunchParam(
+                name="ctx", env="CTX", label="Context (per slot, or pool if unified)",
+                kind="int", default="131072",
+                description="With kv_unified=1 this is ONE shared pool any slot can "
+                            "grow into (each slot still capped at n_ctx_train "
+                            "262144); without it, every slot gets this much and "
+                            "memory is ctx x slots. q4_0 KV measured ~34 KiB/token.",
+            ),
+            LaunchParam(
+                name="slots", env="NP", label="Slots (-np)", kind="int", default="1",
+                description="Dense model, so concurrent slots batch well — but a big "
+                            "cold prefill on one slot visibly slows decode on the "
+                            "other (measured 2026-08-15: ~6 t/s during a 13K prefill).",
+            ),
+            LaunchParam(
+                name="kv_unified", env="KVU", label="Unified KV pool", kind="enum",
+                default="0",
+                choices=(
+                    ("1", "one shared pool of `ctx` tokens across all slots — "
+                          "heterogeneous conversations (256K + 64K) in a fixed budget"),
+                    ("0", "each slot owns a full `ctx` cache; memory = ctx x slots"),
+                ),
+            ),
+            LaunchParam(
+                name="kv", env="KV", label="KV cache type", kind="enum", default="q4_0",
+                choices=(
+                    ("q4_0", "~34 KiB/token — what fits 320K on this card; low-risk "
+                             "on a standard qwen arch (unlike DSV4)"),
+                    ("q8_0", "~2x q4_0"),
+                    ("f16", "~4x q4_0"),
+                ),
+            ),
+            LaunchParam(
+                name="cache_ram", env="CACHE_RAM", label="Prompt cache (MiB)", kind="int",
+                default="1024",
+                description="Host-RAM parked prompt cache — it WORKS on this model "
+                            "(unlike DS4) but the RAM is the Halo's budget; keep it "
+                            "small (<=2048).",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        # 23.7 GiB measured 2026-08-15 at the 320K unified pool (16.5 weights +
+        # KV + buffers). Projected against the R9700's OWN 32 GiB VRAM pool.
+        resident_gib=24,
+        exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-HIP"),
+        consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 since "
+        "2026-08-15T16:35 (declared 250000); pi provider 'qwen38-r9700' -> :8080. "
+        "DS4 on :8108 is now the coding-agent (pi) model.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
+        description="Qwen3.8-27B Q6_K on the R9700 through the Ciru ROCmFPX Vulkan "
+        "build, with MTP self-speculative decode ON — the head ships inside the GGUF "
+        "as blk.64, there is no separate draft file. MTP is +70% decode here: 39.02 "
+        "vs 22.92 tok/s (measured 2026-08-14), which is why this variant exists "
+        "alongside the HIP one. Vision is available (mmproj-F16.gguf is on disk) but "
+        "disabled — it was never exercised, and headroom at 131072 ctx is only ~4.7 GiB.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="chadrock-rocmfpx:latest image, build-laguna-strix-vulkan "
+        "(shared with chadrock/chadrockv2)",
+        backend_device="Vulkan0 (R9700, gfx1201)",
+        # ⚠️ Vulkan0 means the R9700 on this box. Installing the dGPU inverted
+        # it; every older compose file that says Vulkan0 meaning "the iGPU" is
+        # now wrong, which is why those entries are marked unstartable below.
+        devices=("R9700 dGPU (Vulkan0)",),
+        memory_pool=POOL_R9700,
+        deployment="qwen3.8-27b",
+        model_file="models/llm/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q6_K.gguf",
+        port=8110,
+        compose_file="qwen3.8-27b/docker-compose.yml",
+        service_name="qwen3.8-27b",
+        container_name="qwen3.8-27b",
+        # Measured VRAM ceiling: 24.1 GiB at 32768 ctx, 27.2 GiB at the
+        # configured 131072, ~31.6 GiB projected at 262144 (no headroom).
+        resident_gib=28,
+        exclusive_with=_exclusive_with("Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP"),
+        consumers_note="unbound — the faster of the two Qwen3.8 variants, but "
+        "compose-frozen: its launch flags live in the compose file, not in "
+        "selectable parameters.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
+        description="Qwen3.8-27B in ROCmFPX Q4_0_ROCMFP4 format (17.7 GB) on the "
+        "R9700, same Ciru ROCmFPX Vulkan runtime as the Q6_K variant. The AMD-native "
+        "weight format Ben asked for on the 9700: ~4.6 GiB smaller than Q6_K, which "
+        "buys back headroom for context or the vision tower. Requires a ROCmFPX build "
+        "— mainline llama.cpp cannot read these tensors.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="chadrock-rocmfpx:latest image, build-laguna-strix-vulkan",
+        backend_device="Vulkan0 (R9700, gfx1201)",
+        devices=("R9700 dGPU (Vulkan0)",),
+        memory_pool=POOL_R9700,
+        deployment="qwen3.8-27b",
+        model_file="models/llm/Qwen3.8-27B-ROCmFPX-GGUF/Qwen3.8-27B-ROCmFP4.gguf",
+        port=8110,
+        compose_file="qwen3.8-27b/docker-compose.yml",
+        service_name="qwen3.8-27b-rocmfp4",
+        container_name="qwen3.8-27b-rocmfp4",
+        profile="rocmfp4",
+        # 17.7 GB of weights vs Q6_K's 21.3, same q8_0 KV at the same context.
+        # SWAG, not measured — this variant has not been brought up yet.
+        resident_gib=24,
+        exclusive_with=_exclusive_with("Qwen3.8-27B-ROCmFP4-R9700-Vulkan"),
+        consumers_note="unbound — added 2026-08-14, never started. Verify decode "
+        "speed (not just /health) on first run: a silently-failed VRAM fit serves "
+        "correctly at ~0.4 tok/s.",
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-IQ2M-DSpark-64k",
+        description="DeepSeek V4 Flash 0731, Unsloth UD-IQ2_M target plus Q8_0 "
+        "DSpark drafter at width 4. Six 65,536-token slots with unified KV and "
+        "prompt caching. Optional high-throughput profile: 63.83 aggregate tok/s "
+        "for six clients, but the frozen 256-case gate found three new scored "
+        "failures versus target-only. Affine is the quality-first default.",
+        runtime_repo="https://github.com/ggml-org/llama.cpp.git",
+        runtime_ref="08659901c43b51de735740f1cf61bb82fbe0c4e4 (ROCm 7.2.4, gfx1151)",
+        backend_device="ROCm0 (gfx1151)",
+        model_file="models/llm/unsloth-DS4-0731-IQ2M/UD-IQ2_M/"
+        "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf",
+        port=8107,
+        systemd_unit="deepseek-v4-iq2m-dspark-64k.service",
+        # Target (90.92 GB) + drafter (10.90 GB) are one inseparable serving
+        # profile. Keep the measured conservative whole-profile figure instead
+        # of pretending model_file alone describes the resident weights. The
+        # static systemd geometry still reports six 64K slots, while the launch
+        # wrapper independently enforces 108 GiB start / 12 GiB run tripwires.
+        resident_gib=109.0,
+        exclusive_with=_exclusive_with("DS4-0731-IQ2M-DSpark-64k"),
+        startable=False,
+        not_startable_reason="Runtime AND weights are gone: the unit's "
+        "~/ds4-mainline-dspark/ tree no longer exists (checked 2026-08-14). This "
+        "profile was not migrated in the infrastructure consolidation — nothing "
+        "under infrastructure/ carries the IQ2_M target or its Q8_0 drafter. Use "
+        "DS4-0731-IQ3_XXS-Halo-Vulkan or DS4-0731-IQ3_S-Hybrid-ROCm-Dual instead.",
+        consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
+        endpoint_override="http://100.123.245.84:8107/v1",
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-ROCMFPX-affine-256k",
         description="DeepSeek V4 Flash 0731, ROCmFPX affine 2.58 BPW (85.26 GiB), "
-        "served at 128K context. The accepted, manifest-pinned target artifact of "
-        "the DS4 master plan; deployed 2026-08-05. NOT a docker container: it runs "
-        "as the systemd --user unit deepseek-v4-quality-128k.service from a sealed "
-        "runtime bundle. A 32K rollback profile (deepseek-v4-quality-32k.service, "
-        "same bundle, -c 32768) stays installed but disabled.",
+        "served as six guarded 65,536-token slots. Quality-first default selected "
+        "2026-08-10 after tying IQ2_M at 238/256 while recovering all three deepest "
+        "early-recall failures. The compatibility slug and unit filename retain "
+        "'256k', but launch geometry is parsed from the unit and is authoritative. "
+        "The sealed affine runtime, prompt caching, and 12 GiB live guard are active.",
         runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
         runtime_ref="branch decode-fusion (sealed bundle o5-release-86f0056d-20260803T231500-0400)",
         backend_device="ROCm0 (gfx1151)",
@@ -201,9 +911,48 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # Run it after editing either side.
         model_file="models/llm/DS4-0731-ROCMFPX-affine.gguf",
         port=8107,
-        systemd_unit="deepseek-v4-quality-128k.service",
-        resident_gib=86.5,  # measured 2026-08-05: 86.42 GiB GTT at -c 131072
-        exclusive_with=_exclusive_with("DS4-0731-ROCMFPX-affine-128k"),
+        systemd_unit="deepseek-v4-quality-256k.service",
+        # NOT hand-declared any more. The footprint is computed from the `-c`
+        # in deepseek-v4-quality-256k.service (see effective_resident_gib), so
+        # the 2026-08-05 staleness — declared 86.5 while really holding 94.08
+        # after a -c change — cannot recur. resident_gib is the fallback used
+        # only if that unit ever becomes unparseable.
+        #
+        # weights: 85.26 GiB (2.58 BPW affine quant, from the GGUF).
+        # kv: 6880 bytes/token = 6.71875 KiB, MEASURED 2026-08-09 — an OOM at
+        # -c 1382400 -np 6 named the exact buffer it could not allocate
+        # (57065472000 bytes = 1382400 * 6 * 6880), which is a cleaner reading
+        # than the two-GTT-snapshot estimate it replaces (that one said 11.0 and
+        # was wrong, because the snapshots differed by a 4 GiB prompt cache as
+        # well as by -c). KV totals over -c * -np, not -c.
+        resident_gib=86.5,
+        weights_gib=85.26,
+        kv_kib_per_token=6.71875,
+        # 15.6, not the 2.1 default. Compute buffers scale with how much work is
+        # in flight, so this was measured at the PEAK, not at rest — three
+        # readings on 2026-08-09, same weights:
+        #     94.56 GiB  loaded, idle              -> overhead  ~1.9
+        #    104.82 GiB  one slot, small request   -> overhead ~10.5
+        #    108.73 GiB  one slot, 56k prefill     -> overhead ~15.6
+        #        (108.73 - 85.26 weights - 7.87 KV at -c 204800)
+        # The gate exists to refuse overcommit, and overcommit happens at peak,
+        # so the peak is the number it must carry. An earlier pass set 10.7 from
+        # the middle reading; the box had already OOM-killed llama-server 8x that
+        # day, which is the cost of sizing this optimistically.
+        #
+        # ⚠️ This constant cannot fix the gate's real blind spot: _read_gtt_gib()
+        # sees GPU-visible memory ONLY, but on this unified-memory box the CPU
+        # side draws from the same 124 GiB. gemma-aux (~2.6), mongod/mongot/
+        # embeddings (~1.9) and the desk's claude sessions (~1.5) are invisible
+        # to it, so the gate reads ~15 GiB free when ~8 is the truth.
+        overhead_gib=15.6,
+        exclusive_with=_exclusive_with("DS4-0731-ROCMFPX-affine-256k"),
+        startable=False,
+        not_startable_reason="SUPERSEDED by DS4-0731-ROCmFPX-Affine-Quality. The "
+        "sealed O5 runtime moved from runtime-bundles/ into ds4-affine/runtime/ and "
+        "the GGUF into ds4-affine/model/, so this unit's ExecStart and -m both point "
+        "at paths that no longer exist. Same model, same runtime, same guards — the "
+        "new entry adds selectable ctx/slots.",
         consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
         # Binds the TAILNET IP ONLY - there is no localhost listener, so the
         # port-derived default would hand consumers a dead URL. Same gotcha as
@@ -211,6 +960,40 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # entry on localhost; see endpoints.env.
         # _TAILNET_IP is defined below REGISTRY, so hardcode as Ridge does.
         endpoint_override="http://100.123.245.84:8107/v1",
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
+        description="DeepSeek V4 Flash 0731 quality/throughput profile: Unsloth "
+        "UD-IQ3_S target plus compact Q3-expert/Q8-dense DSpark drafter, split "
+        "80/20 over Radeon 8060S + OCuLink Radeon AI PRO R9700. Four unified-KV "
+        "slots, 131,072 tokens per slot, F16 KV, continuous batching, idle-slot "
+        "prompt preservation, and a 1 GiB reusable RAM prompt cache. The 4x256K "
+        "capacity profile loaded, but tripped the 12 GiB guard after real Pi "
+        "traffic while Gemma was resident; 4x128K is the co-resident profile.",
+        runtime_repo="https://github.com/Nathanw1014/strix-halo-llamacpp.git",
+        runtime_ref="Nathan-derived Vulkan runtime with dual-device DSpark support",
+        backend_device="Vulkan1 (Strix Halo) + Vulkan0 (R9700), 80/20 layer split",
+        model_file="ds4-sharded-experts/models-0731/UD-IQ3_S/"
+        "DeepSeek-V4-Flash-0731-UD-IQ3_S-00001-of-00004.gguf",
+        port=18211,
+        systemd_unit="deepseek-v4-iq3s-dspark-dual-production.service",
+        # Used for route ranking/documentation only. The footprint spans a
+        # discrete-VRAM device and shared system memory, so the legacy
+        # single-GTT projection cannot represent it. The launch wrapper's
+        # MemAvailable guard remains authoritative.
+        resident_gib=104.0,
+        gtt_resident=False,
+        exclusive_with=_exclusive_with(
+            "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K"
+        ),
+        startable=False,
+        not_startable_reason="SUPERSEDED by DS4-0731-IQ3_S-Hybrid-ROCm-Dual. The "
+        "ds4-sharded-experts/ tree this unit launches from no longer exists; the "
+        "same UD-IQ3_S weights and compact DSpark drafter now live in ds4-hybrid/, "
+        "served by the mainline HIP dual-arch build over ROCm rather than the "
+        "Vulkan runtime that was removed with the old tree.",
+        consumers_note="Hermes primary; regular Pi; ARIA watched-shell Pi coding",
+        endpoint_override="http://127.0.0.1:18211/v1",
     ),
     ModelServerSpec(
         slug="Ling-3.0-flash-MXFP4",
@@ -237,6 +1020,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # below what a same-size dense-attention model would need.
         resident_gib=70,
         exclusive_with=_exclusive_with("Ling-3.0-flash-MXFP4"),
+        startable=False,
+        not_startable_reason="Weights present, RUNTIME GONE: the bailingmoe3 bundle "
+        "under runtime-bundles/ling-3.0-flash/ was removed in the 2026-08-11..14 "
+        "consolidation and was not relocated. Ling needs that fork specifically — "
+        "the ports of PR ggml-org/llama.cpp#26608 are not in any installed build. "
+        "Rebuild the bundle to revive this entry.",
         consumers_note="unbound — new, not yet validated beyond a smoke test",
         # Binds 127.0.0.1 only, so the port-derived localhost default is
         # correct and no endpoint_override is needed. Deliberately NOT the
@@ -245,35 +1034,40 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # gotcha. To expose it, change --host in the unit AND add an override.
     ),
     ModelServerSpec(
-        slug="Ling-3.0-flash-Q5_K_M",
-        description="inclusionAI Ling-3.0-flash, Q5_K_M (85.20 GiB) — same 124B-total/"
-        "5.1B-active hybrid-linear MoE as the MXFP4 entry (35 KDA + 7 gated-MLA layers, "
-        "512 routed experts top-8 + 1 shared, bundled MTP block), at higher precision. "
-        "Shares port 8108 and the runtime bundle with Ling-3.0-flash-MXFP4, so the two "
-        "are mutually exclusive. Q6_K (98.26 GiB) was the original target and does NOT "
-        "fit: it reached 97 GiB GTT then paged while still loading. The binding budget "
-        "is ~94 GiB, not the 124 GiB aperture — this box holds 13-15 GiB of other "
-        "services' working set in swap, so MemAvailable overstates headroom. Measured "
-        "34.05 tok/s decode, FASTER than MXFP4's 31.55 despite being 31% larger: at "
-        "5.1B active only ~35% of memory bandwidth is in use, so kernel quality "
-        "dominates, not bytes-per-weight. Added 2026-08-06.",
-        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
-        runtime_ref="branch bailingmoe3 (bundle bailingmoe3-89926145-20260805T115134-0400) — "
-        "rocmfpx main @ 2b21cfb04 + upstream PR ggml-org/llama.cpp#26608 cherry-picked and "
-        "its MTP/nextn + recurrent-layer API ported to this fork; PR still open upstream",
+        slug="Ling-3.0-flash-ROCmFP4-STRIX-MTP",
+        description="inclusionAI Ling-3.0-flash, Q4_0_ROCMFP4_STRIX (64.9 GiB) — the same "
+        "124B-total/5.1B-active hybrid-linear MoE, quantized to this fork's own Strix Halo "
+        "attn-K/V recipe with the MTP/NextN head preserved at Q8_0. The PREFERRED Ling: "
+        "faster AND smaller than the Q5_K_M entry — 39.02 vs 34.05 tok/s decode at 20 GiB "
+        "less. Runs a DIFFERENT runtime lineage from the other two: charlie12345/ROCmFPX "
+        "main @ d3ca53726, which merged the BailingMoeV3 implementation from raulvidis "
+        "(who also published these weights) plus three speculative-decode fixes and the "
+        "per-layer SwiGLU clamp against garbage-token logit collapse — none of which the "
+        "aetherbird PR 26608 port behind ling-3.0-flash.service has. MTP is verified "
+        "working here but left OFF: it measures 39.60 vs 39.02, i.e. nothing, because at "
+        "5.1B active Ling uses only ~35% of memory bandwidth and speculation is a "
+        "bandwidth-amortisation trick. Added 2026-08-07.",
+        runtime_repo="https://github.com/charlie12345/ROCmFPX.git",
+        runtime_ref="main @ d3ca53726 (bundle rocmfp4-mtp-d3ca5372-20260807T164848-0400) — "
+        "merges ROCmFPX #57 BailingMoeV3+MTP, #56 spec-state checkpoint restore, "
+        "#59 spec replay livelock guard, #55 draft accept correction. Clean tree.",
         backend_device="ROCm0 (gfx1151)",
-        model_file="models/llm/Ling-3.0-flash-Q5_K_M/Ling-3.0-flash-Q5_K_M.gguf",
+        # Split GGUF — llama.cpp opens part 1 and pulls in part 2 automatically.
+        model_file="models/llm/Ling-3.0-flash-ROCmFP4-STRIX-MTP/Ling-3.0-flash-ROCmFP4-STRIX-MTP-Q4_0-00001-of-00002.gguf",
         port=8108,
-        systemd_unit="ling-3.0-flash-q5km.service",
-        # MEASURED 86 GiB GTT at the served -c 131072 (2026-08-06), full offload,
-        # no --n-cpu-moe. Padded to 88. Unlike a dense model of this size the ctx
-        # cost is ~1 GiB: only the 7 MLA layers hold a growing cache, the 35 KDA
-        # layers keep a fixed-size recurrent state.
-        resident_gib=88,
-        exclusive_with=_exclusive_with("Ling-3.0-flash-Q5_K_M"),
-        consumers_note="unbound — replaces the MXFP4 entry as the preferred Ling",
+        systemd_unit="ling-3.0-flash-rocmfp4.service",
+        # MEASURED 66 GiB GTT at the served -c 131072 (2026-08-07), padded to 68.
+        resident_gib=68,
+        exclusive_with=_exclusive_with("Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
+        startable=False,
+        not_startable_reason="Weights present, RUNTIME GONE: the rocmfp4-mtp bundle "
+        "was removed in the 2026-08-11..14 consolidation. The chadrock-rocmfpx:latest "
+        "image is still on the box but is a DIFFERENT lineage (ciru-ai, not "
+        "charlie12345 @ d3ca53726) and is not known to carry BailingMoeV3 — do not "
+        "assume it as a substitute without testing.",
+        consumers_note="preferred Ling — fastest and smallest of the three. "
+        "Q5_K_M was removed 2026-08-07 and replaced by Q6_K as the quality tier.",
         # Binds 127.0.0.1 only, so the port-derived localhost default is correct.
-        # To expose on the tailnet, change --host in the unit AND add an override.
     ),
     ModelServerSpec(
         slug="Laguna-S-2.1",
@@ -290,6 +1084,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         container_name="laguna",
         resident_gib=87,
         exclusive_with=_exclusive_with("Laguna-S-2.1"),
+        startable=False,
+        not_startable_reason="The GGUF is gone — models/llm/Laguna-S-2.1-GGUF/ no "
+        "longer holds laguna-s-2.1-Q4_K_M.gguf (checked 2026-08-14). Retired "
+        "2026-07-28; the laguna-rocm:latest image is still on the box.",
+        memory_pool=POOL_HALO,
+        devices=("Strix Halo iGPU (HIP ROCm0, single-GPU era)",),
     ),
     ModelServerSpec(
         slug="Chadrock-Laguna-S-2.1",
@@ -312,6 +1112,13 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # chadrock+qwen coexistence the two-server split was designed for.
         resident_gib=60,
         exclusive_with=_exclusive_with("Chadrock-Laguna-S-2.1"),
+        startable=False,
+        not_startable_reason="The GGUF is gone — models/llm/Laguna-S-2.1-Chadrock-"
+        "ROCmFP4/ no longer exists (checked 2026-08-14). Physically shut down by Ben "
+        "2026-07-29. Its `Vulkan0` would also now resolve to the R9700, not the iGPU.",
+        memory_pool=POOL_HALO,
+        devices=("declared Vulkan0 — meant the iGPU when written, now the R9700; "
+                 "needs a device audit before any revival",),
         consumers_note="pool CLI (ProjectAria coding backend) only",
     ),
     ModelServerSpec(
@@ -340,6 +1147,16 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # cleanly, zero container state changes, peak 72.4 GiB combined.
         resident_gib=29,
         exclusive_with=_exclusive_with("ROCmFP4-qwen3.6-35b-a3b"),
+        startable=False,
+        not_startable_reason="DEVICE AUDIT REQUIRED. Its compose file pins "
+        "`--device Vulkan0`, written when the iGPU was the only card. Installing the "
+        "R9700 inverted that: Vulkan0 is now the 32 GiB dGPU, and this service asks "
+        "for 262144 ctx on top of ~20 GiB of weights, which will not fit. The weights "
+        "are still on disk — fix the device (Vulkan1) and re-qualify the context, "
+        "then clear this flag.",
+        memory_pool=POOL_HALO,
+        devices=("declared Vulkan0 — now the R9700; almost certainly meant to be "
+                 "Vulkan1 (Strix Halo)",),
         consumers_note="Hermes main chat + ARIA default/search chat agents (both "
         "currently disabled, so single active consumer in practice)",
     ),
@@ -425,6 +1242,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         service_name="gemma-aux",
         container_name="gemma-aux",
         resident_gib=8,
+        memory_pool=POOL_HOST,
+        devices=("CPU only",),
         # CPU allocations never appear in mem_info_gtt_used, so projecting
         # this against the GTT pool is a category error — the compose file's
         # own mem_limit/oom_score_adj are the real guard here.
@@ -460,52 +1279,188 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # ctx. Padded modestly above measured for headroom.
         resident_gib=42,
         exclusive_with=_exclusive_with("Chadrock-ROCmFP6-qwen3.6-27b"),
+        startable=False,
+        not_startable_reason="The GGUF is gone — models/llm/Chadrockv2-Qwen3.6-27B-"
+        "ROCmFP6-STRIX-QUALITY/ no longer exists (checked 2026-08-14). Its Vulkan0 "
+        "would also now resolve to the R9700.",
+        memory_pool=POOL_HALO,
+        devices=("declared Vulkan0 — meant the iGPU when written, now the R9700",),
     ),
     ModelServerSpec(
-        slug="Qwythos-27b-Q8",
-        description="Qwythos-27B-v1 MTP Q8_0 (Empero) with the F16 vision projector — "
-        "multimodal, MTP draft speculation, 65536 ctx (weights go to 1M; KV cost is "
-        "why they don't here). Standard GGUF, served on the same ciru-ai ROCmFPX "
-        "Vulkan image; verified 2026-07-30 driving mmproj + draft-mtp together.",
+        slug="Ling-3.0-flash-Q6_K",
+        description="inclusionAI Ling-3.0-flash, Q6_K (98.3 GiB) — the highest-fidelity "
+        "Ling quant of the same 124B-total/5.1B-active hybrid-linear MoE. REQUIRES the "
+        "bailingmoe3 bundle; the rocmfp4-mtp bundle will not load it. Shares port 8108 "
+        "with the MXFP4 and ROCmFP4 builds, so only one Ling can be up.",
         runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
-        runtime_ref="branch agent/laguna-radv-device-lost-20260724 @ 090e317b4e2f998a9470faeb076cf841ba72b739 "
-        "(chadrock-rocmfpx:latest — chosen for being already built + Vulkan; any "
-        "recent MTP-capable llama.cpp would also serve this standard GGUF)",
-        backend_device="Vulkan0",
-        model_file="models/llm/Qwythos-27B-v1-GGUF/Qwythos-27B-MTP-Q8_0.gguf "
-        "(+ mmproj-Qwythos-27B-F16.gguf)",
-        port=8106,
-        compose_file="qwythos/docker-compose.yml",
-        service_name="qwythos",
-        container_name="qwythos",
-        # MEASURED 32 GiB at 8192 ctx WITH mmproj + MTP draft ctx (2026-07-30);
-        # budgeted for the larger KV at the configured 65536 ctx.
-        resident_gib=40,
-        exclusive_with=_exclusive_with("Qwythos-27b-Q8"),
-        consumers_note="unbound — the only vision-capable local model on this box",
+        runtime_ref="branch bailingmoe3 (bundle bailingmoe3-89926145-20260805T115134-0400)",
+        backend_device="ROCm0",
+        model_file="models/llm/Ling-3.0-flash-Q6_K/Ling-3.0-flash-Q6_K.gguf",
+        port=8108,
+        systemd_unit="ling-3.0-flash-q6k.service",
+        # 98.3 GiB weights + MLA KV at the served -c 131072. Padded to 105.
+        resident_gib=105,
+        exclusive_with=_exclusive_with("Ling-3.0-flash-Q6_K"),
+        startable=False,
+        not_startable_reason="Both the bailingmoe3 runtime bundle AND the Q6_K GGUF "
+        "were removed in the 2026-08-11..14 consolidation (checked 2026-08-14).",
+        consumers_note="unbound — added 2026-08-08 for benchmarking",
     ),
     ModelServerSpec(
-        slug="Ridge-Qwen3.6-35B-A3B",
-        description="Qwen3.6-35B-A3B on Ridge's RTX 3090 (NInfer), reached through "
+        slug="Step-3.7-Flash-APEX-I-Compact",
+        description="Step-3.7-Flash-APEX I-Compact (Q4_K, 84.1 GiB) — 198B total / ~11B "
+        "active step35 MoE, 45 layers, 288 routed + 1 shared expert top-8. VISION-CAPABLE "
+        "via the f16 mmproj tower; the only multimodal model on this box. Not "
+        "hybrid-linear, so KV grows normally and bounds context (served at 131072, "
+        "below the GGUF's 262144). Fits resident.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="branch main @ d3ca53726 (bundle step-3.7-flash/rocmfp4-mtp-d3ca5372-"
+        "20260807T164848-0400 — a copy of the ling rocmfp4-mtp bundle, the only installed "
+        "lineage carrying step35)",
+        backend_device="ROCm0",
+        model_file="models/llm/Step-3.7-Flash-APEX/Step-3.7-Flash-APEX-I-Compact.gguf "
+        "(+ mmproj-step3.7-flash-f16.gguf)",
+        port=8110,
+        systemd_unit="step-3.7-flash-compact.service",
+        resident_gib=90,
+        exclusive_with=_exclusive_with("Step-3.7-Flash-APEX-I-Compact"),
+        startable=False,
+        not_startable_reason="Weights and mmproj present, RUNTIME GONE: the "
+        "step-3.7-flash rocmfp4-mtp bundle was removed in the 2026-08-11..14 "
+        "consolidation. This is the only multimodal model on the box, so reviving "
+        "the bundle is what restores vision.",
+        consumers_note="unbound — added 2026-08-08 for benchmarking",
+    ),
+    ModelServerSpec(
+        slug="Step-3.7-Flash-APEX-I-Quality",
+        description="Step-3.7-Flash-APEX I-Quality (Q6_K, 114.5 GiB) — same step35 MoE and "
+        "vision tower as I-Compact at higher fidelity. Does NOT fit resident: the unit runs "
+        "--n-cpu-moe 12 + mmap to offload experts to CPU, at ctx 65536. MEASURED "
+        "2026-08-08: 97 GiB GTT, 8.5 tok/s decode. --no-mmap must NOT be used here. Shares port 8110 with I-Compact.",
+        runtime_repo="https://github.com/ciru-ai/ROCmFPX.git",
+        runtime_ref="branch main @ d3ca53726 (bundle step-3.7-flash/rocmfp4-mtp-d3ca5372-"
+        "20260807T164848-0400)",
+        backend_device="ROCm0",
+        model_file="models/llm/Step-3.7-Flash-APEX/Step-3.7-Flash-APEX-I-Quality.gguf "
+        "(+ mmproj-step3.7-flash-f16.gguf)",
+        port=8110,
+        systemd_unit="step-3.7-flash-quality.service",
+        # MEASURED 2026-08-08: 97 GiB GTT with --n-cpu-moe 12 + mmap at -c 65536
+        # (105/124 GiB box total). Padded to 100. Throughput cost is steep:
+        # 8.5 tok/s decode vs I-Compact's, so this is a quality-not-speed option.
+        resident_gib=100,
+        exclusive_with=_exclusive_with("Step-3.7-Flash-APEX-I-Quality"),
+        startable=False,
+        not_startable_reason="Both the runtime bundle AND the I-Quality GGUF were "
+        "removed in the 2026-08-11..14 consolidation (checked 2026-08-14); only "
+        "I-Compact's weights survive.",
+        consumers_note="unbound — added 2026-08-08; offload sizing unverified",
+    ),
+    ModelServerSpec(
+        slug="Ridge-Qwen3.8-27B",
+        description="Qwen3.8-27B on Ridge's RTX 3090 (NInfer 0.6.0), reached through "
         "corsair's ridge-llama-proxy (Wake-on-LAN, ~90s cold first byte). Off-box: "
         "ARIA has no start/stop control, only a descriptive binding.",
-        runtime_repo="NInfer (Ridge's own inference stack — not a corsair llama.cpp fork)",
+        runtime_repo="NInfer 0.6.0-rtx3090 (Don-Chad/ninfer-3090); D:\\ninfer\\bin-0.6.0",
         runtime_ref="remote",
         backend_device="remote CUDA",
         onbox=False,
-        startable=False,
-        not_startable_reason="Off-box — the ridge-llama-proxy wakes it (WoL) on the next "
-        "inference request; there is nothing to 'start' from here.",
+        startable=True,
+        memory_pool=POOL_REMOTE,
+        devices=("Ridge RTX 3090 (remote CUDA)",),
         consumers_note="pi-coding-ridge",
+        # ── remote operate (2026-08-15) ───────────────────────────────────
+        # Previously startable=False: the only way Ridge's model came up was a
+        # user request happening to hit ridge-llama-proxy, which WoLs on demand.
+        # That is fine for the game path and useless for an agent that wants to
+        # PREPARE the box. NInfer runs as scheduled task `NInferServer`
+        # (D:\ninfer) — the same task ridge_proxy.py already bounces for
+        # post-sleep CUDA wedge recovery, so this reuses a proven control point.
+        # Cold load is ~90s and it serves ONE request at a time.
+        wake_command=("/usr/local/bin/wake-ridge",),
+        remote_start_command=(
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "ridge",
+            "schtasks /run /tn NInferServer",
+        ),
+        remote_stop_command=(
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "ridge",
+            "schtasks /end /tn NInferServer",
+        ),
+        remote_health_url="http://100.113.99.30:8080/health",
+        remote_wake_deadline=240.0,
+        remote_ready_deadline=240.0,
         # Ben keeps Ridge suspended when idle. `ssh ridge` is the established
         # path (Windows 11, PowerShell default shell, key already authorized);
         # SetSuspendState is the standard command-line suspend. Waking is NOT
         # ARIA's job — the proxy WoLs it on demand.
+        # NOT rundll32 SetSuspendState — that silently no-ops over ssh (no
+        # SeShutdownPrivilege in session 0) and returns exit 0 while the box
+        # stays up. Measured 2026-08-15. See wake-proxies/windows/sleep-now.ps1.
         sleep_command=(
             "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "ridge",
-            "rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File "
+            "C:\\Windows\\Temp\\sleep-now.ps1",
         ),
         endpoint_override="http://100.123.245.84:8092/v1",
+    ),
+    ModelServerSpec(
+        slug="Red-Qwen3.6-35B-A3B",
+        description="Qwen3.6-35B-A3B on RED's RTX 5090, reached through corsair's "
+        "red-proxy (:8094, Wake-on-LAN + fallback to corsair-local). The fastest "
+        "node in the house (~218 tok/s). Off-box but fully operable by ARIA as of "
+        "2026-08-15: wake, start, stop, sleep.",
+        runtime_repo="RedLlmGateway (RED's own gateway — load/unload backends)",
+        runtime_ref="remote",
+        backend_device="remote CUDA (RTX 5090, 32 GB)",
+        onbox=False,
+        startable=True,
+        memory_pool=POOL_REMOTE,
+        devices=("RED RTX 5090 (remote CUDA)",),
+        consumers_note="war-audio-game (via :8094), coding agents (T1)",
+        # Control goes through gateway-ctl.ps1 on RED, NOT the RedLlmGateway
+        # scheduled task. Three defects made the task unusable from here
+        # (all diagnosed 2026-08-15, all verified):
+        #   1. the task is `Logon Mode: Interactive only` / `At logon time`, so
+        #      `schtasks /run` over ssh returns "SUCCESS: Attempted to run" and
+        #      silently does nothing — the worst possible shape, a confident
+        #      wrong answer. It is also why RED can sit awake-but-not-serving.
+        #   2. its interpreter path `scoop\apps\python312\current\pythonw.exe`
+        #      no longer resolves (the scoop junction is stale); the real one is
+        #      `...\python312\3.12.10\pythonw.exe`.
+        #   3. anything launched with Start-Process over ssh lands in the ssh
+        #      session's job object and is killed when the connection closes,
+        #      so the gateway died seconds after "starting". gateway-ctl.ps1
+        #      uses Win32_Process.Create so it outlives the connection.
+        # The script is idempotent (already-running / not-running) and reports
+        # status, so ARIA's start/stop are safe to retry.
+        # `RedLlmGatewayResumeUnload` is a resume hook, not a lifecycle control
+        # — leave it alone; racing it reintroduces the post-resume CUDA wedge
+        # that red_proxy already handles via /gateway/unload.
+        wake_command=("/usr/local/bin/wake-red",),
+        remote_start_command=(
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File "
+            "C:\\Users\\benja\\Development\\infrastructure\\gateway\\gateway-ctl.ps1 "
+            "-Action start",
+        ),
+        remote_stop_command=(
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File "
+            "C:\\Users\\benja\\Development\\infrastructure\\gateway\\gateway-ctl.ps1 "
+            "-Action stop",
+        ),
+        remote_health_url="http://100.120.162.100:8080/health",
+        # RED_WAKE_TIMEOUT is 180 in ~/.config/red-llama/env; allow headroom.
+        remote_wake_deadline=240.0,
+        remote_ready_deadline=300.0,
+        sleep_command=(
+            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File "
+            "C:\\Windows\\Temp\\sleep-now.ps1",
+        ),
+        # Consumers point at corsair's red-proxy, not RED directly: the proxy
+        # owns wake-on-request and the corsair-local fallback.
+        endpoint_override="http://100.123.245.84:8094/v1",
     ),
 )
 
@@ -514,9 +1469,8 @@ _TAILNET_IP = "100.123.245.84"
 
 _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
-_GTT_TOTAL_PATH = "/sys/class/drm/card0/device/mem_info_gtt_total"
-_GTT_USED_PATH = "/sys/class/drm/card0/device/mem_info_gtt_used"
-_RAM_SAFETY_MARGIN = 0.92  # refuse start() if projected usage would exceed this fraction of GTT total
+# refuse start() if projected usage would exceed this fraction of the pool
+_RAM_SAFETY_MARGIN = 0.92
 
 # Container states that hold their memory allocations. A paused container's
 # process is frozen with all GTT allocations intact; a restarting one is
@@ -524,22 +1478,895 @@ _RAM_SAFETY_MARGIN = 0.92  # refuse start() if projected usage would exceed this
 _MEMORY_HOLDING_STATES = ("running", "paused", "restarting")
 
 
-def _read_gtt_gib() -> Optional[tuple[float, float]]:
-    """Best-effort live (used, total) GTT in GiB. None if unreadable.
+_KFD_PROC = "/sys/class/kfd/kfd/proc"
 
-    Same sysfs signal `shells/selfcheck.py` alerts on — docker/cgroup memory
-    limits do not see GPU-offloaded allocations on this unified-memory box.
+
+async def _server_pid(spec: "ModelServerSpec") -> Optional[int]:
+    """Host PID of a running server, however it is supervised.
+
+    systemd units expose ExecMainPID; docker containers expose State.Pid (the
+    host-namespace pid, which is what /proc and the DRM/KFD trees are keyed by).
+    A safety wrapper can be the systemd main process while llama-server is its
+    child; in that case return the first descendant that actually holds GPU
+    memory, so live accounting does not silently measure the wrapper as zero.
+
+    Descendants are checked for DRM allocations as well as KFD ones. KFD alone
+    was not enough: it only covers HIP/ROCm, so every Vulkan-runtime server
+    here fell through to the wrapper pid and measured as ~0 while holding
+    ~98 GiB.
     """
-    try:
-        with open(_GTT_TOTAL_PATH) as f:
-            total = int(f.read())
-        with open(_GTT_USED_PATH) as f:
-            used = int(f.read())
-        gib = 1024**3
-        return used / gib, total / gib
-    except Exception as exc:
-        logger.warning("model_servers: GTT read failed: %s", exc)
+    unit = unit_name(spec)
+    if unit:
+        rc, out, _ = await _run(
+            "systemctl", "--user", "show", unit, "-p", "ExecMainPID", "--value"
+        )
+        if rc == 0 and out.strip().isdigit() and int(out.strip()) > 0:
+            main_pid = int(out.strip())
+            pending = [main_pid]
+            seen: set[int] = set()
+            while pending:
+                pid = pending.pop(0)
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                if os.path.isdir(os.path.join(_KFD_PROC, str(pid))):
+                    return pid
+                if process_uses_gpu(pid):
+                    return pid
+                try:
+                    with open(f"/proc/{pid}/task/{pid}/children") as f:
+                        pending.extend(int(value) for value in f.read().split())
+                except (OSError, ValueError):
+                    continue
+            return main_pid
         return None
+    if spec.container_name:
+        rc, out, _ = await _run(
+            "docker", "inspect", "-f", "{{.State.Pid}}", spec.container_name
+        )
+        if rc == 0 and out.strip().isdigit() and int(out.strip()) > 0:
+            return int(out.strip())
+    return None
+
+
+def _gtt_bytes_for_pid(pid: int) -> Optional[int]:
+    """GPU-mapped bytes held by one process, from the kfd sysfs tree.
+
+    This is the ONLY signal that sees GPU-offloaded allocations on this
+    unified-memory box — docker/cgroup accounting and RSS both miss them.
+    A process with no kfd entry is not using the GPU at all.
+    """
+    d = os.path.join(_KFD_PROC, str(pid))
+    if not os.path.isdir(d):
+        return None
+    total = 0
+    try:
+        for name in os.listdir(d):
+            if name.startswith("vram_"):
+                with open(os.path.join(d, name)) as f:
+                    total += int(f.read().strip() or 0)
+    except Exception:
+        return None
+    return total
+
+
+def _rss_bytes_for_pid(pid: int) -> Optional[int]:
+    """Resident host memory for one process. Used for CPU-only servers, whose
+    allocations never appear in the GTT pool."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        return None
+    return None
+
+
+# --------------------------------------------------------------------------
+# Launch geometry — `-c` / `-np` are READ from the launch file, never declared
+# --------------------------------------------------------------------------
+# Served context used to live in five places and only one of them was
+# authoritative: the unit's ExecStart. The other four (this registry's
+# resident_gib, Hermes's `ds4` and `ds4-fast` provider context_length, and the
+# coding-session concurrency cap) were hand-copied, so every past `-c` change
+# silently invalidated them — see measure_resident_gib() below for the 7.6 GiB
+# under-count that produced, feeding the very gate meant to prevent overcommit.
+#
+# So the launch file IS the source of truth and the registry reads it. No spec
+# declares a context size; `resident_gib` is COMPUTED from what the unit
+# actually serves. Change `-c` in one place and the footprint estimate, the API
+# view and the start-time GTT gate all follow it.
+
+_SYSTEMD_USER_DIR = os.path.expanduser("~/.config/systemd/user")
+
+# `-cram`/`--cache-ram` must not be mistaken for `-c`: tokens are matched whole.
+_CTX_FLAGS = frozenset(("-c", "--ctx-size", "--context-size"))
+_SLOT_FLAGS = frozenset(("-np", "--parallel"))
+
+
+@dataclass(frozen=True)
+class LaunchGeometry:
+    """What a server's launch file says it will serve. All fields optional —
+    an unparseable launch file degrades to "unknown", never to a wrong number."""
+
+    n_ctx: Optional[int] = None
+    slots: Optional[int] = None
+    source: Optional[str] = None
+
+    @property
+    def ctx_per_slot(self) -> Optional[int]:
+        """Per-agent context — which is `-c` ITSELF, not `-c` divided by slots.
+
+        llama.cpp reports `n_ctx_seq == -c` and allocates KV for
+        `-c * -np` tokens; `-c` is per sequence. Verified 2026-08-09 by an OOM:
+        `-c 1382400 -np 6` tried to allocate 57065472000 bytes of compressed KV,
+        which is exactly `1382400 * 6 * 6880`. Getting this backwards sizes the
+        server ~n_slots too large and it dies on startup."""
+        return self.n_ctx
+
+    @property
+    def total_kv_tokens(self) -> Optional[int]:
+        """Tokens of KV the server must actually hold: every slot, full."""
+        if not self.n_ctx:
+            return None
+        return self.n_ctx * max(1, self.slots or 1)
+
+
+def _as_int(value: Optional[str]) -> Optional[int]:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _argv_geometry(argv: list[str], source: str) -> LaunchGeometry:
+    """Pull -c/-np out of a llama-server argv. First occurrence wins."""
+    n_ctx: Optional[int] = None
+    slots: Optional[int] = None
+    for i, token in enumerate(argv):
+        if "=" in token:
+            flag, _, inline = token.partition("=")
+            value = inline
+        else:
+            flag = token
+            value = argv[i + 1] if i + 1 < len(argv) else None
+        if flag in _CTX_FLAGS and n_ctx is None:
+            n_ctx = _as_int(value)
+        elif flag in _SLOT_FLAGS and slots is None:
+            slots = _as_int(value)
+    return LaunchGeometry(n_ctx=n_ctx, slots=slots, source=source)
+
+
+def _systemd_geometry(unit: str) -> Optional[LaunchGeometry]:
+    """Parse ExecStart= from a --user unit. Only ExecStart is read: ExecStartPre
+    runs `sha256sum -c manifest/...`, whose `-c` would otherwise be read as a
+    context size."""
+    path = os.path.join(_SYSTEMD_USER_DIR, unit)
+    try:
+        with open(path) as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped.startswith("ExecStart="):
+                    continue
+                command = stripped.split("=", 1)[1].lstrip("-+!@")
+                return _argv_geometry(shlex.split(command), unit)
+    except (OSError, ValueError) as exc:
+        logger.debug("model_servers: unit geometry unreadable for %s: %s", unit, exc)
+    return None
+
+
+def _compose_geometry(compose_file: str, service_name: Optional[str]) -> Optional[LaunchGeometry]:
+    """Parse `command:` for one service out of a compose file. Handles both the
+    list form and the folded-string form used across infrastructure/."""
+    if not service_name:
+        return None
+    path = os.path.join(settings.infrastructure_root, compose_file)
+    try:
+        with open(path) as fh:
+            doc = yaml.safe_load(fh) or {}
+        command = ((doc.get("services") or {}).get(service_name) or {}).get("command")
+    except (OSError, yaml.YAMLError, AttributeError) as exc:
+        logger.debug("model_servers: compose geometry unreadable for %s: %s", compose_file, exc)
+        return None
+    if isinstance(command, str):
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return None
+    elif isinstance(command, list):
+        argv = [str(part) for part in command]
+    else:
+        return None
+    return _argv_geometry(argv, f"{compose_file}:{service_name}")
+
+
+_GEOMETRY_CACHE: dict[str, tuple[float, LaunchGeometry]] = {}
+
+
+def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
+    """Served `-c`/`-np` for one server, read from its launch file.
+
+    Cached against the launch file's mtime so an edit is picked up on the next
+    call without a restart — the point of this whole mechanism is that changing
+    the unit is sufficient.
+
+    Two sources, in order. An explicit `-c`/`-np` in the ExecStart or compose
+    command always wins. Where there is none — every serve.sh deployment, whose
+    ExecStart is a shell script and whose context arrives through the
+    environment — the value is taken from the effective launch parameters
+    instead, so a script-launched server still reports what it will actually
+    serve rather than "unknown"."""
+    unit = unit_name(spec)
+    geometry = LaunchGeometry()
+
+    path = None
+    if unit:
+        path = os.path.join(_SYSTEMD_USER_DIR, unit)
+    elif spec.compose_file:
+        path = os.path.join(settings.infrastructure_root, spec.compose_file)
+
+    if path is not None:
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = None
+        if mtime is not None:
+            cached = _GEOMETRY_CACHE.get(path)
+            if cached is not None and cached[0] == mtime:
+                geometry = cached[1]
+            else:
+                geometry = (
+                    _systemd_geometry(unit)
+                    if unit
+                    else _compose_geometry(spec.compose_file or "", spec.service_name)
+                ) or LaunchGeometry()
+                _GEOMETRY_CACHE[path] = (mtime, geometry)
+
+    if not spec.launch_script:
+        return geometry
+
+    # Script-launched deployment. Fill the gaps the ExecStart cannot answer,
+    # cheapest-truth first: a literal in the script, then the effective launch
+    # parameter. Not cached — the whole job of the parameter layer is to
+    # reflect an override that may have just been written.
+    n_ctx, slots, source = geometry.n_ctx, geometry.slots, geometry.source
+    script = _script_geometry(spec)
+    if n_ctx is None:
+        n_ctx = script.n_ctx
+    if slots is None:
+        slots = script.slots
+    if n_ctx is None and spec.ctx_param:
+        n_ctx = _as_int(_effective_param_value(spec, spec.ctx_param))
+        source = f"launch parameters ({unit or spec.launch_script})"
+    if slots is None and spec.slots_param:
+        slots = _as_int(_effective_param_value(spec, spec.slots_param))
+    if source is None:
+        source = spec.launch_script
+    return LaunchGeometry(n_ctx=n_ctx, slots=slots, source=source)
+
+
+def effective_resident_gib(
+    spec: "ModelServerSpec", geometry: Optional[LaunchGeometry] = None
+) -> Optional[float]:
+    """Footprint estimate for a server that is NOT running, in GiB.
+
+    Computed as weights + KV(served -c) + buffers whenever the spec carries the
+    two -c-invariant constants, so it tracks the unit automatically. Falls back
+    to the hand-declared `resident_gib` for entries not yet migrated, and for
+    any server whose launch file could not be parsed.
+
+    KV is sized on `-c * -np`, NOT on `-c` alone: `-c` is per sequence and every
+    slot gets its own full-size cache. Using `-c` alone here under-counts by the
+    slot count, which is precisely the class of under-count this function was
+    written to eliminate."""
+    geo = geometry if geometry is not None else read_launch_geometry(spec)
+    tokens = geo.total_kv_tokens
+    if spec.weights_gib is None or spec.kv_kib_per_token is None or not tokens:
+        return spec.resident_gib
+    kv_gib = tokens * spec.kv_kib_per_token / (1024 * 1024)
+    return round(spec.weights_gib + kv_gib + spec.overhead_gib, 1)
+
+
+# --------------------------------------------------------------------------
+# Launch configuration — choosing HOW a model loads, not just WHICH one
+# --------------------------------------------------------------------------
+# Every deployment folder under infrastructure/ is already parameterised the
+# same way: `VAR="${VAR:-default}"` in its serve.sh, overridden in practice by
+# a hand-written systemd drop-in (ds4-halo-xxs.service.d/context.conf sets CTX,
+# no-draft.conf sets DRAFT). ARIA uses that SAME mechanism rather than building
+# its own command line, for three reasons:
+#
+#   1. The guards survive. ExecStartPre (R9700 awake, TTM pool capped), the
+#      OOMScoreAdjust=900 backstop, and the launcher's MemAvailable floors all
+#      still run. A hand-rolled command line would silently drop every one of
+#      them — and those guards exist because this box has already OOM-killed
+#      llama-server repeatedly.
+#   2. It is inspectable and reversible from outside ARIA. The override is a
+#      file Ben can read, edit, or delete, in the directory he already uses.
+#   3. Hand-written drop-ins keep working. ARIA's file sorts last (`zz-`), so
+#      it wins where they overlap and leaves everything else alone.
+#
+# The override file is rewritten on every parameterised start and REMOVED on a
+# start with no overrides — a previous session's context size must not silently
+# persist into a later "just start it" call.
+
+_ARIA_DROPIN_NAME = "zz-aria-overrides.conf"
+_ARIA_UNIT_PREFIX = "aria-model-"
+_ARIA_UNIT_MARKER = "# Generated by ARIA (aria.infrastructure.model_servers)."
+
+# `VAR="${VAR:-default}"` / `VAR=${VAR:-default}` as the serve.sh scripts write
+# it. Deliberately NOT anchored to the start of a line: every script here packs
+# several of these onto one — `PORT="${PORT:-8107}"; HOST=...; CTX="${CTX:-65536}"`
+# — and a line-anchored pattern silently read only the first of each group.
+_SCRIPT_DEFAULT_RE = re.compile(
+    r'(?:^|[;&|(]\s*|\s)(?P<name>[A-Z_][A-Z0-9_]*)="?\$\{(?P=name):-(?P<value>[^}"]*)\}"?',
+    re.MULTILINE,
+)
+
+
+def unit_name(spec: "ModelServerSpec") -> Optional[str]:
+    """The systemd --user unit this spec is (or will be) served by.
+
+    A deployment with its own hand-written unit keeps it. One that has only a
+    serve.sh gets an ARIA-generated unit, so that everything downstream —
+    start, stop, state, overrides, geometry — has a single mechanism.
+    """
+    if spec.systemd_unit:
+        return spec.systemd_unit
+    if spec.launch_script:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "-", spec.slug)
+        return f"{_ARIA_UNIT_PREFIX}{safe}.service"
+    return None
+
+
+def _abs_infra(path: str) -> str:
+    """Resolve an infrastructure-relative path; absolute paths pass through."""
+    return path if os.path.isabs(path) else os.path.join(settings.infrastructure_root, path)
+
+
+def _dropin_path(unit: str) -> str:
+    return os.path.join(_SYSTEMD_USER_DIR, f"{unit}.d", _ARIA_DROPIN_NAME)
+
+
+def _unit_environment(unit: str) -> dict[str, str]:
+    """Every `Environment=` in a unit and its drop-ins, later definitions winning.
+
+    Mirrors systemd's own resolution order: the main unit first, then
+    `<unit>.d/*.conf` sorted lexically — which is exactly why ARIA's file is
+    named `zz-`.
+    """
+    env: dict[str, str] = {}
+    files = [os.path.join(_SYSTEMD_USER_DIR, unit)]
+    dropin_dir = os.path.join(_SYSTEMD_USER_DIR, f"{unit}.d")
+    try:
+        files += [
+            os.path.join(dropin_dir, name)
+            for name in sorted(os.listdir(dropin_dir))
+            if name.endswith(".conf")
+        ]
+    except OSError:
+        pass
+    for path in files:
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    stripped = line.strip()
+                    if not stripped.startswith("Environment="):
+                        continue
+                    assignment = stripped.split("=", 1)[1].strip().strip('"')
+                    key, sep, value = assignment.partition("=")
+                    if sep:
+                        env[key.strip()] = value.strip().strip('"')
+        except OSError:
+            continue
+    return env
+
+
+def _script_defaults(spec: "ModelServerSpec") -> dict[str, str]:
+    """The `${VAR:-default}` values a deployment's serve.sh falls back to.
+
+    Read rather than duplicated into the spec: the script is the thing that
+    actually runs, and a copied default is a copy that goes stale.
+
+    The two path variables every one of these scripts uses — `$INFRA` for the
+    infrastructure root and `$D` for the script's own directory — are expanded,
+    so a default reads as a real path rather than as shell source.
+    """
+    if not spec.launch_script:
+        return {}
+    script_path = _abs_infra(spec.launch_script)
+    try:
+        with open(script_path) as fh:
+            body = fh.read()
+    except OSError:
+        return {}
+    expansions = {
+        "$INFRA": os.path.abspath(settings.infrastructure_root),
+        "${INFRA}": os.path.abspath(settings.infrastructure_root),
+        "$D": os.path.dirname(script_path),
+        "${D}": os.path.dirname(script_path),
+        "$PWD": os.path.dirname(script_path),
+    }
+    out: dict[str, str] = {}
+    for match in _SCRIPT_DEFAULT_RE.finditer(body):
+        # First assignment wins, matching the shell: a later `VAR="${VAR:-x}"`
+        # cannot change what an earlier one already set.
+        if match.group("name") in out:
+            continue
+        value = match.group("value")
+        for token, replacement in expansions.items():
+            value = value.replace(token, replacement)
+        out[match.group("name")] = value
+    return out
+
+
+def _script_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
+    """`-c`/`-np` written as LITERALS in a deployment's serve.sh.
+
+    Several scripts hardcode what the unit cannot express — ds4-halo-xxs and
+    ds4-hybrid both pin `-np 1` because speculation and multi-slot serving do
+    not mix (upstream #26741). Only numeric literals are taken: a `$CTX` here
+    is answered by the parameter layer instead, and guessing at a shell
+    expansion would be worse than reporting nothing.
+    """
+    if not spec.launch_script:
+        return LaunchGeometry()
+    try:
+        with open(_abs_infra(spec.launch_script)) as fh:
+            body = fh.read()
+    except OSError:
+        return LaunchGeometry()
+    # Line continuations first, so the multi-line `exec ... \` invocation reads
+    # as the single argv it becomes.
+    try:
+        argv = shlex.split(body.replace("\\\n", " "), comments=True)
+    except ValueError:
+        return LaunchGeometry()
+    geometry = _argv_geometry(argv, spec.launch_script)
+    return LaunchGeometry(
+        n_ctx=geometry.n_ctx if (geometry.n_ctx or 0) > 0 else None,
+        slots=geometry.slots if (geometry.slots or 0) > 0 else None,
+        source=spec.launch_script,
+    )
+
+
+def read_aria_overrides(spec: "ModelServerSpec") -> dict[str, str]:
+    """Just the overrides ARIA itself set, keyed by parameter name."""
+    unit = unit_name(spec)
+    if not unit or not spec.parameters:
+        return {}
+    by_env = {p.env: p.name for p in spec.parameters}
+    out: dict[str, str] = {}
+    try:
+        with open(_dropin_path(unit)) as fh:
+            for line in fh:
+                stripped = line.strip()
+                if not stripped.startswith("Environment="):
+                    continue
+                assignment = stripped.split("=", 1)[1].strip().strip('"')
+                key, sep, value = assignment.partition("=")
+                if sep and key.strip() in by_env:
+                    out[by_env[key.strip()]] = value.strip().strip('"')
+    except OSError:
+        return {}
+    return out
+
+
+def resolve_parameters(spec: "ModelServerSpec") -> list[dict]:
+    """Every declared knob with its effective value AND where that came from.
+
+    The `source` field is the point of this function: "65536" means something
+    different when it is ARIA's own override, a drop-in Ben wrote by hand, or
+    the script's built-in fallback — and only the first is ARIA's to clear.
+    """
+    unit = unit_name(spec)
+    aria = read_aria_overrides(spec)
+    unit_env = _unit_environment(unit) if unit else {}
+    script = _script_defaults(spec)
+
+    out = []
+    for param in spec.parameters:
+        if param.name in aria:
+            value, source = aria[param.name], "aria_override"
+        elif param.env in unit_env:
+            value, source = unit_env[param.env], "unit_dropin"
+        elif param.env in script:
+            value, source = script[param.env], "script_default"
+        elif param.default is not None:
+            value, source = param.default, "declared_default"
+        else:
+            value, source = None, "unset"
+        out.append({
+            "name": param.name,
+            "env": param.env,
+            "label": param.label,
+            "kind": param.kind,
+            "description": param.description,
+            "declared_default": param.default,
+            "choices": [{"value": v, "description": d} for v, d in param.choices],
+            "value": value,
+            "source": source,
+        })
+    return out
+
+
+def _effective_param_value(spec: "ModelServerSpec", name: str) -> Optional[str]:
+    for entry in resolve_parameters(spec):
+        if entry["name"] == name:
+            return entry["value"]
+    return None
+
+
+def validate_overrides(
+    spec: "ModelServerSpec", overrides: Optional[dict]
+) -> dict[str, str]:
+    """Normalise a caller's overrides, or raise. Returns {ENV_VAR: value}."""
+    if not overrides:
+        return {}
+    if not spec.parameters:
+        raise ModelServerSafetyError(
+            f"{spec.slug} has no selectable launch parameters — its configuration "
+            f"is frozen in "
+            f"{'its compose file' if spec.compose_file else 'its systemd unit'}. "
+            f"Start it without overrides, or edit that file."
+        )
+    by_name = {p.name: p for p in spec.parameters}
+    unknown = [k for k in overrides if k not in by_name]
+    if unknown:
+        raise ModelServerSafetyError(
+            f"{spec.slug}: unknown parameter(s) {', '.join(sorted(unknown))}. "
+            f"Available: {', '.join(sorted(by_name))}."
+        )
+    return {
+        by_name[name].env: by_name[name].validate(value)
+        for name, value in overrides.items()
+        if value is not None
+    }
+
+
+def _render_dropin(spec: "ModelServerSpec", env: dict[str, str]) -> str:
+    lines = [
+        _ARIA_UNIT_MARKER,
+        "#",
+        "# Launch overrides chosen through ARIA. Sorted last on purpose, so it",
+        "# wins over hand-written drop-ins in this directory; everything those",
+        "# set and this does not is left untouched.",
+        "#",
+        "# Safe to delete by hand — the next ARIA start without overrides removes",
+        "# it anyway, returning the unit to its own defaults.",
+        "[Service]",
+    ]
+    lines += [f"Environment={key}={value}" for key, value in sorted(env.items())]
+    return "\n".join(lines) + "\n"
+
+
+def _render_unit(spec: "ModelServerSpec", unit: str) -> str:
+    """A unit for a deployment that ships only a serve.sh.
+
+    The guard environment and ExecStartPre checks come from the spec rather
+    than being invented here, so what protects an ARIA-launched server is
+    reviewable next to the model it protects.
+    """
+    script = _abs_infra(spec.launch_script or "")
+    workdir = os.path.dirname(script)
+    lines = [
+        _ARIA_UNIT_MARKER,
+        f"# Deployment: {spec.deployment or spec.slug}",
+        "# Regenerated whenever the registry entry changes; hand edits are lost.",
+        "# To customise durably, add your own drop-in under "
+        f"{unit}.d/ (ARIA's file is {_ARIA_DROPIN_NAME} and sorts last).",
+        "",
+        "[Unit]",
+        f"Description={spec.slug} (ARIA-managed model server)",
+        "After=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"WorkingDirectory={workdir}",
+    ]
+    lines += [f"Environment={key}={value}" for key, value in spec.unit_environment]
+    lines += [f"ExecStartPre={check}" for check in spec.unit_exec_start_pre]
+    lines.append(f"ExecStart={script}")
+    # No automatic restart: a wedged GPU is not fixed by restarting into the
+    # same wedge, which is the standing policy for every model server here.
+    lines += [
+        "Restart=no",
+        "KillSignal=SIGTERM",
+        "SendSIGKILL=no",
+        "TimeoutStopSec=180",
+    ]
+    if spec.unit_oom_score_adjust is not None:
+        # Make the model the kernel's preferred OOM victim rather than mongod
+        # or the Hermes gateway — the same reasoning as the hand-written
+        # ds4-halo-xxs oom.conf.
+        lines.append(f"OOMScoreAdjust={spec.unit_oom_score_adjust}")
+    lines += ["", "[Install]", "WantedBy=default.target", ""]
+    return "\n".join(lines)
+
+
+def _write_if_changed(path: str, content: str) -> bool:
+    """Write only on a real change, so daemon-reload is not run for nothing."""
+    try:
+        with open(path) as fh:
+            if fh.read() == content:
+                return False
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.aria-tmp"
+    with open(tmp, "w") as fh:
+        fh.write(content)
+    os.replace(tmp, path)
+    return True
+
+
+def _remove_if_present(path: str) -> bool:
+    try:
+        os.unlink(path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        logger.warning("model_servers: could not remove %s: %s", path, exc)
+        return False
+
+
+# --------------------------------------------------------------------------
+# Live runtime stats — slot occupancy and throughput, read from the server
+# --------------------------------------------------------------------------
+# read_launch_geometry() above answers "how many slots SHOULD exist"; this
+# answers "how many are busy right now". The two are deliberately separate:
+# the static budget check (check_pi_slot_budget) can only catch a
+# misconfiguration, whereas over-subscription in practice shows up here as
+# `requests_deferred > 0` — requests queued because every slot was taken, which
+# is the runtime signature of agents evicting each other.
+#
+# `/slots` is enabled by default and always available. `/metrics` requires the
+# server to have been started with `--metrics` and 501s otherwise, so every
+# field sourced from it is Optional and its absence is reported, never faked.
+
+def base_url_for_spec(spec: "ModelServerSpec") -> Optional[str]:
+    """Where to reach this server, spec-side (llm_route.base_url_for is the
+    dict-side twin, for status rows).
+
+    `endpoint_override` wins and is load-bearing: DS4 binds
+    100.123.245.84:8107 ONLY, so a port-derived localhost URL is
+    connection-refused even with the server up."""
+    if spec.endpoint_override:
+        return spec.endpoint_override.rstrip("/")
+    if spec.port:
+        return f"http://localhost:{spec.port}/v1"
+    return None
+
+
+_METRIC_FIELDS = {
+    "llamacpp:requests_processing": "requests_processing",
+    "llamacpp:requests_deferred": "requests_deferred",
+    "llamacpp:prompt_tokens_total": "prompt_tokens_total",
+    "llamacpp:tokens_predicted_total": "tokens_predicted_total",
+    "llamacpp:prompt_tokens_seconds": "prompt_tokens_per_second",
+    "llamacpp:predicted_tokens_seconds": "predicted_tokens_per_second",
+    "llamacpp:n_busy_slots_per_decode": "avg_busy_slots_per_decode",
+    "llamacpp:n_decode_total": "decode_calls_total",
+}
+
+
+@dataclass(frozen=True)
+class RuntimeStats:
+    """What a running llama.cpp server reports about itself right now."""
+
+    total_slots: Optional[int] = None
+    busy_slots: Optional[int] = None
+    ctx_per_slot: Optional[int] = None
+    metrics_available: bool = False
+    metrics_hint: Optional[str] = None
+    requests_processing: Optional[float] = None
+    requests_deferred: Optional[float] = None
+    prompt_tokens_total: Optional[float] = None
+    tokens_predicted_total: Optional[float] = None
+    prompt_tokens_per_second: Optional[float] = None
+    predicted_tokens_per_second: Optional[float] = None
+    avg_busy_slots_per_decode: Optional[float] = None
+    decode_calls_total: Optional[float] = None
+
+    @property
+    def free_slots(self) -> Optional[int]:
+        if self.total_slots is None or self.busy_slots is None:
+            return None
+        return max(0, self.total_slots - self.busy_slots)
+
+    @property
+    def slot_utilisation(self) -> Optional[float]:
+        """Busy fraction, 0.0–1.0. The headline number for "how loaded is it"."""
+        if not self.total_slots or self.busy_slots is None:
+            return None
+        return round(self.busy_slots / self.total_slots, 3)
+
+    @property
+    def saturated(self) -> Optional[bool]:
+        """True when work is QUEUING — every slot busy and requests waiting.
+
+        This is the condition that silently degrades prefix warmth: a queued
+        request eventually lands in whichever slot frees first, which is not
+        necessarily the one holding its prefix."""
+        if self.requests_deferred is None:
+            return None
+        return self.requests_deferred > 0
+
+
+def _parse_prometheus(text: str) -> dict:
+    """Minimal Prometheus text-format reader for the handful of gauges we want.
+    Ignores HELP/TYPE lines and any metric not in _METRIC_FIELDS."""
+    out: dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, _, value = line.partition(" ")
+        field = _METRIC_FIELDS.get(name)
+        if field is None:
+            continue
+        try:
+            out[field] = float(value)
+        except ValueError:
+            continue
+    return out
+
+
+async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Optional[RuntimeStats]:
+    """Live slot occupancy + throughput for a running server, or None.
+
+    Returns None when the server is unreachable — a stopped server is not an
+    error here, it simply has no runtime to report. Degrades to slots-only when
+    `/metrics` is unavailable rather than failing the whole probe.
+    """
+    base = base_url_for_spec(spec)
+    if not base:
+        return None
+    root = base[: -len("/v1")] if base.endswith("/v1") else base
+
+    slots_data = None
+    metrics: dict = {}
+    metrics_available = False
+    metrics_hint = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            slots_resp, metrics_resp = await asyncio.gather(
+                client.get(f"{root}/slots"),
+                client.get(f"{root}/metrics"),
+                return_exceptions=True,
+            )
+            if isinstance(slots_resp, httpx.Response) and slots_resp.status_code == 200:
+                try:
+                    slots_data = slots_resp.json()
+                except ValueError:
+                    slots_data = None
+            if isinstance(metrics_resp, httpx.Response):
+                if metrics_resp.status_code == 200:
+                    metrics = _parse_prometheus(metrics_resp.text)
+                    metrics_available = True
+                elif metrics_resp.status_code == 501:
+                    # Explicit, actionable: the server simply wasn't started
+                    # with the flag. Not a fault, and not something to retry.
+                    metrics_hint = (
+                        "server started without --metrics; add it to the "
+                        "launch file and restart to get throughput, queue "
+                        "depth and busy-slot averages"
+                    )
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("model_servers: runtime probe failed for %s: %s", spec.slug, exc)
+        return None
+
+    if slots_data is None and not metrics_available:
+        return None
+
+    total_slots = busy = ctx_per_slot = None
+    if isinstance(slots_data, list):
+        total_slots = len(slots_data)
+        busy = sum(1 for s in slots_data if isinstance(s, dict) and s.get("is_processing"))
+        ctxs = [s.get("n_ctx") for s in slots_data if isinstance(s, dict) and s.get("n_ctx")]
+        ctx_per_slot = ctxs[0] if ctxs else None
+
+    return RuntimeStats(
+        total_slots=total_slots,
+        busy_slots=busy,
+        ctx_per_slot=ctx_per_slot,
+        metrics_available=metrics_available,
+        metrics_hint=metrics_hint,
+        **metrics,
+    )
+
+
+def check_pi_slot_budget(
+    slug: str = "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
+) -> Optional[str]:
+    """Complaint string if the coding-session cap over-subscribes the server's
+    slots, else None.
+
+    The cap is policy (how many slots sub-agents may take) and the unit is
+    mechanism (how many exist), so they are legitimately two numbers — but they
+    must stay consistent. Over-subscribing does not fail loudly at runtime: it
+    just makes agents evict each other's prefixes and pay a cold prefill per
+    turn, which reads as "the model got slow" rather than as a misconfiguration.
+    """
+    spec = _BY_SLUG.get(slug)
+    if spec is None:
+        return None
+    slots = read_launch_geometry(spec).slots
+    if not slots:
+        return None
+    reserved = int(settings.coding_pi_reserved_slots or 0)
+    cap = int(settings.coding_max_concurrent_pi_sessions or 0)
+    if cap + reserved > slots:
+        return (
+            f"coding_max_concurrent_pi_sessions={cap} + "
+            f"coding_pi_reserved_slots={reserved} exceeds {slug}'s -np {slots}: "
+            "pi sub-agents will evict warm prefixes and re-prefill every turn. "
+            "Lower the cap or raise -np only after requalifying memory; -c is "
+            "per slot, so total KV scales with -c times -np."
+        )
+    return None
+
+
+async def measure_resident_gib(spec: "ModelServerSpec") -> Optional[float]:
+    """ACTUALLY measured footprint of a running server, in GiB, or None.
+
+    Exists because `spec.resident_gib` is a hand-maintained SWAG that silently
+    goes stale: DS4 was declared 86.5 (measured at -c 131072) while really
+    holding 94.08 after moving to -c 262144 with a 4 GiB prompt cache — a
+    7.6 GiB under-count feeding the safety gate that is supposed to prevent
+    overcommit. Prefer this over the declared value wherever it is available.
+
+    GPU-resident servers are measured from amdgpu's per-device DRM accounting,
+    falling back to the kfd tree; CPU-only ones from RSS. Returns None when the
+    server is not running or the pid is unreadable, in which case callers fall
+    back to the declared SWAG.
+
+    The DRM read comes first because it is the only one that covers both
+    runtimes on this box — KFD sees HIP/ROCm processes only — and because it
+    reports per device, so a server is measured against the pool it actually
+    draws from rather than against a box-wide total.
+    """
+    pid = await _server_pid(spec)
+    if pid is None:
+        return None
+    if spec.memory_pool != POOL_HOST and spec.gtt_resident:
+        by_pool = process_gpu_bytes(pid)
+        held = by_pool.get(spec.memory_pool)
+        if held:
+            return held / 1024**3
+        if by_pool:
+            # It is on the GPU, just not the pool the registry claims — report
+            # what it is really holding rather than zero, so the discrepancy is
+            # visible instead of looking like an idle server.
+            return max(by_pool.values()) / 1024**3
+    raw = _gtt_bytes_for_pid(pid) if spec.gtt_resident else _rss_bytes_for_pid(pid)
+    if raw is None and spec.gtt_resident:
+        # Declared GPU-resident but holds no GPU memory — fall back to RSS
+        # rather than reporting nothing, and let the caller see the mismatch.
+        raw = _rss_bytes_for_pid(pid)
+    return None if raw is None else raw / 1024**3
+
+
+def _read_gtt_gib(pool: str = POOL_HALO) -> Optional[tuple[float, float]]:
+    """Best-effort live (used, total) for ONE memory pool, in GiB. None if unreadable.
+
+    Was a hardcoded read of card0's GTT — the single-GPU assumption. Adding the
+    OCuLink R9700 inverted DRM enumeration (card0 is now the dGPU, card1 the
+    Strix Halo), so that read started reporting ~0 GiB used while the Halo held
+    97 GiB, i.e. it would have approved starting a second ~100 GiB model on a
+    full box. `gpu_devices` classifies the cards instead of trusting their
+    order; see that module for the measurement.
+
+    Keeping the (used, total) shape deliberately: this is still the one signal
+    the gate consults, and `shells/selfcheck.py` alerts on the same numbers.
+    """
+    live = read_pool(pool)
+    if live is None:
+        logger.warning("model_servers: pool %s unreadable", pool)
+        return None
+    return live.used_gib, live.total_gib
 
 
 async def _run(*args: str) -> tuple[int, str, str]:
@@ -551,6 +2378,117 @@ async def _run(*args: str) -> tuple[int, str, str]:
         raise ModelServerError(f"'{args[0]}' binary not found: {exc}")
     stdout, stderr = await proc.communicate()
     return proc.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace")
+
+
+# ── remote operate (2026-08-15) ──────────────────────────────────────────
+# The ordering below deliberately mirrors wake-proxies/{red,ridge}/*_proxy.py,
+# which is the production-proven sequence: probe -> wake -> poll -> act -> verify.
+# The difference is that the proxies wake a box so a *single request* can be
+# served, whereas these drive the model service's lifecycle explicitly.
+
+
+async def _remote_health_ok(spec: "ModelServerSpec", timeout: float = 5.0) -> bool:
+    """True if the remote model service answers its health probe.
+
+    A connection error is a normal, expected answer here (box asleep, or awake
+    with the service stopped) — not an exception worth propagating.
+    """
+    if not spec.remote_health_url:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(spec.remote_health_url)
+            return resp.status_code < 500
+    except Exception:
+        return False
+
+
+async def _remote_box_reachable(spec: "ModelServerSpec", timeout: float = 6.0) -> bool:
+    """True if the machine is up, independent of whether the model is serving.
+
+    Uses the ssh control path rather than the model port precisely because the
+    two states differ: RED was observed awake-with-service-stopped, and a probe
+    that conflates them would wake an already-awake box.
+    """
+    if spec.remote_start_command is None:
+        return False
+    # The declared command is ("ssh", <opts...>, host, <remote cmd>); replacing
+    # the trailing remote command with a trivial one reuses the exact same
+    # connection settings the real call will use.
+    probe = tuple(spec.remote_start_command[:-1]) + ("exit",)
+    try:
+        rc, _, _ = await asyncio.wait_for(_run(*probe), timeout=timeout + 2)
+        return rc == 0
+    except (asyncio.TimeoutError, ModelServerError):
+        return False
+
+
+async def _wake_remote(spec: "ModelServerSpec") -> dict:
+    """Wake the box and wait for it to answer ssh. Idempotent."""
+    if await _remote_box_reachable(spec):
+        return {"woken": False, "detail": "already reachable"}
+    if not spec.wake_command:
+        raise ModelServerSafetyError(
+            f"{spec.slug} is unreachable and has no wake_command declared."
+        )
+    rc, out, err = await _run(*spec.wake_command)
+    if rc != 0:
+        raise ModelServerError(
+            f"Wake command failed for {spec.slug}: {(err or out).strip()[-300:]}"
+        )
+    deadline = time.monotonic() + spec.remote_wake_deadline
+    while time.monotonic() < deadline:
+        await asyncio.sleep(5)
+        if await _remote_box_reachable(spec):
+            return {"woken": True, "detail": f"reachable after wake"}
+    raise ModelServerError(
+        f"{spec.slug}: woke {spec.slug} but it did not answer ssh within "
+        f"{spec.remote_wake_deadline:.0f}s."
+    )
+
+
+# status() is a dashboard read and is called often. Probing a sleeping box costs
+# a full ssh connect timeout, so an uncached remote probe would make every
+# status() call hang for seconds per asleep host. This TTL cache bounds that:
+# reads are cheap and slightly stale; operations (start/stop) always probe fresh.
+_REMOTE_STATE_TTL = 20.0
+_remote_state_cache: dict[str, tuple[float, str]] = {}
+
+
+async def _remote_state(spec: "ModelServerSpec", fresh: bool = False) -> str:
+    """'running' | 'stopped' | 'asleep' for an operable remote.
+
+    'stopped' (box up, model not serving) is the state that motivated all of
+    this — it is actionable and was previously indistinguishable from 'asleep'.
+    """
+    now = time.monotonic()
+    if not fresh:
+        hit = _remote_state_cache.get(spec.slug)
+        if hit and now - hit[0] < _REMOTE_STATE_TTL:
+            return hit[1]
+    if await _remote_health_ok(spec, timeout=3.0):
+        state = "running"
+    elif await _remote_box_reachable(spec, timeout=4.0):
+        state = "stopped"
+    else:
+        state = "asleep"
+    _remote_state_cache[spec.slug] = (now, state)
+    return state
+
+
+async def _await_remote_ready(spec: "ModelServerSpec") -> bool:
+    """Poll the model health endpoint until it serves, or the deadline lapses.
+
+    Returns readiness rather than raising: a started-but-not-yet-ready service
+    is a legitimate outcome to report (Ridge's cold load is ~90s, RED's longer),
+    and the caller records it as `state: starting` rather than as a failure.
+    """
+    deadline = time.monotonic() + spec.remote_ready_deadline
+    while time.monotonic() < deadline:
+        if await _remote_health_ok(spec):
+            return True
+        await asyncio.sleep(5)
+    return False
 
 
 _INSPECT_FMT = '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.project"}}'
@@ -634,6 +2572,10 @@ class ModelServerManager:
 
     def __init__(self):
         self.infrastructure_root = os.path.abspath(settings.infrastructure_root)
+        # Last OS-measured footprint per slug, refreshed by status(). The
+        # safety gate prefers it over spec.resident_gib when it is larger,
+        # so a stale declaration cannot silently under-count an overcommit.
+        self._last_measured: dict[str, float] = {}
         # Serializes every check-then-act sequence (start's safety gates,
         # bind's conflict probe). Without it, two concurrent MCP calls can
         # both pass the exclusivity/RAM checks and launch two ~90 GiB servers
@@ -669,6 +2611,11 @@ class ModelServerManager:
             resident_gib=doc.get("resident_gib"),
             gtt_resident=doc.get("gtt_resident", True),
             consumers_note=doc.get("consumers_note"),
+            # Pulled models are provisioned onto a container runtime on the
+            # iGPU today; the field exists so a future pull targeting the
+            # R9700 is gated against the right pool rather than the Halo's.
+            memory_pool=doc.get("memory_pool", POOL_HALO),
+            devices=tuple(doc.get("devices") or ()),
         )
 
     async def resolve_spec(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> ModelServerSpec:
@@ -689,9 +2636,20 @@ class ModelServerManager:
         docker can't answer for: external (off-box), unwired (no container
         configured), not_created (container doesn't exist)."""
         if not spec.onbox:
-            return "external", False
-        if spec.systemd_unit:
-            return await _systemd_inspect(spec.systemd_unit)
+            if not spec.remotely_operable:
+                return "external", False
+            # Operable remotes get a real state, not a placeholder: the whole
+            # point of remote operate is that "awake but not serving" is a
+            # distinct, actionable condition. Cached — see _remote_state.
+            return await _remote_state(spec), False
+        unit = unit_name(spec)
+        if unit:
+            state, managed = await _systemd_inspect(unit)
+            if state == "not_created" and spec.launch_script:
+                # ARIA generates this unit on first start. "not_created" would
+                # read as "broken"; it is simply not materialised yet.
+                return "ready", False
+            return state, managed
         if not spec.container_name:
             return "unwired", False
         info = await _container_inspect(spec.container_name)
@@ -700,7 +2658,22 @@ class ModelServerManager:
         return info
 
     async def status(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
-        gtt = _read_gtt_gib()
+        # One read per pool, shared by every row, through the same seam the
+        # start-time gate uses. The Halo figure is also kept under the
+        # historical gtt_* keys so existing consumers keep working.
+        pools = {
+            name: _read_gtt_gib(name)
+            for name in (POOL_HALO, POOL_R9700, POOL_HOST)
+        }
+        gtt = pools.get(POOL_HALO)
+        # A discrete card holding GTT is serving out of system RAM — at which
+        # point it is no longer an independent pool and a co-resident Halo
+        # model is at risk. Read separately because the (used, total) seam
+        # above deliberately carries only the two numbers the gate projects on.
+        spilling = {
+            name: bool(live and live.spilling)
+            for name, live in ((n, read_pool(n)) for n in (POOL_HALO, POOL_R9700))
+        }
         bindings: dict[str, list[str]] = {}
         dynamic_specs: list[ModelServerSpec] = []
         if db is not None:
@@ -710,9 +2683,25 @@ class ModelServerManager:
                 if doc["slug"] not in _BY_SLUG:
                     dynamic_specs.append(self._spec_from_doc(doc))
 
+        all_specs = list(REGISTRY) + dynamic_specs
+        # Measure every running server once, concurrently — this is cheap
+        # (sysfs + one systemctl/docker call each) and turns the whole view
+        # from declared SWAGs into observed numbers.
+        measured: dict[str, Optional[float]] = {}
+        gathered = await asyncio.gather(
+            *(measure_resident_gib(sp) for sp in all_specs), return_exceptions=True
+        )
+        for sp, val in zip(all_specs, gathered):
+            measured[sp.slug] = val if isinstance(val, float) else None
+            if isinstance(val, float):
+                # Remembered so start()'s gate can use an observed footprint
+                # instead of a stale declaration.
+                self._last_measured[sp.slug] = val
+
         results = []
-        for spec in list(REGISTRY) + dynamic_specs:
+        for spec in all_specs:
             state, _ = await self._inspect(spec)
+            geometry = read_launch_geometry(spec)
             entry = {
                 "slug": spec.slug,
                 "description": spec.description,
@@ -722,7 +2711,47 @@ class ModelServerManager:
                 "runtime_repo": spec.runtime_repo,
                 "runtime_ref": spec.runtime_ref,
                 "backend_device": spec.backend_device,
-                "resident_gib_estimate": spec.resident_gib,
+                # Computed from the launch file's -c where the spec allows it,
+                # else the declared SWAG. Either way it tracks the unit.
+                "resident_gib_estimate": effective_resident_gib(spec, geometry),
+                # MEASURED from the OS (kfd tree for GPU-resident servers, RSS
+                # for CPU-only), None when not running. The estimate above is a
+                # projection — prefer this whenever it is present.
+                "resident_gib_measured": measured.get(spec.slug),
+                # Read from the unit/compose, never declared here. `ctx_per_slot`
+                # is what one agent may actually send: llama.cpp divides the KV
+                # budget across slots, so a consumer that configures `served_ctx`
+                # will overflow by exactly the slot count.
+                "served_ctx": geometry.n_ctx,
+                "slots": geometry.slots,
+                "ctx_per_slot": geometry.ctx_per_slot,
+                "geometry_source": geometry.source,
+                # Whether this server's memory lands in the GTT pool at all.
+                # CPU-only servers must NOT be summed into a GPU total.
+                "gtt_resident": spec.gtt_resident,
+                # WHERE it runs and WHOSE memory it spends. Two servers in
+                # different pools can be resident at once — that is the point
+                # of the two-GPU topology, not an oversight.
+                "memory_pool": spec.memory_pool,
+                "also_uses": list(spec.also_uses),
+                "devices": list(spec.devices),
+                "deployment": spec.deployment,
+                "pool_used_gib": (
+                    round(pools[spec.memory_pool][0], 1)
+                    if pools.get(spec.memory_pool) else None
+                ),
+                "pool_total_gib": (
+                    round(pools[spec.memory_pool][1], 1)
+                    if pools.get(spec.memory_pool) else None
+                ),
+                "pool_spilling": spilling.get(spec.memory_pool, False),
+                # HOW it loads. `parameters` carries each knob's effective
+                # value plus where that value came from, so an override ARIA
+                # set is distinguishable from a drop-in Ben wrote by hand.
+                "parameters": resolve_parameters(spec),
+                "aria_overrides": read_aria_overrides(spec),
+                "launch_script": spec.launch_script,
+                "systemd_unit": unit_name(spec),
                 "exclusive_with": list(spec.exclusive_with),
                 "onbox": spec.onbox,
                 "startable": spec.startable,
@@ -748,16 +2777,92 @@ class ModelServerManager:
             results.append(entry)
         return results
 
-    async def start(
-        self, slug: str, force: bool = False, db: Optional[AsyncIOMotorDatabase] = None
+    def _apply_launch_config(
+        self, spec: ModelServerSpec, unit: str, env_overrides: dict[str, str]
     ) -> dict:
+        """Materialise the unit (if ARIA owns it) and write/clear its overrides.
+
+        Returns whether a `daemon-reload` is needed and what to report back to
+        the caller. Synchronous file work, called under the manager lock: these
+        are four small writes, and doing them inline keeps "what will start"
+        and "what did start" impossible to interleave.
+        """
+        changed = False
+        report: dict = {}
+
+        if spec.launch_script and not spec.systemd_unit:
+            path = os.path.join(_SYSTEMD_USER_DIR, unit)
+            if _write_if_changed(path, _render_unit(spec, unit)):
+                changed = True
+                report["unit_written"] = path
+
+        dropin = _dropin_path(unit)
+        if env_overrides:
+            if _write_if_changed(dropin, _render_dropin(spec, env_overrides)):
+                changed = True
+            report["overrides_written"] = dropin
+        elif _remove_if_present(dropin):
+            # A previous session's overrides must not silently persist into a
+            # plain "start it" — that is how a 131K context outlives the
+            # experiment it was set for.
+            changed = True
+            report["overrides_cleared"] = dropin
+
+        # Reported AFTER the write, so it is the configuration that will
+        # actually launch rather than the one that was there a moment ago.
+        report["launch_config"] = {
+            entry["name"]: {"value": entry["value"], "source": entry["source"]}
+            for entry in resolve_parameters(spec)
+        }
+        return {"reloaded": changed, "report": report}
+
+    async def start(
+        self,
+        slug: str,
+        force: bool = False,
+        db: Optional[AsyncIOMotorDatabase] = None,
+        overrides: Optional[dict] = None,
+    ) -> dict:
+        """Start a model server, optionally choosing HOW it loads.
+
+        `overrides` maps declared parameter names to values — device placement,
+        context, KV type, drafter, slots. They are validated against the spec's
+        declared knobs, written as a systemd drop-in, and therefore visible and
+        removable outside ARIA. Passing none clears any override ARIA set
+        earlier, so a plain start always means the deployment's own defaults.
+        """
         spec = await self.resolve_spec(slug, db)
         if not spec.onbox:
-            raise ModelServerSafetyError(f"{slug} is off-box — ARIA cannot start it directly.")
+            if not spec.remotely_operable:
+                raise ModelServerSafetyError(
+                    f"{slug} is off-box and has no remote start/stop declared — "
+                    f"ARIA cannot start it directly."
+                )
+            # `startable` gates the remote path too. Without this an entry
+            # whose remote launcher is known-broken would still be attempted,
+            # and the caller would get a slow `starting` instead of the reason.
+            if not spec.startable and not force:
+                raise ModelServerSafetyError(
+                    spec.not_startable_reason or f"{slug} has no working remote launcher."
+                )
+            # Remote path: no local RAM gate applies (POOL_REMOTE has no local
+            # pool), no drop-in to write, no exclusivity to enforce against
+            # corsair's pools. Overrides are refused rather than ignored — a
+            # silently-dropped override is the kind of quiet wrong answer this
+            # module exists to prevent.
+            if overrides:
+                raise ModelServerSafetyError(
+                    f"{slug} is remote; launch overrides are not supported "
+                    f"(its parameters live in the remote service definition)."
+                )
+            return await self._start_remote(spec)
         if not spec.startable and not force:
             raise ModelServerSafetyError(
                 spec.not_startable_reason or f"{slug} has no working runtime/service yet."
             )
+        # Validated BEFORE the lock and before any state change: a typo'd
+        # parameter should cost nothing, not leave a half-written drop-in.
+        env_overrides = validate_overrides(spec, overrides)
 
         async with self._lock:
             state, compose_managed = await self._inspect(spec)
@@ -796,36 +2901,81 @@ class ModelServerManager:
                         f"{', '.join(conflicts)}. Stop them first, or pass force=True."
                     )
 
-                gtt = _read_gtt_gib()
-                if gtt is not None and spec.resident_gib is not None and spec.gtt_resident:
+                # Ports are a hard conflict independent of memory: two servers
+                # cannot bind the same port, and several entries here share one
+                # deliberately (the three :8110 Qwen variants, the DS4s on
+                # :8107). Checked live rather than baked into exclusive_with,
+                # so it also covers dynamically-pulled entries.
+                if spec.port:
+                    for other in REGISTRY:
+                        if other.slug == slug or other.port != spec.port:
+                            continue
+                        if not other.onbox or not (other.container_name or unit_name(other)):
+                            continue
+                        other_state, _ = await self._inspect(other)
+                        if other_state in _MEMORY_HOLDING_STATES:
+                            raise ModelServerSafetyError(
+                                f"Port {spec.port} is already held by {other.slug} "
+                                f"({other_state}). Stop it first, override the port, "
+                                f"or pass force=True."
+                            )
+
+                # Projected against the pool this server actually draws from —
+                # the R9700's own VRAM for a dGPU model, the Halo's shared
+                # system memory otherwise. Reading one number for the whole box
+                # would forbid the dual-serving deployment that works.
+                gtt = _read_gtt_gib(spec.memory_pool)
+                # Projected from the `-c` the unit will actually launch with,
+                # so raising context and forgetting to update a number here can
+                # no longer slip an overcommit past this gate.
+                projection = effective_resident_gib(spec)
+                gated_pool = spec.gtt_resident and spec.memory_pool != POOL_HOST
+                if gtt is not None and projection is not None and gated_pool:
                     used, total = gtt
-                    projected = used + spec.resident_gib
+                    # The projection is only as good as the number added to it.
+                    # A stale SWAG under-counts and lets an overcommit through,
+                    # so bias to the larger of projected-vs-last-measured.
+                    claim = projection
+                    seen = self._last_measured.get(slug)
+                    basis = "projected"
+                    if seen is not None and seen > claim:
+                        claim, basis = seen, "measured"
+                    projected = used + claim
                     if projected > total * _RAM_SAFETY_MARGIN:
                         raise ModelServerSafetyError(
-                            f"Starting {slug} (~{spec.resident_gib:.0f} GiB SWAG) would push "
-                            f"GTT usage to ~{projected:.0f}/{total:.0f} GiB, over the "
-                            f"{_RAM_SAFETY_MARGIN:.0%} safety margin. Stop something first, "
-                            f"or pass force=True."
+                            f"Starting {slug} (~{claim:.0f} GiB {basis}) would push "
+                            f"{spec.memory_pool} usage to ~{projected:.0f}/{total:.0f} "
+                            f"GiB, over the {_RAM_SAFETY_MARGIN:.0%} safety margin. "
+                            f"Stop something first, or pass force=True."
                         )
 
             note = None
-            if spec.systemd_unit:
-                rc, out, err = await _run(
-                    "systemctl", "--user", "start", spec.systemd_unit
-                )
+            unit = unit_name(spec)
+            if unit:
+                applied = self._apply_launch_config(spec, unit, env_overrides)
+                if applied["reloaded"]:
+                    rc, out, err = await _run("systemctl", "--user", "daemon-reload")
+                    if rc != 0:
+                        raise ModelServerError(
+                            f"Failed to reload systemd for {slug}: {(err or out).strip()}"
+                        )
+                rc, out, err = await _run("systemctl", "--user", "start", unit)
                 if rc != 0:
                     raise ModelServerError(
                         f"Failed to start {slug}: {(err or out).strip()}"
                     )
-                return {
+                result = {
                     "slug": slug, "state": "starting", "action": "started",
+                    "unit": unit,
                     "output": (out + err)[-2000:],
                     "note": (
-                        "systemd unit; the sealed bundle manifest is verified by "
-                        "ExecStartPre on every start. Model load takes ~2-3 min "
-                        "before /health reports ok."
+                        "systemd unit; ExecStartPre guards (bundle manifest, dGPU "
+                        "power state, TTM pool cap) run on every start. Model load "
+                        "takes ~2-3 min before /health reports ok."
                     ),
                 }
+                result.update(applied["report"])
+                return result
             container_exists = spec.container_name and state not in ("not_created", "unwired")
             if container_exists and not compose_managed:
                 # Hand-run container: `compose up` would hit a name conflict
@@ -858,18 +3008,93 @@ class ModelServerManager:
                 result["note"] = note
             return result
 
+    async def _start_remote(self, spec: ModelServerSpec) -> dict:
+        """Wake if needed, start the remote model service, verify it serves.
+
+        Held under the same lock as local starts so two callers cannot race a
+        wake, and so a remote start is serialised against local ones (they can
+        contend for nothing physical, but they do contend for ARIA's own view
+        of what it has asked for).
+        """
+        async with self._lock:
+            if await _remote_health_ok(spec):
+                _remote_state_cache[spec.slug] = (time.monotonic(), "running")
+                return {"slug": spec.slug, "state": "ready", "action": "noop",
+                        "detail": "already serving"}
+            # Any action invalidates the read cache; the outcome below re-seeds it.
+            _remote_state_cache.pop(spec.slug, None)
+
+            wake = await _wake_remote(spec)
+            rc, out, err = await _run(*spec.remote_start_command)
+            # A scheduled task that is already running returns nonzero on some
+            # Windows builds; readiness below is the real oracle, so a nonzero
+            # exit is recorded but not treated as terminal.
+            ready = await _await_remote_ready(spec)
+            _remote_state_cache[spec.slug] = (
+                time.monotonic(), "running" if ready else "stopped")
+            detail = (err or out).strip()[-300:]
+            if not ready:
+                return {
+                    "slug": spec.slug,
+                    "state": "starting",
+                    "action": "start_requested",
+                    "woken": wake["woken"],
+                    "detail": (
+                        f"start issued (exit {rc}); not serving within "
+                        f"{spec.remote_ready_deadline:.0f}s. {detail}"
+                    ).strip(),
+                }
+            return {
+                "slug": spec.slug,
+                "state": "ready",
+                "action": "started",
+                "woken": wake["woken"],
+                "detail": detail or f"serving (start exit {rc})",
+            }
+
+    async def _stop_remote(self, spec: ModelServerSpec) -> dict:
+        """Stop the remote model service. Does NOT suspend the machine.
+
+        Stopping a model and sleeping its host are separate decisions: freeing
+        a 3090 for something else is not the same as putting the box to sleep,
+        and conflating them would make stop() unexpectedly destructive. sleep()
+        remains the explicit verb for suspending.
+        """
+        async with self._lock:
+            if not await _remote_box_reachable(spec):
+                _remote_state_cache[spec.slug] = (time.monotonic(), "asleep")
+                return {"slug": spec.slug, "state": "asleep", "action": "noop",
+                        "detail": "box unreachable — nothing to stop"}
+            _remote_state_cache.pop(spec.slug, None)
+            rc, out, err = await _run(*spec.remote_stop_command)
+            serving = await _remote_health_ok(spec)
+            _remote_state_cache[spec.slug] = (
+                time.monotonic(), "running" if serving else "stopped")
+            detail = (err or out).strip()[-300:]
+            if serving:
+                raise ModelServerError(
+                    f"Failed to stop {spec.slug}: still serving after stop "
+                    f"(exit {rc}). {detail}"
+                )
+            return {"slug": spec.slug, "state": "stopped", "action": "stopped",
+                    "detail": detail or f"stopped (exit {rc})"}
+
     async def stop(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
         spec = await self.resolve_spec(slug, db)
         if not spec.onbox:
-            raise ModelServerSafetyError(f"{slug} is off-box — ARIA cannot stop it directly.")
-        if spec.systemd_unit:
+            if not spec.remotely_operable:
+                raise ModelServerSafetyError(
+                    f"{slug} is off-box and has no remote start/stop declared — "
+                    f"ARIA cannot stop it directly."
+                )
+            return await self._stop_remote(spec)
+        unit = unit_name(spec)
+        if unit:
             async with self._lock:
                 state, _ = await self._inspect(spec)
-                if state in ("not_created", "exited", "dead"):
+                if state in ("not_created", "exited", "dead", "ready"):
                     return {"slug": slug, "state": state, "action": "noop"}
-                rc, out, err = await _run(
-                    "systemctl", "--user", "stop", spec.systemd_unit
-                )
+                rc, out, err = await _run("systemctl", "--user", "stop", unit)
                 if rc != 0:
                     raise ModelServerError(
                         f"Failed to stop {slug}: {(err or out).strip()}"
@@ -908,13 +3133,43 @@ class ModelServerManager:
             probe = spec.sleep_command[:-1] + ("exit",)
             rc, _, _ = await _run(*probe)
             if rc != 0:
+                _remote_state_cache[slug] = (time.monotonic(), "asleep")
                 return {"slug": slug, "state": "asleep", "action": "noop",
                         "detail": "unreachable over ssh — already asleep"}
             rc, out, err = await _run(*spec.sleep_command)
             # The box suspending mid-command drops the ssh connection, so a
             # nonzero exit here is the EXPECTED success shape, not a failure.
-            return {"slug": slug, "state": "sleeping", "action": "sleep_requested",
-                    "detail": (err or out).strip()[-300:] or f"suspend sent (ssh exit {rc})"}
+            #
+            # CAVEAT (measured 2026-08-15): that also means this call CANNOT
+            # distinguish "suspended" from "command ran and the box stayed up".
+            # Ridge was observed still serving after a clean `ssh exit 0` here.
+            # So the returned state is `sleep_requested`, never `asleep`, and
+            # the cache is INVALIDATED rather than seeded with an assumption —
+            # the next status() re-probes and reports what is actually true.
+            _remote_state_cache.pop(slug, None)
+            # Verify from HERE. The box cannot report its own suspension, and
+            # the previous implementation trusted the exit code — which is how
+            # a sleep verb that never suspended anything went unnoticed.
+            deadline = time.monotonic() + 90.0
+            while time.monotonic() < deadline:
+                await asyncio.sleep(5)
+                if not await _remote_box_reachable(spec, timeout=4.0):
+                    _remote_state_cache[slug] = (time.monotonic(), "asleep")
+                    return {"slug": slug, "state": "asleep", "action": "slept",
+                            "verified": True,
+                            "detail": "confirmed unreachable from corsair"}
+            _remote_state_cache.pop(slug, None)
+            return {
+                "slug": slug, "state": "awake", "action": "sleep_failed",
+                "verified": False,
+                "detail": (
+                    "suspend was issued but the box is still reachable after 90s. "
+                    "Check `powercfg /requests` for a held wakelock and "
+                    "WakeOnPattern on the NICs (a pattern-armed NIC is revived by "
+                    "the next Tailscale keepalive). "
+                    + ((err or out).strip()[-200:] or f"ssh exit {rc}")
+                ),
+            }
 
     async def bind(
         self, db: AsyncIOMotorDatabase, slug: str, agent_id_or_slug: str, force: bool = False

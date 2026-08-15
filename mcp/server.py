@@ -2,7 +2,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = [
-#   "mcp>=1.2",
+#   "mcp>=1.2,<2",  # 2.0.0 removed mcp.server.fastmcp (2026-08-15: gateway parked the aria MCP 251x/24h)
 #   "httpx>=0.27",
 # ]
 # ///
@@ -22,9 +22,13 @@ Tool groups:
   - Alerts (relay) : list_alerts, ack_alert  — ProjectAria queues alerts here and
                      Hermes relays them over Signal, since ProjectAria no longer
                      pushes notifications directly.
-  - Model servers  : list_model_servers, start_model_server, stop_model_server,
-                     bind_model_server, unbind_model_server — the local LLM
-                     control plane (see aria.infrastructure.model_servers).
+  - Model servers  : list_model_servers, list_gpu_devices,
+                     model_server_utilization, start_model_server,
+                     stop_model_server, bind_model_server, unbind_model_server
+                     — the local LLM control plane (see
+                     aria.infrastructure.model_servers). start_model_server
+                     also chooses HOW a model loads (device placement, context,
+                     KV type, drafter) via `overrides`.
 
 ProjectAria listens on :8200 after the cutover (it inherited aria-shells' port).
 """
@@ -101,14 +105,11 @@ def _map_task_status(status: Optional[str]) -> Optional[str]:
 async def fleet_status(awaiting_only: bool = False) -> dict:
     """Digest of the whole watched-shell fleet in ONE call — start here.
 
-    Returns each active/idle shell with: status, idle_seconds, awaiting_input
-    (sitting at an interactive prompt waiting for a human), the matched
-    prompt_line, and the last_line of output. Shells awaiting input are listed
-    first, and `awaiting_count` tells you how many need attention.
-
-    Prefer this over list_shells + per-shell snapshots when answering "what is
-    my fleet doing?" or "is anything waiting on me?". Set awaiting_only=True to
-    get just the shells blocked on input.
+    Per shell: status, idle_seconds, awaiting_input (blocked on a human),
+    prompt_line, last_line. Shells awaiting input sort first; `awaiting_count`
+    says how many. Prefer over list_shells + per-shell snapshots for "what is my
+    fleet doing?" / "is anything waiting on me?". awaiting_only=True filters to
+    blocked shells.
     """
     params = {"awaiting": "true"} if awaiting_only else None
     overview = await _request("GET", "/api/v1/shells/overview", params=params)
@@ -239,14 +240,11 @@ async def send_shell_input(
 async def nudge_paused_shell(
     name: str, text: Optional[str] = None, force: bool = False
 ) -> dict:
-    """Nudge a watched shell that is paused at a prompt (activity_state
-    'blocked' in fleet_status). Sends a wake-up (bare Enter at a safe
-    'press enter' prompt, else a continue instruction) and tracks attempts on
-    the shell across calls: after 3 consecutive failed nudges it raises an
-    alert for the human. Safe to call on every sweep — a shell that is not
-    paused, was nudged recently, or paused only moments ago is left alone
-    (the response's `reason` says why). Pass text to override the nudge
-    message; force=true skips the freshly-paused and debounce guards."""
+    """Nudge a watched shell paused at a prompt (activity_state 'blocked' in
+    fleet_status). Sends Enter at a safe 'press enter' prompt, else a continue
+    instruction; after 3 consecutive failed nudges it alerts the human. Safe on
+    every sweep — not-paused, recently-nudged, or just-paused shells are skipped
+    (see `reason`). `text` overrides the message; force=true skips the guards."""
     body: dict[str, Any] = {"force": force}
     if text is not None:
         body["text"] = text
@@ -544,15 +542,13 @@ async def update_agent(
     model: Optional[str] = None,
     temperature: Optional[float] = None,
 ) -> dict:
-    """Enable/disable an agent, or repoint its backend/model. `agent_slug`
-    takes a stable slug (e.g. 'search-agent', 'pi-coding') or a raw agent id.
+    """Enable/disable an agent or repoint its backend/model. `agent_slug`
+    takes a slug ('search-agent', 'pi-coding') or raw id.
 
-    backend/model are the LLM-ADAPTER vocabulary (llamacpp, agentic, ridge,
-    anthropic, ...) — a DIFFERENT vocabulary from create_coding_session's
-    backend (claude_code/codex/pi-code/pool). Only the fields you pass are
-    changed; anything you omit (system_prompt, the rest of llm, etc.) is left
-    exactly as it was. Use this instead of asking a human to hand-edit the
-    database — it's the whole point of exposing agent management over MCP."""
+    backend/model use the LLM-ADAPTER vocabulary (llamacpp, agentic, ridge,
+    anthropic...) — NOT create_coding_session's (claude_code/codex/pi-code/
+    pool). Only fields you pass change; omitted ones are untouched. Use this
+    rather than asking a human to hand-edit the database."""
     body: dict[str, Any] = {}
     if enabled is not None:
         body["enabled"] = enabled
@@ -582,35 +578,59 @@ async def update_agent(
 
 @mcp.tool()
 async def list_model_servers() -> Any:
-    """List every registered local model server (+ the off-box Ridge entry)
-    with its live docker state, runtime fork, RAM SWAG estimate, live GTT
-    usage, and which agent (if any) it's bound to."""
+    """Every registered local model+runtime pair (+ the off-box Ridge entry):
+    live state, runtime fork, device placement, memory pool, footprint estimate
+    and which agent (if any) it is bound to.
+
+    Two fields answer "how do I load this differently":
+      - `devices` / `memory_pool` — WHERE it runs. Entries on `r9700-vram` and
+        entries on `halo-gtt` can be resident at the same time.
+      - `parameters` — HOW it loads. Each knob carries its effective `value`
+        and the `source` of that value, and any of them can be passed to
+        start_model_server(overrides=...). An empty list means the server's
+        configuration is frozen in its compose file or unit.
+
+    `startable: false` with a `not_startable_reason` is a deliberate record,
+    not a bug: several entries kept their weights but lost their runtime in the
+    2026-08-11..14 infrastructure consolidation, and the reason says which."""
     return await _request("GET", "/api/v1/infrastructure/model-servers")
 
 
 @mcp.tool()
-async def which_model_am_i() -> Any:
-    """What model is generating your replies right now. CALL THIS whenever you
-    are asked what model / LLM / AI you are, what you are running on, or what is
-    backing this conversation — do NOT answer from your own configuration.
+async def model_server_utilization() -> Any:
+    """How loaded the local model servers are RIGHT NOW — busy vs total slots,
+    queue depth and throughput, read live from llama.cpp.
 
-    Your configured model id is the synthetic alias `aria-resident`, which is a
-    ROUTING alias, not a model: it means "whatever ARIA currently has resident".
-    Answering from config yields "I'm aria-resident on a custom provider", which
-    is true of the plumbing and tells the user nothing about the actual model.
+    list_model_servers() says how many slots should exist; this says how many
+    are busy. Use it when the local model "feels slow", before starting another
+    server, or when deciding whether to spawn more concurrent work.
 
-    This returns `model_id` — the loaded model as the backend itself reports it,
-    read live — plus `serving` (ARIA registry slug) and `summary`, a
-    ready-to-say sentence. Quote `model_id`."""
-    return await _request("GET", "/api/v1/infrastructure/llm-route")
+    `saturated` is the field to watch, not `slot_utilisation`. Every slot busy
+    is FINE — each consumer has its own slot by design. Saturated means requests
+    are QUEUING (`requests_deferred > 0`), and a queued request lands in whichever
+    slot frees first rather than the one holding its prefix, so sustained
+    saturation is how warm caches quietly decay into a cold prefill per turn.
+
+    `saturated: null` means unknown, not false: the server was launched without
+    `--metrics`, so queue depth and throughput are unreadable (`metrics_hint`
+    says so). Missing data is reported as missing rather than as zero.
+
+    `declared_*` vs the live values is a drift check — they disagree exactly
+    when a unit file was edited but the server never restarted."""
+    return await _request("GET", "/api/v1/infrastructure/model-servers/utilization")
 
 
 @mcp.tool()
 async def get_llm_route() -> Any:
     """Which local model currently answers as 'the local model', and whether
-    that is pinned or auto-selected. Same payload as which_model_am_i() — this
-    name is the infrastructure-facing alias; use which_model_am_i() for the
-    "what model are you?" question.
+    that is pinned or auto-selected.
+
+    Also answers "what model am I running on?" — the payload carries `model_id`
+    (the loaded model as the backend reports it, read live) and a ready-to-say
+    `summary`. A dedicated which_model_am_i() wrapper existed briefly in Aug 2026
+    and was removed: it cost ~190 tokens of prompt prefix on every request, and
+    became redundant once Hermes started naming real models instead of the
+    `aria-resident` alias.
 
     This is the model YOU are most likely running on: Hermes's default provider
     is ARIA's /llm/v1 passthrough, so whatever this reports as `serving` is what
@@ -631,25 +651,86 @@ async def set_llm_route(slug: Optional[str] = None) -> dict:
 
 
 @mcp.tool()
-async def start_model_server(slug: str, force: bool = False) -> dict:
-    """Start a model server by its registry slug (e.g. 'gemma-4-e4b-Q4').
-    Refuses (409) if a RAM-exclusive server is already running or the live GTT
-    usage + this server's SWAG would blow the safety margin — pass force=True
-    only if you've verified it's actually safe."""
+async def list_gpu_devices() -> Any:
+    """The physical GPUs on corsair-ai and the memory pools they own.
+
+    There are TWO, with separate memory: the Strix Halo iGPU (124 GiB of shared
+    system memory) and a discrete Radeon AI PRO R9700 (32 GiB of its own VRAM).
+    A model on one does NOT compete with a model on the other — running one from
+    each simultaneously is a supported deployment, not an accident. Read this
+    before concluding "the box is full": the answer depends on which pool.
+
+    `spilling: true` on the R9700 means it is serving out of system RAM, at
+    which point the pools are no longer independent."""
+    return await _request("GET", "/api/v1/infrastructure/model-servers/devices")
+
+
+@mcp.tool()
+async def start_model_server(
+    slug: str, force: bool = False, overrides: Optional[dict] = None
+) -> dict:
+    """Start a model server by its registry slug, optionally choosing HOW it loads.
+
+    `overrides` selects launch parameters — device placement, context size, KV
+    cache type, drafter, slot count — keyed by the `parameters[].name` values
+    list_model_servers() reports for that server. Only servers that expose
+    `parameters` accept them; compose-frozen ones refuse (409) rather than
+    silently ignoring the request. Examples:
+
+        start_model_server("DS4-0731-IQ3_XXS-Halo-Vulkan",
+                           overrides={"kv": "q8_0", "draft": "none"})
+        start_model_server("DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
+                           overrides={"placement": "split", "ctx": "65536"})
+
+    Omitting `overrides` starts with the deployment's own defaults AND clears
+    any override a previous start applied — a plain start is always a clean one.
+
+    Refuses (409) if a mutually-exclusive server is running, if the port is
+    taken, or if the projected footprint would blow the safety margin of THAT
+    SERVER'S memory pool (the Halo's shared RAM or the R9700's VRAM — see
+    list_gpu_devices). Pass force=True only if you have verified it is safe.
+
+    REMOTE SERVERS (2026-08-15): 'Red-Qwen3.6-35B-A3B' (RTX 5090) and
+    'Ridge-Qwen3.8-27B' (RTX 3090) can now be started from here. Starting
+    one WAKES the machine if it is asleep, then starts its model service, then
+    waits until it actually serves — so the call can take a few minutes
+    (RED ~5 min worst case, Ridge ~90s cold) and returns state='ready' only
+    when health confirms it. state='starting' means the command was issued but
+    it was not serving yet; that is a real outcome, not an error. Remote servers
+    do not accept `overrides` (their parameters live on the remote host).
+
+    Their states are meaningful: 'asleep' (box down), 'stopped' (box up, model
+    not serving — start it), 'running' (serving)."""
     # Longer per-request timeout than the global default: a cold
     # `docker compose up -d` (image build/pull, container recreate) can far
     # exceed 20s, and timing out client-side while the start proceeds
     # server-side reads as a false failure.
+    body: dict = {"force": force}
+    if overrides:
+        body["overrides"] = overrides
+    # 180s covered local starts. A REMOTE start can legitimately take far
+    # longer: it wakes the machine (deadline 240s) and then waits for the model
+    # service to serve (up to 300s on RED) — 540s worst case. A client timeout
+    # shorter than the server's own deadlines is the worst combination, because
+    # the operation SUCCEEDS while the caller is told it failed, and Hermes
+    # would then retry a start that is already running.
     return await _request(
         "POST", f"/api/v1/infrastructure/model-servers/{slug}/start",
-        json={"force": force}, timeout=180.0,
+        json=body, timeout=600.0,
     )
 
 
 @mcp.tool()
 async def stop_model_server(slug: str) -> dict:
-    """Stop a model server by its registry slug."""
-    return await _request("POST", f"/api/v1/infrastructure/model-servers/{slug}/stop")
+    """Stop a model server by its registry slug.
+
+    For remote servers (RED, Ridge) this stops the MODEL SERVICE and leaves the
+    machine awake — use sleep_model_server to suspend the box itself."""
+    # Remote stop does an ssh round trip plus a health re-check; a sleeping box
+    # costs a connect timeout first, so the 20s default is too tight.
+    return await _request(
+        "POST", f"/api/v1/infrastructure/model-servers/{slug}/stop", timeout=120.0,
+    )
 
 
 @mcp.tool()
@@ -672,10 +753,107 @@ async def unbind_model_server(agent: str) -> dict:
 
 @mcp.tool()
 async def sleep_model_server(slug: str) -> dict:
-    """Suspend an off-box machine (currently only 'Ridge-Qwen3.6-35B-A3B').
-    Wake is automatic — the ridge-llama-proxy WoLs it on the next inference
-    request. Noops with state=asleep if it's already unreachable."""
+    """Suspend an off-box MACHINE — 'Ridge-Qwen3.8-27B' or 'Red-Qwen3.6-35B-A3B'.
+
+    This suspends the whole box, which is NOT the same as stopping its model:
+    use stop_model_server to free the GPU while leaving the machine up, and
+    this only when you want the machine itself asleep. Noops with state=asleep
+    if it is already unreachable.
+
+    Waking is handled for you — start_model_server wakes the box first, and the
+    wake proxies also wake it on an inference request."""
     return await _request("POST", f"/api/v1/infrastructure/model-servers/{slug}/sleep")
+
+
+# --- Non-LLM services + the ontology graph -----------------------------------
+# Two separate registries on purpose (a merged one would make "mongod is down"
+# read as "stopped on purpose" and silence the alert — see
+# api/aria/infrastructure/services.py). `whats_running` is the union read, so
+# there is still one question to ask.
+
+
+@mcp.tool()
+async def whats_running() -> Any:
+    """What is actually running on corsair-ai, across BOTH registries.
+
+    Use this for "is everything up?", "what's running?", "is X running?".
+    Returns non-LLM services (mongod, embeddings, hermes-gateway, signal-cli,
+    samba, ...) plus the local model servers, and — the useful part — an
+    `unhealthy` list containing ONLY services that are expected to be up and
+    are not. A stopped model server is normal (they are mutually RAM-exclusive)
+    and a stopped on_demand service is normal, so neither is flagged."""
+    return await _request("GET", "/api/v1/infrastructure/running")
+
+
+@mcp.tool()
+async def list_services() -> Any:
+    """Every non-LLM service with its live state, `expected_state`
+    (always_up | on_demand) and health verdict. `needs_review=true` marks
+    entries whose expected_state was inferred, not confirmed by Ben."""
+    return await _request("GET", "/api/v1/infrastructure/services")
+
+
+@mcp.tool()
+async def start_service(slug: str) -> dict:
+    """Start a non-LLM service by slug (e.g. 'aria-stt'). Refuses with 409 for
+    unmanageable entries: aria-api (would restart itself mid-request),
+    aria-tmux (killing it can orphan every watched claude-* session) and
+    system units ARIA has no root for."""
+    return await _request("POST", f"/api/v1/infrastructure/services/{slug}/start")
+
+
+@mcp.tool()
+async def stop_service(slug: str) -> dict:
+    """Stop a non-LLM service by slug. Same unmanageable refusals as
+    start_service."""
+    return await _request("POST", f"/api/v1/infrastructure/services/{slug}/stop")
+
+
+@mcp.tool()
+async def kg_search(query: str, type: Optional[str] = None, limit: int = 10) -> Any:
+    """Semantic search over the ONTOLOGY GRAPH of Ben's world — machines,
+    services, projects, datastores, networks, devices.
+
+    Use this for STRUCTURAL questions ("what is the gaming PC used for
+    inference?", "where do backups go?") where search_memory would only find
+    whatever someone happened to write in prose. Optional `type` filter:
+    machine | device | service | project | datastore | network |
+    external_service | person."""
+    body: dict = {"query": query, "limit": limit}
+    if type:
+        body["type"] = type
+    return await _request("POST", "/api/v1/ontology/search", json=body)
+
+
+@mcp.tool()
+async def kg_entity(slug: str) -> Any:
+    """One entity plus every structural edge in and out of it (its
+    neighborhood). Slugs are `type:name` — e.g. 'machine:corsair-ai',
+    'service:shared-mongod', 'project:aria'.
+
+    Answers "what runs on X?", "what depends on X?", "what is X?". Most
+    attributes are DERIVED from ARIA's registries and db.projects, so they
+    reflect what is actually configured rather than what was documented."""
+    return await _request("GET", f"/api/v1/ontology/{slug}")
+
+
+@mcp.tool()
+async def kg_map(type: Optional[str] = None) -> Any:
+    """Typed overview of the graph — all machines, all services, all projects.
+    Omit `type` for everything."""
+    params = {"type": type} if type else None
+    return await _request("GET", "/api/v1/ontology/map", params=params)
+
+
+@mcp.tool()
+async def kg_memories(slug: str, limit: int = 25) -> Any:
+    """Memories that refer to a given entity — the graph -> memory direction.
+
+    Complements search_memory: that searches prose semantically, this returns
+    everything linked to a specific thing."""
+    return await _request(
+        "GET", f"/api/v1/ontology/entity/{slug}/memories", params={"limit": limit}
+    )
 
 
 @mcp.tool()
@@ -683,13 +861,11 @@ async def pull_model(
     repo_id: str, filename: str, name: str, runtime: str,
     port: Optional[int] = None, ctx: int = 32768,
 ) -> dict:
-    """Download a GGUF from Hugging Face into the shared models dir and
-    provision it as a new startable model server. `runtime` picks the
-    llama.cpp build (GET /infrastructure/model-servers/runtimes, or:
-    mainline-vulkan | mainline-cpu | rocmfp4-fork | rocmfpx-vulkan-fork —
-    standard GGUFs take mainline; ROCmFP4/FP6/FPX-quantized files need their
-    matching fork). Returns a job id — poll list_model_pulls for progress;
-    downloads are 20-60 GB so completion takes many minutes."""
+    """Download a GGUF from Hugging Face and provision it as a startable model
+    server. `runtime` picks the llama.cpp build: mainline-vulkan | mainline-cpu
+    | rocmfp4-fork | rocmfpx-vulkan-fork — standard GGUFs take mainline;
+    ROCmFP4/FP6/FPX files need their matching fork. Returns a job id; poll
+    list_model_pulls (20-60 GB, many minutes)."""
     body: dict[str, Any] = {
         "repo_id": repo_id, "filename": filename, "name": name, "runtime": runtime, "ctx": ctx,
     }
@@ -736,6 +912,47 @@ async def add_memory(
     return await _request("POST", "/api/v1/memories", json=body)
 
 
+@mcp.tool()
+async def retrieval_capabilities() -> dict:
+    """Are mongot (search) and the embeddings model currently in use, and what
+    is waiting to be re-embedded?
+
+    Returns each switch with the reason it was last flipped, `retrieval_mode`
+    (hybrid | lexical | fallback — what a memory search will actually do right
+    now), the backing containers' state, and the backfill backlog. Check this
+    first when recall looks worse than expected: `fallback` means mongot is off
+    and results come from a crude mongod scan, not from search."""
+    return await _request("GET", "/api/v1/capabilities/retrieval")
+
+
+@mcp.tool()
+async def set_retrieval_capabilities(
+    embeddings: Optional[bool] = None,
+    search: Optional[bool] = None,
+    reason: str = "",
+    with_service: bool = False,
+) -> dict:
+    """Turn the embeddings model and/or mongot off (or back on) WITHOUT
+    stopping ARIA. Omitted switches are left alone.
+
+    Turning them off degrades retrieval, it does not break writes: memories are
+    still stored, flagged `embedding_pending`, and re-embedded automatically the
+    moment `embeddings` goes back to true — no repair step. With `search` off,
+    recall falls back to a mongod-native scan. Health checks stop paging about a
+    capability that is off on purpose.
+
+    `with_service=true` also stops/starts the backing container
+    (shared-embeddings / shared-mongot) — use it to actually free the box, in
+    the safe order (switch off then stop; start then switch on)."""
+    body: dict[str, Any] = {"reason": reason, "with_service": with_service,
+                            "changed_by": "hermes"}
+    if embeddings is not None:
+        body["embeddings"] = embeddings
+    if search is not None:
+        body["search"] = search
+    return await _request("PUT", "/api/v1/capabilities/retrieval", json=body)
+
+
 # ───────────────────────────────────────────────── coding sessions (sub-agents) ──
 # ARIA-spawned Claude/Codex coding agents — same substrate as watched shells, but
 # launched and lifecycle-managed by ARIA (watchdog/checkpoints).
@@ -761,25 +978,19 @@ async def create_coding_session(
     subagent_profile: Optional[str] = None,
 ) -> dict:
     """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
-    backend: 'claude_code' (default), 'codex', 'pi-code' (the real upstream
-        Pi coding-agent executable; 'pi' is accepted as an alias), or
-        'pool' (Poolside's own coding agent, run in standalone mode against the
-        locally hosted Laguna model -- best matched to these weights; aliases
-        'pool-cli' and 'poolside').
-    loop=True keeps the session going — the watchdog nudges it forward whenever
-    it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (a Ralph
-    loop). Use set_coding_loop to toggle this on an already-running session.
-    host: run the session on a remote node (its aria-node id, e.g. a MacBook from
-    list_nodes) instead of this host; omit to run locally.
-    subagent_profile: a named specialist (a db.agents slug/name) whose backend,
-    model, and system_prompt (role) are applied; an explicit backend still wins.
 
-    Returns immediately with status='queued'/'running' — this does not wait for
-    the work to finish. For a short task, prefer calling
-    wait_for_coding_session right after this to block for the result instead of
-    telling the human to poll a session id themselves. For a long-running or
-    looped session, check back later with get_coding_session (or list_coding_sessions)
-    rather than waiting inline."""
+    backend: 'claude_code' (default) | 'codex' | 'pi-code' (alias 'pi') |
+        'pool' (Poolside's agent against local Laguna; aliases 'pool-cli',
+        'poolside').
+    loop=True: watchdog nudges on idle until RALPH_DONE or the nudge/deadline
+        caps. Toggle later with set_coding_loop.
+    host: an aria-node id to run remotely; omit for this host.
+    subagent_profile: a db.agents slug whose backend/model/role apply; an
+        explicit backend still wins.
+
+    Returns immediately (queued/running) — it does NOT wait. Short task: call
+    wait_for_coding_session next to block for the result rather than making the
+    human poll. Long or looped: check back with get_coding_session."""
     body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
     if backend:
         body["backend"] = backend
@@ -802,28 +1013,23 @@ async def list_nodes() -> Any:
 
 @mcp.tool()
 async def get_coding_session(session_id: Optional[str] = None, id: Optional[str] = None) -> dict:
-    """Get one coding sub-agent's structured status: status, backend/model,
-    workspace, routing decision, `error` (why it failed, if it did),
-    `result_summary` (set once it reaches a terminal state), and `gate_runs`
-    (Verification Gate history — [{at, passed, tail}], empty if the gate is
-    off or never ran). Prefer this over list_coding_sessions + client-side
-    filtering when you already have the id, and over get_coding_output when
-    you want a verdict rather than raw terminal text. Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """One coding sub-agent's structured status: status, backend/model,
+    workspace, routing, `error`, `result_summary` (once terminal), and
+    `gate_runs` (Verification Gate history, empty if off). Prefer over
+    list_coding_sessions when you have the id, and over get_coding_output when
+    you want a verdict not raw terminal text. Accepts `session_id` or `id`.
     """
     return await _request("GET", f"/api/v1/coding/sessions/{_one_id(session_id, id, 'session_id')}")
 
 
 @mcp.tool()
 async def wait_for_coding_session(session_id: Optional[str] = None, timeout_seconds: float = 60.0, id: Optional[str] = None) -> dict:
-    """Block until a coding sub-agent reaches a terminal state (completed/
-    failed/stopped) or timeout_seconds elapses (clamped server-side to
-    [1, 300]), then return it with `result_summary` attached — the same join
-    primitive workflow fan-out uses internally, exposed directly. Use this
-    right after create_coding_session for a task expected to finish quickly,
-    instead of handing the human a session id to poll themselves. If it comes
-    back with timed_out=true, the session is still running — check back later
-    with get_coding_session rather than waiting inline again (a Ralph-looped
-    or long task will keep timing out here). Takes the id under either `session_id` or `id` — list_coding_sessions returns it as `id`.
+    """Block until a coding sub-agent is terminal (completed/failed/stopped)
+    or timeout_seconds elapses (clamped to [1,300]), returning it with
+    `result_summary`. Use right after create_coding_session for short tasks
+    instead of handing the human an id to poll. timed_out=true means still
+    running — check back with get_coding_session rather than re-waiting (looped
+    or long tasks always time out here). Accepts `session_id` or `id`.
     """
     return await _request(
         "GET",
@@ -882,24 +1088,20 @@ async def set_coding_loop(
     gate_timeout: Optional[int] = None,
     gate_max_retries: Optional[int] = None,
 ) -> dict:
-    """Turn the Ralph loop on or off for a running coding sub-agent.
+    """Turn the Ralph loop on/off for a running coding sub-agent.
 
-    enabled=True keeps the session going: the watchdog nudges it forward each
-    time it idles at its prompt (re-checking the killswitch/e-stop every nudge)
-    until it emits the done token (`done_regex`, default RALPH_DONE) or hits
-    `max_nudges`/`deadline_minutes`. enabled=False stops nudging but leaves the
-    session alive. Unset options fall back to the server's coding_loop_* defaults.
-    `nudge_prompt_file` is re-read fresh on every nudge, so editing it steers a
-    live session.
+    enabled=True: the watchdog nudges the session whenever it idles (re-checking
+    the killswitch each nudge) until it emits `done_regex` (default RALPH_DONE)
+    or hits max_nudges/deadline_minutes. enabled=False stops nudging, session
+    stays alive. Unset options use the server's coding_loop_* defaults.
+    `nudge_prompt_file` is re-read every nudge, so editing it steers a live run.
 
-    Verification Gate (only takes effect if the server has coding_gate_enabled
-    on — off by default): when the done token appears, the watchdog runs a
-    check command in the workspace before honoring it. Pass fails re-nudge
-    with the check's output instead of ending the loop, up to `gate_max_retries`
-    (then it gives up and alerts rather than looping forever). `gate_command`
-    overrides the project's `check_command`/the server default for this
-    session only; a project with no check configured anywhere is skipped, not
-    blocked. See get_coding_session's `gate_runs` for the history."""
+    Verification Gate (only if the server has coding_gate_enabled — off by
+    default): on the done token, a check command runs in the workspace first; a
+    failure re-nudges with its output, up to gate_max_retries, then alerts.
+    `gate_command` overrides the project/server check for this session. No check
+    configured anywhere = skipped, not blocked. History: get_coding_session's
+    `gate_runs`."""
     body: dict[str, Any] = {"enabled": enabled}
     for key, val in (
         ("nudge_prompt", nudge_prompt),
@@ -945,15 +1147,11 @@ async def create_workflow(
     results with {{steps.N.path}} and nested fan-out results with
     {{steps.N.results.M.path}}.
 
-    NOTE: `code_session`'s params.backend and `synthesize`'s params.backend are
-    TWO DIFFERENT VOCABULARIES, despite the shared field name:
-    - `code_session` (goes to coding_manager.start_session): a coding-session
-      SUBSTRATE — 'claude_code' (default), 'codex', 'pi-code', or 'pool'. See
-      create_coding_session's docstring for the full list + aliases.
-    - `synthesize` (runs one orchestrator agent turn): an LLM ADAPTER — e.g.
-      'llamacpp', 'agentic', 'ridge', 'anthropic', 'openai', 'openrouter',
-      'fireworks'. Passing a coding-session name here (e.g. 'claude_code') is
-      invalid and vice versa."""
+    WARNING: params.backend means DIFFERENT things per action.
+    - `code_session`: a coding SUBSTRATE — claude_code|codex|pi-code|pool.
+    - `synthesize`: an LLM ADAPTER — llamacpp|agentic|ridge|anthropic|openai|
+      openrouter|fireworks.
+    Passing one vocabulary where the other is expected is invalid."""
     body: dict[str, Any] = {"name": name, "description": description, "steps": steps}
     if tags:
         body["tags"] = tags

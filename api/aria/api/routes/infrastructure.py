@@ -9,13 +9,19 @@ safety gates, and the provisioning pipeline.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
-from aria.api.deps import get_db, get_model_pull_service, get_model_server_manager
+from aria.api.deps import (
+    get_db,
+    get_model_pull_service,
+    get_model_server_manager,
+    get_service_manager,
+)
 from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
     base_url_for,
@@ -25,13 +31,24 @@ from aria.infrastructure.llm_route import (
     select,
     write_pin,
 )
+from aria.infrastructure.gpu_devices import device_snapshot, pool_snapshot
 from aria.infrastructure.model_pull import RUNTIME_TEMPLATES, ModelPullService
 from aria.infrastructure.model_servers import (
+    _BY_SLUG,
     ModelServerBindingConflict,
     ModelServerError,
     ModelServerManager,
     ModelServerNotFound,
     ModelServerSafetyError,
+    check_pi_slot_budget,
+    probe_runtime,
+)
+from aria.infrastructure.services import (
+    ServiceError,
+    ServiceManager,
+    ServiceNotFound,
+    ServiceNotManageable,
+    review_needed,
 )
 
 router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
@@ -39,6 +56,15 @@ router = APIRouter(prefix="/infrastructure", tags=["infrastructure"])
 
 class StartStopRequest(BaseModel):
     force: bool = False
+    overrides: Optional[dict[str, str]] = Field(
+        default=None,
+        description=(
+            "Launch parameters to apply, keyed by the `parameters[].name` values "
+            "the server reports — device placement, context, KV type, drafter, "
+            "slots. Omit to start with the deployment's own defaults, which also "
+            "CLEARS any override ARIA applied on a previous start."
+        ),
+    )
 
 
 class BindRequest(BaseModel):
@@ -160,6 +186,124 @@ async def set_llm_route(
     return await get_llm_route(manager=manager, db=db)
 
 
+@router.get("/running")
+async def running_overview(
+    manager: ModelServerManager = Depends(get_model_server_manager),
+    services: ServiceManager = Depends(get_service_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """One answer to "what is running on this box?" across BOTH registries.
+
+    A union read, deliberately not a merged control plane: model servers and
+    non-LLM services keep separate registries (see
+    aria/infrastructure/services.py for why merging them silences the alerts
+    this endpoint exists to surface), but an operator asking what is up should
+    not have to check two places.
+
+    `unhealthy` counts only services expected to be up and aren't. A stopped
+    model server is normal — they are mutually RAM-exclusive — and a stopped
+    on_demand service is normal too, so neither counts against it.
+    """
+    try:
+        svc = await services.status(db)
+    except Exception as exc:  # noqa: BLE001 — never let one side blank the view
+        svc, svc_error = [], str(exc)
+    else:
+        svc_error = None
+
+    try:
+        model_servers = await manager.status(db)
+    except ModelServerError as exc:
+        model_servers, ms_error = [], str(exc)
+    else:
+        ms_error = None
+
+    unhealthy = [s for s in svc if not s["healthy"]]
+    return {
+        "services": svc,
+        "model_servers": [
+            {
+                "slug": s["slug"],
+                "state": s["state"],
+                "port": s["port"],
+                "backend_device": s.get("backend_device"),
+                "resident_gib": s.get("resident_gib_estimate"),
+            }
+            for s in model_servers
+        ],
+        "running": {
+            "services": [s["slug"] for s in svc if s["state"] == "running"],
+            "model_servers": [
+                s["slug"] for s in model_servers if s["state"] == "running"
+            ],
+        },
+        "unhealthy": [
+            {"slug": s["slug"], "state": s["state"], "expected": s["expected_state"]}
+            for s in unhealthy
+        ],
+        "needs_review": [s.slug for s in review_needed()],
+        "errors": {k: v for k, v in (("services", svc_error), ("model_servers", ms_error)) if v},
+    }
+
+
+@router.get("/services")
+async def list_services(
+    services: ServiceManager = Depends(get_service_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Non-LLM services: state, expected_state, and the health verdict."""
+    entries = await services.status(db)
+    return {
+        "services": entries,
+        "healthy": sum(1 for s in entries if s["healthy"]),
+        "total": len(entries),
+    }
+
+
+@router.get("/services/{slug}")
+async def get_service(
+    slug: str,
+    services: ServiceManager = Depends(get_service_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    try:
+        return await services.get(slug, db)
+    except ServiceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/services/{slug}/start")
+async def start_service(
+    slug: str,
+    services: ServiceManager = Depends(get_service_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    try:
+        return await services.start(slug, db)
+    except ServiceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ServiceNotManageable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/services/{slug}/stop")
+async def stop_service(
+    slug: str,
+    services: ServiceManager = Depends(get_service_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    try:
+        return await services.stop(slug, db)
+    except ServiceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ServiceNotManageable as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ServiceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/model-servers")
 async def list_model_servers(
     manager: ModelServerManager = Depends(get_model_server_manager),
@@ -170,6 +314,85 @@ async def list_model_servers(
     except ModelServerError as exc:
         # e.g. docker daemon unreachable — surfaced, not masked as not_created
         raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/model-servers/utilization")
+async def model_server_utilization(
+    manager: ModelServerManager = Depends(get_model_server_manager),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Live slot occupancy + throughput for every RUNNING on-box server.
+
+    Answers "how loaded is the local fleet right now", which the static
+    `/model-servers` view cannot: that reports how many slots *should* exist,
+    this reports how many are busy. Declared here (before `/{slug}`) so the
+    literal path is not captured as a slug.
+
+    `saturated` is the field to watch. It means requests are QUEUING because
+    every slot was taken — and a queued request lands in whichever slot frees
+    first, not necessarily the one holding its prefix, so sustained saturation
+    is how warm caches quietly degrade into a cold prefill per turn.
+    """
+    try:
+        servers = await manager.status(db)
+    except ModelServerError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    running = [s for s in servers if s.get("state") == "running" and s.get("onbox")]
+    specs = [_BY_SLUG.get(s["slug"]) for s in running]
+    probes = await asyncio.gather(
+        *(probe_runtime(sp) for sp in specs if sp is not None),
+        return_exceptions=True,
+    )
+
+    out = []
+    for server, stats in zip([s for s, sp in zip(running, specs) if sp is not None], probes):
+        if isinstance(stats, BaseException) or stats is None:
+            out.append({"slug": server["slug"], "reachable": False})
+            continue
+        out.append({
+            "slug": server["slug"],
+            "reachable": True,
+            "busy_slots": stats.busy_slots,
+            "total_slots": stats.total_slots,
+            "free_slots": stats.free_slots,
+            "slot_utilisation": stats.slot_utilisation,
+            "ctx_per_slot": stats.ctx_per_slot,
+            # Declared (from the launch file) vs observed (from the server).
+            # A mismatch means the unit was edited without a restart.
+            "declared_slots": server.get("slots"),
+            "declared_ctx_per_slot": server.get("ctx_per_slot"),
+            "saturated": stats.saturated,
+            "requests_processing": stats.requests_processing,
+            "requests_deferred": stats.requests_deferred,
+            "prompt_tokens_per_second": stats.prompt_tokens_per_second,
+            "predicted_tokens_per_second": stats.predicted_tokens_per_second,
+            "avg_busy_slots_per_decode": stats.avg_busy_slots_per_decode,
+            "prompt_tokens_total": stats.prompt_tokens_total,
+            "tokens_predicted_total": stats.tokens_predicted_total,
+            "metrics_available": stats.metrics_available,
+            "metrics_hint": stats.metrics_hint,
+            "resident_gib_measured": server.get("resident_gib_measured"),
+        })
+    return {"servers": out, "slot_budget_warning": check_pi_slot_budget()}
+
+
+@router.get("/model-servers/devices")
+async def list_devices():
+    """The physical GPUs on this box and the memory pools they own.
+
+    Two GPUs with SEPARATE memory means "how full is the box" has two answers,
+    and conflating them is a real failure mode rather than a rounding error:
+    DRM enumeration puts the discrete R9700 at card0 and the Strix Halo iGPU
+    at card1, so the historical hardcoded card0 read reports ~0 GiB used while
+    the Halo is holding ~100. Declared before `/{slug}` so the literal path is
+    not captured as a slug.
+
+    `spilling` on a discrete card means it has started serving out of system
+    RAM — at which point the pools are no longer independent and a co-resident
+    Halo model is at risk.
+    """
+    return {"devices": device_snapshot(), "pools": pool_snapshot()}
 
 
 @router.get("/model-servers/runtimes")
@@ -233,7 +456,9 @@ async def start_model_server(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     try:
-        return await manager.start(slug, force=body.force, db=db)
+        return await manager.start(
+            slug, force=body.force, db=db, overrides=body.overrides
+        )
     except ModelServerNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ModelServerSafetyError as exc:

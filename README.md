@@ -199,6 +199,10 @@ Two-tier architecture with shared access across all interfaces:
 
 Memories have content types (fact/preference/experience/relationship), categories, confidence scores (with time decay), importance ratings, and access counts.
 
+**Either retrieval dependency can be switched off at runtime without stopping ARIA** — mongot (`search`) and the embeddings model (`embeddings`) are independent switches (`GET`/`PUT /api/v1/capabilities/retrieval`). Recall degrades rather than failing: embeddings off → BM25 only; mongot off → a mongod-native scan. Writes never block — a memory that can't be embedded is stored flagged `embedding_pending`, and that flag is a queue the backfill worker drains automatically when embeddings come back on. Health checks stop paging for a capability that is off on purpose.
+
+> ⚠️ **Both switches are currently OFF (2026-08-15)** — `retrieval_mode` is `fallback`, so search results come from the scan, not from mongot. See **`docs/ops/RETRIEVAL_CAPABILITIES.md`** for current state and how to restore.
+
 ## LLM Backends
 
 | Backend | Type | Config / models |
@@ -278,6 +282,7 @@ Local sentence-transformers running `voyageai/voyage-4-nano` on CPU. OpenAI-comp
 - **Model**: voyage-4-nano (MRL truncated to 1024 dims)
 - **Service**: `http://localhost:8001`
 - **Fallback**: Voyage AI cloud API (if `VOYAGE_API_KEY` is set)
+- **Switchable**: the `embeddings` capability can be turned off (and the container stopped) without stopping ARIA — memories are still written, flagged `embedding_pending`, and re-embedded on re-enable. **Currently OFF and stopped (2026-08-15)**; see `docs/ops/RETRIEVAL_CAPABILITIES.md`.
 
 ## Quick Start
 

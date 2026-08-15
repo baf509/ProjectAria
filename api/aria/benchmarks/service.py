@@ -15,6 +15,14 @@ Design notes:
   started detached and polled. State lives in a JSON registry beside the results
   so it survives an API restart.
 
+* THE CHILD MUST ESCAPE THIS UNIT'S CGROUP. aria-api.service uses systemd's
+  default KillMode=control-group, which SIGTERMs every pid in the unit's cgroup on
+  stop/restart. `start_new_session=True` makes a new session but NOT a new cgroup,
+  so an `aria-api` restart killed a live 2h23m benchmark mid-run (observed
+  2026-08-07: returncode -15 while ds4-affine was still on batch 0/1). We therefore
+  launch through `systemd-run --user --scope`, which places the child in its own
+  transient scope cgroup so it survives API restarts.
+
 * MODEL LIFECYCLE IS A SHARED CONCERN. ARIA's ModelServerManager already owns
   start/stop, knows which agent each model is bound to, and gates on live GTT.
   evalstack has its own VRAM guard, and the two can disagree. We therefore refuse
@@ -159,6 +167,15 @@ class BenchmarkService:
             reg = self._read_registry()
             if run_id in reg["runs"] and reg["runs"][run_id].get("status") == "running":
                 raise BenchmarkError(f"run '{run_id}' is already running")
+            # Heal stale records first. A run killed by a reboot or an OOM keeps
+            # status="running" forever because its reaper died with it, and that
+            # then blocks every future run. list_runs() already heals this; the
+            # concurrency gate must too, or a crash bricks the whole feature.
+            for r in reg["runs"].values():
+                if r.get("status") == "running" and not self._alive(r.get("pid")):
+                    r["status"] = "interrupted"
+                    r["finished_at"] = r.get("finished_at") or time.time()
+            self._write_registry(reg)
             running = [r for r in reg["runs"].values() if r.get("status") == "running"]
             if running:
                 raise BenchmarkError(
@@ -180,10 +197,20 @@ class BenchmarkService:
             if keep_up:
                 argv += ["--no-down"]
 
+            # Escape aria-api's cgroup (see module docstring) so an API restart
+            # cannot kill a running benchmark.
+            if shutil.which("systemd-run"):
+                argv = ["systemd-run", "--user", "--scope", "--collect",
+                        f"--unit=evalstack-{run_id}", "--quiet"] + argv
+
             logf = open(log_path, "w")
+            # PYTHONUNBUFFERED: without it evalstack's own progress lines sit in a
+            # block buffer for the whole run (stdout is a file, not a tty), so the
+            # log showed only subprocess output and the UI looked stalled.
             proc = await asyncio.create_subprocess_exec(
                 *argv, cwd=str(self.root), stdout=logf, stderr=asyncio.subprocess.STDOUT,
                 start_new_session=True,      # survive an API reload
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
             )
             rec = {
                 "run_id": run_id, "pid": proc.pid, "status": "running",
@@ -269,7 +296,26 @@ class BenchmarkService:
             rec["status"] = "cancelled"
             rec["finished_at"] = time.time()
             self._write_registry(reg)
-            return rec
+        # Killing the sweep does NOT free the GPU: a model it started (possibly
+        # still loading) keeps its memory, and the next run then stacks on top of
+        # it. That sequence wedged the box on 2026-08-08, so tear down exactly
+        # what this run started.
+        await self._teardown(run_id)
+        return rec
+
+    async def _teardown(self, run_id: str) -> None:
+        binary = self.bin
+        if not binary:
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                binary, "teardown", "--run", run_id, cwd=str(self.root),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            for ln in (out or b"").decode(errors="replace").splitlines():
+                print(f"[benchmarks:teardown] {ln}")
+        except Exception as ex:
+            print(f"[benchmarks:teardown] failed for {run_id}: {ex}")
 
 
 def _extract_json_summary(lines: list[str]) -> Optional[dict]:

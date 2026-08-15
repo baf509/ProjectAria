@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 import httpx
 
 from aria.config import settings
+from aria.infrastructure import gpu_devices
+from aria.memory.capabilities import retrieval_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -36,29 +38,42 @@ async def _check_http(
 
 
 _GTT_ALERT_PCT = 90
-_GTT_TOTAL_PATH = "/sys/class/drm/card0/device/mem_info_gtt_total"
-_GTT_USED_PATH = "/sys/class/drm/card0/device/mem_info_gtt_used"
 
 
 def _check_gtt() -> tuple[bool, str]:
-    """AMD APU unified-memory (GTT) pressure — the actual resource that ran
-    out and crashed qwen on 2026-07-28. Docker/cgroup memory limits do NOT see
-    this: GPU-offloaded allocations (chadrock, qwen, both -ngl 999) are
-    accounted to the DRM/GTT pool, not to the container's cgroup — confirmed
-    live that day (docker stats showed ~5 GiB combined for those two
-    containers while mem_info_gtt_used showed ~97 GiB). This sysfs read is the
-    only ground-truth signal for real pressure on this hardware."""
+    """GPU memory pressure, per device — the actual resource that ran out and
+    crashed qwen on 2026-07-28. Docker/cgroup memory limits do NOT see this:
+    GPU-offloaded allocations (-ngl 999) are accounted to the DRM pool, not to
+    the container's cgroup — confirmed live that day (docker stats showed ~5
+    GiB combined for two containers while the GTT pool showed ~97 GiB). This
+    sysfs read is the only ground-truth signal for real pressure here.
+
+    Reads every pool rather than a fixed card. This used to be a hardcoded
+    card0 read, which was correct while the box had one GPU — but the OCuLink
+    R9700 made card0 the *discrete* card and card1 the Strix Halo, so the check
+    started reporting the dGPU's near-empty pool and would have stayed green
+    through a full Halo. `gpu_devices` classifies cards instead of trusting
+    their order; a pool crossing the threshold fails the check and names
+    itself, so the alert says WHICH device is under pressure.
+    """
     try:
-        with open(_GTT_TOTAL_PATH) as f:
-            total = int(f.read())
-        with open(_GTT_USED_PATH) as f:
-            used = int(f.read())
-        pct = used / total * 100
-        gib = 1024**3
-        return (
-            pct < _GTT_ALERT_PCT,
-            f"{pct:.0f}% GTT used ({used // gib}/{total // gib} GiB)",
-        )
+        pools = [
+            pool for pool in gpu_devices.pool_snapshot()
+            if pool["pool"] != gpu_devices.POOL_HOST and pool["total_gib"]
+        ]
+        if not pools:
+            return (False, "unreadable: no GPU memory pools found")
+        parts, ok = [], True
+        for pool in pools:
+            pct = pool["used_gib"] / pool["total_gib"] * 100
+            if pct >= _GTT_ALERT_PCT:
+                ok = False
+            note = " SPILLING to system RAM" if pool.get("spilling") else ""
+            parts.append(
+                f"{pool['label']}: {pct:.0f}% "
+                f"({pool['used_gib']:.0f}/{pool['total_gib']:.0f} GiB){note}"
+            )
+        return ok, "; ".join(parts)
     except Exception as exc:
         return (False, f"unreadable: {str(exc)[:100]}")
 
@@ -115,10 +130,16 @@ async def run_checks(db) -> list[dict]:
     ok, detail = _check_gtt()
     checks.append({"name": "gpu_memory", "ok": ok, "detail": detail})
 
-    # Embeddings (/health on the non-/v1 root)
-    emb = settings.embedding_url.rstrip("/").replace("/v1", "") + "/health"
-    ok, detail = await _check_http(emb)
-    checks.append({"name": "embeddings", "ok": ok, "detail": detail})
+    # Embeddings (/health on the non-/v1 root). Skipped when the capability is
+    # switched off — identical reasoning to the pool_enabled skip above: a
+    # dependency that is off ON PURPOSE is not an incident, and paging about it
+    # every 10 minutes is how an alert channel gets ignored. Nothing is lost by
+    # skipping: memories written meanwhile carry embedding_pending and the
+    # backfill worker re-embeds them the moment the capability comes back.
+    if retrieval_capabilities.embeddings_enabled:
+        emb = settings.embedding_url.rstrip("/").replace("/v1", "") + "/health"
+        ok, detail = await _check_http(emb)
+        checks.append({"name": "embeddings", "ok": ok, "detail": detail})
 
     # Extraction freshness — newest last_run_at across shells should be recent
     newest = None
@@ -143,6 +164,13 @@ async def run_checks(db) -> list[dict]:
     # silently once when the mongot container failed to start (bad bind mount),
     # so $search/$vectorSearch errored for days unnoticed. $listSearchIndexes
     # routes mongod -> mongot and fails fast if that gRPC channel is down.
+    #
+    # The check is skipped only when the search capability is switched OFF —
+    # which is the point of the switch, and is NOT the silent-breakage case
+    # above: an operator flipped it, and recall has visibly degraded to the
+    # fallback scan. An unswitched mongot still gets probed exactly as before.
+    if not retrieval_capabilities.search_enabled:
+        return checks
     try:
         cur = db.memories.aggregate([{"$listSearchIndexes": {}}])
         idx = await asyncio.wait_for(cur.to_list(length=20), timeout=5.0)

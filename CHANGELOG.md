@@ -2,6 +2,680 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-15] - ARIA↔infrastructure is now stated as one system, not two unrelated repos
+
+### Added
+
+- **`~/Development/CLAUDE.md`** (new, above both repos — Claude Code loads project memory
+  from the cwd upward, so *any* session in *either* repo inherits it). It states the fact
+  that was previously implicit: **ARIA is the control plane, `infrastructure/` is the data
+  plane it drives, and they are one system in two git repos** — so a deployment change
+  usually touches both and must be committed in both.
+- **`infrastructure/CLAUDE.md`** (new — that repo had **no** `CLAUDE.md` at all, only a
+  README, so an agent landing there had zero project instructions). Carries the
+  never-hand-run-docker/systemctl rule, the inverted-DRM and tailnet-only-`:8092` hazards,
+  the two-repo commit rule, and doc routing. Previously the hand-run prohibition existed
+  *only* in ProjectAria's CLAUDE.md — i.e. not where the temptation is.
+- **`CLAUDE.md` → *Working set: the `infrastructure` repo*** (this repo): reframes
+  `infrastructure/` from a dependency ("must be started first") to part of the working set,
+  with the explicit 4-step recipe for adding/changing a deployment — artifacts under
+  `infrastructure/<slug>/`, register in `model_servers.REGISTRY` (or the sibling
+  `services.py`), tests, docs — plus the retire-with-`startable=False` mirror image. Notes
+  that **`start_coding_session` defaults to `coding_default_workspace`
+  (`aria-projects`)**, so an ARIA-spawned agent lands in *neither* repo unless `workspace`
+  is passed explicitly.
+
+### Changed
+
+- **`HOUSE_AGENT_ARCHITECTURE_20260815` moved `vault/infrastructure/Planning/` →
+  `vault/ProjectAria/Planning/`** (Ben's call). It is an agent-architecture doc — Hermes as
+  the always-on house agent, coding agents on projects, ARIA as the management console —
+  and the model topology is an *input* to it, not its subject. The move is recorded in its
+  frontmatter; `aria` is now its lead tag. Obsidian wikilinks resolve by name so
+  `[[HOUSE_AGENT_ARCHITECTURE_20260815]]` backlinks are unaffected; the one path-based
+  reference (`docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` §Sources) was updated.
+- Both CLAUDE.md doc-routing notes now state the vault-folder filing test explicitly, since
+  the vault has **both** an `infrastructure/` and a `ProjectAria/` folder: how a model is
+  built/quantized/tuned/measured → `infrastructure/`; how the agents are
+  architected/routed/operated → `ProjectAria/`.
+
+## [2026-08-15] - mongot and embeddings are switchable at runtime, and re-enabling self-heals
+
+### Added
+
+- **Retrieval capability switches** (`api/aria/memory/capabilities.py`) — mongot
+  (`search`) and the embeddings model (`embeddings`) can each be turned off
+  **without stopping ARIA**, and turned back on without a repair step. State is
+  a persisted fixed-`_id` doc (`db.capabilities`/`_id=retrieval`), same pattern
+  as the killswitch, so a capability an operator switched off **stays off across
+  an `aria-api` restart** rather than silently resuming the alerts they
+  silenced. `EMBEDDINGS_ENABLED` / `SEARCH_ENABLED` are boot defaults only.
+- **`EmbeddingBackfillWorker`** (`api/aria/memory/backfill.py`) — the missing
+  half of the existing `embedding_pending` graceful-degradation flag. Nothing
+  ever came back for a memory written during an embeddings outage; now the flag
+  **is** a queue, drained on a timer *and* immediately when embeddings are
+  switched back on (`set_backfill_trigger` → `kick()`). Also picks up
+  `embedding: null` docs the flag predates, and ontology entities whose
+  `_embed_entity` degraded to `None`. Bounded per pass (batch + concurrency
+  caps) so it can't starve live writes of the same CPU-only service.
+- **API** `GET/PUT /api/v1/capabilities/retrieval` (+ `POST .../backfill` for a
+  synchronous catch-up pass). `with_service=true` on the PUT also stops/starts
+  the backing container via the non-LLM service registry, in the order that
+  matters: **switch off → stop**, **start → switch on**. A failed container
+  transition never rolls back the switch.
+- **MCP** `retrieval_capabilities` / `set_retrieval_capabilities`, so Hermes can
+  flip either switch and read `retrieval_mode` when recall looks off.
+- Partial index `memory_embedding_pending` (only the docs actually waiting).
+
+### Deployed + operator state (2026-08-15T17:19-04:00)
+
+- Deployed (`aria-api` restarted) and **both capabilities switched OFF at Ben's
+  request**: `search=false` (mongot container left running — it is shared with
+  AgentBenchPlatform, so stopping it is a cross-project call) and
+  `embeddings=false` with `with_service=true`, which stopped `shared-embeddings`
+  (exit 137). `retrieval_mode` is now **`fallback`** — recall is served by the
+  mongod-native scan. **This is the expected state; check
+  `GET /api/v1/capabilities/retrieval` before debugging recall.**
+- **826 memories + 21 ontology entities are queued** for re-embedding. 825 of
+  those predate this change — they had been stranded by past embeddings
+  outages with nothing to pick them up, which is the gap the backfill worker
+  closes. They drain automatically when `embeddings` is switched back on.
+- Verified live: switches survived an `aria-api` restart with `.env` still
+  saying `true`; `/health/services` reports both as `capability disabled`
+  (13/15 healthy, the two reds pre-existing and unrelated); recall in fallback
+  mode returns relevant results over the live 19,889-memory collection; a store
+  issued while degraded returned 201 and landed `embedding_pending: true`.
+- `_drive_service` now re-reads the real container state before reporting a
+  failure: the registry's docker call times out at 10s while `docker stop`
+  itself waits 10s for SIGTERM before SIGKILL, so a container that ignores
+  SIGTERM reliably reports a timeout **and stops anyway** (observed on
+  `shared-embeddings`). Reporting that as "failed to stop" sends the operator
+  to fix something already done. ⚠️ `services._run`'s own 10s timeout is
+  unchanged and still affects every slow-stopping container in that registry.
+- Docs: new runbook `docs/ops/RETRIEVAL_CAPABILITIES.md`; design writeup
+  `vault/ProjectAria/Design/RETRIEVAL_CAPABILITIES.md`; current state recorded
+  in CLAUDE.md, README, PROJECT_STATUS, and both service-registry entries
+  (`shared-embeddings`'s "Memory store/recall both block on this" note was
+  simply no longer true).
+
+### Changed
+
+- **`LongTermMemory.search()` degrades by capability instead of failing**:
+  `embeddings off` → BM25 `$search` only, with **no query embedding computed**;
+  `search off` → a mongod-native fallback scan (`_fallback_search`, token
+  overlap + importance, stopword-filtered, bounded candidate window). The
+  branches now raise `SearchBranchUnavailable` rather than returning `[]`, so
+  "mongot answered and nothing matched" is distinguishable from "mongot could
+  not answer" — the second now degrades to the scan, closing the silent-empty-
+  recall failure that a dead mongot used to produce.
+- `create_memory` keeps a good embedding even when mongot is off (only *vector
+  dedup* needs mongot), and falls back to **exact-content dedup** while
+  degraded, so a degraded window doesn't fill `memories` with the literal
+  duplicates the machine emitters re-emit routinely.
+- `EmbeddingService.embed()` raises `EmbeddingsDisabled` (a `RuntimeError`, so
+  the existing 503 mapping in `/memories/search` applies) **before** the
+  circuit breaker — a disabled capability costs no HTTP call and cannot trip
+  the breaker.
+- **A disabled capability no longer pages.** `/health/services` reports mongot
+  and embeddings as `capability disabled` instead of probing them, and
+  `shells/selfcheck.py` skips both checks — same rule as a deliberately-stopped
+  model server. Startup's embeddings probe is skipped too.
+- `OntologyStore.search()` skips `$vectorSearch` when mongot is off and goes
+  straight to its existing lexical fallback.
+
+## [2026-08-15] - DS4 halo profile: q8_0 @131K adopted; drafter device is a declared knob
+
+### Changed
+
+- **Hermes → Qwen3.8 on the R9700; DS4 → the coding agent.** `qwen-r9700.service`
+  now serves `-c 327680 -np 2 --kv-unified` (one 320K KV pool: Hermes's main
+  conversation up to the native 262144, a second slot for crons; measured
+  23.7 GiB VRAM, 26.3 t/s short / 22.2 t/s @13K, 852 t/s prefill; a 13K cold
+  prefill on one slot drops the other's decode to ~6 t/s while it runs).
+  `serve-rocmfp4.sh` gained `NP`/`KVU` knobs; `~/.hermes/config.yaml` default
+  is `custom:qwen38-r9700` (declared 250000; backup `config.yaml.bak-pre-qwen-default-*`).
+- **Registry: `Qwen3.8-27B-Q6_K-R9700-HIP` → `Qwen3.8-27B-R9700-HIP`.** The unit
+  had been swapped to the ROCmFP4 model + ROCmFPX HIP build by drop-in while the
+  registry still described Q6_K/mainline and pointed `launch_script` at the
+  wrong script. Entry rewritten to the real script with `model`/`ctx`/`slots`/
+  `kv_unified`/`kv`/`cache_ram` parameters and `slots_param`, so utilization
+  reports `declared 2 × 327680` against live `2 × 262144`.
+
+### Fixed
+
+- **Gap sweep after the topology change (2026-08-15 evening).** `endpoints.env`
+  (`DS4_URL`→`:8108`, `QWEN38_27B_URL`→`:8080`, `LING3_FLASH_URL` commented — `:8108`
+  is DS4 now); `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` gained §13 (today's layout,
+  the four measured facts behind it) and a correction on the affine-only 6,880 B/token
+  KV figure; CLAUDE.md's "current Hermes/pi default" and "six slots" lines; the DS4
+  registry `consumers_note`; the DS4 unit `Description`; Hermes's `ds4-halo` provider
+  text; pi's `qwen38-r9700` contextWindow (64000 → 250000); `POST-REBOOT-CHECKLIST.md`
+  now says start through ARIA — a bare `ds4-halo-xxs/serve.sh` uses script defaults
+  (bf16 drafter on the Halo) and trips the OOM guard.
+- **Hermes had had no ARIA tools for a day: `mcp/server.py` pinned `mcp>=1.2`,
+  which now resolves to mcp 2.0.0 — `mcp.server.fastmcp` is gone there — so
+  `~/.local/share/aria-mcp/run.sh` crashed on import and the gateway parked the
+  `aria` MCP connection 251×/24h.** Pinned `mcp>=1.2,<2` in the repo file and the
+  installed copy; verified `initialize` → `serverInfo aria 1.29.0`, and zero
+  parked-connection warnings after the gateway restart.
+
+- **`DS4-0731-IQ3_XXS-Halo-Vulkan` now serves the Flow Z13 reference profile** —
+  Nathan v0.6.1, **q8_0 KV, one 131,072-token slot**, ub2048 — as the unit's own
+  default (`ds4-halo-xxs.service.d/profile-flowz13.conf`; the registry reports it
+  as `unit_dropin`, so a start with no overrides lands there). `context.conf`
+  (f16 @65536) and `no-draft.conf` are retired in place (`*.retired-20260815`)
+  as the fallback. Measured after the swap: 19.2–19.4 t/s short, 16.1 t/s at
+  22.8K depth, 250 t/s prefill at 22.8K, MemAvailable 18 → 14.9 GiB after that
+  fill. Decision + evidence: vault `HOUSE_AGENT_ARCHITECTURE_20260815` Prime
+  question; residency: `MEMORY_BUDGET_POLICY_20260814` §7.
+- New launch parameter **`draft_device`** (`DRAFT_DEV`, `serve.sh` `-devd`) on
+  that entry, with the measured caveat baked into its choices: on Nathan v0.6.1
+  the DSpark head shares the target's `output.weight`, so a drafter on the
+  R9700 (`Vulkan0`) with the target on the Halo **aborts at draft-context init**
+  (`pre-allocated tensor (output.weight) in a buffer (Vulkan1) that cannot run
+  the operation`). Draft and target must share a device; on the Halo the
+  drafter trips the co-resident floor, hence the profile runs `DRAFT=none`.
+  The `kv`/`ctx`/`draft` descriptions were refreshed to match (KV is allocated
+  lazily — ~45 KiB/token q8_0, ~90 KiB/token f16 — a *filled* slot is what
+  costs memory, not `-c`).
+
+## [2026-08-14] - Choose which model loads, and how — plus per-device memory accounting
+
+### Added
+
+- **Launch parameters on the model-server registry.** A registry entry can now
+  declare the knobs its deployment already exposes — device placement, KV cache
+  type, context, drafter, slot count, prompt cache — and
+  `POST /infrastructure/model-servers/{slug}/start` accepts `overrides` for
+  them. Values are validated against the declared type/choices before anything
+  is written (an allowlist, not an escape: these end up in a systemd
+  `Environment=` line read by a shell script).
+- ARIA applies a choice as a systemd drop-in (`<unit>.d/zz-aria-overrides.conf`,
+  which sorts last and therefore wins) rather than by building its own command
+  line. That keeps every ExecStartPre guard, the `OOMScoreAdjust=900` backstop
+  and the launcher's MemAvailable floors — a hand-rolled argv would silently
+  drop all of them — and leaves the override a file that can be read or deleted
+  from outside ARIA. A start with **no** overrides removes ARIA's drop-in, so a
+  context size chosen for one experiment cannot silently outlive it.
+- Deployments that ship a `serve.sh` but no unit of their own (`ds4-affine`,
+  `ds4-hybrid`) get an ARIA-generated `aria-model-<slug>.service`, with the
+  guard environment and ExecStartPre checks declared in the registry entry.
+- **Six live deployments registered**, one per model+runtime+placement pair
+  actually present on the box: `DS4-0731-IQ3_XXS-Halo-Vulkan` (APU-only, Nathan
+  Vulkan fork), `DS4-0731-IQ3_S-Hybrid-ROCm-Dual` (split 80/20 across both
+  GPUs), `DS4-0731-ROCmFPX-Affine-Quality` (sealed O5 runtime, the quality
+  reference), `Qwen3.8-27B-Q6_K-R9700-HIP`, `Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP`
+  and `Qwen3.8-27B-ROCmFP4-R9700-Vulkan`.
+- `infrastructure/gpu_devices.py`: DRM device discovery and per-pool memory
+  accounting, plus `GET /infrastructure/model-servers/devices` and the MCP tool
+  `list_gpu_devices`.
+- A port-conflict check on `start()` — several entries deliberately share a
+  port (the three `:8110` Qwen variants, the DS4s on `:8107`), which is a hard
+  conflict independent of memory.
+- Web `/operate` gained a Launch configuration panel; the TUI gained a model
+  screen under `g`; `start_model_server` gained an `overrides` argument.
+- `qwen3.8-27b/docker-compose.yml` gained a profile-gated
+  `qwen3.8-27b-rocmfp4` service for the ROCmFPX-native weights (17.7 GB, 4.6
+  GiB smaller than Q6_K). Not yet brought up — verify decode speed on first run.
+
+### Fixed
+
+- **The memory safety gate was reading the wrong GPU.** `model_servers.py` and
+  `shells/selfcheck.py` both hardcoded `/sys/class/drm/card0/device/
+  mem_info_gtt_*`, which was correct while the box had one GPU. Adding the
+  OCuLink R9700 made `card0` the *discrete* card, so the gate read the dGPU's
+  near-empty pool: measured live 2026-08-14, card0 reported 0.22 GiB used while
+  the Halo held 97.8 GiB. It would have approved starting a second ~100 GiB
+  model onto a full box. Cards are now classified by VRAM size and each server
+  is gated against the pool it actually draws from.
+- **Vulkan servers measured as ~0 GiB.** `measure_resident_gib()` read the KFD
+  tree, which only covers HIP/ROCm; a RADV process has no KFD entry, so every
+  Vulkan deployment looked idle while holding ~98 GiB — and `_server_pid()`
+  fell through to the launcher wrapper. Both now use amdgpu's per-device
+  `drm-resident-{gtt,vram}` fdinfo, which covers both runtimes and reports per
+  card.
+- Models on different cards are no longer treated as mutually exclusive. The
+  verified dual-serving deployment (DS4 on the Halo + Qwen3.8 on the R9700,
+  both resident) was previously unrepresentable.
+- `_script_defaults()` reads every `VAR="${VAR:-default}"` on a line, not just
+  the first. The serve.sh scripts pack several onto one line
+  (`PORT=…; HOST=…; CTX=…`), so a line-anchored pattern silently missed all but
+  the first of each group.
+
+### Changed
+
+- Registry entries whose runtime or weights the 2026-08-11..14 infrastructure
+  consolidation removed are marked `startable=False` with a stated reason
+  rather than deleted: the Ling and Step entries kept their weights but lost
+  their runtimes, the IQ2_M profile lost both, and the Laguna/chadrockv2 GGUFs
+  are gone. `ROCmFP4-qwen3.6-35b-a3b` and the chadrock entries are also flagged
+  pending a device audit — their compose files pin `Vulkan0`, which now means
+  the 32 GiB R9700 rather than the iGPU they were written for.
+- The exclusivity graph is generated from two named groups (one Halo-resident
+  model at a time; one R9700-resident model at a time) instead of being
+  hand-enumerated pair by pair.
+
+## [2026-08-11] - aria-shell-register fails quietly instead of popping up in every shell
+
+### Fixed
+
+- `scripts/aria-shell-register` no longer lets failures reach the tmux client.
+  It runs from the `session-created`/`client-attached` hooks, so an uncaught
+  exception surfaced as a `'... --ensure-capture ...' returned 1` message that
+  intercepted keystrokes in every watched shell until dismissed with Escape.
+  All paths now exit 0 and append the traceback to `/tmp/aria-shell-register.log`
+  (`ARIA_SHELL_REGISTER_LOG`); `tmux pipe-pane`'s own stderr is captured for the
+  same reason. This was the visible symptom of mongod being down for 9 hours —
+  the popup said nothing about the actual outage.
+- Mongo `serverSelectionTimeoutMS` for that script is now 3s
+  (`ARIA_MONGO_TIMEOUT_MS`) rather than the 30s default, so a hook can't stall
+  an attach for half a minute when the database is unreachable.
+
+## [2026-08-10] - DS4 quality-first affine profile after the broad gate
+
+### Changed
+
+- The resident DS4 default is again ROCmFPX affine. A frozen 256-case suite tied
+  affine and UD-IQ2_M at 238/256, but affine recovered all three deepest early-
+  recall failures. Exact DSpark width 4 fell to 235/256 with three regressions
+  and no recoveries; it remains an explicit optional throughput profile.
+- Compatibility unit `deepseek-v4-quality-256k.service` now authoritatively
+  serves `-c 65536 -np 6 --kv-unified -ub 256`, with prompt caching, Decode
+  Fusion, batched APE, and 108 GiB start / 12 GiB live memory guards. The
+  filename and registry slug retain `256k`; parsed unit geometry reports the
+  actual six 64K slots.
+- Six-by-128K and six-by-64K/ub512 both failed closed during a 33K prefill.
+  Six-by-64K/ub256 completed it with about 17.8 GiB available and reused 32,768
+  tokens in 4.33-4.40 seconds. Hermes and pi now advertise 65,536 tokens.
+- Batched APE is enabled after 24/24 long-context responses were correct and
+  byte-identical to the off baseline, closing its prior path-coverage gap.
+
+Evidence: `benchmarks/ds4-selection/run-20260810T062000-0400/`.
+
+## [2026-08-09] - DS4 to 200K/slot; the box has been OOMing
+
+### Changed
+- **DS4 `-c 230400` → `-c 204800`** (225K → **200K per agent**, `-np 6`
+  unchanged), per Ben. Live and verified: healthy in ~130 s, `n_slots = 6`,
+  `new slot, n_ctx = 204800` ×6. Hermes's `ds4`/`ds4-fast` `context_length`,
+  CLAUDE.md and the topology runbook updated to match.
+  - Worth knowing before reaching for this lever again: it frees only
+    **~0.99 GiB**. Weights (85.26) and compute buffers (~15.6) are ~92% of the
+    footprint and neither scales with `-c`. Stopping a co-resident server is
+    worth ~10× more than a context cut.
+- **`DS4.overhead_gib` 10.7 → 15.6.** Compute buffers scale with in-flight
+  work, so the constant is now sized at the PEAK rather than at rest. Three
+  readings, same weights: 94.56 GiB loaded-idle, 104.82 with one slot on a small
+  request, **108.73 during a 56K-token prefill**. Projection is now 108.70
+  against 108.73 observed. The 10.7 set earlier the same day came from the
+  middle reading — on a day the box had already OOM-killed llama-server 8×.
+
+### Measured — DS4 at 200K (2026-08-09, unique prompts, no cache hits)
+| | measured | prior baseline |
+|---|---|---|
+| decode @ depth 0 | 19.49 tok/s | 19.69 |
+| prefill, 883 tok | 139.64 tok/s | — |
+| prefill, 3.5K tok | 162.80 tok/s | — |
+| prefill, 14.2K tok | 137.17 tok/s | 160.66 (pp8192) |
+
+Prefill peaks near 2–3K tokens and falls off with depth. Cutting context 225K →
+200K cost nothing measurable, as expected — `-c` sizes the cache, not the math.
+
+### Found — this box has been OOMing, repeatedly
+Eight `oom-kill` events on 2026-08-09 alone, and the pattern starts the day
+before. Not a rogue service: every non-LLM process is small (mongod 750 MB,
+mongot 632 MB, embeddings 408 MB, every Hermes/proxy unit < 80 MB, ~4.4 GiB
+total). The cause is that DS4 alone is **108.7 GiB of 124** under load.
+- `2026-08-08 13:07, 13:27` — `deepseek-v4-quality-128k.service` OOM-killed ×2.
+- `2026-08-08 13:27:56` — **`aria-tmux.service` OOM-killed**, taking a `claude`
+  process with it. That unit exists specifically to own the tmux server hosting
+  every watched session (see the Critical Gotchas in CLAUDE.md); an OOM kill
+  reaches it the same way a careless `systemctl restart` would.
+- `2026-08-08 13:30, 13:38` — a docker llama-server killed mid-load, allocating
+  86.8 GiB — i.e. something tried to bring up DS4-sized weights inside Docker.
+- `2026-08-09 01:04, 01:07` — the `-c 1382400` KV failure → SEGV (known).
+- `2026-08-09 09:08–09:23` — llama-server OOM-killed 4× in 15 minutes.
+Leading indicators were in the log the whole time: `swap 100% used AND only
+3365 MB RAM free - OOM risk`, `disk: root 96% full`.
+
+### Open — the GTT gate's blind spot
+`_read_gtt_gib()` reads GPU-visible memory only, but on this unified-memory box
+the CPU side draws from the same 124 GiB. gemma-aux (~2.6), the mongo/embeddings
+containers (~1.9) and the desk's claude sessions (~1.5) are all invisible to it,
+so the gate reads ~15 GiB free when ~8 is the truth. `overhead_gib` cannot fix
+this — the gate needs a second term for non-GPU RSS. Noted, not yet implemented.
+
+## [2026-08-09] - Slot occupancy is now observable (not just declared)
+
+Follow-on to the six-slot cutover below. That work made the *declared* geometry
+trustworthy; this makes the *live* occupancy visible, because over-subscription
+produces no error — just a cold prefill every turn, which reads to a human as
+"the model got slow" with nothing in any log.
+
+### Added
+- **`GET /api/v1/infrastructure/model-servers/utilization`** — busy/total slots,
+  queue depth and throughput per RUNNING on-box server, read live from
+  llama.cpp `/slots` + `/metrics`. Probes concurrently, 4 s timeout, degrades to
+  `reachable: false` per server rather than failing the request.
+  - **`saturated` is the field to watch, not `slot_utilisation`.** Every slot
+    busy is the *design* (one slot per consumer, each holding its prefix). Slots
+    *queuing* (`requests_deferred > 0`) is the failure: a queued request lands
+    in whichever slot frees first, not the one holding its prefix.
+  - **`saturated: null` means unknown, never false.** Without `--metrics` the
+    server exposes `/slots` but not `/metrics`, so occupancy is readable while
+    queue depth and throughput are not; `metrics_available` + `metrics_hint` say
+    so instead of reporting zeroes.
+  - `declared_*` (from the unit file) vs live (from the server) is a drift
+    check — they disagree exactly when a unit was edited without a restart.
+    This is the runtime counterpart to `check_pi_slot_budget()`, which can only
+    catch the static misconfiguration.
+- `probe_runtime()` / `RuntimeStats` and `base_url_for_spec()` in
+  `infrastructure/model_servers.py` — the latter is the spec-side twin of
+  `llm_route.base_url_for`, honouring `endpoint_override` so DS4's tailnet-only
+  bind is not probed at a refused `localhost` URL.
+- **MCP `model_server_utilization`** — Hermes can now see local load itself
+  (before starting another server, or when the model "feels slow"). Verified by
+  a direct `tools/list` + `tools/call` against the stdio server: 68 tools
+  registered, live payload returned.
+- **`/operate` "Slots" panel** — per-server occupancy meter beside the memory
+  budget, plus a `SLOTS` status stat for the serving model. Colour follows the
+  alarm, not the fill level (full is normal; queuing turns it red), and missing
+  metrics render as blank rather than as zero.
+- 5 tests, including that `saturated` is `None` — not a confident `False` —
+  when metrics are unavailable.
+
+### Fixed
+- **`DS4.overhead_gib` 2.1 → 10.7.** Measured 2026-08-09: GTT read 94.56 GiB
+  immediately after load but **104.82 with a single slot active** — compute
+  buffers for an in-flight batch are ~10 GiB at `-b 2048` across 6 slots. The
+  gate exists to refuse overcommit, so it must be sized for a *loaded* server;
+  the idle figure under-counted by ~9 GiB in exactly the case that matters (a
+  cold `aria-api` with no live measurement to prefer). Projection now 104.8
+  against 104.82 observed.
+- **DS4 was launched without `--metrics`** (gemma had it), so throughput and
+  queue depth were unreadable on the one server they matter most on. Added to
+  `ExecStart`; takes effect on its next start.
+
+## [2026-08-09] - One big server, six slots; served context set in one place
+
+### Changed
+- **DS4 re-provisioned for multi-agent use** (`deepseek-v4-quality-256k.service`)
+  — `-c 262144 -np 1` → **`-c 230400 -np 6 --kv-unified`**, i.e. **225K per
+  agent across six slots**. ⚠️ **`-c` is PER SEQUENCE, not a total to divide by
+  `-np`**: llama.cpp reports `n_ctx_seq == -c` and gives every slot its own
+  full-size cache, so total KV = `-c` × `-np`. The first cutover attempt assumed
+  the opposite (`-c 1382400`), tried to allocate 54 GiB of compressed KV, OOM'd
+  and segfaulted — which measured the constant exactly:
+  `57065472000 / (1382400 * 6)` = **6880 bytes/token**. Live verification:
+  `n_slots = 6`, `new slot, n_ctx = 230400` ×6, GTT 94.56 GiB against a 96.2
+  projection (conservative, the correct direction for an overcommit gate). Hermes main chat, the system pi-coding
+  agent, all pi sub-agents and ARIA's background workers now share one server,
+  one slot each, so each agent's prefix stays warm without evicting anyone.
+  `--cache-ram` 4096 → 1024: the parked prompt-cache tier has logged `loads=0`
+  on **every** DS4 run to date (one save, zero restores) and falls back to
+  `forcing full prompt re-processing … (likely due to SWA or hybrid/recurrent
+  memory)` at `n_swa = 128`, so nothing depends on it. In-slot context
+  checkpoints DO work (measured: 22,091 tokens restored in ~0.5 s).
+- **Served context is no longer copied by hand.** It lived in five places and
+  only the unit's `ExecStart` was authoritative; the other four were all wrong,
+  and Hermes's two disagreed with each other (262144 vs 131072) about one
+  server. `model_servers.read_launch_geometry()` now parses `-c`/`-np` out of
+  the systemd unit or compose file (mtime-cached), and
+  `effective_resident_gib()` computes the footprint as
+  `weights + KV(served -c) + buffers`. The 2026-08-05 staleness — declared
+  86.5 GiB while really holding 94.08 after a `-c` change, under-counting the
+  very gate meant to prevent overcommit — cannot recur.
+
+### Added
+- `served_ctx` / `slots` / `ctx_per_slot` / `geometry_source` on
+  `GET /api/v1/infrastructure/model-servers`; the start-time GTT gate now
+  projects from the real `-c` (`basis="projected"`).
+- `ModelServerSpec.weights_gib` / `kv_kib_per_token` / `overhead_gib` — the two
+  `-c`-invariant constants that replace a hand-maintained `resident_gib`
+  (retained as fallback for uncharacterised entries).
+- **`pi-code` concurrency cap** (`coding_max_concurrent_pi_sessions`=3,
+  `coding_pi_reserved_slots`=3). The global cap could never protect llama.cpp
+  slots: a `claude_code` session takes a global slot but **zero** local
+  capacity, so four Claude sessions would block pi entirely while the GPU idled,
+  and four pi sessions would over-subscribe their reserved slots.
+  `check_pi_slot_budget()` reports drift — over-subscription otherwise presents
+  as "the model got slow", not as an error.
+- 9 tests covering the parse cases that would silently yield a wrong number:
+  `--cache-ram`/`-cram` not matching `-c`, and `ExecStartPre`'s `sha256sum -c`
+  being ignored.
+
+### Fixed — dead endpoints
+- `AGENTIC_URL` `:8105` → the `:8200` passthrough. It named a **stopped-by-
+  default** server, so every `agentic` consumer dialled a port with no
+  listener; `shells/extraction.py` did so every 10 minutes.
+- `shells/extraction.py` no longer hardcodes `llm_backend="agentic"` —
+  `SHELLS_EXTRACTION_BACKEND`/`_MODEL` route it to gemma-aux, which is what
+  cheap bulk classification belongs on.
+- `PI_CODING_PROVIDER_LLAMACPP`/`_AGENTIC` → `ds4`. pi's own
+  `~/.pi/agent/models.json` is a second mapping layer that had drifted
+  independently (`llama-cpp` → `:8103` qwen, down; `agentic` → `:8105`, stopped).
+- `~/.pi/agent/settings.json` default provider/model → `ds4` (hand-run `pi`).
+- Hermes `qwen-chat` `localhost:8107` → `:8103`. The 2026-07-30 move to `:8107`
+  dodged `ridge-llama-proxy` but landed on DS4's port, which binds the
+  **tailnet IP only** — refused on localhost, and a running DS4 would have
+  answered qwen-labelled requests.
+- Hermes `ds4`/`ds4-fast` `context_length` → both `230400`.
+- Stale `id_slot` / `laguna-slot-proxy` prose removed from `config.py` and
+  `agents/backends/pool.py` (those ports have not listened since 2026-07-28).
+
+### Docs
+- `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` — new **§11** (current topology, slot
+  budget, single-source-of-truth rule, routing table, what was fixed, what is
+  still unverified); §§1–10 kept as history behind a read-§11-first banner.
+- `vault/ProjectAria/Design/COHERENCE_DESIGN.md` — decision-log **#36**; #16
+  amended (pin-by-server is no longer available, so consumers are separated by
+  slot again — but still never by an `id_slot`-rewriting proxy).
+
+### Verified in production (2026-08-09 cutover)
+- DS4 live at 6 slots × 230400; `aria-api` and `hermes-gateway` restarted clean;
+  `GET /api/v1/infrastructure/model-servers` reports `ctx_per_slot=230400
+  slots=6 est=96.2 measured=94.5`; an end-to-end completion through the `:8200`
+  passthrough resolved to `DS4-0731-ROCMFPX-affine.gguf`.
+
+### Open
+- **llama.cpp segfaults on the KV-allocation failure path** (`status=11/SEGV`
+  after `failed to allocate DeepSeek4 compressed KV cache buffer`), and
+  `Restart=on-failure` retries it — an auto-restart of the pre-edit config raced
+  an edit during the cutover and produced a misleading second failure. Stop the
+  unit before changing `-c`.
+- The parked prompt cache is still unproven on DS4 (`loads=0` historically).
+  Nothing depends on it; re-check `loads=` before designing around it.
+
+## [2026-08-07] - Ontology Memory Map + non-LLM service registry (Phases 0-5d)
+
+### Added
+- **Non-LLM service registry** (`api/aria/infrastructure/services.py`, new) —
+  19 services (mongod, mongot, embeddings, aria-api, aria-tmux, aria-ui, tts,
+  stt, hermes-gateway, hermes-webui, signal-cli, ridge/red proxies, samba,
+  war-audio-*, obsidian bridge, ts-drop-capture), built from OBSERVED live
+  state rather than documentation. **A deliberate sibling of
+  `model_servers.REGISTRY`, never rows in it** — verified breakages if merged:
+  `llm_route.match_requested` would proxy `model: "shared-mongod"` to :27017;
+  `rank_resident` scores a missing `resident_gib_estimate` as `0.0` rather than
+  excluding it; and `health.py`'s port-keyed `stopped_on_purpose` would make
+  "mongod is down" read as "stopped on purpose". Disjointness by slug AND port
+  is enforced by `tests/test_service_registry.py`.
+  - New **`expected_state`** (`always_up` | `on_demand`) carries the semantic
+    difference. 7 entries are flagged `needs_review` where the policy was
+    inferred rather than confirmed.
+  - **Found a live hole:** `aria-stt` had been EXITED for 7 days while
+    `/health/services` probed it unconditionally — silently counted unhealthy
+    every tick with no way to express "that's fine". `/health/services` now
+    honours `expected_state`, and additionally reports the always_up services
+    that have no HTTP surface (signal-cli, hermes-gateway, samba, aria-tmux),
+    which nothing was watching before.
+  - API: `GET /infrastructure/services`, `/services/{slug}`,
+    `POST /services/{slug}/{start,stop}`, and **`GET /infrastructure/running`**
+    — a union read over both registries.
+- **Ontology Memory Map** (`api/aria/ontology/`, new: `models`, `store`,
+  `seed`, `projection`, `crosslink`, `emitter`) — 100 entities / 102 relations
+  live, with `ontology_vector_index` + `ontology_text_index` in mongot.
+  - **Projected, not hand-seeded** (the doc's revised §4): 53 projects from
+    `db.projects`, 32 services from both registries, remote machines from
+    `db.nodes`. Only ~14 durable entities (machines, devices, datastores,
+    networks, person) are hand-authored. Vanished things go `stale`.
+  - S3 ownership enforced at the write boundary in `store.upsert_entity`, not
+    per caller: a projection physically cannot overwrite `summary`/`aliases`/
+    `tags`; contradictions go to `scan_review`.
+  - `OntologyProjectionEmitter` rides the S2 scan worker. `ScanReconcileWorker`
+    gained an **`always_run`** emitter flavour — the default contract fires only
+    on a machine-snapshot diff, but this projection's inputs (registries,
+    `db.projects`) change without one, so it would have refreshed only by
+    coincidence.
+  - **3,709 memories cross-linked with ZERO inference** via most-specific-root
+    path-category mapping (§7a). Verified it does not regress to plain prefix
+    matching: `project:aria` got 1,205 and the parent `project:development`
+    only 246.
+  - `kg` CLI (`~/.claude/skills/agent-memory/kg`) — **stdlib-only over HTTP**,
+    so unlike its sibling `mem` it needs no venv and the same file runs from
+    the MacBook/Red/Ridge.
+  - MCP: `whats_running`, `list_services`, `start_service`, `stop_service`,
+    `kg_search`, `kg_entity`, `kg_map`, `kg_memories` (restart
+    `hermes-gateway.service` to load).
+
+### Fixed / corrected during the build
+- **Dropped bulk `mentions` edges** after measuring the damage: one edge per
+  (memory, entity) duplicated `memories.entities[]`, grew ~670/day, and buried
+  every structural edge — `project:aria` came back with 500 of 500 incoming
+  edges being mentions, hiding `runs_on machine:corsair-ai`. `entities[]` (now
+  indexed) IS the cross-link; `mentions` stays in the vocabulary for
+  hand-authored edges and is excluded from neighborhood views by default.
+- **Entity extraction pointed at `gemma-4-e4b-Q4` explicitly**, not the
+  resident model. DS4 is a reasoning model that spent its whole 256-token
+  budget thinking and got truncated before emitting JSON — failing *silently*
+  as "zero entities" for every memory. `max_tokens` raised to 768 and
+  `parse_json_object` now strips `<think>` blocks and fences, because the
+  passthrough means the model on the other end is not fixed.
+- **Added a verification gate** (`verify_slug`): the LLM proposes, the memory
+  text disposes. It rejected a WRONG-QUANT model server
+  (`ling-3.0-flash-q5km` → the MXFP4 entry — the most dangerous kind of wrong),
+  an unrelated ephemeral container matched to `hermes-webui`, and entities
+  absent from the text. `person` was dropped from the extraction catalog (one
+  person in the graph; every `/home/ben/` path was tagging it).
+- **Project slug derivation unified** in `project_entity_slug()` — the
+  projection and the cross-link deriving slugs differently would point
+  `entities[]` at entities the graph does not have. Prefers `db.projects.slug`
+  over `name` so a rename cannot mint a second entity.
+- `project_roots()` now reads `relevant_paths` as well as `path`: the harvested
+  "ARIA" row has no `path` at all and was left with no location and no host
+  edge.
+- Deterministic tie-break in `PathProjectIndex` — "ARIA" and "ProjectAria" both
+  genuinely claim `~/Development/ProjectAria`, so without a stable secondary
+  sort the winner depended on Mongo's iteration order, reassigning thousands of
+  memories between runs. The collision is now raised as a `scan_review` item
+  rather than silently resolved.
+- `INVERSE` no longer claims `member_of`/`part_of` are inverses — they are
+  near-synonyms, and treating them as a pair would flip edge direction on
+  traversal (`corsair-ai member_of tailnet` reading back as `tailnet part_of
+  corsair-ai`). Caught by a test.
+
+### Fixed — project harvester created duplicate rows (root cause + data)
+- **`harvest.py` upserted on `{"slug": <directory name>}` and never checked
+  whether an existing project already claimed that path.** So the hand-created
+  "ARIA" (slug `aria`, real summary, claiming `~/Development/ProjectAria` via
+  `relevant_paths` and carrying **no `path` at all**) was shadowed by a
+  harvested twin "ProjectAria" with an empty summary. Both rows claimed the
+  same root, which split that project's memories, cockpit rollups and path
+  attribution, and made the winner depend on Mongo's iteration order. The
+  harvester now resolves an existing project by `path`/`relevant_paths` before
+  falling back to the directory slug; new directories still register normally.
+  Regression tests in `tests/test_harvest_dedup.py`.
+- **Merged the existing duplicate**: kept the curated `aria` row (its slug is
+  what 1,246 memories already point at), folded in the harvested
+  `path`/`activity_status`/`git`, deleted the twin. Zero memories orphaned —
+  `project:projectaria` ended with 0 links. Its entity remains as a `stale`
+  tombstone per S3 rather than being deleted, and the `scan_review` conflict
+  was acked.
+
+### Added — Services panel in the Web UI (`/operate`)
+- `ui/src/app/operate/page.tsx` gained a **Services** card plus a `SERVICES`
+  status stat, backed by new `listServices`/`startService`/`stopService` in
+  `api-client.ts`. Rows sort **unhealthy first**, then always_up before
+  on_demand — a 19-row alphabetical list buries the one row that matters.
+  `manageable: false` entries (aria-api, aria-tmux, samba) render as `locked`
+  rather than offering a button that would 409. The `needs_review` entries are
+  marked ⚠ with a footer explaining that an outage on those will not alert
+  until their `expected_state` is confirmed.
+- The services fetch is tolerated independently of the model-server fetch, so
+  the registry going quiet cannot blank the page's primary view.
+- The ontology graph deliberately has **no** UI yet — reachable via HTTP, the
+  `kg` CLI and MCP only.
+
+### Scope
+- Phase 5e (LLM pass over the 13,671 `shell_extraction` +
+  `claude_session_digest` memories) remains **closed**, enforced by
+  `BULK_SOURCE_TYPES`. The targeted backfill covers the 877 curated memories,
+  is resumable via `entity_extraction_at`, and measured ~5-10s/memory.
+- New settings: `ONTOLOGY_ENABLED` (on), `ONTOLOGY_PROJECTION_EMBED` (off —
+  re-embedding 100 entities costs ~78s on the CPU service),
+  `ONTOLOGY_EXTRACTION_ENABLED` (off), `ONTOLOGY_EXTRACTION_MODEL`,
+  `ONTOLOGY_EXTRACTION_VERIFY`.
+- Tests: `test_service_registry.py` (19) + `test_ontology.py` (39). Full suite
+  1126 → 1184 passing.
+
+## [2026-08-07] - ONTOLOGY design doc revised against live state (docs only, no code)
+
+### Changed
+- **`ONTOLOGY_MEMORY_DESIGN.md` (vault) re-verified and revised.** Still unbuilt
+  — no `ontology_*` collections, no `/api/v1/ontology/*`, no `kg` command — but
+  three weeks of drift had invalidated its numbers and its seed plan.
+  - **Scale correction.** The doc was denominated in "~1,186 existing memories"
+    (correct at writing: 1,219 predate 2026-07-18). `aria.memories` is now
+    **14,590** — 13,371 of them produced *by the shell/scan workers this plan
+    was blocked behind*. The dependency it waited on invalidated its own
+    estimate. At ~670/day, entity extraction is a continuous obligation, not a
+    backfill; Phase 5 split into 5a–5e with the 13,671-doc bulk pass
+    **deferred** (local-only host since 2026-07-26 — no burst capacity).
+  - **Hand-written seed list deleted (§4).** It seeded `qwen-chat`,
+    `qwen-agentic` (retired), `fireworks` (key gone 2026-07-23), and the
+    `laguna`/`:8095` slot topology (retired), while missing the model-server
+    registry, chadrock, gemma-aux and the `:8200/llm/v1` passthrough. New rule:
+    **project what churns, hand-author what doesn't** — `project`/`service`
+    entities derive from `db.projects` (53) and the model-server registry (15
+    slugs); only ~14 durable machine/device/network entities stay hand-written.
+    Hand-seeding services wrote a dead map in as ground truth and forked
+    collections that already own those facts, against this plan's own S3
+    convention.
+  - **`categories[]` gap closed (§7a).** The doc never acknowledged that
+    path-shaped categories (`~/Development/ProjectAria`, 1,202 docs) are already
+    entity references; they now seed `entities[]` deterministically, LLM-free,
+    before any extraction runs — with the most-specific-root caveat carried over
+    from C4's `PathIndex`.
+  - Confirmed intact: `memories.entities[]` is still **0 of 14,590** (the hook
+    is unclaimed), and the S2 `ScanEmitter` substrate matches what the plan
+    assumed. Minor: `consolidated_into` 227 → 250; `nodes` holds only remote
+    nodes (1) and *not* corsair-ai, so it can't be the sole `machine` source.
+  - Phase 4 flagged: no `kg` binary exists yet, and the native-Windows client
+    for Red/Ridge remains unestimated with no prior art in this repo.
+
+### Decided (2026-08-07, Ben)
+- **Non-LLM services get registry coverage** ("need to know what is running") —
+  mongod, mongot, embeddings, aria-api, hermes-gateway, signal-cli, samba, tts,
+  stt, ui. New **Phase 0** in the ontology plan, but independently valuable and
+  shippable on its own: `api/aria/infrastructure/services.py` + `db.services` +
+  `GET /api/v1/infrastructure/running` (a union read over both registries).
+  **Deliberately a SIBLING registry, not rows in `model_servers.REGISTRY`** —
+  verified against the code, sharing it breaks three ways:
+  (1) `match_requested()` matches on slug, so `model: "shared-mongod"` would
+  proxy LLM traffic to :27017; (2) `rank_resident()` scores a missing
+  `resident_gib_estimate` as `0.0` rather than excluding it
+  (`llm_route.py:111`), making non-LLM rows auto-route candidates whenever no
+  model is resident; (3) decisively, `health.py:230` builds `stopped_on_purpose`
+  by port from `model_servers.status()` because the big LLM servers are
+  RAM-exclusive and *are* meant to be down — non-LLM services invert that, so
+  sharing the registry would make "mongod is down" read as "stopped on purpose"
+  and silence the alert the decision exists to raise. New `expected_state`
+  (`always_up` | `on_demand`) field carries that distinction.
+- **The 13,671 machine-generated memories (`shell_extraction` +
+  `claude_session_digest`) will not get an LLM extraction pass.** Phase 5e is
+  closed rather than deferred; forward-only extraction plus the LLM-free
+  path-category mapping covers the need.
+
 ## [2026-08-05] - Hermes follows ARIA's resident model; the passthrough learns to route
 
 ### Added

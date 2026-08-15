@@ -182,6 +182,21 @@ class Settings(BaseSettings):
     # Same reasoning as laguna above, different resource. Cloud backends are
     # not affected by this cap either.
     coding_max_concurrent_ridge_sessions: int = 1
+    # pi-code sessions land on the resident local server (DS4), where each one
+    # occupies a llama.cpp SLOT for its whole life. The global cap above cannot
+    # protect those slots: a claude_code session consumes a global slot but ZERO
+    # local capacity, so four Claude sessions would block pi entirely while the
+    # GPU idles, and four pi sessions would over-subscribe the slots reserved
+    # for them. This is the cap that must track the server's -np.
+    #
+    # Budget at -np 4: reserve one slot for Hermes and one for a directly-run
+    # Pi/other foreground caller, leaving two watched-shell Pi sessions. Most
+    # background/auxiliary Hermes work runs on the separate CPU-only Gemma.
+    # `check_pi_slot_budget()` warns if this drifts from the production unit.
+    coding_max_concurrent_pi_sessions: int = 2
+    # Slots on the local server NOT available to pi sub-agents (Hermes main,
+    # the system pi-coding agent, background workers).
+    coding_pi_reserved_slots: int = 2
 
     # Master switch, independent of everything below: False refuses any
     # pool-backed coding session up front (start_session) with a clear error,
@@ -191,18 +206,19 @@ class Settings(BaseSettings):
     # it back on later is a one-line change once the server is back.
     pool_enabled: bool = True
 
-    # Poolside `pool` CLI, run in standalone mode against the local laguna
-    # endpoint. pool_api_url should point at the slot-proxy port for the coding
-    # slot (not :8095 directly) so requests carry id_slot and keep this agent's
-    # prefix pinned. The model is passed via POOLSIDE_STANDALONE_MODEL, not a
-    # CLI flag -- `pool exec` has no --model.
+    # Poolside `pool` CLI, run in standalone mode against a local OpenAI-
+    # compatible endpoint. The model is passed via POOLSIDE_STANDALONE_MODEL,
+    # not a CLI flag -- `pool exec` has no --model.
     pool_binary: str = "/home/ben/.local/bin/pool"
-    # :8097 is laguna-slot-proxy mapped to id_slot=1 (the coding slot).
-    # :8096 is slot 0 and belongs to Hermes -- pointing pool there would
-    # evict Hermes' tool-schema prefix on every coding turn.
-    # :8102 is Chadrock (Laguna ROCmFP4, Vulkan) running --parallel 1 as its
-    # only consumer. No slot proxy needed: Hermes lives on its own server
-    # (:8103, Qwen3.6-35B-A3B), so nothing else can evict this cache.
+    # :8102 is Chadrock (Laguna ROCmFP4, Vulkan) running --parallel 1 with pool
+    # as its ONLY consumer -- that exclusivity is what keeps its prefix warm.
+    #
+    # The id_slot advice that used to live here is GONE, along with the
+    # topology it described: laguna-slot-proxy (:8096-:8100, mapping consumers
+    # to id_slot values on one shared server) is stopped and disabled, and
+    # those ports have no listener. Prefix isolation now comes from one server
+    # per consumer class, and on DS4 from one llama.cpp slot per agent -- not
+    # from a proxy rewriting id_slot. Do not reintroduce it.
     pool_api_url: str = "http://127.0.0.1:8102"
     # Must match the alias Chadrock reports at /v1/models. llama-server ignores
     # the request model field in single-model mode, so a mismatch is silent --
@@ -294,6 +310,28 @@ class Settings(BaseSettings):
     embedding_model: str = "voyageai/voyage-4-nano"
     embedding_dimension: int = 1024
     voyage_api_key: str = ""
+
+    # Retrieval capability switches (memory/capabilities.py). These are only
+    # the *boot defaults*: the live state is a persisted doc, so a capability
+    # switched off by an operator stays off across an aria-api restart rather
+    # than silently coming back and resuming the alerts they turned off.
+    #   embeddings_enabled=False -> never call the embeddings service; writes
+    #     land with embedding_pending=true and are backfilled on re-enable.
+    #   search_enabled=False     -> never emit $vectorSearch/$search; recall
+    #     degrades to the mongod-native fallback scan.
+    embeddings_enabled: bool = True
+    search_enabled: bool = True
+
+    # Backfill worker: drains embedding_pending memories + un-embedded ontology
+    # entities. Runs on a timer and is woken immediately when embeddings are
+    # re-enabled, which is what makes "turn it back on" self-healing.
+    embedding_backfill_enabled: bool = True
+    embedding_backfill_interval_seconds: int = 300
+    embedding_backfill_batch_size: int = 100
+    # Concurrent embed calls inside a batch. The embeddings service is CPU-only
+    # (sentence-transformers), so a wide fan-out just queues; 4 keeps the
+    # backfill from starving live memory writes of the same service.
+    embedding_backfill_concurrency: int = 4
 
     # API
     # Port 8200 is canonical post-cutover (ProjectAria absorbed aria-shells;
@@ -544,6 +582,13 @@ class Settings(BaseSettings):
     shells_context_lookback_hours: int = 24
     shells_context_lines_per_shell: int = 20
     shells_extraction_enabled: bool = True
+    # Was hardcoded `"agentic"`, i.e. AGENTIC_URL -> the on-demand local coding
+    # server, which is STOPPED by default -- so this fired every 10 minutes at a
+    # port with no listener. It is cheap bulk classification, which is what
+    # gemma-aux exists for, and keeping it off the big server leaves that
+    # server's slots for Hermes and the coding agents.
+    shells_extraction_backend: str = "llamacpp"
+    shells_extraction_model: str = "gemma-4-e4b-Q4"
     shells_extraction_interval_minutes: int = 10
     shells_extraction_min_events: int = 20
     # Per-shell wall-clock bound on one extraction call. Belt-and-suspenders
@@ -661,6 +706,40 @@ class Settings(BaseSettings):
     git_scan_enabled: bool = True
     git_scan_roots: list[str] = []
     git_scan_min_change_lines: int = 10
+
+    # Ontology Memory Map (ONTOLOGY_MEMORY_DESIGN.md) — the knowledge graph of
+    # machines/services/projects and its cross-link into aria.memories.
+    #
+    # `ontology_enabled` runs the PROJECTION (§4a) — deriving service/project/
+    # machine entities from the registries and db.projects. It is cheap,
+    # LLM-free and idempotent, so it rides the S2 scan worker.
+    ontology_enabled: bool = False
+    # Re-embed entities during projection. Costs ~0.8s/entity on the CPU
+    # embedding service (measured 2026-08-07: 100 entities in 78s), so the
+    # periodic pass leaves it off and only explicit runs re-embed.
+    ontology_projection_embed: bool = False
+    # Forward-only entity extraction on newly created memories (§7, phase 5c).
+    # Separate flag from ontology_enabled because this one spends inference on
+    # every memory written, whereas the projection spends none.
+    ontology_extraction_enabled: bool = False
+    # Local by default and deliberately so: this host has had no cloud fallback
+    # since 2026-07-26, and `llamacpp` resolves to ARIA's own /llm/v1
+    # passthrough, which follows whichever server is resident. Naming a port
+    # here would break every time the resident model changes.
+    ontology_extraction_backend: str = "llamacpp"
+    # Names gemma-aux explicitly rather than following the resident model. Two
+    # measured reasons (2026-08-07): the resident server is DS4, a REASONING
+    # model that spends its whole token budget thinking before emitting JSON —
+    # and gemma is the box's designated auxiliary model, so extraction does not
+    # compete with interactive inference for the GPU. The passthrough resolves
+    # this string via llm_route.match_requested, so it is a selector, not a URL.
+    ontology_extraction_model: str = "gemma-4-e4b-Q4"
+    # Require the memory text to actually contain an entity's name before
+    # accepting the LLM's proposal. Measured on the first sample, this rejected
+    # a wrong-quant model server, an unrelated container, and two entities that
+    # appeared nowhere in the text. Costs some true positives on purpose: a
+    # wrong edge in a knowledge graph is worse than a missing one.
+    ontology_extraction_verify: bool = True
 
     # Coherence C6: Obsidian vault as the long-form human⇄agent surface.
     # ARIA writes plain markdown under vault/<RepoName>/{Design,Specs,Analysis,

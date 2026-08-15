@@ -235,6 +235,7 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
                 rec["activity"].append(commit_at)
 
     upserts = 0
+    merged = 0
     for slug, rec in agg.items():
         last_activity = max(rec["activity"]) if rec["activity"] else None
         is_active = bool(last_activity and last_activity >= active_cutoff)
@@ -243,8 +244,40 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
         if rec["git"]:
             git_info = {k: v for k, v in rec["git"].items() if k != "path"}
 
+        # Match an EXISTING project by the path it claims before falling back to
+        # the directory-derived slug.
+        #
+        # Without this, a hand-created project is silently shadowed by a
+        # harvested twin: "ARIA" (slug `aria`, created by hand with a real
+        # summary, claiming ~/Development/ProjectAria via relevant_paths) got a
+        # duplicate "ProjectAria" (slug from the directory name) with an empty
+        # summary. Both then claimed the same root, splitting that project's
+        # memories, cockpit rollups and path attribution across two rows —
+        # and whichever won a tie depended on iteration order.
+        #
+        # Slug stays the fallback so genuinely new directories still register.
+        key = {"slug": slug}
+        existing = await db.projects.find_one(
+            {
+                "slug": {"$ne": slug},
+                "$or": [
+                    {"path": primary_path},
+                    {"relevant_paths": primary_path},
+                ],
+            },
+            {"_id": 1, "slug": 1},
+        )
+        if existing:
+            key = {"_id": existing["_id"]}
+            merged += 1
+            logger.debug(
+                "harvest: %s already claims %s — refreshing it instead of "
+                "creating duplicate slug '%s'",
+                existing.get("slug"), primary_path, slug,
+            )
+
         await db.projects.update_one(
-            {"slug": slug},
+            key,
             {
                 "$setOnInsert": {
                     "slug": slug,
@@ -275,7 +308,15 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
         )
         upserts += 1
 
-    return {"discovered": len(canon_paths), "slugs": len(agg), "upserted": upserts, "repos": len(repos)}
+    return {
+        "discovered": len(canon_paths),
+        "slugs": len(agg),
+        "upserted": upserts,
+        # Harvested paths that resolved to an existing project rather than
+        # minting a duplicate slug.
+        "matched_existing": merged,
+        "repos": len(repos),
+    }
 
 
 class ProjectHarvestWorker:

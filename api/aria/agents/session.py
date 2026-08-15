@@ -78,6 +78,11 @@ class CodingSessionManager:
         self._backend_limits: dict[str, int] = {
             "pool": int(settings.coding_max_concurrent_laguna_sessions or 0),
             "ridge": int(settings.coding_max_concurrent_ridge_sessions or 0),
+            # Local llama.cpp slots on the resident server. Without this, the
+            # global cap is the wrong instrument: it counts claude_code
+            # sessions, which cost zero local capacity, against pi sessions,
+            # which each hold a slot for their whole life.
+            "pi-code": int(settings.coding_max_concurrent_pi_sessions or 0),
         }
         self._backend_slotted: dict[str, set[str]] = {
             name: set() for name in self._backend_limits

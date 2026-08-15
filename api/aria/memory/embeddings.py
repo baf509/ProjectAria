@@ -16,6 +16,7 @@ import httpx
 
 from aria.config import settings
 from aria.core.resilience import CircuitBreaker, retry_async
+from aria.memory.capabilities import EmbeddingsDisabled, retrieval_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +116,19 @@ class EmbeddingService:
 
         Returns:
             Embedding vector
+
+        Raises:
+            EmbeddingsDisabled: if the embeddings capability is switched off.
+                Checked BEFORE the circuit breaker so a disabled capability
+                costs nothing — no HTTP call, no retry ladder, no breaker trip
+                that would then also block the Voyage fallback.
         """
+        if not retrieval_capabilities.embeddings_enabled:
+            raise EmbeddingsDisabled(
+                "embeddings capability is disabled "
+                "(PUT /api/v1/capabilities/retrieval to re-enable)"
+            )
+
         if use_fallback and self.fallback:
             embedding = await self.fallback.embed(text)
             return self._validate_dimension(embedding)
@@ -146,9 +159,17 @@ class EmbeddingService:
         Generate embedding, returning None instead of raising on failure.
         Useful for graceful degradation — callers can store content
         without an embedding and backfill later.
+
+        A *disabled* capability is logged at debug, not warning: it is an
+        operator decision, not a fault, and these callers run on every memory
+        write — warning-per-write would bury the log for as long as the
+        capability stays off.
         """
         try:
             return await self.embed(text)
+        except EmbeddingsDisabled:
+            logger.debug("Embeddings disabled; storing without a vector (will backfill)")
+            return None
         except Exception as e:
             logger.warning("Embedding failed (graceful degradation): %s", e)
             return None

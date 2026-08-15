@@ -235,7 +235,7 @@ class ModelPullService:
             os.makedirs(target_dir, exist_ok=True)
             # Positional filename, NOT --include: --include has silently
             # skipped large files before (see agent-memory note from the
-            # Chadrockv2/Qwythos download session).
+            # Chadrockv2 download session).
             proc = await asyncio.create_subprocess_exec(
                 "hf", "download", repo_id, filename, "--local-dir", target_dir,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

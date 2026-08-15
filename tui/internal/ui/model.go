@@ -33,6 +33,7 @@ const (
 	screenHistoryDetail
 	screenProjects
 	screenProjectCockpit
+	screenModels
 )
 
 // Which quadrant has focus on the dashboard
@@ -89,6 +90,19 @@ type fleetLoaded struct {
 	usage    []api.SessionUsage
 }
 type healthLoaded struct{ health *api.ServicesHealth }
+
+// modelServersLoaded carries the local LLM registry: which model+runtime pairs
+// exist, how each is currently configured to load, and what memory each pool
+// is holding.
+type modelServersLoaded struct{ servers []api.ModelServer }
+
+// modelServerActed reports the outcome of a start/stop. The message text is the
+// point: a refusal names the conflicting server or the memory projection, and
+// discarding it would leave the operator with a silent no-op.
+type modelServerActed struct {
+	status string
+	reload bool
+}
 type searchResultLoaded struct {
 	result *api.ToolExecuteResult
 	err    error
@@ -122,6 +136,7 @@ type Model struct {
 	dbBrowser     *components.DBBrowser
 	fleetView     *components.FleetView
 	healthView    *components.HealthView
+	modelsView    *components.ModelsView
 	searchView    *components.SearchView
 	newSession    *components.NewSessionModal
 	historyView   *components.HistoryView
@@ -181,6 +196,7 @@ func NewModel(client *api.Client) Model {
 		dbBrowser:     components.NewDBBrowser(),
 		fleetView:     components.NewFleetView(),
 		healthView:    components.NewHealthView(),
+		modelsView:    components.NewModelsView(),
 		searchView:    components.NewSearchView(),
 		newSession:    components.NewNewSessionModal(),
 		historyView:   components.NewHistoryView(),
@@ -354,6 +370,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case healthLoaded:
 		m.healthView.SetData(msg.health)
+
+	case modelServersLoaded:
+		m.modelsView.SetData(msg.servers)
+
+	case modelServerActed:
+		m.modelsView.Status = msg.status
+		if msg.reload {
+			return m, loadModelServers(m.client)
+		}
 
 	case historyLoaded:
 		m.historyView.SetShells(msg.shells)
@@ -615,6 +640,9 @@ func (m *Model) openHotkey(key string) tea.Cmd {
 	case "j":
 		m.pushScreen(screenProjects)
 		return loadProjects(m.client)
+	case "g":
+		m.pushScreen(screenModels)
+		return loadModelServers(m.client)
 	}
 	return nil
 }
@@ -824,6 +852,61 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			}), true
 		}
 		return nil, true
+	case screenModels:
+		// Inline editing owns the keyboard first — otherwise typing "8" into a
+		// context size would be read as a screen action.
+		if m.modelsView.HandleEditKey(key) {
+			return nil, true
+		}
+		s := m.modelsView.Selected()
+		switch key {
+		case "up", "k":
+			m.modelsView.MoveCursor(-1)
+			return nil, true
+		case "down", "j":
+			m.modelsView.MoveCursor(1)
+			return nil, true
+		case "left", "h":
+			m.modelsView.CycleChoice(-1)
+			return nil, true
+		case "right", "l":
+			m.modelsView.CycleChoice(1)
+			return nil, true
+		case "tab":
+			m.modelsView.ToggleParamFocus()
+			return nil, true
+		case "enter":
+			m.modelsView.BeginEdit()
+			return nil, true
+		case "r":
+			return loadModelServers(m.client), true
+		case "s":
+			if s == nil {
+				return nil, true
+			}
+			if err := m.modelsView.ValidateDraft(); err != nil {
+				m.modelsView.Status = err.Error()
+				return nil, true
+			}
+			m.modelsView.Status = "starting " + s.Slug + " — " + m.modelsView.ParamSummary()
+			return startModelServer(m.client, s.Slug, m.modelsView.Overrides()), true
+		case "d":
+			// Deliberately distinct from "s": a plain start also CLEARS any
+			// override ARIA applied earlier, so a context size chosen for one
+			// experiment cannot silently outlive it.
+			if s == nil {
+				return nil, true
+			}
+			m.modelsView.ClearDraft()
+			m.modelsView.Status = "starting " + s.Slug + " with deployment defaults"
+			return startModelServer(m.client, s.Slug, nil), true
+		case "x":
+			if s == nil {
+				return nil, true
+			}
+			m.modelsView.Status = "stopping " + s.Slug
+			return stopModelServer(m.client, s.Slug), true
+		}
 	case screenUsage, screenTools, screenObservations, screenHealth:
 		if key == "r" {
 			switch m.screen {
@@ -1149,6 +1232,7 @@ func (m Model) renderHeader() string {
 			screenSearch: "search", screenNewSession: "new session",
 			screenHistory: "history", screenHistoryDetail: "history › scrollback",
 			screenProjects: "projects", screenProjectCockpit: "projects › cockpit",
+			screenModels: "models",
 		}
 		screenLabel = " › " + labels[m.screen]
 	}
@@ -1283,6 +1367,9 @@ func (m Model) renderSubScreen() string {
 	case screenHealth:
 		m.healthView.SetSize(m.width, bodyH)
 		return m.healthView.View()
+	case screenModels:
+		m.modelsView.SetSize(m.width, bodyH)
+		return m.modelsView.View()
 	case screenSearch:
 		m.searchView.SetSize(m.width, bodyH)
 		return m.searchView.View()
@@ -1522,6 +1609,40 @@ func loadServicesHealth(client *api.Client) tea.Cmd {
 			return errMsg{err}
 		}
 		return healthLoaded{health: health}
+	}
+}
+
+func loadModelServers(client *api.Client) tea.Cmd {
+	return func() tea.Msg {
+		servers, err := client.ListModelServers()
+		if err != nil {
+			return errMsg{err}
+		}
+		return modelServersLoaded{servers: servers}
+	}
+}
+
+func startModelServer(client *api.Client, slug string, overrides map[string]string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.StartModelServer(slug, overrides); err != nil {
+			// Surfaced rather than raised as a generic error: a refusal here
+			// explains WHICH server conflicts or how far over the memory
+			// margin the projection lands, and that text is the whole value.
+			return modelServerActed{status: err.Error(), reload: true}
+		}
+		return modelServerActed{
+			status: slug + " starting — model load takes ~2-3 min before it answers",
+			reload: true,
+		}
+	}
+}
+
+func stopModelServer(client *api.Client, slug string) tea.Cmd {
+	return func() tea.Msg {
+		if err := client.StopModelServer(slug); err != nil {
+			return modelServerActed{status: err.Error(), reload: true}
+		}
+		return modelServerActed{status: slug + " stopped", reload: true}
 	}
 }
 

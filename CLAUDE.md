@@ -10,6 +10,53 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 3. `SPECIFICATION.md` - Detailed architecture and requirements (now in Obsidian: `/home/ben/Obsidian/vault/ProjectAria/Specs/SPECIFICATION.md`)
 
 > **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault at `/home/ben/Obsidian/vault/ProjectAria/` (synced to all devices). Agent-operational docs (this file, `PROJECT_STATUS.md`, `BACKLOG.md`, handoffs, READMEs) stay in the repo. See the `project-docs` skill.
+>
+> ⚠️ The vault has **both** a `ProjectAria/` and an `infrastructure/` folder. File by what the doc is *about*: agent architecture, routing, ARIA operations → `ProjectAria/`; how a model is built, quantized, tuned or measured → `infrastructure/`. (`HOUSE_AGENT_ARCHITECTURE_20260815` moved `infrastructure/Planning` → `ProjectAria/Planning` on 2026-08-15 for exactly this reason.)
+
+## Working set: the `infrastructure` repo
+
+**ARIA orchestrates `~/Development/infrastructure`. Treat it as part of your working set, not
+as an external dependency you merely read.** This repo is the **control plane** — what runs,
+when, and how it loads; `infrastructure/` is the **data plane** it drives (compose project,
+per-deployment folders, weights, `endpoints.env`, `CATALOG.md`). The cross-repo map is in
+`~/Development/CLAUDE.md`; `infrastructure/CLAUDE.md` says the same from the other side.
+
+⚠️ **They are two git repos, not submodules.** A deployment change usually touches both —
+**commit in both**, and say so. Editing `infrastructure/` and committing only here leaves the
+change half-recorded.
+
+**A deployment ARIA does not know about is not deployed; it is a folder.** So adding or
+changing one is *always* a two-repo job:
+
+1. **Artifacts in `infrastructure/`** — a self-contained `<slug>/` folder (`model/`,
+   `runtime/`, `serve.sh` whose env knobs ARE the "how"), plus its compose entry or systemd
+   unit. Deployments with a `serve.sh` but no unit get an ARIA-generated
+   `aria-model-<slug>.service`.
+2. **Register it here** in `api/aria/infrastructure/model_servers.py` (`REGISTRY`) — port,
+   runtime fork/branch/commit, backend device and **which memory pool** it draws from,
+   RAM-exclusivity group, resident/overhead estimates, and the launch `parameters` the knobs
+   in (1) expose. A non-LLM service goes in the *sibling* registry
+   `api/aria/infrastructure/services.py` instead, with an `expected_state`. **Never merge the
+   two registries** — see the module docstring for the three ways that breaks.
+3. **Tests** — `api/tests/test_model_servers.py` / `test_service_registry.py` (the latter
+   enforces the registries stay disjoint by slug and by port).
+4. **Docs** — `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` for the operational recipe, `CHANGELOG.md`,
+   and the vault for design/measurement writeups (routing note above).
+
+Retiring a deployment is the mirror image: set `startable=False` **with a stated reason**
+rather than deleting the entry — the reason is the record of what happened, and deleting it
+invites re-adding a model that is already here.
+
+⚠️ **Never hand-run `docker`/`systemctl`/`serve.sh`** to start or stop any of this; the
+registries enforce RAM exclusivity, per-pool fit and port conflicts that a raw `docker start`
+does not (rule since 2026-07-29 — see *Current model topology* below).
+
+> **Spawning an agent for this work:** start it in **this repo**, not in `infrastructure/` —
+> here it inherits the registry rules, the topology, and this recipe. Note that
+> `start_coding_session` defaults to `coding_default_workspace`
+> (`/home/ben/Development/aria-projects`), so an ARIA-spawned session lands in *neither* repo
+> unless you pass `workspace=/home/ben/Development/ProjectAria` explicitly. Do pass it, and
+> state in the prompt that the task spans both repos.
 
 ## Architecture Overview
 
@@ -71,6 +118,15 @@ User Message → API (FastAPI) → Orchestrator
 1. **Short-term** (`conversations` collection): Recent conversation context via fast MongoDB queries. Current conversation + last 24h.
 2. **Long-term** (`memories` collection): Hybrid search combining `$vectorSearch` (1024-dim voyage-4-nano) + `$search` (BM25) via RRF fusion (k=60). Background extraction from conversations via LLM.
 
+**Both retrieval dependencies are switchable at runtime** (`memory/capabilities.py`, added 2026-08-15). mongot (`search`) and the embeddings model (`embeddings`) are independent switches, persisted in a fixed-`_id` doc (`db.capabilities`/`_id=retrieval`) exactly like the killswitch — so a capability switched off **stays off across an `aria-api` restart**; `EMBEDDINGS_ENABLED`/`SEARCH_ENABLED` in `.env` are boot defaults only, never an override. Runbook: **`docs/ops/RETRIEVAL_CAPABILITIES.md`**.
+
+> ⚠️ **BOTH ARE CURRENTLY OFF (since 2026-08-15T17:19-04:00).** `retrieval_mode` is **`fallback`**: every memory search is served by the mongod-native scan, with no BM25 and no vectors. `shared-embeddings` is **stopped**; `shared-mongot` is still running but receives no queries (it is shared with AgentBenchPlatform, so stopping the container is a cross-project call). **826 memories + 21 ontology entities are queued for re-embedding** and drain automatically when `embeddings` is switched back on. **Check `GET /api/v1/capabilities/retrieval` before concluding that recall is broken** — degraded recall is the expected state right now, not a bug.
+
+- **Recall degrades, it does not fail.** `embeddings off` → BM25-only (no query embedding computed at all); `search off` → a mongod-native fallback scan (token overlap + importance). `retrieval_mode` (`hybrid`|`lexical`|`fallback`) is the one field that says what a search will actually do. The same fallback now also catches an *unswitched* dead mongot: search branches raise `SearchBranchUnavailable` instead of returning `[]`, so "nothing matched" and "could not answer" are no longer the same thing — the second used to yield silent empty recall.
+- **Writes never wait on either.** A memory that can't be embedded is stored with `embedding_pending: true`; that flag **is the backfill queue**. `memory/backfill.py` drains it on a timer *and* immediately when embeddings are switched back on — so "turn it back on" and "catch up on what was missed" are one action. It also covers `embedding: null` docs predating the flag and un-embedded ontology entities. Vector dedup needs mongot; while it's off, `create_memory` falls back to exact-content dedup (the machine emitters re-emit identical text routinely).
+- **A disabled capability never pages.** `/health/services` and `shells/selfcheck.py` skip both probes when the switch is off — the same "stopped on purpose" rule as the RAM-exclusive model servers. This is the point of the switch: stopping mongot to free the box previously fed the Hermes alert-triage cron an incident with no fix every 10 minutes.
+- API: `GET`/`PUT /api/v1/capabilities/retrieval` (`with_service=true` also stops/starts `shared-mongot`/`shared-embeddings` via the non-LLM service registry, in the safe order — switch off then stop, start then switch on), `POST /capabilities/retrieval/backfill` for a synchronous catch-up pass. MCP: `retrieval_capabilities` / `set_retrieval_capabilities`.
+
 ### LLM Adapter Pattern
 
 All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
@@ -80,14 +136,21 @@ All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
 
 Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter.py`, `fireworks.py`. The OpenRouter and Fireworks adapters use the OpenAI SDK internally (OpenAI-compatible); `fireworks.py` subclasses `OpenRouterAdapter` to reuse its GLM reasoning-mode handling. Manager (`manager.py`) handles backend selection and fallback chain.
 
-**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; as of 2026-07-28, two-server split + same-day routing correction + an evening crash that added a third server — full detail in `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` §10 and `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #24–28):
-- **Three local model servers now, no shared KV cache between any of them.** `chadrock` (`:8102`, Laguna S 2.1 ROCmFP4/Vulkan, `-c 131072`) is the **`pool` CLI's dedicated server only** — nothing else may point at it, on purpose, since it's `--parallel 1`. `qwen3.6-35b-a3b` (`:8103`, Qwen3.6-35B-A3B-MTP ROCmFP4/Vulkan, renamed from `qwen-hermes`, `-c` trimmed to **100000**) serves **Hermes's main chat only** — `backend=llamacpp`/`agentic` still resolve here, but both consumers behind them (ARIA's default chat agent, Search Agent) are disabled, so it's single-active-consumer in practice. **`gemma-aux`** (`:8104`, Gemma 4 E4B Q4_0, **CPU-only**, new 2026-07-28 evening) took Hermes's ~16 auxiliary side-tasks + 2 cron jobs off qwen entirely. **⚠️ Docker/cgroup memory limits do not see GPU-offloaded memory on this unified-memory box** — `mem_limit` only works on gemma-aux (CPU-only); real pressure on chadrock/qwen must be read from `/sys/class/drm/card0/device/mem_info_gtt_{used,total}`, now monitored in `selfcheck.py`.
-- **Pi Coding** is an external coding-session backend, not an ARIA chat persona. ARIA launches the real upstream `pi` executable in a watched tmux shell. The legacy `db.agents` rows are launch profiles: `pi-coding` selects **`provider=agentic`, Chadrockv2 Qwen3.6-27B ROCmFP6 on `:8105`**; `pi-coding-ridge` selects **`provider=ridge`, Qwen3.6-35B-A3B on Ridge's RTX 3090** via `ridge-llama-proxy`. Pi owns tools/transcript/context; ARIA owns the shell, worktree, fleet capture, concurrency, watchdog, review, and Ralph loop. A bare `backend="pi-code"` inherits `pi-coding`. `:8105` is stopped by default; start it through the registry before launching local Pi.
+**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; rewritten **2026-08-14** for the two-GPU box — full detail in `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` **§11–§12** and `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #36):
+- **TWO GPUs, two separate memory pools — this is the governing fact now.** An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB of its own VRAM) sits alongside the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). A model on one does **not** compete with a model on the other, so the normal deployment is **one of each**: DS4 Flash on the Halo + Qwen3.8-27B on the R9700, both resident, verified live 2026-08-14 (`infrastructure/DUAL-SERVING.md`). ⚠️ **DRM enumeration is inverted from what you would guess**: `card0` = R9700 (discrete), `card1` = Strix Halo. The old hardcoded `/sys/class/drm/card0/.../mem_info_gtt_*` read therefore reported the *dGPU's* near-empty pool while the Halo held ~98 GiB; `infrastructure/gpu_devices.py` classifies cards by VRAM instead and reports **per pool**, and `model_servers.py` + `selfcheck.py` both gate on the pool a server actually draws from. ⚠️ **`Vulkan0` now means the R9700, not the iGPU** — every compose file written before the dGPU arrived is wrong about its device (those entries are flagged `startable=False` pending an audit). ⚠️ **Start order matters:** the dGPU model FIRST — it needs host RAM only transiently to reach VRAM, while the Halo model takes and holds ~100 GiB (reversing it OOM-killed the Halo model 17 MiB short).
+- **Which model, and how it loads, are both selectable.** Each live deployment is a self-contained folder under `infrastructure/` (`ds4-halo-xxs`, `ds4-hybrid`, `ds4-affine`, `qwen-r9700`, `qwen3.8-27b`) holding `model/`, `runtime/`, and a `serve.sh` whose env knobs — device placement, KV type, context, drafter, slots, prompt cache — ARE the "how". The registry declares those knobs as `parameters`, and `start(overrides=...)` applies them **as a systemd drop-in** (`<unit>.d/zz-aria-overrides.conf`, sorts last) rather than by building a command line, so every ExecStartPre guard, the `OOMScoreAdjust=900` backstop and the launcher's MemAvailable floors survive — and the override is a file Ben can read or delete. A start with **no** overrides clears ARIA's drop-in, so a context size chosen for one experiment cannot silently outlive it. Deployments with a `serve.sh` but no unit of their own (`ds4-affine`, `ds4-hybrid`) get an ARIA-generated `aria-model-<slug>.service`, with the guard env declared in the registry entry.
+- **The Halo side, one at a time (86–100 GiB each).** `DS4-0731-IQ3_XXS-Halo-Vulkan` (`:8108`, `ds4-halo-xxs.service`, Nathan's Vulkan fork — it implements the DeepSeek-V4 kernels mainline Vulkan disables, which is why it beats both mainline Vulkan and mainline ROCm here) is the **APU-only** profile — since 2026-08-15T16:35 the **single-slot coding-agent (pi) model** (q8_0 KV, one 131K slot, no drafter; Hermes's default moved to Qwen3.8 on the R9700). `DS4-0731-IQ3_S-Hybrid-ROCm-Dual` (`:18211`, mainline HIP dual-arch) **splits the higher-quality IQ3_S across both cards** (80/20, `PLACEMENT=split|hybrid`). `DS4-0731-ROCmFPX-Affine-Quality` (`:8107`, sealed O5 runtime) is the **quality/long-recall reference** — 238/256 broad, 24/24 long-context, and slow; type-108 tensors load on that runtime ONLY. **`gemma-aux`** (`:8104`, Gemma 4 E4B Q4_0, **CPU-only**) takes Hermes's ~16 auxiliary side-tasks + crons plus ARIA's shell- and ontology-extraction workers, and coexists with anything.
+- **The R9700 side, one at a time (~24 GiB each).** `Qwen3.8-27B-R9700-HIP` (`:8080`, `qwen-r9700.service`; slug renamed from `…-Q6_K-…` 2026-08-15 — the unit's ExecStart is `serve-rocmfp4.sh`, ROCmFPX HIP build serving **ROCmFP4** by default, quant is a launch parameter) is the live one. **Since 2026-08-15T16:35 it is Hermes's DEFAULT model** (`custom:qwen38-r9700`, declared 250000) with **`-c 327680 -np 2 --kv-unified`** — one 320K KV pool, main conversation up to the native 262144 + a ~64K cron slot, 23.7 GiB VRAM; DS4 on `:8108` (q8_0 KV, one 131K slot, no drafter — the drafter must share the target's device on Nathan v0.6.1 and does not fit on the Halo) is now the single-slot **coding-agent (pi)** model. `Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP` (`:8110`, ROCmFPX image) trades it for **MTP self-speculative decode: 39.02 vs 22.92 tok/s**, at the cost of a compose-frozen configuration. `Qwen3.8-27B-ROCmFP4-R9700-Vulkan` (`:8110`, profile `rocmfp4`) serves the **AMD-native ROCmFPX weights** — 4.6 GiB smaller, never yet started. ⚠️ `-fit off` is load-bearing on all three: a failed VRAM fit silently serves from host memory at ~0.4 tok/s and eats the RAM the Halo model needs, so **check decode speed after a restart, not just `/health`**.
+- ⚠️ **Most older registry entries are `startable=False` with a stated reason.** The 2026-08-11..14 infrastructure consolidation moved every runtime bundle into the deployment folders above; the Ling and Step runtimes were not relocated (their weights remain), the IQ2_M profile lost both, and the Laguna/chadrockv2 GGUFs are gone. Those entries are **kept, not deleted** — the reason is the record of what happened, and deleting them invites re-adding a model that is already here.
+- **~~Six slots, one per consumer~~ — SUPERSEDED 2026-08-15** (this paragraph describes the retired affine `:8107` deployment; today: DS4 = one 131K slot for pi, Qwen = 2 slots / 320K unified pool for Hermes — `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` §13). Kept for the `-c`-is-per-sequence lesson: **Six slots, one per consumer — this was the whole cache design.** `-c 65536 -np 6 --kv-unified -ub 256` → **64K per agent**. ⚠️ **`-c` is PER SEQUENCE, not a total to divide**; total KV = `-c` × `-np`. The old six-by-204800 geometry was capacity-deployed but not pressure-qualified. On 2026-08-10 six-by-128K/ub512 and six-by-64K/ub512 both crossed the 12 GiB floor during a 33K prefill; six-by-64K/ub256 completed it with ~17.8 GiB available and then reused 32,768 tokens in 4.33–4.40 s. Slot 0 Hermes, slot 1 system pi-coding, slots 2–4 pi sub-agents, slot 5 ARIA background workers. Over-subscription still produces latency rather than an error; `coding_max_concurrent_pi_sessions` (3) + `coding_pi_reserved_slots` (3) must equal `-np`.
+- **Live slot monitoring:** `GET /api/v1/infrastructure/model-servers/utilization` returns busy/total slots, utilisation, throughput and `saturated` per running server, from llama.cpp `/slots` + `/metrics`. **`saturated` is the field to watch** — queued requests (`requests_deferred > 0`) mean a request lands in whichever slot frees first rather than the one holding its prefix. `declared_*` vs live is a drift check for "unit edited, not restarted". The affine registry uses the measured peak `overhead_gib=15.6`; the service independently enforces the host-memory floor.
+- **Served context has one source of truth per deployment, and ARIA reads it — never a hand-copied number.** For a unit that spells out `-c`/`-np` in its `ExecStart`, that is the source (`read_launch_geometry()` parses it). For a `serve.sh` deployment, where the ExecStart is a script and the context arrives through the environment, the source is the effective launch parameter — ARIA's drop-in, else a hand-written drop-in, else the script's own `${CTX:-…}` default — and the reported value says which (`parameters[].source`). Either way `served_ctx`/`slots`/`ctx_per_slot` in `GET /api/v1/infrastructure/model-servers`, the footprint (`effective_resident_gib()` = weights + KV(served `-c` × `-np`) + buffers) and the start-time memory gate all follow it automatically. ⚠️ **`-c` is per sequence**; total KV = `-c` × `-np`. The hand-maintained Hermes/pi `context_length` copies still have to be kept aligned by hand.
+- **Pi Coding** is an external coding-session backend, not an ARIA chat persona. ARIA launches the real upstream `pi` executable in a watched tmux shell. The legacy `db.agents` rows are launch profiles: `pi-coding` runs on **DS4** (`backend=llamacpp` → the `:8200` passthrough, bound to `DS4-0731-ROCMFPX-affine-256k`); `pi-coding-ridge` selects **`provider=ridge`, Qwen3.6-35B-A3B on Ridge's RTX 3090** via `ridge-llama-proxy`. Pi owns tools/transcript/context; ARIA owns the shell, worktree, fleet capture, concurrency, watchdog, review, and Ralph loop. A bare `backend="pi-code"` inherits `pi-coding`. ⚠️ **Two provider-mapping layers:** ARIA's `PI_CODING_PROVIDER_LLAMACPP`/`_AGENTIC` (both `ds4`) name a provider inside *pi's own* `~/.pi/agent/models.json`, which has its own base_urls. Changing ARIA's backend is not enough — check both.
 - **This host is LOCAL-ONLY as of 2026-07-26.** `OPENROUTER_API_KEY` is commented out in `.env` (credits exhausted, HTTP 402) and Fireworks is gone, so `GET /health` reports `available (llamacpp, agentic, ridge)`. **There is no cloud fallback anywhere.** Two settings that had been silently failing against the dead OpenRouter account are now local: `PLANNING_AMBIENT_BACKEND` (ambient task capture, fires on **every conversation turn**) and `HEARTBEAT_BACKEND`.
 - **The old shared-`laguna` slot-proxy topology is retired.** `:8095`–`:8100` no longer listen; there's no per-agent slot pinning anymore because each server now has exactly the consumer set described above, not a pool of consumers to pin against.
 - **Fireworks / GLM 5.2 is not in use.** `FIREWORKS_API_KEY` was removed from `.env` on 2026-07-23 after it began returning 401. The adapter and the `fireworks`/`glm` aliases remain — re-add a key to reactivate.
 - The `qwen-rocmfp4` compose project under `infrastructure/` still defines **qwen-chat** `:8092` and **qwen-agentic** `:8093`; those containers are **RETIRED** (not deleted — profile-gated). ⚠️ `:8092` is bound by `ridge-llama-proxy` on the **tailnet IP only**, so `localhost:8092` is connection-refused even though `ss` shows a listener — this has caused misdiagnosis repeatedly.
-- **As of 2026-07-29, ALL start/stop of these servers goes through ARIA's model-server registry (`api/aria/infrastructure/model_servers.py`), not manual `docker`/`docker compose` commands.** It tracks, per server, which llama.cpp fork/branch/commit + backend device (Vulkan/HIP/CPU) it needs — mixing a model with the wrong runtime either refuses to load or can wedge the GPU — plus a RAM-exclusivity group and a live-GTT-usage SWAG check, both of which hard-refuse `start()` unless `force=True`. Registry slugs (Ben's naming, tracks quant/runtime): `Laguna-S-2.1`, `Chadrock-Laguna-S-2.1`, `ROCmFP4-qwen3.6-35b-a3b`, `qwen3.6-35b-a3b-Q4`, `qwen3.6-27b-Q8`, `context1-Q4`, `gemma-4-e4b-Q4`, `Chadrock-ROCmFP6-qwen3.6-27b` (verified startable 2026-07-30, now bound to `pi-coding`), `Qwythos-27b-Q8` (startable, unbound — vision-capable), and off-box `Ridge-Qwen3.6-35B-A3B`. `bind()`/`unbind()` descriptively pair a server with an agent (`AgentResponse.model_server`, one-agent-per-server enforced) — it does not change the agent's actual `llm.backend`/`model` routing. API: `/api/v1/infrastructure/model-servers`; MCP: `list_model_servers`/`start_model_server`/`stop_model_server`/`bind_model_server`/`unbind_model_server`.
+- **ALL start/stop of these servers goes through ARIA's model-server registry (`api/aria/infrastructure/model_servers.py`), not manual `docker`/`systemctl`/`serve.sh` commands** (rule since 2026-07-29; extended 2026-08-14 to cover *how* a model loads, not just whether). Per server it tracks the llama.cpp fork/branch/commit, the backend device and **which memory pool** it draws from — mixing a model with the wrong runtime either refuses to load or can wedge the GPU — plus a RAM-exclusivity group, a **port** conflict check, and a live **per-pool** usage check; all of them hard-refuse `start()` unless `force=True`. Live deployment slugs: `DS4-0731-IQ3_XXS-Halo-Vulkan`, `DS4-0731-IQ3_S-Hybrid-ROCm-Dual`, `DS4-0731-ROCmFPX-Affine-Quality`, `Qwen3.8-27B-Q6_K-R9700-HIP`, `Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP`, `Qwen3.8-27B-ROCmFP4-R9700-Vulkan`, `gemma-4-e4b-Q4`, plus off-box `Ridge-Qwen3.6-35B-A3B`; the rest are retained with `startable=False` and a reason. `bind()`/`unbind()` descriptively pair a server with an agent (`AgentResponse.model_server`, one-agent-per-server enforced) — it does not change the agent's actual `llm.backend`/`model` routing. API: `/api/v1/infrastructure/model-servers` (+ `/devices` for the GPU/pool map, `overrides` on `/start`); MCP: `list_model_servers`/`list_gpu_devices`/`start_model_server`/`stop_model_server`/`bind_model_server`/`unbind_model_server`; UI: `/operate` (Launch configuration panel); TUI: `g`.
 
 **Model pinning, cost & health:**
 - A conversation can be pinned to a specific backend/model via `/model <backend> [<model-id>]` (strict — no fallback); `/model auto` unpins; `/route <task>` applies an advisory heuristic pin. Backend aliases include `agentic`/`qwen-agentic` and `fireworks`/`glm`.
@@ -189,6 +252,82 @@ surface, deliberately deferred pending its own design conversation):
   debounce. The did-it-work check is the NEXT sweep by design (the injected
   text resets the idle clock).
 
+### Non-LLM Service Registry (`api/aria/infrastructure/services.py`)
+
+The **sibling** of the model-server registry, added 2026-08-07 to answer "what
+is supposed to be running, and is it?" for the ~19 non-LLM services (mongod,
+mongot, embeddings, aria-api, aria-tmux, aria-ui, tts, stt, hermes-gateway,
+hermes-webui, signal-cli, the ridge/red proxies, samba, …).
+
+⚠️ **Never merge this into `model_servers.REGISTRY`.** Verified against the
+code: (1) `llm_route.match_requested()` matches a request's `model` field
+against registry slugs, so `model: "shared-mongod"` would proxy LLM traffic to
+:27017; (2) `rank_resident()` scores a missing `resident_gib_estimate` as
+`0.0` rather than excluding it, making non-LLM rows auto-route candidates;
+(3) decisively, `health.py` builds `stopped_on_purpose` **by port** from
+`model_servers.status()` because the big LLM servers are mutually RAM-exclusive
+and *are* meant to be down — sharing the registry would make "mongod is down"
+read as "stopped on purpose" and silence the alert. A disjointness test
+(`tests/test_service_registry.py`) enforces the separation by slug and by port.
+
+- **`expected_state`** is the field that carries the difference: `always_up`
+  (down = incident, reaches the alert cron) vs `on_demand` (stopped is normal,
+  never pages). Anything whose policy was inferred rather than confirmed is
+  flagged `needs_review=True` — currently 7 entries, including **`aria-stt`,
+  which had been EXITED for 7 days while `/health/services` counted it
+  unhealthy every tick**.
+- `manageable=False` for `aria-api` (would restart itself mid-request),
+  `aria-tmux` (see the tmux gotcha) and system units like `smbd`.
+- API: `GET /api/v1/infrastructure/services`, `/services/{slug}`,
+  `POST /services/{slug}/{start,stop}`, plus **`GET /api/v1/infrastructure/running`**
+  — a union read over BOTH registries, so "what is running" has one answer
+  without merging the two control planes.
+
+### Ontology Memory Map (`api/aria/ontology/`)
+
+A queryable knowledge graph of Ben's world — machines, services, projects,
+datastores, networks, devices — cross-linked into `aria.memories`. Design:
+`vault/ProjectAria/Design/ONTOLOGY_MEMORY_DESIGN.md`. Built 2026-08-07.
+
+**The rule that shapes everything: project what churns, hand-author what
+doesn't.** The original plan hand-seeded ~40 entities including every service;
+three weeks later that list named two retired qwen containers, a dead Fireworks
+account and a retired slot topology. So:
+
+- **Projected** (`projection.py`, never hand-written): `project` from
+  `db.projects` (53), `service` from BOTH registries (32), `machine` from
+  `db.nodes` (remote nodes only). Vanished things go `stale`, never deleted.
+- **Hand-authored** (`seed.py`, ~14): machines, devices, datastores, networks,
+  person — the durable physical world, which has no authoritative collection.
+- **Ownership (S3):** `attributes`/`status`/`name` are worker-owned;
+  `summary`/`aliases`/`tags` are human-owned and a projection *cannot* write
+  them (enforced in `store.upsert_entity`, not in each caller). Contradictions
+  go to the `scan_review` queue.
+- **Refresh:** `OntologyProjectionEmitter` rides the S2 scan worker with
+  `always_run = True` — its inputs (registries, `db.projects`) change without
+  the machine snapshot changing, so the default change-gated contract would
+  refresh the graph only by coincidence.
+- **Memory cross-link:** `memories.entities[]` **is** the link (3,709 memories
+  linked, LLM-free, via most-specific-root path-category mapping — never plain
+  prefix matching). There are deliberately **no bulk `mentions` edges**: they
+  duplicated `entities[]`, grew ~670/day, and buried every structural edge
+  (`project:aria` came back 500-of-500 mentions). "Which memories mention X"
+  reads `memories.entities[]` instead.
+- **LLM extraction** is gated: forward-only on new memories
+  (`ontology_extraction_enabled`, default off) plus a resumable backfill of the
+  ~877 *curated* memories. The 13,671 machine-generated ones
+  (`shell_extraction` + `claude_session_digest`) get **no** LLM pass — closed
+  by decision, enforced by `BULK_SOURCE_TYPES`.
+- ⚠️ Extraction routes to **`gemma-4-e4b-Q4` explicitly**, not the resident
+  model: DS4 is a reasoning model that spent its entire token budget thinking
+  and returned no JSON, silently labelling every memory with zero entities. A
+  **verification gate** (`verify_slug`) then requires the memory text to
+  actually contain the entity's name — it rejected a wrong-quant model server,
+  an unrelated container, and two entities absent from the text.
+- API: `/api/v1/ontology/{map,search,neighbors,stats,vocabulary,entity,relation,project}`;
+  CLI: the stdlib-only **`kg`** client in `~/.claude/skills/agent-memory/`
+  (HTTP, no venv, so it runs from any machine).
+
 ### MCP Server (`mcp/server.py`) — Hermes bridge
 
 ProjectAria exposes an MCP server (FastMCP, run via `~/.local/share/aria-mcp/`,
@@ -203,7 +342,7 @@ Overview*) — ~40 tools wrapping `/api/v1`:
 - **Projects / tasks** — native `/todos` + `/projects/{id|slug}`.
 - **Alerts** — list_alerts, ack_alert.
 - **Health / cost** — aria_health (quick, config-presence only), **health_services** (real per-backend reachability probes), **get_usage_cost** (spend by model/backend).
-- **Model servers** — list_model_servers, start_model_server, stop_model_server, bind_model_server, unbind_model_server (the local LLM control plane — see *LLM Adapter Pattern* above).
+- **Model servers** — list_model_servers, **model_server_utilization** (live busy/total slots + queue depth; `saturated` is the field to watch, and `null` there means *unknown* because the server lacks `--metrics`, not "not saturated"), start_model_server, stop_model_server, bind_model_server, unbind_model_server (the local LLM control plane — see *LLM Adapter Pattern* above).
 - **Long-form / trackers** — publish_to_obsidian (guarded markdown into the vault, C6), create_linear_ticket (Signal → Hermes → Linear capture path, C3; 409 while Linear is disabled).
 
 After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset —
@@ -332,7 +471,8 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 |---------|------|---------|
 | mongod | 27017 | MongoDB 8.2 data (replica set `rs0`) |
 | mongot | 27028 | MongoDB search (vector + text) |
-| laguna | 8095 | local LLM — `laguna-s-2.1` Q4_K_M (ROCm). **Currently serves both `llamacpp_url` and `agentic_url`** |
+| laguna | 8095 | local LLM — `laguna-s-2.1` Q4_K_M (ROCm). **STOPPED**, on-demand only (2026-08-08: `llamacpp_url` *and* `agentic_url` both point at the `:8200` passthrough now, not at any model port) |
+| DS4 Flash | 8107 | local LLM — affine quality default, 6 slots × 64K. systemd `deepseek-v4-quality-256k.service` (compatibility name), **tailnet IP only** |
 | embeddings | 8001 | voyage-4-nano via sentence-transformers (CPU) |
 | qwen-chat | 8092 | local LLM — Qwen3.6 **35B-A3B** (ROCm). Defined but *not running* |
 | qwen-agentic | 8093 | local LLM — Qwen3.6 **27B** (ROCm). Defined but *not running* |
@@ -356,8 +496,13 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 > minutes into the Hermes alert-triage cron. `LLAMACPP_API_KEY` must equal
 > `API_KEY` (the middleware accepts it as `Authorization: Bearer`). To swap the
 > *resident* model, start/stop servers through the model-server registry — the
-> `llamacpp` backend follows automatically. `AGENTIC_URL` still names a specific
-> port (`:8105`) because it is the on-demand local coding server.
+> `llamacpp` backend follows automatically. **`AGENTIC_URL` now follows it too
+> (2026-08-08)** — it named `:8105` (chadrockv2), which is *stopped by default*,
+> so every consumer of the `agentic` backend dialled a port with no listener;
+> the shell-extraction worker did exactly that every 10 minutes. Both consumers
+> have since moved (extraction names gemma via `SHELLS_EXTRACTION_*`; pi reaches
+> DS4 through pi's own `ds4` provider), and pointing it at the passthrough means
+> anything still resolving `agentic` lands on the resident server instead.
 >
 > **Hermes follows the same passthrough (2026-08-05).** `~/.hermes/config.yaml`
 > no longer names a model: `model.default: aria-resident` /

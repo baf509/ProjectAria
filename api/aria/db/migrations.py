@@ -154,6 +154,15 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     await _safe_create_index(db.memories, "access_count", name="memory_access_count")
     await _safe_create_index(db.memories, "content_type", name="memory_content_type")
     await _safe_create_index(db.memories, "categories", name="memory_categories")
+    # Backfill queue (memory/backfill.py). Partial so it indexes only the docs
+    # that are actually waiting — normally zero, and at most a short outage's
+    # worth — instead of carrying an entry for every memory in the collection.
+    await _safe_create_index(
+        db.memories,
+        "embedding_pending",
+        name="memory_embedding_pending",
+        partialFilterExpression={"embedding_pending": True},
+    )
     await _safe_create_index(db.usage, "timestamp", name="usage_timestamp")
     await _safe_create_index(db.usage, "model", name="usage_model")
     await _safe_create_index(db.usage, "source", name="usage_source")

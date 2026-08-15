@@ -243,15 +243,31 @@ class ScanReconcileWorker:
         prev = state.get("snapshot") if state else None
         diff = _diff(prev, snapshot)
 
-        # First run establishes the baseline only — everything would otherwise
-        # look "added" and spam a memory per container/service. Emit changes only
-        # once we have a prior snapshot to diff against.
-        if prev is not None and diff:
-            for em in self.emitters:
+        # Emitters come in two flavours:
+        #
+        #  - change-driven (default): only run when the snapshot actually
+        #    diffed. First run establishes the baseline only — everything would
+        #    otherwise look "added" and spam a memory per container/service.
+        #  - always-run (`always_run = True`): run every tick regardless of the
+        #    diff, including the baseline tick. The ontology projection needs
+        #    this because its inputs (db.projects, the two registries) change
+        #    without any container/service/port changing — gating it on a
+        #    machine-state diff would leave the graph refreshing only by
+        #    coincidence.
+        change_emitters = [e for e in self.emitters if not getattr(e, "always_run", False)]
+        always_emitters = [e for e in self.emitters if getattr(e, "always_run", False)]
+
+        async def _fire(emitters: list) -> None:
+            for em in emitters:
                 try:
                     await em.emit(self.db, snapshot, diff)
                 except Exception as e:  # noqa: BLE001 — one emitter must not kill the tick
                     logger.error("scan emitter %s failed: %s", type(em).__name__, e)
+
+        await _fire(always_emitters)
+
+        if prev is not None and diff:
+            await _fire(change_emitters)
 
             # S3: a removed service is worth a glance
             for key in ("containers", "services"):

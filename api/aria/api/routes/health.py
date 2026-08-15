@@ -21,6 +21,7 @@ from aria.config import settings
 from aria.infrastructure.model_servers import ModelServerManager
 from aria.db.models import HealthResponse
 from aria.llm.manager import llm_manager
+from aria.memory.capabilities import retrieval_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,17 @@ async def services_health(
                 "detail": type(e).__name__,
             }
 
+    async def _disabled_capability(name: str) -> dict:
+        """Awaitable stand-in so a disabled capability can sit in the task list."""
+        cap = retrieval_capabilities.status().get(name, {})
+        reason = cap.get("reason") or "switched off"
+        return {
+            "name": name,
+            "ok": True,
+            "latency_ms": 0,
+            "detail": f"capability disabled ({reason})",
+        }
+
     async def mongo_ping() -> dict:
         t0 = time.monotonic()
         try:
@@ -206,6 +218,19 @@ async def services_health(
     async def mongot_ping() -> dict:
         # mongot isn't exposed on the host; verify it via a search-index list
         # (which is served by mongot through mongod).
+        #
+        # A capability switched OFF is not a degraded one — same rule as a
+        # deliberately-stopped model server, and the reason the switch exists:
+        # without this, turning mongot off to free the box would page the
+        # Hermes alert-triage cron every 10 minutes about a decision the
+        # operator made on purpose.
+        if not retrieval_capabilities.search_enabled:
+            return {
+                "name": "mongot",
+                "ok": True,
+                "latency_ms": 0,
+                "detail": "search capability disabled (not probed)",
+            }
         t0 = time.monotonic()
         try:
             cur = db.memories.aggregate([{"$listSearchIndexes": {}}])
@@ -233,6 +258,27 @@ async def services_health(
     except Exception as e:  # registry is advisory here, never fatal to health
         logger.debug("services_health: model-server registry unavailable: %s", e)
 
+    # The NON-LLM half of the same question, from the sibling registry. The two
+    # are kept separate on purpose: a stopped model server is normal (they are
+    # mutually RAM-exclusive), whereas a stopped mongod is always an incident.
+    # `expected_state` is what carries that difference — an `on_demand` service
+    # may report healthy while stopped; an `always_up` one may not, ever.
+    #
+    # This closed a real hole: aria-stt had been EXITED for 7 days (as of
+    # 2026-08-07) while this endpoint probed it unconditionally, so it was
+    # silently counted unhealthy every tick with no way to say "that's fine".
+    svc_expected: dict[int, dict] = {}
+    svc_all: list[dict] = []
+    try:
+        from aria.infrastructure.services import get_service_manager
+
+        svc_all = await get_service_manager().status(db)
+        for s in svc_all:
+            if s.get("port"):
+                svc_expected[int(s["port"])] = s
+    except Exception as e:  # advisory, exactly like the model-server lookup
+        logger.debug("services_health: service registry unavailable: %s", e)
+
     def _port_of(url: str) -> int | None:
         try:
             return urlparse(url).port
@@ -258,6 +304,27 @@ async def services_health(
         headers = {"X-API-Key": settings.api_key} if settings.api_key else None
         return await http_ping(name, f"{url.rstrip('/')}/models", headers=headers)
 
+    async def svc_ping(name: str, url: str) -> dict:
+        """Probe a non-LLM service, honouring its registry `expected_state`.
+
+        An `on_demand` service that is simply stopped is reported healthy with
+        a reason, rather than as a failure nobody can act on. An `always_up`
+        one is probed normally — if it is down, that must surface.
+        """
+        entry = svc_expected.get(_port_of(url) or -1)
+        if (
+            entry
+            and entry.get("expected_state") == "on_demand"
+            and entry.get("state") != "running"
+        ):
+            return {
+                "name": name,
+                "ok": True,
+                "latency_ms": 0,
+                "detail": f"{entry['slug']} stopped (on demand)",
+            }
+        return await http_ping(name, url)
+
     tasks = [
         mongo_ping(),
         mongot_ping(),
@@ -275,9 +342,19 @@ async def services_health(
         # Ridge sleeps when idle, so a probe would either report it DOWN when it
         # is merely asleep, or send a Wake-on-LAN on every health tick and keep a
         # gaming PC awake 24/7. Its liveness is the proxy's job, not this list's.
-        http_ping("embeddings", f"{_base(settings.embedding_url)}/health"),
-        http_ping("tts", f"{_base(settings.tts_url)}/health"),
-        http_ping("stt", f"{_base(settings.stt_url)}/health"),
+        # Routed through svc_ping so a deliberately-stopped on_demand service
+        # (stt, today) reads as "stopped on demand" rather than as a failure.
+        # embeddings and tts are always_up in the registry, so this is a no-op
+        # for them — they still get a real probe and still go red when down.
+        # Same rule as mongot above: a disabled capability is reported as such
+        # rather than probed and counted unhealthy.
+        (
+            svc_ping("embeddings", f"{_base(settings.embedding_url)}/health")
+            if retrieval_capabilities.embeddings_enabled
+            else _disabled_capability("embeddings")
+        ),
+        svc_ping("tts", f"{_base(settings.tts_url)}/health"),
+        svc_ping("stt", f"{_base(settings.stt_url)}/health"),
     ]
     if settings.context1_enabled:
         tasks.append(http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"))
@@ -288,6 +365,37 @@ async def services_health(
             headers={"Authorization": f"Bearer {settings.fireworks_api_key}"},
         ))
     results = list(await asyncio.gather(*tasks))
+
+    # Registry-driven additions: the always_up services with no HTTP surface to
+    # probe (signal-cli, hermes-gateway, samba, the tmux owner, ...). Before
+    # this, nothing here noticed if signal-cli died — which silently takes out
+    # alert triage and the Signal→Linear capture path. Process state IS the
+    # health signal for these; there is nothing to GET.
+    #
+    # Ports already probed above are skipped so a service is never double-
+    # counted, and on_demand services are omitted entirely rather than padding
+    # the healthy/total ratio with things that are meant to be down.
+    probed_ports = {
+        _port_of(u)
+        for u in (settings.embedding_url, settings.tts_url, settings.stt_url)
+    } - {None}
+    for s in svc_all:
+        if s.get("expected_state") != "always_up":
+            continue
+        if s.get("port") in probed_ports:
+            continue
+        # mongod/mongot have dedicated probes above that test real reachability
+        # rather than container state; don't shadow them with a weaker signal.
+        if s["slug"] in ("shared-mongod", "shared-mongot"):
+            continue
+        results.append(
+            {
+                "name": s["slug"],
+                "ok": bool(s["healthy"]),
+                "latency_ms": 0,
+                "detail": f"{s['state']} ({s.get('unit') or s.get('container') or 'process'})",
+            }
+        )
 
     healthy = sum(1 for r in results if r["ok"])
     return {"services": results, "healthy": healthy, "total": len(results)}

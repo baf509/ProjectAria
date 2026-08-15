@@ -17,6 +17,7 @@ from aria.db.mongodb import get_database
 from aria.core.orchestrator import Orchestrator
 from aria.infrastructure.model_pull import ModelPullService
 from aria.infrastructure.model_servers import ModelServerManager
+from aria.infrastructure.services import ServiceManager
 from aria.research.service import ResearchService
 from aria.agents.session import CodingSessionManager
 from aria.agents.review import CodingReviewService
@@ -60,6 +61,7 @@ _notification_service: NotificationService = None
 _task_runner: TaskRunner = None
 _research_service: ResearchService = None
 _model_server_manager: ModelServerManager = None
+_service_manager: ServiceManager = None
 _model_pull_service: ModelPullService = None
 _coding_session_manager: CodingSessionManager = None
 _coding_review_service: CodingReviewService = None
@@ -147,6 +149,19 @@ def get_model_server_manager() -> ModelServerManager:
     if _model_server_manager is None:
         _model_server_manager = ModelServerManager()
     return _model_server_manager
+
+
+def get_service_manager() -> ServiceManager:
+    """Get shared non-LLM service registry manager.
+
+    Deliberately separate from get_model_server_manager — see the module
+    docstring in aria/infrastructure/services.py for why the two registries
+    must not merge.
+    """
+    global _service_manager
+    if _service_manager is None:
+        _service_manager = ServiceManager()
+    return _service_manager
 
 
 def get_model_pull_service() -> ModelPullService:
