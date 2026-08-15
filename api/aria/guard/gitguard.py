@@ -504,7 +504,7 @@ class GitGuard:
         base = await self._merge_base(worktree, record)
 
         checks.append(await self._check_worktree_clean(worktree))
-        checks.append(await self._check_command(worktree, check_command))
+        checks.append(await self._check_command(worktree, check_command, session_id))
         changed = await self._changed_paths(worktree, base, head)
         checks.append(await self._check_diff_size(
             worktree, base, head,
@@ -575,15 +575,26 @@ class GitGuard:
             ),
         }
 
-    async def _check_command(self, worktree: str, check_command: Optional[str]) -> dict:
+    async def _check_command(
+        self, worktree: str, check_command: Optional[str], session_id: str = ""
+    ) -> dict:
         command = check_command or settings.coding_gate_command
         if not command:
             return {"name": "check_command", "passed": True, "skipped": True,
                     "detail": "no check command configured"}
         try:
+            # Explicit, scrubbed env. The gate runs the WORKTREE'S OWN
+            # Makefile/test target as ben — that is the point of a check
+            # command, and it means agent-authored code executes here. Passing
+            # aria-api's environment through would hand that code ADMIN_KEY and
+            # API_KEY (both live in the .env this unit loads), which is exactly
+            # the escalation the key split exists to prevent.
+            from aria.guard.sandbox import session_env
+
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=worktree,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                env=session_env(os.environ, session_id=session_id),
             )
             stdout, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=settings.coding_gate_timeout_seconds

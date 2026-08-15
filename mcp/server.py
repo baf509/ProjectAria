@@ -615,14 +615,16 @@ async def rollback_coding_session(session_id: str, to: str = "start") -> dict:
 
 
 @mcp.tool()
-async def coding_session_merge_gate(session_id: str, check_command: str = "") -> dict:
+async def coding_session_merge_gate(session_id: str) -> dict:
     """Run the merge gate — check command, diff size, protected paths, gitleaks,
     charter allowed_paths — and return the verdict.
 
-    It NEVER merges. A merge at autonomy <= 2 is Ben's APPLY and needs the admin
-    key, which MCP deliberately does not have."""
-    params = {"check_command": check_command} if check_command else None
-    return await _request("GET", f"/api/v1/guard/sessions/{session_id}/merge-gate", params=params)
+    The check command comes from the project's own `check_command` or the
+    configured default; a caller cannot supply one (that parameter was a remote
+    shell with the admin key in scope, removed 2026-08-15). It NEVER merges: a
+    merge at autonomy <= 2 is Ben's APPLY and needs the admin key, which MCP
+    deliberately does not have."""
+    return await _request("GET", f"/api/v1/guard/sessions/{session_id}/merge-gate")
 
 
 @mcp.tool()

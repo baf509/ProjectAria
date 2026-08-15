@@ -172,12 +172,22 @@ async def rollback_session(
 @router.get("/guard/sessions/{session_id}/merge-gate")
 async def session_merge_gate(
     session_id: str,
-    check_command: Optional[str] = None,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Run every gate check and return the verdict. Never merges."""
+    """Run every gate check and return the verdict. Never merges.
+
+    ⚠️ There is deliberately NO caller-supplied `check_command`. It existed as an
+    unauthenticated GET query parameter for a few hours on 2026-08-15 and was a
+    remote shell: the string went straight to `create_subprocess_shell` as `ben`
+    with aria-api's whole environment — including ADMIN_KEY and API_KEY from
+    .env — and the last 1500 bytes of output were echoed back in the verdict, so
+    `?check_command=env` returned the admin key to anything that could reach the
+    MCP surface. The gate's command now comes only from the project's own
+    `check_command` or the configured default, which is the only version of this
+    that a gate can safely have: the thing being verified must not choose the
+    verification."""
     try:
-        return await get_git_guard(db).merge_gate(session_id, check_command=check_command)
+        return await get_git_guard(db).merge_gate(session_id)
     except GuardGitError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
