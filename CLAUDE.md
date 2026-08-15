@@ -65,6 +65,14 @@ long-term memory, tool execution, the watched-shell fleet, and coding-session
 orchestration — capabilities a human or agent *drives*, not something a human
 chats with directly.
 
+> **Since 2026-08-15 it is also the STEWARD** (approved plan:
+> `vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md`). The line against
+> Hermes is now explicit: **any loop that runs while Ben is not talking lives in ARIA code; any
+> text Ben reads or writes goes through Hermes (short, typed) or the Obsidian vault (long,
+> editable).** Hermes holds no project state and no supervision policy — the loops that used to
+> live in its cron prompts are ARIA workers now. See *Steward Layer* below and
+> `~/Development/CLAUDE.md` → *Hermes is Ben's channel. ARIA is the steward.*
+
 **Two ways to reach those capabilities (2026-07-28, clarified same day the
 default chat agent was disabled):**
 - **Hermes** (a separate agent, its own service) is the sole conversational/
@@ -449,19 +457,108 @@ is still a useful manual "what would this route to?" client against
 watchdog records a cooldown in `model_availability` when it sees rate-limit text
 in a `claude_code` session's output; the router demotes until it expires.
 
-### Notifications, Alerts & Self-Healing (`api/aria/notifications/`)
+### Notifications, Alerts & Self-Healing (`api/aria/notifications/`) — Alerts v2 since 2026-08-15
 
-ProjectAria does **not** push notifications itself (no Signal/Telegram send path; Telegram was removed entirely). `NotificationService.notify()`
-enqueues cooldown-gated, **actionable** alerts into the `alerts` collection (it
-**drops** `coding:*` / `task` lifecycle events — those aren't alerts, and
-enqueuing them would loop the triage below). `selfcheck` alerts **once per state
-transition** (degraded → recovered), not every tick.
+ProjectAria still does **not** push notifications itself, with exactly two
+break-glass exceptions (below). `NotificationService.notify()` enqueues
+cooldown-gated, **classified** alerts into `alerts`.
 
-Hermes owns the **self-healing loop** (a cron job, `~/.hermes/cron/jobs.json`):
-on each unacked alert it spawns a diagnostic coding sub-agent via the aria MCP,
-collects a root-cause + proposed fix, relays *that* to Signal ("reply APPLY…"),
-and acks. On APPLY, Hermes spawns a fixer agent. Routes: `/api/v1/alerts`
-(`list_alerts` / `ack_alert`).
+**Every alert carries `severity`, `kind`, `needs_human`, `dedup_key`,
+`occurrences`, `delivered_at`, `proposal` and `decision`.** The rule that makes
+the whole thing work: **only `needs_human=True` is relayed to Ben.** Everything
+else is cockpit and digest material.
+
+- ⚠️ **The old `coding:*` drop filter is GONE.** It silently discarded every
+  `stalled:*` / `deadline` / `budget:*` / `loop:*` event, so a stuck coding agent
+  had no channel to reach anyone — the meta layer had no signal at all. Those are
+  now `severity="info", needs_human=False` rows. The feedback loop the filter
+  originally prevented (a fixer agent's own lifecycle noise re-triggering the
+  thing that spawned it) is prevented **structurally** instead: every consumer
+  that *acts* selects `needs_human=true`, and no lifecycle event ever sets it.
+- **Cooldowns live in Mongo** (`alert_cooldowns`), not process memory. The
+  in-memory dict died with each process, and 37 `aria-api` restarts since
+  2026-08-11 turned "alert once per transition" into 31 duplicate rows.
+- **A disabled capability never pages** — `selfcheck` skips the extraction
+  freshness probe while `shells_extraction_enabled` is false, the same rule the
+  retrieval switches follow. That probe was the source of those 31 duplicates.
+
+**The relay, and what watches it.** ARIA queues; a Hermes `no_agent` cron
+("ARIA outbox", `*/5`, `~/.hermes/scripts/aria_outbox.py`) delivers `needs_human`
+alerts over the signal-cli JSON-RPC daemon, marks `delivered_at`, and heartbeats
+back through MCP `relay_heartbeat`. **There is no LLM anywhere in that path** —
+the previous relay was an LLM cron and died three times when its model went away
+(2026-06-29, 07-28, and 08-10, that last one silently for five days).
+`notifications/relay.py` `RelayWatchdog` raises `relay:dead` after 20 minutes
+without a heartbeat, writes `STEWARD_INBOX.md` into the vault, and sends **one**
+direct Signal message — the only sanctioned exception to "ARIA never pushes",
+limited to `relay:dead` and `estop` (decision D5).
+
+**Triage moved in.** `notifications/triage.py` classifies, spawns a DIAGNOSE-ONLY
+session, and writes `proposal={root_cause, fix, confidence, evidence}` onto the
+alert. It never applies the fix — that is Ben's `APPLY <id>`, which arrives as
+MCP `decide_alert` and is recorded in `decision`. `IGNORE` marks a raise
+unnecessary and feeds the false-raise metric.
+
+Routes: `/api/v1/alerts` (`?needs_human&undelivered&severity&kind&project`),
+`POST /alerts/{id}/{ack,decide,delivered}`, `POST /alerts/relay-heartbeat`.
+
+### Steward Layer (`api/aria/steward/`, `api/aria/guard/`) — added 2026-08-15
+
+The approved plan lives at
+`vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md` (decisions D1–D16, phase
+gates, and the live execution status in §E). **Every worker here is OFF by default** — a phase is
+enabled once its gate passes, so a fresh checkout never starts acting on its own.
+
+| Component | What it does |
+|---|---|
+| `guard/policy.py` | Protected paths, the policy hash (tamper detection), `guard_events` |
+| `guard/sandbox.py` | bwrap prefix for coding sessions, resource caps, credential-scrubbed env |
+| `guard/gitguard.py` | Worktree per session, pre-session tag, **checkpoint commits**, bare mirror, merge gate, rollback |
+| `steward/service.py` | Per-project tick: charter → gap → next action, within the charter's autonomy and budget |
+| `steward/research.py` | Question generation, topic dedup + cool-down, budget, **citation check**, publish |
+| `steward/supervisor.py` | Stuck signals + the L0–L5 escalation ladder, cross-kind liveness |
+| `steward/outcomes.py` | `session_outcomes` — the labels everything else is measured by |
+| `steward/improve.py` | Eval-gated self-improvement proposals, versioned in `policy_versions` |
+| `steward/pi_transcript.py` | Parser for pi's structured JSONL — where a local agent's tool calls and tokens actually live |
+| `integrations/vault_reader.py` | Reads Ben's `approval:` / `autonomy:` / `accepted:` edits back out of the vault |
+
+**Projects gained a charter.** `kind` (project|scratch|ignored) plus `charter`
+{purpose, goals, success_criteria, non_goals, research_topics, autonomy,
+tiers_allowed, cadence, budget, guard} and `steward` state. The **active set** —
+what the steward acts on — is `status=active AND kind=project AND a charter with
+a purpose`. Everything else is inventory: the harvester had registered 59
+"projects" including `Downloads`, `/tmp/workspace`, `venv` and `.worktrees/*`,
+all `status=active`, which is why the cockpit's attention score read zero for
+every row.
+
+**Autonomy is per project.** A0 observe · A1 propose (plans, tasks, research;
+no sessions) · A2 execute in a sandboxed worktree, merge proposed to Ben ·
+A3 auto-merge behind the full gate. **Local models cap at A2** until the
+eval gate in the plan's §8 passes.
+
+⚠️ **The guard holds the git pen, not the agent.** Checkpoint commits, pushes,
+merges and rollbacks happen in the ARIA process. An agent that can skip its own
+checkpoint has no checkpoint. And both the guard's checkpoint and the hourly
+safety-net snapshot are **size-capped and report every skip** — a naive
+`git add -A` in `infrastructure/` on 2026-08-15 started hashing 18 GB of
+unignored model weights and put 6 GB of loose objects in `.git` before it was
+stopped.
+
+⚠️ **`ADMIN_KEY` gates the irreversible routes** (killswitch/e-stop deactivate,
+`PUT /agents`, `set_llm_route`, guard merge, policy accept) via `require_admin`
+in `api/deps.py`. Anything running as `ben` can read `API_KEY` out of `.env`, so
+`API_KEY` cannot be what stands between an agent and an irreversible action. It
+fails **closed**: an unset `ADMIN_KEY` refuses rather than falling back. MCP
+deliberately has no admin key, so MCP `update_agent` now returns 403.
+
+⚠️ **Background LLM work goes to Qwen on the R9700 (`:8080`), never DS4.**
+`/llm/v1` is pinned off DS4 because DS4 `:8108` is the pi coding agent's single
+131K slot; every background call through the auto-route was evicting its warm
+prefix (4.2 s warm vs 39.5 s cold). Qwen is a **reasoning model**: it emits
+`reasoning_content` before `content`, so a tight `max_tokens` returns
+`finish_reason="length"` with an EMPTY `content`. Budget generously and treat
+empty content as a failure — writing the empty result is exactly how DS4
+silently labelled every memory with zero entities.
 
 ## Shared Infrastructure
 
