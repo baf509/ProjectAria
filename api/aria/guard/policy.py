@@ -803,6 +803,11 @@ async def verify_policy(db, expected_hash: Optional[str] = None) -> dict:
             f"{policy.path}: {policy.error} — enforcing settings defaults",
             blocked=True, severity="critical", path=policy.path,
         )
+        # And no acceptance of any kind: `current` is the settings digest here,
+        # not a statement about the file, so blessing it would record a baseline
+        # that means nothing and would then read as tamper once the file parses
+        # again.
+        return result
 
     if policy.rejected:
         # No effect on `ok`: the widening was already dropped at load time, and
@@ -910,6 +915,21 @@ async def verify_policy(db, expected_hash: Optional[str] = None) -> dict:
             return result
 
         result["accepted_hash"] = (stored or {}).get("hash")
+        if not result["accepted_hash"]:
+            # A stored document with no usable hash is not an absence — the
+            # comparison below would skip and return ok, which is the "unknown
+            # reads as fine" shape this whole function exists to remove.
+            result["ok"] = False
+            result["status"] = "unknown"
+            result["detail"] = (
+                f"the accepted-hash record exists but carries no hash: {stored!r}"
+            )
+            result["remedy"] = ACCEPT_REMEDY
+            await record_event(
+                db, "policy:state_unreadable", f"{result['detail']}\n{ACCEPT_REMEDY}",
+                blocked=True, severity="critical", path=policy.path,
+            )
+            return result
         if disk is None and stored is not None and stored.get("hash"):
             # Upgrade path: this box accepted a policy before the on-disk record
             # existed. Mirror what Mongo already says rather than waiting for

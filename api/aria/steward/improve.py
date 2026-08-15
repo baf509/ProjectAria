@@ -1347,6 +1347,15 @@ class Improver:
         if not rationale:
             return {"status": "discarded", "reason": "no rationale",
                     "target": target.canonical}
+        # "Tied to a metric" has to be checkable, or it is just a story attached
+        # to a diff. The named metric must be one the baseline actually measured
+        # — that is also what the regression watch will compare against later,
+        # so an unmeasurable rationale means an unwatchable promotion.
+        if metric not in baseline.to_dict():
+            return {"status": "discarded", "target": target.canonical,
+                    "reason": (f"rationale cites {metric!r}, which is not one of the "
+                               f"measured metrics — a change we cannot watch is a "
+                               f"change we cannot roll back on evidence")}
 
         version = await self.store.propose(
             target=target, after=after, rationale=rationale,

@@ -1163,6 +1163,26 @@ class TestAutoApply:
         assert result["proposals"][0]["status"] == "discarded"
         assert db["policy_versions"].docs == []
 
+    @pytest.mark.asyncio
+    async def test_a_rationale_must_cite_a_measured_metric(
+        self, db, repo, worktree, cfg, monkeypatch
+    ):
+        """A rationale tied to a metric nobody measures is a story, and the
+        regression watch would have nothing to compare against later."""
+        monkeypatch.setattr(settings, "improver_enabled", True)
+        cfg["improver_min_labelled_outcomes"] = 1
+        _outcomes(db, 10, 8)
+
+        async def proposer(*, baseline):
+            return [{"target": "api/prompts/steward.md", "after": "AFTER needle\n",
+                     "rationale": "it will feel snappier", "metric": "vibes"}]
+
+        worker = self._worker(db, repo, worktree, cfg, proposer=proposer)
+        result = await worker.run_once()
+        assert result["proposals"][0]["status"] == "discarded"
+        assert "measured metrics" in result["proposals"][0]["reason"]
+        assert db["policy_versions"].docs == []
+
 
 # ---------------------------------------------------------------------------
 # 8. The regression watch

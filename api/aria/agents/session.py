@@ -321,23 +321,18 @@ class CodingSessionManager:
         # keys its worktree, branch, start tag and checkpoint commits off it.
         session_id = str(uuid4())
 
-        # Guard seam (proposal §7.2/§7.3). `workspace` as given names the SOURCE
-        # repo, not where the session actually runs. Everything downstream
-        # (complexity routing, StartParams, the pi-code/tmux/subprocess
-        # dispatches) only ever sees `workspace` post-substitution, so this is
-        # the one place that needs to know the distinction.
-        guard = await self._guard_prepare(
+        # Guard seam, part 1 of 2 (proposal §7.2/§7.3): decide, refuse, but do
+        # not touch git yet. The refusals belong here, before any work — the
+        # worktree itself is cut further down, after the arguments have been
+        # validated, so a bad `subagent_profile` or a disabled backend cannot
+        # leave an orphan branch + worktree + mirror push behind.
+        guard = await self._guard_plan(
             session_id=session_id,
             workspace=workspace,
             host=host,
             create_worktree=create_worktree,
             worktree_name=worktree_name,
         )
-        source_repo = guard.get("source_repo")
-        if guard.get("worktree"):
-            workspace = guard["worktree"]
-            if branch is None:
-                branch = guard.get("branch")
 
         # Declarative specialist profile (Pi-Flow subagents parity): resolve a
         # named `db.agents` row and apply it — its llm pins backend/model (an
@@ -438,6 +433,19 @@ class CodingSessionManager:
         # keep role instructions in the correct message channel there.
         if profile_role and backend_name != "pi-code":
             prompt = f"{profile_role}\n\n---\n\nTask:\n{prompt}"
+
+        # Guard seam, part 2 of 2: cut the worktree. Everything that could
+        # refuse this spawn has already run, so from here a worktree that gets
+        # created is a worktree that gets used.
+        await self._guard_provision(guard, session_id)
+        source_repo = guard.get("source_repo")
+        if guard.get("worktree"):
+            # The session runs in the worktree, not the live checkout.
+            # Everything downstream (StartParams, the pi-code/tmux/subprocess
+            # dispatches, the watchdog, review) only ever sees this path.
+            workspace_path = guard["worktree"]
+            if branch is None:
+                branch = guard.get("branch")
 
         # Which backends get the OS sandbox is a per-backend policy knob, and
         # `backend_name` is only final after routing — so the decision is made
@@ -596,7 +604,7 @@ class CodingSessionManager:
     # ------------------------------------------------------------------
     # Guard seam (proposal §7.2 git protocol, §7.3 machine)
     # ------------------------------------------------------------------
-    async def _guard_prepare(
+    async def _guard_plan(
         self,
         *,
         session_id: str,
@@ -605,24 +613,24 @@ class CodingSessionManager:
         create_worktree: Optional[bool],
         worktree_name: Optional[str],
     ) -> dict:
-        """Decide what the guard does for this session, and do the git half.
+        """Decide what the guard does for this session. NO side effects.
 
-        Returns the guard context the launch path reads. `active` means the
-        guard governs this spawn (preflight ran, resource scope applies);
-        `worktree` is where the session will actually run.
+        Returns the guard context the rest of the launch reads. `active` means
+        the guard governs this spawn (preflight ran, the resource scope
+        applies); `worktree` is filled in later by `_guard_provision`.
 
-        Three refusals, all deliberate and all FAIL CLOSED, because a safety
-        control that degrades quietly is decoration:
-          - preflight says no (sandbox requested with no bwrap, or MemAvailable
-            under the floor — a spawn under it OOM-kills a resident model);
-          - the sandbox is on and the worktree could not be created, so the only
-            thing that would be bound read-write is the LIVE checkout;
-          - the caller explicitly asked for a worktree and it failed (unchanged
-            ValueError, so existing callers keep their error).
-        Everything else degrades with a recorded guard event: an unguarded
-        session in a directory that is not a repo is what happens today, and
-        refusing every such spawn would take the whole coding surface down for a
-        control that has no rollback story there anyway.
+        The refusal lives here, before anything has been created:
+        preflight failing (the sandbox is requested and bwrap is missing or
+        cannot start a process, or MemAvailable is under the floor — a spawn
+        under it OOM-kills a resident model) means no session at all. FAIL
+        CLOSED: "just this once, unsandboxed" is how a safety control becomes
+        decorative.
+
+        Scope of the gate: the guard refuses the spawns it GOVERNS. A workspace
+        that is not a git repo gets no worktree (see `_git_repo_root`) and, with
+        the sandbox off, nothing else to enforce — refusing those too would take
+        the whole coding surface down for a control with no rollback story
+        there. That is recorded as a guard event, not swallowed.
         """
         ctx: dict = {
             "active": False,
@@ -634,6 +642,13 @@ class CodingSessionManager:
             "sandbox": False,
             "preflight": None,
             "degraded": None,
+            # Plan fields, consumed by _guard_provision.
+            "workspace": os.path.abspath(workspace),
+            "repo_root": None,
+            "will_worktree": False,
+            "explicit": create_worktree is not None,
+            "worktree_name": worktree_name,
+            "legacy": False,
         }
 
         from aria.nodes import is_remote_host
@@ -645,8 +660,6 @@ class CodingSessionManager:
             # node agent grows its own guard (see the report's deferred list).
             return ctx
 
-        workspace = os.path.abspath(workspace)
-        explicit = create_worktree is not None
         want_worktree = bool(
             settings.guard_worktree_default if create_worktree is None else create_worktree
         )
@@ -655,31 +668,23 @@ class CodingSessionManager:
             # Guard off: the pre-guard behaviour, byte for byte — an explicit
             # request still gets the old timestamp-slug worktree, nothing else
             # changes. This is the escape hatch, so it must stay honest.
-            if want_worktree and explicit:
-                ctx["source_repo"] = workspace
-                try:
-                    worktree_path, worktree_branch, _ = await asyncio.to_thread(
-                        _create_worktree, workspace, worktree_name
-                    )
-                except WorktreeError as exc:
-                    raise ValueError(
-                        f"Could not provision a worktree at {workspace!r}: {exc}"
-                    ) from exc
-                ctx["worktree"] = worktree_path
-                ctx["branch"] = worktree_branch
+            ctx["legacy"] = ctx["will_worktree"] = bool(want_worktree and ctx["explicit"])
             return ctx
 
         repo_root = (
-            await asyncio.to_thread(_git_repo_root, workspace) if want_worktree else None
+            await asyncio.to_thread(_git_repo_root, ctx["workspace"])
+            if want_worktree else None
         )
-        will_worktree = want_worktree and (repo_root is not None or explicit)
+        ctx["repo_root"] = repo_root
+        ctx["will_worktree"] = want_worktree and (repo_root is not None or ctx["explicit"])
         sandbox_possible = bool(settings.guard_sandbox_enabled)
-        if not (will_worktree or sandbox_possible):
+        if not (ctx["will_worktree"] or sandbox_possible):
             if want_worktree:
                 await record_event(
                     self.db, "session:unguarded",
-                    f"{workspace} is not a git repository — no worktree, no rollback point",
-                    session_id=session_id, path=workspace, severity="warning",
+                    f"{ctx['workspace']} is not a git repository — no worktree, no "
+                    "rollback point",
+                    session_id=session_id, path=ctx["workspace"], severity="warning",
                 )
                 ctx["degraded"] = "workspace is not a git repository"
             return ctx
@@ -690,48 +695,75 @@ class CodingSessionManager:
             reasons = "; ".join(pre.get("reasons") or ["preflight refused the spawn"])
             await record_event(
                 self.db, "spawn:refused", reasons,
-                session_id=session_id, path=workspace, blocked=True, severity="critical",
+                session_id=session_id, path=ctx["workspace"], blocked=True, severity="critical",
             )
             await self._notify_guard(
-                "spawn_refused", f"Refused a coding session in {workspace}: {reasons}", workspace
+                "spawn_refused",
+                f"Refused a coding session in {ctx['workspace']}: {reasons}",
+                ctx["workspace"],
             )
             raise RuntimeError(f"Guard refused this coding session — {reasons}")
 
         ctx["active"] = True
-        if will_worktree:
-            try:
-                gs = await get_git_guard(self.db).prepare_session(
-                    repo_root or workspace, session_id, worktree_name
+        return ctx
+
+    async def _guard_provision(self, ctx: dict, session_id: str) -> dict:
+        """Cut the worktree planned by `_guard_plan`. The git half.
+
+        Two failure modes, deliberately different:
+          - the caller EXPLICITLY asked for a worktree → ValueError, unchanged
+            from before the guard (the route turns it into a 400);
+          - the sandbox is on and the worktree failed → refuse, because the
+            worktree is the only path the sandbox binds read-write and falling
+            back would hand the agent Ben's live checkout instead.
+        Otherwise degrade to the live checkout with a recorded guard event —
+        that is today's behaviour, and it is visible rather than silent.
+        """
+        if not ctx.get("will_worktree"):
+            return ctx
+        source = ctx.get("repo_root") or ctx["workspace"]
+        try:
+            if ctx.get("legacy"):
+                worktree_path, worktree_branch, _ = await asyncio.to_thread(
+                    _create_worktree, source, ctx.get("worktree_name")
                 )
-            except (GuardGitError, WorktreeError) as exc:
-                if explicit:
-                    raise ValueError(
-                        f"Could not provision a worktree at {repo_root or workspace!r}: {exc}"
-                    ) from exc
-                if sandbox_possible:
-                    await record_event(
-                        self.db, "spawn:refused",
-                        f"sandbox is enabled but the worktree failed ({exc}) — the live "
-                        "checkout would be the only writable path",
-                        session_id=session_id, path=workspace, blocked=True, severity="critical",
-                    )
-                    raise RuntimeError(
-                        "Guard refused this coding session — the sandbox is enabled but no "
-                        f"worktree could be created at {repo_root or workspace!r}: {exc}"
-                    ) from exc
-                await record_event(
-                    self.db, "session:unguarded",
-                    f"worktree unavailable at {repo_root or workspace} ({exc}) — the session "
-                    "runs in the live checkout",
-                    session_id=session_id, path=workspace, severity="warning",
-                )
-                ctx["degraded"] = f"worktree unavailable: {exc}"
+                ctx["source_repo"] = source
+                ctx["worktree"] = worktree_path
+                ctx["branch"] = worktree_branch
                 return ctx
-            ctx["source_repo"] = gs["repo"]
-            ctx["worktree"] = gs["worktree"]
-            ctx["branch"] = gs["branch"]
-            ctx["start_tag"] = gs.get("start_tag")
-            ctx["mirror"] = gs.get("mirror")
+            gs = await get_git_guard(self.db).prepare_session(
+                source, session_id, ctx.get("worktree_name")
+            )
+        except (GuardGitError, WorktreeError) as exc:
+            if ctx.get("explicit"):
+                raise ValueError(
+                    f"Could not provision a worktree at {source!r}: {exc}"
+                ) from exc
+            if settings.guard_sandbox_enabled:
+                await record_event(
+                    self.db, "spawn:refused",
+                    f"sandbox is enabled but the worktree failed ({exc}) — the live "
+                    "checkout would be the only writable path",
+                    session_id=session_id, path=source, blocked=True, severity="critical",
+                )
+                raise RuntimeError(
+                    "Guard refused this coding session — the sandbox is enabled but no "
+                    f"worktree could be created at {source!r}: {exc}"
+                ) from exc
+            await record_event(
+                self.db, "session:unguarded",
+                f"worktree unavailable at {source} ({exc}) — the session runs in the "
+                "live checkout",
+                session_id=session_id, path=source, severity="warning",
+            )
+            ctx["degraded"] = f"worktree unavailable: {exc}"
+            return ctx
+
+        ctx["source_repo"] = gs["repo"]
+        ctx["worktree"] = gs["worktree"]
+        ctx["branch"] = gs["branch"]
+        ctx["start_tag"] = gs.get("start_tag")
+        ctx["mirror"] = gs.get("mirror")
         return ctx
 
     async def _notify_guard(self, event_type: str, detail: str, workspace: str) -> None:
@@ -870,6 +902,18 @@ class CodingSessionManager:
         task = self._checkpoint_tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
+
+    async def shutdown(self) -> None:
+        """Cancel the per-session checkpoint loops on service shutdown.
+
+        The sessions themselves are deliberately left alone: aria-api restarts
+        routinely (a deploy, a config change) and a restart that killed every
+        coding agent would be its own outage. Only the timers stop; a restarted
+        service picks the sessions back up through the watchdog, and the last
+        checkpoint before the restart is already committed.
+        """
+        for session_id in list(self._checkpoint_tasks):
+            self._stop_checkpoint_loop(session_id)
 
     async def stop_all_running(self, reason: str = "stop_all") -> dict:
         """Stop every running/queued coding session — the half the killswitch
@@ -1131,6 +1175,13 @@ class CodingSessionManager:
             if self.tmux_manager:
                 await self.tmux_manager.kill_pane(session_id)
             # If tmux_manager is None but session was tmux-based, still mark as stopped
+        elif session.get("status") == "queued":
+            # A queued session has no process to kill yet — cancelling its
+            # deferred launcher below IS the stop. Without this branch it fell
+            # through to process_manager.stop(), returned False, and stayed
+            # `queued`, so a killswitch sweep reported "stopped 0" while three
+            # sessions sat waiting for a slot.
+            pass
         else:
             stopped = await self.process_manager.stop(session_id)
             if not stopped:
@@ -1354,7 +1405,7 @@ class CodingSessionManager:
             # The agent has exited; anything it wrote and never committed is
             # still sitting in the worktree. Commit it before finalizing —
             # "the session finished" must not mean "the diff is gone".
-            if (session or {}).get("guard", {}).get("worktree"):
+            if ((session or {}).get("guard") or {}).get("worktree"):
                 await self.checkpoint_session(session_id, reason="exit")
 
             # Some backends have exit codes that are a real result, not a
@@ -1476,7 +1527,7 @@ class CodingSessionManager:
                 return
             # Same rule as the subprocess watcher: commit what the agent left
             # behind before the session is marked finished.
-            if (cur or {}).get("guard", {}).get("worktree"):
+            if ((cur or {}).get("guard") or {}).get("worktree"):
                 await self.checkpoint_session(session_id, reason="exit")
             output_tail = await self.get_output(session_id, lines=10)
             now = datetime.now(timezone.utc)

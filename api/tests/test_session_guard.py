@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from aria.agents.backends.base import CommandSpec
 from aria.agents.session import CodingSessionManager, _git_repo_root
 from aria.config import settings
 from aria.guard import sandbox as guard_sandbox
@@ -76,6 +77,13 @@ def _manager(db=None, *, prepare=None, checkpoint=None):
     mgr = _make_manager(db=db)
     mgr.registry.canonicalize.side_effect = lambda name: name
     mgr.shell_service = None  # force the subprocess substrate: deterministic argv
+    # Echo the params back the way every real backend does, so "the session
+    # runs in the worktree" is actually observable through cwd.
+    mgr.registry.get.return_value.start_command.side_effect = lambda params: CommandSpec(
+        argv=["claude", "--prompt", params.prompt],
+        cwd=params.workspace,
+        env={"ARIA_MANAGED": "1"},
+    )
     guard = MagicMock()
     if isinstance(prepare, Exception):
         guard.prepare_session = AsyncMock(side_effect=prepare)
@@ -302,6 +310,23 @@ class TestFailsClosed:
         assert "no space left" in doc["guard"]["degraded"]
 
     @pytest.mark.asyncio
+    async def test_a_rejected_request_leaves_no_orphan_worktree(self):
+        """The worktree is cut AFTER the arguments are validated. A typo'd
+        subagent_profile used to be answered with a branch, a worktree, a start
+        tag and a mirror push for a session that never existed."""
+        db = make_mock_db()
+        db.agents.find_one = AsyncMock(return_value=None)
+        db.coding_sessions.find_one = AsyncMock(return_value={"_id": "sid"})
+        mgr = _manager(db=db)
+        with _Ctx(mgr), patch("aria.agents.session._git_repo_root", return_value="/repo"):
+            with pytest.raises(RuntimeError, match="subagent profile"):
+                await mgr.start_session(workspace="/repo", backend="claude_code",
+                                        prompt="fix it", model="x",
+                                        subagent_profile="typo-profile")
+
+        mgr._fake_git_guard.prepare_session.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_an_explicit_worktree_request_still_raises_valueerror(self):
         """Unchanged contract: a caller that asked for a worktree and did not
         get one gets the 400, not a silent live-checkout session."""
@@ -332,7 +357,7 @@ class TestGuardedLaunch:
         argv = _spawned_command(mgr).argv
         assert argv[:3] == ["systemd-run", "--user", "--scope"]
         assert argv[3] == "bwrap"
-        assert argv[-3:] == ["claude", "--prompt", "do stuff"]
+        assert argv[-3:] == ["claude", "--prompt", "fix it"]
 
     @pytest.mark.asyncio
     async def test_a_backend_outside_the_sandbox_list_still_gets_the_resource_scope(self):
@@ -376,6 +401,30 @@ class TestGuardedLaunch:
         assert "GH_TOKEN" not in env and "API_KEY" not in env
         assert env["PATH"] == "/usr/bin"          # a scrub, not a wipe
         assert env["GIT_TERMINAL_PROMPT"] == "0"  # no credential prompt to hang on
+
+    @pytest.mark.asyncio
+    async def test_the_shell_substrate_launches_guarded_in_the_worktree(self):
+        """The shell substrate is the production default — if the guard only
+        reached the subprocess fallback it would guard almost nothing."""
+        mgr = _manager()
+        shell = MagicMock()
+        shell.name = "claude-coding-abcd"
+        mgr.shell_service = MagicMock()
+        mgr.shell_service.create_shell = AsyncMock(return_value=shell)
+        with _Ctx(mgr), \
+             patch.object(settings, "coding_use_shell_substrate", True), \
+             patch("aria.agents.session._git_repo_root", return_value="/repo"):
+            await mgr.start_session(workspace="/repo", backend="claude_code",
+                                    prompt="fix it", model="x")
+
+        kwargs = mgr.shell_service.create_shell.call_args.kwargs
+        launch = kwargs["launch_command"]
+        assert kwargs["workdir"] == "/repo/.worktrees/demo-abcd1234"
+        assert launch.startswith("bash -lc ")
+        assert " env " in launch or launch.count("env") >= 1
+        assert "systemd-run" in launch
+        # ... and the resource scope wraps the agent, not the other way round.
+        assert launch.index("systemd-run") < launch.index("claude")
 
     def test_shell_substrate_env_prefix_unsets_secrets_after_the_login_shell(self):
         """`bash -lc` re-sources the profile after tmux gets the string, so the
@@ -456,6 +505,21 @@ class TestCheckpoints:
             assert not mgr._checkpoint_tasks
 
     @pytest.mark.asyncio
+    async def test_shutdown_cancels_the_loops_but_not_the_sessions(self):
+        mgr = _manager()
+        with _Ctx(mgr), \
+             patch.object(settings, "guard_checkpoint_enabled", True), \
+             patch("aria.agents.session._git_repo_root", return_value="/repo"):
+            await mgr.start_session(workspace="/repo", backend="claude_code",
+                                    prompt="fix it", model="x")
+            assert mgr._checkpoint_tasks
+            await mgr.shutdown()
+
+        assert not mgr._checkpoint_tasks
+        # aria-api restarts routinely; a restart must not kill live sessions.
+        mgr.process_manager.stop.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_an_unguarded_session_gets_no_checkpoint_task(self):
         mgr = _manager()
         with _Ctx(mgr), \
@@ -508,6 +572,23 @@ class TestStopAllRunning:
         assert db.coding_sessions.find.call_args.args[0] == {
             "status": {"$in": ["running", "queued"]}
         }
+
+    @pytest.mark.asyncio
+    async def test_a_queued_session_is_stopped_not_left_waiting(self):
+        """It has no process yet, so cancelling its deferred launcher is the
+        stop — falling through to process_manager.stop() reported False and
+        left it `queued`."""
+        db = make_mock_db()
+        db.coding_sessions.find_one = AsyncMock(return_value={
+            "_id": "q1", "status": "queued", "workspace": "/repo",
+            "shell_name": None, "tmux_pane_id": None,
+        })
+        mgr = _manager(db=db)
+        mgr.process_manager.stop = AsyncMock(return_value=False)
+
+        assert await mgr.stop_session("q1") is True
+        assert db.coding_sessions.update_one.call_args.args[1]["$set"]["status"] == "stopped"
+        mgr.process_manager.stop.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_one_wedged_session_does_not_block_the_rest(self):

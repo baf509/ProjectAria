@@ -471,6 +471,33 @@ class TestTamperDetection:
         verdict = await guard_policy.verify_policy(BrokenDB())
         assert verdict["ok"] is True and verdict["status"] == "ok_disk_only"
 
+    async def test_a_hashless_accepted_record_fails_closed(self, tmp_path, monkeypatch):
+        """A stored document with no hash used to skip the comparison entirely
+        and return ok — "we don't know" reading as "fine"."""
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        db = FakeDB()
+        await guard_policy.verify_policy(db)
+        db.app_state.docs[0].pop("hash")
+
+        verdict = await guard_policy.verify_policy(db)
+        assert verdict["ok"] is False and verdict["status"] == "unknown"
+
+    async def test_an_unparseable_policy_is_never_blessed(self, tmp_path, monkeypatch):
+        """`current` is the settings digest when the file will not parse, so
+        accepting it would record a baseline that says nothing about the file —
+        and then read as tamper the moment the file parses again."""
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths: [oops]\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        db = FakeDB()
+
+        verdict = await guard_policy.verify_policy(db)
+        assert verdict["ok"] is False and verdict["status"] == "unparseable"
+        assert db.app_state.docs == []
+        assert not os.path.exists(guard_policy.guard_state_path())
+
     async def test_a_widening_policy_file_is_reported_as_critical(self, tmp_path, monkeypatch):
         path = tmp_path / "policy.yaml"
         path.write_text("sandbox:\n  rw_paths:\n    - /home/ben\n")
