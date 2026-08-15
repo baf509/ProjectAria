@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology, guard
+from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology, guard, steward, improve
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -413,16 +413,97 @@ async def lifespan(app: FastAPI):
     # Ben edits `approval:` / `autonomy:` / `accepted:` on his phone, LiveSync
     # lands it on this disk within seconds, and this is the thing that reads it
     # back. Without it the shared notepad is a broadcast, not a control surface.
+    # ---- Steward layer -----------------------------------------------------
+    # Order matters here: the StewardWorker is constructed BEFORE the VaultReader
+    # because the reader hands its events to `steward.handle_vault_events`. Start
+    # them the other way round and Ben's approval flips are computed, delivered to
+    # nobody, and lost — the file state has already advanced by then.
+    if settings.steward_enabled:
+        from aria.steward.service import StewardWorker
+        steward_worker = StewardWorker(
+            db,
+            notifier=get_notification_service(),
+            coding_manager=coding_manager,
+            shell_service=await resolve_shell_service(db),
+        )
+        await steward_worker.start()
+        app.state.steward = steward_worker
+
     if settings.vault_reader_enabled:
         from aria.integrations.vault_reader import VaultReader
         vault_reader = VaultReader(
             db=db, interval_seconds=settings.vault_reader_interval_seconds
         )
-        steward = getattr(app.state, "steward", None)
-        if steward is not None:
-            vault_reader.on_events = steward.handle_vault_events
-        await vault_reader.start()
-        app.state.vault_reader = vault_reader
+        steward_worker = getattr(app.state, "steward", None)
+        if steward_worker is not None:
+            vault_reader.on_events = steward_worker.handle_vault_events
+        else:
+            # Reading the vault while nothing consumes the events would burn
+            # Ben's edits: poll_once() advances each file's stored hash, so the
+            # NEXT poll sees no change and the approval is gone. Refuse instead.
+            startup_logger.warning(
+                "vault_reader_enabled but steward_enabled is false — not starting the "
+                "reader, because polling with no consumer silently consumes Ben's edits"
+            )
+            vault_reader = None
+        if vault_reader is not None:
+            await vault_reader.start()
+            app.state.vault_reader = vault_reader
+
+    # The supervisor watches every agent kind and owns the escalation ladder. It
+    # is what turns "a session stalled" from a log line into an action.
+    if settings.meta_supervisor_enabled:
+        from aria.steward.supervisor import MetaSupervisor
+        meta_supervisor = MetaSupervisor(
+            db,
+            session_manager=coding_manager,
+            notification_service=get_notification_service(),
+            watchdog=watchdog,
+        )
+        await meta_supervisor.start()
+        app.state.meta_supervisor = meta_supervisor
+
+    # Triage: classify, diagnose, propose — the loop that used to be a Hermes
+    # cron prompt run by a 4B model, and died with it on 2026-08-10.
+    if getattr(settings, "triage_enabled", False):
+        from aria.notifications.triage import TriageWorker
+        triage_worker = TriageWorker(
+            db, get_notification_service(), manager=coding_manager
+        )
+        await triage_worker.start()
+        app.state.triage_worker = triage_worker
+
+    # The paused-shell nudger's TIMER (its state and three-strikes bookkeeping
+    # were always ARIA-side; only the clock lived in Hermes).
+    if getattr(settings, "shells_nudge_worker_enabled", False):
+        from aria.shells.nudge_worker import NudgeWorker
+        nudge_worker = NudgeWorker(
+            db,
+            shell_service=await resolve_shell_service(db),
+            notifier=get_notification_service(),
+        )
+        await nudge_worker.start()
+        app.state.nudge_worker = nudge_worker
+
+    # Outcomes: without a label on each finished session there is no metric, and
+    # without a metric the improvement loop below has nothing to gate on.
+    if settings.outcome_scoring_enabled:
+        from aria.steward.outcomes import OutcomeWorker
+        outcome_worker = OutcomeWorker(db, notifier=get_notification_service())
+        await outcome_worker.start()
+        app.state.outcome_worker = outcome_worker
+
+    if getattr(settings, "research_planner_enabled", False):
+        from aria.steward.research import ResearchPlanner
+        research_planner = ResearchPlanner(db, notifier=get_notification_service())
+        await research_planner.start()
+        app.state.research_planner = research_planner
+
+    if settings.improver_enabled:
+        from aria.steward.improve import Improver
+        improver = Improver(db, notifier=get_notification_service())
+        await improver.start()
+        app.state.improver = improver
 
     # Planning subsystem (tasks + projects) — index bootstrap. Cheap, idempotent.
     try:
@@ -441,6 +522,15 @@ async def lifespan(app: FastAPI):
         await db.alerts.create_index([("dedup_key", 1), ("acked", 1)])
         await db.alerts.create_index([("needs_human", 1), ("acked", 1), ("created_at", -1)])
         await db.alerts.create_index([("delivered_at", 1)], sparse=True)
+        # Bounded life for the info lane. Coding-session lifecycle rows are
+        # never acked, never delivered and never read by anything that closes
+        # them, so before this they accumulated forever — inflating every
+        # project's cockpit attention score and eventually crowding the real
+        # alerts out of the cockpit's 300-row read. notifications/service.py
+        # sets `expires_at` on info rows only and clears it the moment one
+        # escalates; a TTL index ignores documents whose field is null or
+        # missing, so nothing that needs a human is reachable by this sweep.
+        await db.alerts.create_index([("expires_at", 1)], expireAfterSeconds=0, sparse=True)
         startup_logger.info("Planning indexes ready")
     except Exception as exc:  # pragma: no cover - non-fatal
         startup_logger.warning("Planning index creation failed: %s", exc)
@@ -493,7 +583,9 @@ async def lifespan(app: FastAPI):
         "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",
         "project_harvester", "scan_worker", "selfcheck", "report_worker",
         "shell_adopter", "shell_worker", "linear_sync", "embedding_backfill",
-        "relay_watchdog", "vault_reader",
+        "relay_watchdog", "vault_reader", "steward", "meta_supervisor",
+        "triage_worker", "nudge_worker", "outcome_worker", "research_planner",
+        "improver",
     ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
@@ -709,6 +801,8 @@ app.include_router(digest.router, prefix="/api/v1", tags=["cockpit"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
 app.include_router(guard.router, prefix="/api/v1", tags=["guard"])
+app.include_router(steward.router, prefix="/api/v1", tags=["steward"])
+app.include_router(improve.router, prefix="/api/v1", tags=["improve"])
 
 
 @app.get("/")

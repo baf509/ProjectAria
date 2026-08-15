@@ -11,7 +11,7 @@ Related Spec Sections:
 from typing import Annotated, Optional
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.db.mongodb import get_database
 from aria.core.orchestrator import Orchestrator
@@ -595,17 +595,37 @@ async def get_obsidian_writer(
 
 
 async def get_vault_reader(
+    request: Request,
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
 ):
-    """Shared VaultReader so an on-demand poll and the worker see one state."""
+    """The ONE VaultReader in this process.
+
+    `app.state.vault_reader` is the worker main.py starts; this returns that
+    instance when it exists rather than a second one. Two instances is not a
+    tidiness problem: a poll permanently advances each file's `last_hash`, so
+    whichever instance polls first consumes the events and the other reports
+    nothing — `POST /vault/poll` and the worker were silently eating each
+    other's reads of Ben's edits.
+
+    When the worker is disabled (`vault_reader_enabled=false`, the current
+    default) this creates the on-demand reader and publishes it on app.state, so
+    the identity holds from whichever side asks first.
+    """
     global _vault_reader
     from aria.integrations.vault_reader import VaultReader
 
-    if _vault_reader is None:
-        _vault_reader = VaultReader(db=db)
-    else:
-        _vault_reader.db = db
-    return _vault_reader
+    reader = getattr(request.app.state, "vault_reader", None)
+    if reader is None:
+        if _vault_reader is None:
+            _vault_reader = VaultReader(db=db)
+        reader = _vault_reader
+        request.app.state.vault_reader = reader
+    if reader.db is None:
+        # The handle lives on reader.state; the property forwards to it. The old
+        # `reader.db = db` here set an attribute nothing read, so a reader built
+        # without a db stayed dbless forever while looking wired.
+        reader.db = db
+    return reader
 
 
 async def require_admin(

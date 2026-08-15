@@ -66,6 +66,46 @@ def test_attention_score_weights_blocked_highest():
 
 # ----------------------------------------------------------------- fakes
 
+def _field(doc: dict, key: str):
+    """Dotted-path read, because the cockpit queries `source.type`."""
+    current = doc
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _match(doc: dict, flt: dict) -> bool:
+    """Enough of the Mongo query language for the reads the cockpit issues.
+
+    The fake used to ignore filters entirely, which made it agree with whatever
+    the route asked for — including the `acked: False` scan that silently
+    counted every info-severity session lifecycle row toward attention."""
+    for key, expected in (flt or {}).items():
+        if key == "$or":
+            if not any(_match(doc, sub) for sub in expected):
+                return False
+            continue
+        actual = _field(doc, key)
+        if isinstance(expected, dict):
+            for op, operand in expected.items():
+                if op == "$ne":
+                    if actual == operand:
+                        return False
+                elif op == "$in":
+                    if actual not in operand:
+                        return False
+                elif op == "$gte":
+                    if actual is None or actual < operand:
+                        return False
+                else:  # pragma: no cover - unsupported operator in a test
+                    raise NotImplementedError(op)
+        elif actual != expected:
+            return False
+    return True
+
+
 class _FakeCursor:
     def __init__(self, docs):
         self.docs = docs
@@ -83,8 +123,8 @@ class _FakeColl:
         self.one = None
         self.updates = []
 
-    def find(self, *a, **k):
-        return _FakeCursor(self.docs)
+    def find(self, flt=None, *a, **k):
+        return _FakeCursor([d for d in self.docs if _match(d, flt or {})])
 
     async def find_one(self, *a, **k):
         return self.one
@@ -208,6 +248,52 @@ async def test_overview_parent_project_does_not_swallow_child(cockpit_client):
     assert rows["development"]["attention_score"] == 0
 
 
+@pytest.mark.asyncio
+async def test_overview_ignores_info_severity_alerts(cockpit_client):
+    """Since the notification service stopped dropping `coding:*`, every coding
+    session writes several info rows (stopped/completed/stall/budget/loop) that
+    nothing ever acks and nothing ever delivers. Counting them turned
+    `2 * unacked_alerts` into a permanent per-session tax on the attention
+    score, and 300 of them would push the real alerts out of this read."""
+    _seed_project(cockpit_client, slug="demo", path="/tmp/demo", pid="P1")
+    now = datetime.now(timezone.utc)
+    cockpit_client.db.alerts.docs = [
+        {"_id": f"i{n}", "acked": False, "severity": "info", "needs_human": False,
+         "project_path": "/tmp/demo", "source": f"coding:s{n}", "event_type": "stopped",
+         "message": "m", "created_at": now}
+        for n in range(5)
+    ] + [
+        {"_id": "real", "acked": False, "severity": "high", "needs_human": True,
+         "project_path": "/tmp/demo", "source": "selfcheck", "event_type": "degraded",
+         "message": "m", "created_at": now},
+        # Pre-v2 row: no severity field at all. These are exactly the alerts
+        # that used to reach Ben, so they must keep counting.
+        {"_id": "legacy", "acked": False, "project_path": "/tmp/demo",
+         "source": "selfcheck", "event_type": "degraded", "message": "m", "created_at": now},
+        {"_id": "acked", "acked": True, "severity": "high", "project_path": "/tmp/demo",
+         "source": "selfcheck", "event_type": "degraded", "message": "m", "created_at": now},
+    ]
+    body = (await cockpit_client.get("/api/v1/projects/overview")).json()
+    assert body["projects"][0]["attention"]["unacked_alerts"] == 2
+    assert body["unacked_alerts_total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cockpit_alert_list_excludes_the_info_lane(cockpit_client):
+    _seed_project(cockpit_client, slug="demo", path="/tmp/demo", pid="P1")
+    now = datetime.now(timezone.utc)
+    cockpit_client.db.alerts.docs = [
+        {"_id": "i1", "acked": False, "severity": "info", "project_path": "/tmp/demo",
+         "source": "coding:s1", "event_type": "completed", "message": "m", "created_at": now},
+        {"_id": "f1", "acked": False, "severity": "high", "project_path": "/tmp/demo",
+         "source": "coding:s1", "event_type": "error", "message": "m", "created_at": now},
+    ]
+    body = (await cockpit_client.get("/api/v1/projects/demo/cockpit")).json()
+    # A failed session is visible here — that is the point of classifying it
+    # high — while "session completed" is not.
+    assert [a["id"] for a in body["alerts"]] == ["f1"]
+
+
 # ------------------------------------------------------------- active focus
 
 @pytest.mark.asyncio
@@ -256,10 +342,10 @@ async def test_cockpit_aggregates_scoped_data(cockpit_client):
          "updated_at": now, "created_at": now},
     ]
     cockpit_client.db.alerts.docs = [
-        {"_id": "a1", "source": "coding:gate", "event_type": "gate:failed",
-         "message": "m", "project_path": "/tmp/demo", "created_at": now},
-        {"_id": "a2", "source": "selfcheck", "event_type": "x",
-         "message": "m2", "created_at": now},
+        {"_id": "a1", "source": "coding:gate", "event_type": "gate:failed", "acked": False,
+         "severity": "high", "message": "m", "project_path": "/tmp/demo", "created_at": now},
+        {"_id": "a2", "source": "selfcheck", "event_type": "x", "acked": False,
+         "severity": "high", "message": "m2", "created_at": now},
     ]
     cockpit_client.db.memories.docs = [
         {"content": "repo changed", "created_at": now,

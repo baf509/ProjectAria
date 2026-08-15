@@ -2,21 +2,34 @@
 #
 # Loaded by api/aria/guard/policy.py. Two rules govern this file:
 #
-#   1. IT CAN ONLY TIGHTEN. Every list here is UNIONed with the compiled-in
-#      defaults in api/aria/config.py, and every numeric cap takes the smaller
-#      of the two. Deleting a line from this file does NOT unprotect anything —
-#      it just gives up the extra protection this file was adding. That is
-#      deliberate: an agent that rewrites this file must not be able to widen
-#      its own blast radius (proposal §2 principle 12).
+#   1. IT CAN ONLY TIGHTEN. The DENY lists here (protected_paths, sandbox
+#      tmpfs_paths) are UNIONed with the compiled-in defaults in
+#      api/aria/config.py, and every numeric cap takes the smaller of the two.
+#      The ALLOW lists (sandbox ro_paths / rw_paths) are INTERSECTED with those
+#      defaults — naming a path here that config.py does not is ignored and
+#      reported, because adding an exception is a loosening. Deleting a line
+#      from this file does NOT unprotect anything; it just gives up the extra
+#      protection this file was adding. That is deliberate: an agent that
+#      rewrites this file must not be able to widen its own blast radius
+#      (proposal §2 principle 12).
 #
-#   2. ITS BYTES ARE THE TAMPER HASH. sha256 of this file is checked against the
-#      accepted hash in Mongo (app_state/_id=guard_policy) on every guard tick;
-#      a mismatch is a critical guard event. After editing this file on purpose:
-#          curl -XPOST localhost:8200/api/v1/guard/policy/accept \
-#               -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
-#               -d "{\"hash\": \"$(sha256sum guard/policy.yaml | cut -d' ' -f1)\"}"
-#      (the hash is over the raw file bytes, prefixed 'file:' — read it from
-#       GET /api/v1/guard/status rather than computing it by hand).
+#   2. ITS BYTES ARE THE TAMPER HASH, checked against the accepted hash on every
+#      guard tick — recorded in BOTH Mongo (app_state/_id=guard_policy) and
+#      ~/.aria/guard/accepted_policy.json, so deleting one of them is detected
+#      rather than being a reset button. A mismatch is a critical guard event
+#      AND an e-stop at the next boot. After editing this file on purpose:
+#
+#        HASH=$(curl -s localhost:8200/api/v1/guard/status \
+#               | python3 -c 'import json,sys; print(json.load(sys.stdin)["policy"]["hash"])')
+#        curl -XPOST localhost:8200/api/v1/guard/policy/accept \
+#             -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+#             -d "{\"hash\": \"$HASH\"}"
+#
+#      ⚠️ NOT `sha256sum guard/policy.yaml` — the hash is sha256 of the literal
+#      bytes prefixed with `file:`, so the plain checksum is always rejected
+#      with a 409. This comment used to say otherwise, which is the sort of
+#      wrong instruction that makes an operator "just delete the state file"
+#      instead — precisely the re-arm attack the two records exist to catch.
 #
 # The parser understands a strict subset of YAML: nested mappings, lists of
 # scalars, and scalars. No anchors, no flow collections ([a, b]), no multi-line

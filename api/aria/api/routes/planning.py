@@ -31,11 +31,48 @@ from aria.planning.models import (
     TaskStatus,
     TaskUpdateRequest,
 )
-from aria.planning.service import PlanningService, effective_budget
+from aria.planning.service import (
+    CharterRefused,
+    PlanningService,
+    active_set_blockers,
+    effective_budget,
+)
 from aria.tasks.runner import TaskRunner
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _charter_response(proj: Project) -> CharterResponse:
+    """One builder for both charter routes, so the active-set verdict is always
+    reported. A 200 that echoed the charter back and said nothing about whether
+    the steward would ever read it is how a charter on an ignored row looked
+    exactly like a charter on a live project."""
+    blockers = active_set_blockers(proj)
+    return CharterResponse(
+        project_id=proj.id,
+        slug=proj.slug,
+        kind=proj.kind,
+        charter=proj.charter,
+        steward=proj.steward,
+        effective_budget=effective_budget(proj.charter),
+        in_active_set=not blockers,
+        active_set_blockers=blockers,
+    )
+
+
+def _charter_conflict(exc: CharterRefused) -> HTTPException:
+    """A refused charter is a 409 carrying the reason AND the fix — the caller
+    is a human surface (API/MCP/vault), so 'no' has to be actionable."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "charter_refused",
+            "project": exc.slug,
+            "reason": exc.reason,
+            "remedy": exc.remedy,
+        },
+    )
 
 
 # --------------------------------------------------------------------- todos
@@ -234,7 +271,10 @@ async def update_project(
 ):
     if not body.model_dump(exclude_unset=True):
         raise HTTPException(status_code=400, detail="No fields to update")
-    proj = await service.update_project(project_id, body)
+    try:
+        proj = await service.update_project(project_id, body)
+    except CharterRefused as exc:
+        raise _charter_conflict(exc) from exc
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
     return proj
@@ -259,14 +299,7 @@ async def get_project_charter(
     proj = await service.get_project_by_ident(ident)
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {ident}")
-    return CharterResponse(
-        project_id=proj.id,
-        slug=proj.slug,
-        kind=proj.kind,
-        charter=proj.charter,
-        steward=proj.steward,
-        effective_budget=effective_budget(proj.charter),
-    )
+    return _charter_response(proj)
 
 
 @router.put("/projects/{ident}/charter", response_model=CharterResponse)
@@ -279,19 +312,18 @@ async def set_project_charter(
     present are merged, so a vault/phone edit of one field cannot blank the
     rest. This route is a human surface (it always writes as actor `human`);
     workers call PlanningService.set_charter with their own actor and get
-    propose-into-scan_review semantics instead."""
+    propose-into-scan_review semantics instead.
+
+    409 when the charter cannot take effect (a human marked this row
+    `kind=ignored`); the body carries the reason and the one-PATCH fix."""
     patch = body.charter.model_dump(exclude_unset=True)
-    proj = await service.set_charter(ident, patch, actor="human", via=body.via)
+    try:
+        proj = await service.set_charter(ident, patch, actor="human", via=body.via)
+    except CharterRefused as exc:
+        raise _charter_conflict(exc) from exc
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {ident}")
-    return CharterResponse(
-        project_id=proj.id,
-        slug=proj.slug,
-        kind=proj.kind,
-        charter=proj.charter,
-        steward=proj.steward,
-        effective_budget=effective_budget(proj.charter),
-    )
+    return _charter_response(proj)
 
 
 @router.get("/projects/{project_id}/tasks", response_model=TaskListResponse)

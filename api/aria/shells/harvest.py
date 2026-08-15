@@ -83,6 +83,18 @@ HARVEST_IGNORE = [
 # Basename globs. `*-smoke.*` is pi's mkstemp-suffixed smoke dirs, `session-*`
 # the watchdog's worktree branches, `*-wt` the hand-made worktree convention
 # used in infrastructure/.
+#
+# ⚠️ These match a BASENAME anywhere on the box, so they are a naming
+# convention, not evidence — a real repo called `session-recorder` or
+# `foo-wt` would be classified `ignored` on its name alone. Audited against
+# every discovered path on 2026-08-15: nothing real is misclassified today
+# (the only name-glob-only hit, `infrastructure/rocmfpx-decode-fusion-wt`, is a
+# worktree that no longer exists on disk). The safety net is that this verdict
+# is now RECOVERABLE: a human charter on a harvester-classified row promotes it
+# to kind=project (planning.service.set_charter) instead of being silently
+# stored on a row the steward never reads. Do NOT make the check structural
+# ("a linked worktree is not a project") — `Development/operator-placement-manifest`
+# is a live worktree of infrastructure and a kind=project row.
 HARVEST_IGNORE_NAMES = [
     "*-smoke.*",
     "session-*",
@@ -468,8 +480,17 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
                 # (steward) fields exist from insert so their absence never
                 # reads as "not yet harvested". The harvester writes neither
                 # again, ever.
+                #
+                # ⚠️ `steward` is an EMPTY DOCUMENT, not null. The steward writes
+                # its bookkeeping with dotted paths and MongoDB cannot create a
+                # field under a null parent — "Cannot create field
+                # 'no_progress_streak' in element {steward: null}" (live mongod
+                # 8.2.0). A row inserted with null here was permanently
+                # unusable by the steward; a MISSING parent auto-creates, which
+                # is the only reason the 59 pre-existing rows never hit it.
+                # `charter` stays null: it is only ever written wholesale.
                 "charter": None,
-                "steward": None,
+                "steward": {},
                 "recent_activity": [],
                 "created_at": now,
             },

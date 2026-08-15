@@ -193,6 +193,13 @@ class Project(BaseModel):
     # and by a human thereafter; `charter` is human-only; `steward` is
     # worker-only. The active set the steward iterates is
     # status=active AND kind=project AND charter.purpose non-empty.
+    #
+    # ⚠️ `steward` is Optional in the SCHEMA but must never be persisted as an
+    # explicit null: it is written with dotted paths (`steward.last_run_at`),
+    # and MongoDB 8.2 refuses to create a field under a null parent — "Cannot
+    # create field 'paused_reason' in element {steward: null}" (reproduced
+    # against the live mongod, 2026-08-15). Writers store `{}`; see
+    # `planning.service._steward_set`.
     kind: ProjectKind = "project"
     charter: Optional[Charter] = None
     steward: Optional[StewardState] = None
@@ -257,13 +264,22 @@ class CharterSetRequest(BaseModel):
 class CharterResponse(BaseModel):
     """GET/PUT /projects/{ident}/charter. `effective_budget` is the resolved
     view (charter values over settings.steward_default_*) so a caller never has
-    to re-derive the defaults."""
+    to re-derive the defaults.
+
+    `in_active_set` / `active_set_blockers` exist because writing a charter and
+    getting a 200 back used to say nothing about whether the steward would ever
+    look at the project — a charter on a `kind=ignored` row was accepted, echoed
+    and then ignored forever. The blockers name the failing condition
+    (status / kind / empty purpose) in the same response.
+    """
     project_id: str
     slug: str
     kind: ProjectKind
     charter: Optional[Charter] = None
     steward: Optional[StewardState] = None
     effective_budget: dict
+    in_active_set: bool = False
+    active_set_blockers: list[str] = Field(default_factory=list)
 
 
 class ProjectListResponse(BaseModel):

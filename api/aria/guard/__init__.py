@@ -21,9 +21,11 @@ others:
 """
 
 from aria.guard.policy import (
+    ACCEPT_REMEDY,
     GuardPolicy,
     PolicyError,
     accept_policy,
+    guard_state_path,
     is_protected,
     load_policy,
     policy_hash,
@@ -33,18 +35,28 @@ from aria.guard.policy import (
 )
 from aria.guard.sandbox import (
     build_sandbox_prefix,
+    credential_masks,
     mem_available_gib,
     preflight,
+    preflight_async,
     resource_prefix,
+    sandbox_canary,
     session_env,
     session_tmp_dir,
 )
-from aria.guard.gitguard import GitGuard, GuardGitError, get_git_guard
+from aria.guard.gitguard import (
+    GitGuard,
+    GuardGitError,
+    GuardMergeConflict,
+    get_git_guard,
+)
 
 __all__ = [
+    "ACCEPT_REMEDY",
     "GuardPolicy",
     "PolicyError",
     "accept_policy",
+    "guard_state_path",
     "is_protected",
     "load_policy",
     "policy_hash",
@@ -52,12 +64,16 @@ __all__ = [
     "repo_root",
     "verify_policy",
     "build_sandbox_prefix",
+    "credential_masks",
     "mem_available_gib",
     "preflight",
+    "preflight_async",
     "resource_prefix",
+    "sandbox_canary",
     "session_env",
     "session_tmp_dir",
     "GitGuard",
     "GuardGitError",
+    "GuardMergeConflict",
     "get_git_guard",
 ]

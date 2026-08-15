@@ -916,6 +916,24 @@ class Settings(BaseSettings):
     # edit from a sync echo or from ARIA's own write.
     vault_hash_state_collection: str = "vault_docs"
 
+    # --- Triage + the nudger's timer (both moved out of Hermes crons) ------
+    # These two loops used to be cron PROMPTS executed by a 4B model. When that
+    # model went away on 2026-08-10 the jobs errored, the gateway paused them,
+    # and Ben received nothing for five days. They are ARIA workers now; the
+    # flags stay off until each is exercised once.
+    triage_enabled: bool = False
+    triage_interval_seconds: int = 300
+    triage_max_alerts_per_tick: int = 3
+    triage_max_diagnoses_per_hour: int = 4
+    shells_nudge_worker_enabled: bool = False
+    shells_nudge_worker_interval_minutes: int = 15
+
+    # --- Research planner ---------------------------------------------------
+    research_planner_enabled: bool = False
+    research_topic_cooldown_days: int = 30
+    research_daytime_prefill_cap_tokens: int = 8000
+    research_night_window: str = "01:00-07:00"
+
     # --- Meta supervisor ----------------------------------------------------
     meta_supervisor_enabled: bool = False
     meta_supervisor_interval_seconds: int = 30

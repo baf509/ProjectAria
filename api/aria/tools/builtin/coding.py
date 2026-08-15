@@ -47,6 +47,8 @@ class StartCodingSessionTool(_CodingBaseTool):
             ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (Ralph loop). Default false.", required=False, default=False),
             ToolParameter(name="host", type="string", description="Run on a remote node (its aria-node id, e.g. a MacBook). Omit to run on this host.", required=False),
             ToolParameter(name="subagent_profile", type="string", description="Named specialist profile (a db.agents slug/name): applies its backend/model and prepends its system_prompt as the role. An explicit backend/model still wins.", required=False),
+            ToolParameter(name="create_worktree", type="boolean", description="Run in a dedicated git worktree branched from `workspace` (the Guard's default) instead of the live checkout. Omit to follow guard_worktree_default; pass false only when the task must edit the checkout in place.", required=False),
+            ToolParameter(name="worktree_name", type="string", description="Slug hint for the worktree directory and branch (aria/<slug>/<session>). Defaults to the repo name.", required=False),
         ]
 
     async def execute(self, arguments: dict) -> ToolResult:
@@ -54,6 +56,12 @@ class StartCodingSessionTool(_CodingBaseTool):
         # The tool exposes loop as a simple on/off; start_session takes a config
         # dict, so an enabled loop → {} (server defaults fill it in).
         arguments["loop"] = {} if arguments.get("loop") else None
+        # An omitted create_worktree must stay ABSENT, not become False: None is
+        # "follow guard_worktree_default" and False is "run in the live
+        # checkout", and a tool-call JSON that simply didn't mention it means
+        # the first one.
+        if arguments.get("create_worktree") is None:
+            arguments.pop("create_worktree", None)
         session = await self.manager.start_session(**arguments)
         return ToolResult(tool_name=self.name, status=ToolStatus.SUCCESS, output=session)
 

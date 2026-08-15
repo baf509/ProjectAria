@@ -1304,12 +1304,37 @@ class TestPiCodingAgentTool:
 
         assert result.status == ToolStatus.SUCCESS
         assert result.output["session_id"] == "session-1"
+        # `create_worktree` is threaded through as of 2026-08-15 (steward plan
+        # §7.2). Omitted by the caller it is None, meaning "use the configured
+        # default" — which is now True — rather than "no worktree". The tool
+        # must not decide that itself: the guard owns whether a session gets an
+        # isolated tree, and a tool that silently passed False would put a local
+        # model back on the live checkout.
         manager.start_session.assert_awaited_once_with(
             workspace="/tmp/project",
             backend=None,
             prompt="Build a REST API",
             subagent_profile="pi-coding",
+            create_worktree=None,
         )
+
+    @pytest.mark.asyncio
+    async def test_create_worktree_is_passed_through(self):
+        """An explicit request for isolation must reach the session manager."""
+        manager = MagicMock()
+        manager.start_session = AsyncMock(return_value={
+            "_id": "session-2", "status": "running",
+            "shell_name": "claude-coding-session", "workspace": "/tmp/project",
+        })
+        from aria.tools.builtin.pi_coding import PiCodingAgentTool
+        tool = PiCodingAgentTool(manager)
+        result = await tool.execute({
+            "task": "Build a REST API",
+            "workspace": "/tmp/project",
+            "create_worktree": True,
+        })
+        assert result.status == ToolStatus.SUCCESS
+        assert manager.start_session.await_args.kwargs["create_worktree"] is True
 
 
 # ============================================================================

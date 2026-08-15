@@ -77,7 +77,31 @@ class PathIndex:
         for p in projects:
             for r in project_roots(p):
                 self._entries.append((r, p.id))
+        self._sort_entries()
+
+    def _sort_entries(self) -> None:
         self._entries.sort(key=lambda e: len(e[0]), reverse=True)
+
+    @classmethod
+    def from_docs(cls, docs: list[dict], *, value: str = "slug") -> "PathIndex":
+        """The same index over raw `db.projects` rows, keyed on any field.
+
+        For callers that need path→project outside the cockpit and have no
+        Project models to hand — notifications/service.py resolves an alert's
+        `project_slug` this way. It exists so that attribution has ONE rule:
+        the alert path and the cockpit path disagreeing about which project owns
+        a directory is how an alert ends up filed where nobody looks."""
+        index = cls([])
+        for doc in docs:
+            key = doc.get(value)
+            if not key:
+                continue
+            for raw in [doc.get("path"), *(doc.get("relevant_paths") or [])]:
+                root = _norm_path(raw)
+                if root and (root, key) not in index._entries:
+                    index._entries.append((root, key))
+        index._sort_entries()
+        return index
 
     def owner(self, candidate: Optional[str]) -> Optional[str]:
         c = _norm_path(candidate)
@@ -127,9 +151,19 @@ async def _gather_context(db, shell_service: ShellService) -> dict:
             ]
         }
     ).sort("updated_at", -1).to_list(length=300)
-    alerts = await db.alerts.find({"acked": False}).sort("created_at", -1).to_list(
-        length=300
-    )
+    # Alerts that are ASKING for something, which is not the same set as
+    # "unacked". `severity: info` is the record-keeping lane: since the
+    # notification service stopped dropping `coding:*` events, every coding
+    # session writes several info rows (stopped/completed/stall/budget/loop)
+    # that no consumer ever acks and no relay ever delivers. Counting those made
+    # `2 * unacked_alerts` a permanent session counter, and 300 of them would
+    # push the real alerts out of this read entirely. `$ne` rather than an
+    # explicit severity list so pre-v2 rows — which have no severity field —
+    # keep counting; the alerts that predate the field are exactly the ones that
+    # used to reach Ben.
+    alerts = await db.alerts.find(
+        {"acked": False, "severity": {"$ne": "info"}}
+    ).sort("created_at", -1).to_list(length=300)
     return {"shells": shells, "sessions": sessions, "alerts": alerts, "now": now}
 
 
@@ -156,6 +190,9 @@ def _project_attention(
             1 for s in sessions if s.get("status") in ("starting", "running", "queued")
         ),
         "gate_failed_sessions": sum(1 for s in sessions if _last_gate_failed(s)),
+        # Unacked *and* above info — _gather_context already applied that; the
+        # score weights this at 2 per alert, so an info row that never gets
+        # acked would add 2 forever.
         "unacked_alerts": sum(
             1
             for a in ctx["alerts"]
@@ -226,6 +263,8 @@ async def projects_overview(
     return {
         "projects": rows,
         "active_project": await _get_active_project_slug(db),
+        # Key kept (the TUI and web cockpit read it): unacked alerts that need
+        # attention, i.e. excluding the info lifecycle lane.
         "unacked_alerts_total": len(ctx["alerts"]),
         "generated_at": ctx["now"],
     }

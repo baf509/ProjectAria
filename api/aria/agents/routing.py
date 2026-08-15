@@ -19,6 +19,13 @@ Three stages, cheap-first:
 Sonnet is the floor for normal routing. The sub-Sonnet fallback is reached only
 via stage 3.
 
+Re-routing (added for the escalation ladder, proposal §6.2 L3) is a SEPARATE
+entry point: `reroute()`. Spawn-time routing above is one-shot and only ever
+demotes (stage 3); the ladder needs the opposite move — a *failed* session
+promoted one rung up a fixed strength ladder, honouring the project charter's
+`tiers_allowed`. Nothing in `classify()` or its stages changes: a task that has
+not failed still routes exactly as before.
+
 Related Spec Sections:
 - CLAUDE.md: Coding Sub-agents on the Shell Substrate
 """
@@ -56,6 +63,21 @@ ROUTABLE_BACKENDS = frozenset({CLAUDE_PROVIDER})
 def is_routable_backend(backend: Optional[str]) -> bool:
     """True when `backend` leaves the model choice up to the router."""
     return backend is None or backend in ROUTABLE_BACKENDS
+
+
+def judge_transport() -> str:
+    """Which Claude transport a small judge/review call should use.
+
+    `auto` picks the API when a key is configured and the Claude CLI otherwise —
+    so this works out of the box on a subscription-only box, and upgrades to the
+    sub-second path the moment a key is added. Public because the different-
+    family reviewer (agents/review.py) needs exactly this decision and must not
+    fork a second, drifting copy of it.
+    """
+    transport = (settings.coding_routing_judge_transport or "auto").lower()
+    if transport in ("api", "cli"):
+        return transport
+    return "api" if settings.anthropic_api_key else "cli"
 
 TIER_DEEP = "deep"
 TIER_STANDARD = "standard"
@@ -279,16 +301,8 @@ class ComplexityRouter:
 
     @staticmethod
     def _resolve_transport() -> str:
-        """Which judge transport to actually use.
-
-        `auto` picks the API when a key is configured and the Claude CLI
-        otherwise — so routing works out of the box on a subscription-only box,
-        and upgrades to the sub-second path the moment a key is added.
-        """
-        transport = (settings.coding_routing_judge_transport or "auto").lower()
-        if transport in ("api", "cli"):
-            return transport
-        return "api" if settings.anthropic_api_key else "cli"
+        """Which judge transport to actually use (see `judge_transport`)."""
+        return judge_transport()
 
     async def _judge_via_api(self, system: str, user: str) -> str:
         """Anthropic API call — sub-second, costs a fraction of a cent."""
@@ -503,3 +517,334 @@ async def clear_cooldown(
 ) -> None:
     """Lift a cooldown early (quota reset sooner than the window assumed)."""
     await db.model_availability.delete_one({"_id": provider})
+
+
+# --------------------------------------------------------------------------
+# Re-route — the ladder's L3 rung (proposal §6.2).
+#
+# Spawn-time routing is one-shot and only demotes. When a session has already
+# failed, the supervisor needs the opposite: move it ONE rung up a fixed
+# strength ladder, carrying the failure history into the prompt, and only
+# within the tiers the project's charter allows. None of the code above is
+# involved — a re-route is not a re-classification, because the task's
+# complexity is not what changed; the evidence that the current tier cannot do
+# it is.
+# --------------------------------------------------------------------------
+
+# Charter vocabulary (planning/models.py Charter.tiers_allowed).
+TIER_LOCAL = "local"
+TIER_RIDGE = "ridge"
+TIER_RED = "red"
+TIER_CLOUD = "cloud"
+CHARTER_TIERS = (TIER_LOCAL, TIER_RIDGE, TIER_RED, TIER_CLOUD)
+
+
+@dataclass(frozen=True)
+class Rung:
+    """One step on the escalation ladder.
+
+    `profile` names a `db.agents` launch row rather than a backend/model pair
+    because that is how the remote coders are actually configured (pi-coding-
+    ridge pins provider=ridge AND its model). Passing a bare llm=ridge with no
+    model would inherit DS4's model id from the pi-coding profile — a session
+    pointed at Ridge asking for a model Ridge does not serve.
+    """
+
+    tier: str                       # charter vocabulary: local|ridge|red|cloud
+    strength: int                   # strictly increasing; the only ordering
+    label: str
+    backend: Optional[str] = None
+    model: Optional[str] = None
+    llm: Optional[str] = None
+    profile: Optional[str] = None   # db.agents slug
+
+    def start_kwargs(self) -> dict:
+        """The subset of `start_session()` kwargs this rung pins."""
+        kwargs: dict = {}
+        if self.backend:
+            kwargs["backend"] = self.backend
+        if self.model:
+            kwargs["model"] = self.model
+        if self.llm:
+            kwargs["llm"] = self.llm
+        if self.profile:
+            kwargs["subagent_profile"] = self.profile
+        return kwargs
+
+
+def default_ladder() -> list[Rung]:
+    """The ladder, weakest first. Built per call so a settings change (e.g. a
+    new Sonnet/Opus id) is picked up without a process restart."""
+    return [
+        # Local: no model pinned — start_session fills provider+model from the
+        # pi-coding profile, which is the box's single DS4 slot.
+        Rung(tier=TIER_LOCAL, strength=0, label="pi on DS4 (local)",
+             backend="pi-code"),
+        Rung(tier=TIER_RIDGE, strength=1, label="pi on Ridge (Qwen, WoL)",
+             backend="pi-code", profile="pi-coding-ridge"),
+        Rung(tier=TIER_RED, strength=2, label="pi on RED (Qwen, WoL)",
+             backend="pi-code", profile="pi-coding-red"),
+        Rung(tier=TIER_CLOUD, strength=3, label="claude_code (standard tier)",
+             backend=CLAUDE_PROVIDER, model=settings.coding_routing_model_standard),
+        Rung(tier=TIER_CLOUD, strength=4, label="claude_code (deep tier)",
+             backend=CLAUDE_PROVIDER, model=settings.coding_routing_model_deep),
+    ]
+
+
+@dataclass
+class RerouteVerdict:
+    """The decision to re-run a failed session on a stronger tier."""
+
+    rung: Rung
+    from_tier: str
+    from_strength: int
+    why: str
+    attempt: int                     # 1 = first re-route for this session
+    skipped: list[str] = field(default_factory=list)
+
+    @property
+    def tier(self) -> str:
+        return self.rung.tier
+
+    def start_kwargs(self) -> dict:
+        return self.rung.start_kwargs()
+
+    def to_dict(self) -> dict:
+        return {
+            "tier": self.rung.tier,
+            "label": self.rung.label,
+            "strength": self.rung.strength,
+            "backend": self.rung.backend,
+            "model": self.rung.model,
+            "llm": self.rung.llm,
+            "profile": self.rung.profile,
+            "from_tier": self.from_tier,
+            "from_strength": self.from_strength,
+            "attempt": self.attempt,
+            "why": self.why,
+            "skipped": list(self.skipped),
+            "decided_at": datetime.now(timezone.utc),
+        }
+
+
+def classify_tier(session: Optional[dict]) -> str:
+    """Which charter tier a coding session actually ran on.
+
+    Reads the session doc rather than its routing verdict: a session can be
+    re-pointed after routing (profile resolution, a caller-pinned model), and
+    the tier that matters for escalation is the one that just failed.
+    """
+    session = session or {}
+    backend = (session.get("backend") or "").strip().lower()
+    llm = (session.get("llm") or "").strip().lower()
+    model = (session.get("model") or "").strip().lower()
+
+    # codex is a cloud tier even though it is not Anthropic: it runs against a
+    # hosted API, not a slot on this box. Classifying it as local would make the
+    # ladder "promote" a failed codex session onto Ridge — a demotion dressed as
+    # an escalation.
+    if backend in ("claude_code", "claude-code", "codex"):
+        return TIER_CLOUD
+    if llm in ("ridge", "ridge-proxy"):
+        return TIER_RIDGE
+    if llm in ("red", "red-proxy"):
+        return TIER_RED
+    if "ridge" in model:
+        return TIER_RIDGE
+    if "red-" in model or model.startswith("red"):
+        return TIER_RED
+    if backend in ("pi-code", "pool") or llm:
+        return TIER_LOCAL
+    if model.startswith("claude-"):
+        return TIER_CLOUD
+    return TIER_LOCAL
+
+
+def _current_strength(session: Optional[dict], ladder: list[Rung]) -> int:
+    """Strength of the rung the session ran on. For the cloud tier the model id
+    disambiguates standard from deep, so a failed Opus run is not 'promoted'
+    back to Sonnet."""
+    tier = classify_tier(session)
+    model = ((session or {}).get("model") or "").strip().lower()
+    matches = [r for r in ladder if r.tier == tier]
+    if not matches:
+        return -1
+    exact = [r for r in matches if r.model and r.model.lower() == model]
+    if exact:
+        return max(r.strength for r in exact)
+    # Unknown model on a known tier: assume the weakest rung of that tier, so
+    # the ladder still has somewhere to go rather than parking immediately.
+    return min(r.strength for r in matches)
+
+
+def _tiers_from_charter(charter) -> list[str]:
+    """`tiers_allowed` out of a Charter model, a dict, or a bare list."""
+    if charter is None:
+        return []
+    if isinstance(charter, (list, tuple, set)):
+        return [str(t).strip().lower() for t in charter if t]
+    tiers = None
+    if isinstance(charter, dict):
+        tiers = charter.get("tiers_allowed")
+    else:
+        tiers = getattr(charter, "tiers_allowed", None)
+    return [str(t).strip().lower() for t in (tiers or []) if t]
+
+
+async def _profile_exists(db, slug: str) -> bool:
+    """A ladder rung whose launch profile is not in db.agents is not a rung.
+
+    `pi-coding-red` in particular does not exist on this box today; escalating
+    into it would raise "subagent profile not found" out of start_session and
+    turn a recoverable stall into a hard failure.
+    """
+    if db is None:
+        return False
+    try:
+        doc = await db.agents.find_one({"slug": slug})
+    except Exception as exc:  # noqa: BLE001 — availability check, never fatal
+        logger.debug("reroute: could not verify profile %s: %s", slug, exc)
+        return False
+    if not doc:
+        return False
+    if doc.get("enabled") is False:
+        return False
+    return True
+
+
+async def reroute(
+    db: Optional[AsyncIOMotorDatabase],
+    session: dict,
+    *,
+    charter=None,
+    tiers_allowed: Optional[list[str]] = None,
+    previous_tiers: Optional[list[str]] = None,
+    ladder: Optional[list[Rung]] = None,
+    reason: str = "",
+) -> Optional[RerouteVerdict]:
+    """Pick the next stronger tier for a failed session, or None.
+
+    None means "the ladder is exhausted here" — every stronger rung is either
+    outside the charter, already tried, or unavailable. The caller escalates
+    (L4/L5); it must NOT re-run the same tier, which is what the ladder exists
+    to stop.
+
+    Never raises: an unreachable db degrades to "that rung is unavailable",
+    because refusing to escalate is always safe and escalating into a profile
+    that isn't there is not.
+    """
+    ladder = ladder or default_ladder()
+    ladder = sorted(ladder, key=lambda r: r.strength)
+
+    from_tier = classify_tier(session)
+    from_strength = _current_strength(session, ladder)
+
+    allowed = [t for t in (tiers_allowed or _tiers_from_charter(charter))]
+    # An unset `tiers_allowed` is unset, not empty: a charter that never named
+    # its tiers has not restricted anything, and treating it as "nothing is
+    # allowed" would silently disable L3 for every project Ben hasn't finished
+    # filling in. The real caps are autonomy level and the merge gate.
+    unrestricted = not allowed
+
+    tried = {str(t).strip().lower() for t in (previous_tiers or [])}
+    tried |= {
+        str(entry.get("tier") or "").strip().lower()
+        for entry in ((session.get("reroute") or {}).get("history") or [])
+        if isinstance(entry, dict)
+    }
+
+    cloud_cooling: Optional[datetime] = None
+    if db is not None:
+        try:
+            cloud_cooling = await get_cooldown(db, CLAUDE_PROVIDER)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("reroute: availability check failed: %s", exc)
+
+    skipped: list[str] = []
+    for rung in ladder:
+        if rung.strength <= from_strength:
+            continue
+        if not unrestricted and rung.tier not in allowed:
+            skipped.append(f"{rung.label}: not in charter tiers_allowed")
+            continue
+        if rung.tier in tried:
+            skipped.append(f"{rung.label}: tier already tried for this session")
+            continue
+        if rung.tier == TIER_CLOUD and cloud_cooling is not None:
+            mins = max(1, int((cloud_cooling - datetime.now(timezone.utc)).total_seconds() // 60))
+            skipped.append(f"{rung.label}: Claude quota cooling down ~{mins}m")
+            continue
+        if rung.profile and not await _profile_exists(db, rung.profile):
+            skipped.append(f"{rung.label}: launch profile '{rung.profile}' not available")
+            continue
+
+        why = (
+            f"{from_tier} → {rung.tier}: {reason or 'previous attempt failed'}"
+        )
+        return RerouteVerdict(
+            rung=rung,
+            from_tier=from_tier,
+            from_strength=from_strength,
+            why=why,
+            attempt=len([t for t in tried if t]) + 1,
+            skipped=skipped,
+        )
+
+    logger.info(
+        "reroute: no stronger tier available for session %s (from %s): %s",
+        session.get("_id"), from_tier, "; ".join(skipped) or "ladder exhausted",
+    )
+    return None
+
+
+# How much of the failure history to carry. A re-route whose prompt is mostly
+# the previous agent's output is a re-route that spends its context on the
+# failure instead of the task.
+REROUTE_HISTORY_CHARS = 4000
+
+
+def build_reroute_prompt(
+    original_prompt: str,
+    history: Optional[list[dict]] = None,
+    *,
+    verdict: Optional[RerouteVerdict] = None,
+    max_chars: int = REROUTE_HISTORY_CHARS,
+) -> str:
+    """Original task + a Reflexion-style note on what already failed.
+
+    `history` entries are `{"tier"/"label", "outcome"/"reason", "evidence"}`
+    dicts — whatever the supervisor recorded per attempt. A re-route without
+    this note is just the same task on a bigger model, which is the version of
+    L3 that reliably reproduces the original failure.
+    """
+    lines: list[str] = []
+    for entry in history or []:
+        if not isinstance(entry, dict):
+            continue
+        who = entry.get("label") or entry.get("tier") or entry.get("model") or "previous attempt"
+        outcome = entry.get("reason") or entry.get("outcome") or "failed"
+        line = f"- {who}: {outcome}"
+        evidence = (entry.get("evidence") or "").strip()
+        if evidence:
+            line += f"\n  evidence: {evidence[:600]}"
+        lines.append(line)
+
+    if not lines:
+        return original_prompt
+
+    note = "\n".join(lines)
+    if len(note) > max_chars:
+        note = note[:max_chars] + "\n  … (history truncated)"
+
+    header = "A previous attempt at this task failed. What was tried:"
+    footer = (
+        "Do not repeat the failed approach. Start by establishing what is "
+        "actually true in the workspace (read the files, run the check) before "
+        "changing anything."
+    )
+    if verdict is not None:
+        header = (
+            f"This task is being retried on a stronger tier "
+            f"({verdict.from_tier} → {verdict.tier}). What was tried before:"
+        )
+    return f"{original_prompt}\n\n---\n{header}\n{note}\n\n{footer}"

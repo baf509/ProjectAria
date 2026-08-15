@@ -16,11 +16,10 @@ SPEC about moving it to `api/deps.py` alongside the other key-split routes
 (`PUT /agents`, `set_llm_route`, model start/stop, killswitch deactivate).
 """
 
-import hmac
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
@@ -33,13 +32,11 @@ from aria.guard.gitguard import (
     GuardGitError,
     get_git_guard,
 )
-from aria.guard.sandbox import preflight
+from aria.guard.sandbox import preflight_async
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
 
 
 class CheckpointRequest(BaseModel):
@@ -88,7 +85,9 @@ async def guard_status(db: AsyncIOMotorDatabase = Depends(get_db)):
 
     return {
         "enabled": settings.guard_enabled,
-        "preflight": preflight(),
+        # preflight may spawn the bwrap liveness canary, so it runs in a thread:
+        # a status poll must never park the event loop on a subprocess.
+        "preflight": await preflight_async(),
         "policy": {**policy.to_dict(), "verification": verification},
         "counts": counts,
         "mirror_root": get_git_guard(db).mirror_root,
@@ -220,6 +219,11 @@ async def accept_guard_policy(
 
     The hash must be passed explicitly: accepting "whatever is on disk now"
     would let a caller who never read the file wave through someone else's edit.
+
+    This is also the ONLY sanctioned way out of a tamper verdict. Deleting the
+    acceptance record instead would clear the alarm by performing the very
+    attack the alarm detects (`policy.verify_policy`), so the failure paths
+    quote this route rather than a `rm`.
     """
     current = guard_policy.policy_hash()
     if body.hash != current:

@@ -11,6 +11,7 @@ The invariants under test are incident-derived, not stylistic:
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -43,7 +44,13 @@ def _match(doc: dict, flt: dict) -> bool:
                     if actual == operand:
                         return False
                 elif op == "$in":
-                    if actual not in operand:
+                    # Mongo matches $in element-wise against an array field —
+                    # db.projects.relevant_paths is one, and the slug resolver
+                    # queries it.
+                    if isinstance(actual, list):
+                        if not any(item in operand for item in actual):
+                            return False
+                    elif actual not in operand:
                         return False
                 elif op == "$regex":
                     if actual is None or not re.search(operand, str(actual)):
@@ -104,7 +111,7 @@ class FakeCollection:
         self.docs.append(doc)
         return SimpleNamespace(inserted_id=doc["_id"])
 
-    async def find_one(self, flt=None, *args, **kwargs):
+    async def find_one(self, flt=None, projection=None, *args, **kwargs):
         for doc in self.docs:
             if _match(doc, flt or {}):
                 return dict(doc)
@@ -182,8 +189,26 @@ class TestClassification:
         kind, severity, needs_human = classify("coding:abc123", "stalled:idle")
         assert (kind, severity, needs_human) == ("stall", "info", False)
 
-    def test_deadline_budget_loop_are_info(self):
-        for event in ("deadline", "budget:hard_gate", "loop:ended"):
+    def test_progress_notices_are_info(self):
+        for event in ("loop:ended", "loop:nudge", "budget:warn", "budget:soft_gate", "stopped"):
+            _, severity, needs_human = classify("coding:abc123", event)
+            assert (severity, needs_human) == ("info", False), event
+
+    def test_bad_terminal_outcomes_are_visible_but_never_needs_human(self):
+        """A session that FAILED, was killed by the budget guard or ran out its
+        deadline used to land in the same silent info bucket as "completed", so
+        the headline claim of Alerts v2 was false for the cases that matter.
+        Severity carries it now; needs_human still must not, or the triage cron
+        starts spawning fixers for lifecycle events again."""
+        for event in ("error", "failed", "deadline", "budget:hard_gate", "crashed"):
+            _, severity, needs_human = classify("coding:abc123", event)
+            assert severity == "high", event
+            assert needs_human is False, event
+
+    def test_completion_is_not_a_failure(self):
+        # "completed" contains no failure marker and must stay in the quiet lane
+        # even though it is terminal.
+        for event in ("completed", "complete", "resolved"):
             _, severity, needs_human = classify("coding:abc123", event)
             assert (severity, needs_human) == ("info", False), event
 
@@ -237,9 +262,33 @@ async def test_mail_echo_still_dropped():
     assert db.alerts.docs == []
 
 
+def _seed_projects(db) -> None:
+    """db.projects as it actually is on corsair: a coarse harvested row for
+    ~/Development, and the hand-created `aria` row that claims ProjectAria
+    through relevant_paths (shells/harvest.py merges into it rather than minting
+    a `ProjectAria` twin)."""
+    db.projects.docs.extend(
+        [
+            {
+                "_id": "PP",
+                "slug": "development",
+                "path": "/home/ben/Development",
+                "relevant_paths": [],
+            },
+            {
+                "_id": "PA",
+                "slug": "aria",
+                "path": None,
+                "relevant_paths": ["/home/ben/Development/ProjectAria"],
+            },
+        ]
+    )
+
+
 @pytest.mark.asyncio
 async def test_caller_supplied_classification_wins():
     db = FakeDB()
+    _seed_projects(db)
     with _patch_db(db):
         await NotificationService().notify(
             source="guard",
@@ -255,7 +304,48 @@ async def test_caller_supplied_classification_wins():
     assert doc["severity"] == "critical"
     assert doc["kind"] == "guard"
     assert doc["dedup_key"] == "guard|blocked|sess-9"
-    assert doc["project_slug"] == "ProjectAria"
+    # NOT the basename: this row's project is `aria` in db.projects, which is
+    # the slug the cockpit queries with.
+    assert doc["project_slug"] == "aria"
+
+
+@pytest.mark.asyncio
+async def test_project_slug_is_resolved_not_guessed_from_the_basename():
+    """`GET /alerts?project=aria` returned 0 rows because every ProjectAria
+    alert was filed as `ProjectAria` — a slug no db.projects row has. Most
+    specific root wins, so the coarse ~/Development row must not claim it."""
+    db = FakeDB()
+    _seed_projects(db)
+    with _patch_db(db):
+        await NotificationService().notify(
+            source="coding:gate",
+            event_type="gate:failed",
+            detail="check failed 3x",
+            project_path="/home/ben/Development/ProjectAria/api",
+        )
+        await NotificationService().notify(
+            source="selfcheck",
+            event_type="degraded",
+            detail="x",
+            project_path="/home/ben/Development/some-other-repo",
+        )
+    assert db.alerts.docs[0]["project_slug"] == "aria"
+    assert db.alerts.docs[1]["project_slug"] == "development"
+
+
+@pytest.mark.asyncio
+async def test_project_slug_falls_back_to_basename_when_unclaimed():
+    """A workspace no project row claims yet (harvest will mint this same slug)
+    — and the same answer when db.projects is unreachable."""
+    db = FakeDB()
+    with _patch_db(db):
+        await NotificationService().notify(
+            source="coding:s1",
+            event_type="error",
+            detail="x",
+            project_path="/home/ben/Development/aria-projects/scratch-1/",
+        )
+    assert db.alerts.docs[0]["project_slug"] == "scratch-1"
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +367,82 @@ async def test_repeat_increments_occurrences_instead_of_duplicating():
     assert second["deduped"] is True and second["occurrences"] == 2
     assert len(db.alerts.docs) == 1
     assert db.alerts.docs[0]["detail"] == "llm still down"
+
+
+@pytest.mark.asyncio
+async def test_dedup_escalates_severity():
+    """The break-glass mute. `POST /api/v1/notifications/send
+    {"source":"relay","event_type":"dead"}` needs only the global API key and
+    pre-creates the `relay|dead` row at whatever classify() defaults to (high
+    here); the RelayWatchdog's real critical then deduped INTO it, and
+    `?severity=critical` — the query the break-glass path runs — returned
+    nothing. The first occurrence must not cap the row."""
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        planted = await svc.notify(
+            source="relay", event_type="dead", detail="x", cooldown_seconds=0
+        )
+        assert db.alerts.docs[0]["severity"] == "high"
+
+        real = await svc.notify(
+            source="relay",
+            event_type="dead",
+            detail="no heartbeat for 45m",
+            severity="critical",
+            kind="relay",
+            needs_human=True,
+            dedup_key="relay|dead",
+            cooldown_seconds=0,
+        )
+    assert real["deduped"] is True
+    assert real["alert_id"] == planted["alert_id"]
+    assert len(db.alerts.docs) == 1
+    row = db.alerts.docs[0]
+    assert row["severity"] == "critical"
+    assert row["needs_human"] is True
+    assert real["severity"] == "critical"
+
+
+@pytest.mark.asyncio
+async def test_dedup_never_downgrades_severity():
+    """Severity ranks explicitly because BSON would not: sorted as strings,
+    "critical" < "info" < "low" < "medium", so a $max would let any later repeat
+    walk a critical row back down."""
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        await svc.notify(
+            source="relay", event_type="dead", detail="dead",
+            severity="critical", needs_human=True, cooldown_seconds=0,
+        )
+        for lower in ("info", "low", "medium", "high"):
+            await svc.notify(
+                source="relay", event_type="dead", detail="still dead",
+                severity=lower, cooldown_seconds=0,
+            )
+            assert db.alerts.docs[0]["severity"] == "critical", lower
+    assert db.alerts.docs[0]["needs_human"] is True
+
+
+@pytest.mark.asyncio
+async def test_dedup_freezes_kind_by_design():
+    """kind is the row's ROUTING identity — the break-glass allow-list, the
+    triage selectors and the digest grouping are all keyed on it. Escalating
+    severity under a consumer is fine; moving the row to another lane is not.
+    A genuinely different kind of event carries its own dedup_key."""
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        await svc.notify(
+            source="relay", event_type="dead", detail="x", kind="relay", cooldown_seconds=0
+        )
+        await svc.notify(
+            source="relay", event_type="dead", detail="x",
+            kind="estop", severity="critical", cooldown_seconds=0,
+        )
+    assert db.alerts.docs[0]["kind"] == "relay"
+    assert db.alerts.docs[0]["severity"] == "critical"
 
 
 @pytest.mark.asyncio
@@ -332,6 +498,69 @@ async def test_expired_persisted_cooldown_allows_send():
 
 
 @pytest.mark.asyncio
+async def test_future_cooldown_stamp_does_not_silence_the_alert_class(caplog):
+    """Mongo is bound 0.0.0.0 with no auth (CLAUDE.md S4), so one document —
+    writable by any coding agent on the tailnet — used to mute an alert class
+    permanently and across restarts: `now - last_sent >= cooldown` can never
+    become true when last_sent is in the future."""
+    db = FakeDB()
+    db.alert_cooldowns.docs.append(
+        {
+            "_id": "selfcheck|degraded",
+            "last_sent_at": datetime.now(timezone.utc) + timedelta(hours=4),
+        }
+    )
+    with _patch_db(db), caplog.at_level(logging.WARNING, logger="aria.notifications.service"):
+        res = await NotificationService().notify(
+            source="selfcheck", event_type="degraded", detail="llm down", cooldown_seconds=600
+        )
+    assert res["queued"] is True
+    assert any("FUTURE" in r.getMessage() for r in caplog.records)
+    # And the poisoned stamp is overwritten on the way out, so it self-heals.
+    assert db.alert_cooldowns.docs[0]["last_sent_at"] <= datetime.now(timezone.utc)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored",
+    [
+        pytest.param(lambda now: now + timedelta(days=365), id="future"),
+        pytest.param(lambda now: now - timedelta(days=400), id="ancient"),
+        pytest.param(lambda now: "2026-08-15T12:00:00", id="not-a-datetime"),
+    ],
+)
+async def test_implausible_cooldown_is_loud_not_debug(caplog, stored):
+    """Bad *data* has to be as visible as a bad read. A silently-ignored stamp
+    is indistinguishable from a working cooldown, which is how "this alert
+    stopped firing" goes unnoticed for days."""
+    db = FakeDB()
+    db.alert_cooldowns.docs.append(
+        {"_id": "selfcheck|degraded", "last_sent_at": stored(datetime.now(timezone.utc))}
+    )
+    with _patch_db(db), caplog.at_level(logging.WARNING, logger="aria.notifications.service"):
+        res = await NotificationService().notify(
+            source="selfcheck", event_type="degraded", detail="x", cooldown_seconds=600
+        )
+    assert res["queued"] is True
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings and "selfcheck" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_poisoned_in_memory_cooldown_is_dropped():
+    """The cache is not a trusted source either — _load_cooldown is not the only
+    writer of that dict."""
+    svc = NotificationService()
+    svc._cooldowns[("selfcheck", "degraded")] = datetime.now(timezone.utc) + timedelta(hours=4)
+    db = FakeDB()
+    with _patch_db(db):
+        res = await svc.notify(
+            source="selfcheck", event_type="degraded", detail="x", cooldown_seconds=600
+        )
+    assert res["queued"] is True
+
+
+@pytest.mark.asyncio
 async def test_cooldown_store_failure_falls_back_to_memory():
     """The cooldown store is a convenience path: if it is unreadable the alert
     goes through (fail open), and the in-process dict still dampens repeats."""
@@ -353,6 +582,109 @@ async def test_cooldown_store_failure_falls_back_to_memory():
         )
     assert first["queued"] is True
     assert second == {"queued": False, "reason": "cooldown"}
+
+
+# ---------------------------------------------------------------------------
+# Bounded life for the info lane (C4 regression)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_info_rows_expire_and_attention_rows_do_not():
+    """Nothing acks a session lifecycle row and nothing delivers it, so without
+    an expiry they accumulate forever — inflating every project's cockpit
+    attention score and eventually filling its 300-row read with noise."""
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        await svc.notify(
+            source="coding:s1", event_type="stalled:idle", detail="idle", cooldown_seconds=0
+        )
+        await svc.notify(
+            source="selfcheck", event_type="degraded", detail="llm down", cooldown_seconds=0
+        )
+    info, real = db.alerts.docs
+    assert info["severity"] == "info"
+    assert info["expires_at"] is not None
+    assert info["expires_at"] > datetime.now(timezone.utc)
+    # Anything that needs a human is out of the TTL index's reach entirely.
+    assert real["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_escalated_row_loses_its_expiry():
+    """A row that has become real must not evaporate under the TTL sweep."""
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        await svc.notify(
+            source="coding:s1", event_type="stalled:idle", detail="idle", cooldown_seconds=0
+        )
+        assert db.alerts.docs[0]["expires_at"] is not None
+        await svc.notify(
+            source="coding:s1", event_type="stalled:idle", detail="wedged",
+            severity="high", cooldown_seconds=0,
+        )
+    assert db.alerts.docs[0]["severity"] == "high"
+    assert db.alerts.docs[0]["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_recurring_info_row_expiry_tracks_the_last_occurrence():
+    db = FakeDB()
+    svc = NotificationService()
+    with _patch_db(db):
+        await svc.notify(
+            source="coding:s1", event_type="stalled:idle", detail="idle", cooldown_seconds=0
+        )
+        first = db.alerts.docs[0]["expires_at"]
+        db.alerts.docs[0]["expires_at"] = first - timedelta(days=6)
+        await svc.notify(
+            source="coding:s1", event_type="stalled:idle", detail="idle", cooldown_seconds=0
+        )
+    assert db.alerts.docs[0]["expires_at"] > first - timedelta(days=6)
+
+
+# ---------------------------------------------------------------------------
+# Failed sessions: visible, and structurally unable to loop
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_failed_session_enqueues_a_visible_row():
+    db = FakeDB()
+    with _patch_db(db):
+        res = await NotificationService().notify(
+            source="coding:sess-7", event_type="error", detail="Session exited with code 1"
+        )
+    assert res["queued"] is True
+    doc = db.alerts.docs[0]
+    assert doc["severity"] == "high"
+    assert doc["needs_human"] is False
+    # No expiry: a failed session is not disposable record-keeping.
+    assert doc["expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_no_session_lifecycle_event_can_re_enter_the_triage_lane():
+    """The 31-row incident: the triage cron selected an alert, spawned a fixer
+    agent, the fixer's own lifecycle became an alert, and triage selected that
+    too. Every consumer that ACTS (relay, triage, break-glass) selects
+    needs_human=true; no coding:<session_id> event of any severity sets it, so
+    a fixer that fails, blows its budget and times out re-triggers nothing."""
+    db = FakeDB()
+    svc = NotificationService()
+    events = [
+        "stopped", "completed", "error", "failed", "crashed", "deadline",
+        "budget:hard_gate", "budget:warn", "stalled:idle", "loop:ended", "loop:nudge",
+    ]
+    with _patch_db(db):
+        for i, event in enumerate(events):
+            await svc.notify(
+                source=f"coding:fixer-{i}", event_type=event, detail="x", cooldown_seconds=0
+            )
+    assert len(db.alerts.docs) == len(events)
+    assert all(doc["needs_human"] is False for doc in db.alerts.docs)
+    # The relay's own selector, verbatim (notifications/relay.py _pending_alerts).
+    assert [d for d in db.alerts.docs if _match(d, {"needs_human": True, "acked": False})] == []
 
 
 @pytest.mark.asyncio
@@ -447,6 +779,23 @@ async def test_list_filters_by_project_slug_or_path(alerts_client):
     resp = await alerts_client.get("/api/v1/alerts?project=ProjectAria")
     ids = {a["id"] for a in resp.json()["alerts"]}
     assert ids == {str(by_slug["_id"]), str(by_path["_id"])}
+
+
+@pytest.mark.asyncio
+async def test_list_by_slug_finds_rows_filed_under_the_old_basename(alerts_client):
+    """History: every ProjectAria alert written before the slug resolver landed
+    carries project_slug="ProjectAria", and the cockpit asks for `aria`. Nothing
+    can re-emit those rows, so the reader matches the project's real roots."""
+    _seed_projects(alerts_client.db)
+    legacy_slug = _alert_doc(project_slug="ProjectAria")
+    by_path = _alert_doc(project_path="/home/ben/Development/ProjectAria/api")
+    current = _alert_doc(project_slug="aria")
+    alerts_client.db.alerts.docs.extend(
+        [legacy_slug, by_path, current, _alert_doc(project_slug="hermes")]
+    )
+    resp = await alerts_client.get("/api/v1/alerts?project=aria")
+    ids = {a["id"] for a in resp.json()["alerts"]}
+    assert ids == {str(legacy_slug["_id"]), str(by_path["_id"]), str(current["_id"])}
 
 
 @pytest.mark.asyncio

@@ -102,10 +102,20 @@ async def run_checks(db) -> list[dict]:
     #
     # The key is required because the proxy sits behind api_key_middleware; it
     # is harmlessly ignored if llamacpp_url is ever repointed at a raw server.
-    ok, detail = await _check_http(
-        settings.llamacpp_url.rstrip("/") + "/models",
-        headers={"X-API-Key": settings.api_key} if settings.api_key else None,
-    )
+    # Timeout and retry, measured 2026-08-15: a COLD call to the passthrough
+    # took 8.57 s, and the two immediately after it took 0.60 s and 0.58 s. The
+    # shared 4 s default therefore turned an ordinary first-request warm-up into
+    # `llm (ReadTimeout)`, which reached Ben's phone as a real alert — the fastest
+    # possible way to train someone to ignore their own alert queue. One slow
+    # response is not a degradation; two in a row is. Retry once before judging,
+    # and give the LLM probe a budget that fits a local model rather than the
+    # budget that fits a health endpoint.
+    _llm_url = settings.llamacpp_url.rstrip("/") + "/models"
+    _llm_headers = {"X-API-Key": settings.api_key} if settings.api_key else None
+    ok, detail = await _check_http(_llm_url, timeout=15.0, headers=_llm_headers)
+    if not ok:
+        ok, retry_detail = await _check_http(_llm_url, timeout=15.0, headers=_llm_headers)
+        detail = detail if ok else f"{detail} then {retry_detail}"
     checks.append({"name": "llm", "ok": ok, "detail": detail})
 
     # Chadrock (pool_api_url) — the pool-cli coding backend. Added 2026-07-28:

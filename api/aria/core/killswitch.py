@@ -30,6 +30,7 @@ class Killswitch:
         self._db: Optional[AsyncIOMotorDatabase] = None
         self._escalation_manager = None
         self._escalation_id: Optional[str] = None
+        self._coding_manager = None
 
     @property
     def is_active(self) -> bool:
@@ -37,6 +38,12 @@ class Killswitch:
 
     def set_db(self, db: "AsyncIOMotorDatabase") -> None:
         self._db = db
+
+    def set_coding_manager(self, manager) -> None:
+        """Wire the coding-session manager so activation can stop sessions that
+        are ALREADY RUNNING. Until 2026-08-15 the killswitch only refused new
+        spawns: the thing you press the button about kept going."""
+        self._coding_manager = manager
 
     async def load_state(self, db: "AsyncIOMotorDatabase") -> None:
         """Load persisted killswitch state on startup."""
@@ -71,6 +78,7 @@ class Killswitch:
         task_runner=None,
         notification_service=None,
         escalation_manager=None,
+        coding_manager=None,
     ) -> dict:
         """Activate the killswitch, cancelling all running autonomous work."""
         self._active = True
@@ -82,12 +90,17 @@ class Killswitch:
         if task_runner is not None:
             cancelled_tasks = await self._cancel_all_tasks(task_runner)
 
+        stopped_sessions = await self._stop_running_sessions(coding_manager, reason)
+
         if notification_service is not None:
             try:
                 await notification_service.notify(
                     source="killswitch",
                     event_type="activated",
-                    detail=f"Killswitch activated: {reason}. Cancelled {cancelled_tasks} task(s).",
+                    detail=(
+                        f"Killswitch activated: {reason}. Cancelled {cancelled_tasks} task(s), "
+                        f"stopped {stopped_sessions} coding session(s)."
+                    ),
                     cooldown_seconds=0,
                 )
             except Exception as exc:
@@ -108,18 +121,43 @@ class Killswitch:
                 logger.warning("Failed to create killswitch escalation: %s", exc)
 
         logger.warning(
-            "Killswitch ACTIVATED: %s (cancelled %d tasks)", reason, cancelled_tasks
+            "Killswitch ACTIVATED: %s (cancelled %d tasks, stopped %d coding sessions)",
+            reason, cancelled_tasks, stopped_sessions,
         )
         return {
             "active": True,
             "reason": reason,
             "activated_at": self._activated_at,
             "cancelled_tasks": cancelled_tasks,
+            "stopped_sessions": stopped_sessions,
         }
 
     async def _cancel_all_tasks(self, task_runner) -> int:
         """Cancel all running tasks via the task runner."""
         return await task_runner.cancel_all()
+
+    async def _stop_running_sessions(self, coding_manager, reason: str) -> int:
+        """Kill every running coding session (proposal §7.3).
+
+        Best-effort by construction: the killswitch's first job is to be
+        activatable, so a manager that isn't wired, a Mongo blip or one wedged
+        tmux session must not make pressing the button fail. The state is
+        already persisted by the time this runs, so new spawns are blocked
+        either way.
+        """
+        manager = coding_manager or self._coding_manager
+        if manager is None:
+            from aria.agents.session import resolve_active_session_manager
+
+            manager = resolve_active_session_manager()
+        if manager is None:
+            return 0
+        try:
+            result = await manager.stop_all_running(reason=f"killswitch: {reason}")
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.error("Killswitch could not stop running coding sessions: %s", exc)
+            return 0
+        return int((result or {}).get("stopped") or 0)
 
     async def deactivate(self) -> dict:
         """Deactivate the killswitch, allowing operations to resume."""

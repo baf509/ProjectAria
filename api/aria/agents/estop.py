@@ -72,10 +72,16 @@ class EstopManager:
     and the killswitch is checked via killswitch.check_or_raise().
     """
 
-    def __init__(self, db: AsyncIOMotorDatabase):
+    def __init__(self, db: AsyncIOMotorDatabase, session_manager=None):
         self.db = db
         self._cached_state: Optional[EstopState] = None
         self._cache_time: float = 0
+        self._session_manager = session_manager
+
+    def set_session_manager(self, manager) -> None:
+        """Wire the coding-session manager so activation stops sessions that
+        are ALREADY RUNNING, not just the next spawn (proposal §7.3)."""
+        self._session_manager = manager
 
     async def get_state(self) -> EstopState:
         """Get the current estop state (cached for 5 seconds)."""
@@ -130,8 +136,35 @@ class EstopManager:
             "timestamp": now,
         })
 
-        logger.warning("ESTOP ACTIVATED: %s (by %s)", reason, triggered_by)
+        # STOP means stop. The freeze is persisted first (so nothing new can
+        # spawn while this runs), then everything already running is
+        # checkpointed and killed — before this, a Signal `ESTOP` left a rogue
+        # agent editing files for as long as it liked.
+        stopped = await self._stop_running_sessions(reason)
+
+        logger.warning(
+            "ESTOP ACTIVATED: %s (by %s; stopped %d coding session(s))",
+            reason, triggered_by, stopped,
+        )
         return state
+
+    async def _stop_running_sessions(self, reason: str) -> int:
+        """Best-effort stop of every running coding session. Never raises: a
+        freeze that fails because one tmux session is wedged is worse than a
+        freeze that reports a partial stop."""
+        manager = self._session_manager
+        if manager is None:
+            from aria.agents.session import resolve_active_session_manager
+
+            manager = resolve_active_session_manager()
+        if manager is None:
+            return 0
+        try:
+            result = await manager.stop_all_running(reason=f"estop: {reason}")
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.error("Estop could not stop running coding sessions: %s", exc)
+            return 0
+        return int((result or {}).get("stopped") or 0)
 
     async def deactivate(self, reason: str = "manual") -> EstopState:
         """Deactivate the emergency stop (thaw)."""

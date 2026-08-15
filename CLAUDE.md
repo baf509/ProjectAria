@@ -357,6 +357,15 @@ After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the to
 the `aria` MCP connection has no per-tool whitelist on Hermes's side, so this
 restart alone is sufficient; no config.yaml edit is needed to "register" a new tool.
 
+⚠️ **That was only true after 2026-08-15.** Hermes launches
+`~/.local/share/aria-mcp/server.py`, which until then was a hand-made **copy** of this
+file — so "edit and restart" reloaded the *old* toolset and the new tool simply never
+appeared. The drift was 19 tools deep when it was found (71 deployed vs 90 here). It is
+now a **symlink to this repo file**, which is what makes the instruction above correct;
+the last copy is kept as `server.py.bak-predeploy-20260815`. If you ever replace the
+symlink with a copy, you are reintroducing a failure whose only symptom is a tool that
+"doesn't exist" for no visible reason.
+
 ### Coding Sub-agents on the Shell Substrate (`api/aria/agents/`)
 
 ARIA-spawned coding sessions (`start_coding_session`, watchdog, checkpoints,

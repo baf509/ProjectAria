@@ -216,6 +216,59 @@ class SchedulerService:
                     notify=True,
                     metadata={"task_kind": "scheduled_autopilot", "schedule_id": str(schedule["_id"])},
                 )
+        elif action == "research":
+            # Proactive per-project research (steward proposal §5). The schedule
+            # row only says WHICH project and WHEN; the ResearchPlanner owns
+            # question generation, dedup/cool-down, the per-project budget, the
+            # citation check and publishing — including the model rules (Qwen
+            # slot 2, heavy work 01:00-07:00 or when Hermes is idle, never DS4).
+            #
+            # Put the cadence in cron_expr, not in params: "weekly sunday 02:00"
+            # lands inside the night window, which is the only time a full-depth
+            # run may take the big prefill without dragging Hermes's decode.
+            project = params.get("project") or params.get("slug")
+            if project:
+                questions = params.get("questions") or None
+                force = bool(params.get("force"))
+
+                async def _run_research_plan():
+                    from aria.api.deps import get_notification_service, get_research_service
+                    from aria.steward.research import ResearchPlanner
+
+                    research_service = await get_research_service(self.db, self.task_runner)
+                    planner = ResearchPlanner(
+                        self.db,
+                        research=research_service,
+                        notifier=get_notification_service(),
+                    )
+                    return await planner.run_project(
+                        project, questions=questions, force=force
+                    )
+
+                await self.task_runner.submit_task(
+                    name=f"research-plan:{project}",
+                    coroutine_factory=_run_research_plan,
+                    # notify=False on purpose: the task runner's completion and
+                    # failure notices go out as source="task", which classifies
+                    # to needs_human=True — i.e. every finished or failed
+                    # research run would Signal Ben. The planner raises its own
+                    # classified, needs_human=False alerts instead.
+                    notify=False,
+                    metadata={
+                        "task_kind": "scheduled_research",
+                        "schedule_id": str(schedule["_id"]),
+                        "project": project,
+                    },
+                    # A research run is bounded by the planner's own wall-clock
+                    # budget; the task timeout is the outer backstop for a run
+                    # that wedges before the budget watchdog can see it.
+                    timeout_seconds=int(params.get("timeout_seconds") or 3600),
+                )
+            else:
+                logger.error(
+                    "Schedule '%s' has action=research with no project param",
+                    schedule.get("name", schedule["_id"]),
+                )
         elif action == "notify":
             await self.notification_service.notify(
                 source="scheduler",
@@ -339,7 +392,9 @@ class SchedulerService:
         Args:
             name: Human-readable name for the schedule.
             schedule_type: "once" or "recurring".
-            action: "remind", "prompt", "tool", or "notify".
+            action: "remind", "prompt", "tool", "autopilot", "notify", or
+                "research" (params: {project: slug-or-id, questions?: [str],
+                force?: bool} — see _execute_schedule).
             params: Action-specific parameters.
             cron_expr: Simplified cron expression (required for recurring).
             run_at: When to run (required for one-shot).

@@ -114,3 +114,45 @@ async def test_append_section_proceeds_when_file_is_old(tmp_path):
     assert p2 == p
     text = open(p, encoding="utf-8").read()
     assert "## Second" in text and "beta" in text
+
+
+@pytest.mark.asyncio
+async def test_upsert_managed_without_a_db_never_claims_an_existing_doc(tmp_path):
+    """No db handle means no hash record, which means ARIA cannot prove it wrote
+    anything — so it must not rewrite a doc that already exists. Refusing here
+    is the honest answer; the alternative is overwriting Ben's file on the
+    strength of an assumption."""
+    e1, e2 = _enabled(tmp_path)
+    with e1, e2:
+        w = ObsidianWriter(str(tmp_path))
+        first = await w.upsert_managed("PLAN.md", {"status": "active"},
+                                       "# Plan\n\nbody", managed_keys=["status"])
+        assert first["wrote"] is True                 # creating it is fine
+        second = await w.upsert_managed("PLAN.md", {"status": "paused"},
+                                        "# Plan\n\nrewritten", managed_keys=["status"])
+    assert second["wrote"] is False
+    assert second["reason"] == "unknown-provenance"
+    path = first["path"]
+    assert "rewritten" not in open(path, encoding="utf-8").read()
+    # The proposal still lands beside it, so nothing ARIA computed is lost.
+    assert second["proposal_path"] and os.path.exists(second["proposal_path"])
+
+
+@pytest.mark.asyncio
+async def test_seed_keys_default_to_the_three_control_keys(tmp_path):
+    """A caller that knows nothing about the split still gets the safe
+    behaviour: `approval`/`autonomy`/`accepted` are seeded, never managed."""
+    e1, e2 = _enabled(tmp_path)
+    with e1, e2:
+        w = ObsidianWriter(str(tmp_path))
+        result = await w.upsert_managed(
+            "PLAN.md",
+            {"status": "active", "approval": "pending", "autonomy": 0,
+             "accepted": "pending"},
+            "# Plan\n\nbody",
+            # Deliberately claiming them as managed: the split must win.
+            managed_keys=["status", "approval", "autonomy", "accepted"],
+        )
+    assert result["seeded"] == ["accepted", "approval", "autonomy"]
+    text = open(result["path"], encoding="utf-8").read()
+    assert "approval: pending" in text and "autonomy: 0" in text

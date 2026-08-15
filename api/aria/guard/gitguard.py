@@ -38,10 +38,12 @@ admin-keyed action.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
 import shutil
+import signal
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
@@ -79,12 +81,42 @@ class GuardGitError(Exception):
     """A git operation the guard needs failed."""
 
 
+class GuardMergeConflict(GuardGitError):
+    """The merge could not be completed — and the working tree is back as it was.
+
+    Separate from `GuardGitError` because it is an ANSWER, not a fault: the
+    caller turns it into a 409 ("this needs a human or a rebase"), whereas a
+    bare GuardGitError from the merge path now means the far more serious "we
+    could not put the tree back".
+    """
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# How long a timed-out gitleaks scan is given before it is killed. A module
+# constant so a test can shorten it without waiting three minutes.
+GITLEAKS_TIMEOUT_SECONDS = 180
+
+
 def _sid8(session_id: str) -> str:
-    return session_id.replace("/", "-")[:8]
+    """A short, git-safe, COLLISION-RESISTANT label for a session id.
+
+    It names branches (`aria/<project>/<sid8>`), worktree directories and
+    `parked/` branches, so two sessions that share it cannot both exist: the
+    second `git worktree add` fails and that session id can never be prepared.
+    Truncating to 8 characters was fine for uuids and wrong for everything else
+    — ARIA's own ids look like `sess-abcdef-0123456789`, where the first 8
+    characters are `sess-abc` for every session ever created. The hash suffix is
+    over the WHOLE id, so distinct ids stay distinct while the prefix keeps the
+    name readable.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", session_id).strip("-.")
+    safe = re.sub(r"\.{2,}", ".", safe) or "session"
+    if len(safe) <= 8 and safe == session_id:
+        return safe
+    return f"{safe[:8]}-{hashlib.sha256(session_id.encode('utf-8')).hexdigest()[:6]}"
 
 
 class GitGuard:
@@ -97,10 +129,12 @@ class GitGuard:
         *,
         mirror_root: Optional[str] = None,
         policy: Optional[GuardPolicy] = None,
+        notifier=None,
     ):
         self.db = db
         self.mirror_root = os.path.expanduser(mirror_root or settings.guard_mirror_root)
         self._policy = policy
+        self._notifier = notifier
         self._sessions: dict[str, dict] = {}
 
     @property
@@ -139,6 +173,76 @@ class GitGuard:
 
     async def _event(self, kind: str, detail: str, **kwargs) -> dict:
         return await record_event(self.db, kind, detail, **kwargs)
+
+    async def _alert(self, event_type: str, detail: str, **kwargs) -> None:
+        """Raise to Ben. Convenience path: FAILS OPEN.
+
+        The durable half of a raise is the `guard_events` row and the merge
+        gate's refusal, both of which happen whether or not this works; an alert
+        backend that is down must not take the checkpoint down with it.
+        """
+        try:
+            notifier = self._notifier
+            if notifier is None:
+                from aria.notifications.service import NotificationService
+
+                notifier = self._notifier = NotificationService()
+            await notifier.notify(
+                source="guard", event_type=event_type, detail=detail, **kwargs
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("guard: could not raise alert %s", event_type, exc_info=True)
+
+    async def _raise_on_protected(
+        self, record: dict, paths: Iterable[str], policy: GuardPolicy
+    ) -> list[dict]:
+        """A protected path was just staged — raise NOW, not at merge time.
+
+        `guard/policy.yaml` promises "A touch is an immediate raise, not merely a
+        merge rejection", and until this existed `is_protected()` had exactly one
+        caller: the merge gate. So an agent could rewrite `api/aria/guard/**` or
+        `.env`, have it committed by the guard itself every ten minutes, and the
+        first anyone heard of it was whenever someone happened to run a gate.
+
+        The checkpoint still stages the file. Refusing to would leave the edit
+        uncommitted forever, which is both un-revertible (no commit to reset to)
+        and a permanent gate deadlock — see `_classify_candidate`. Capture it,
+        shout, and let the gate be the thing that refuses.
+        """
+        already = set(record.get("raised_protected") or [])
+        hits: list[dict] = []
+        for path in dict.fromkeys(paths):
+            pattern = guard_policy.protecting_pattern(path, record["repo"], policy)
+            if pattern:
+                hits.append({"path": path, "pattern": pattern})
+        if not hits:
+            return []
+
+        session_id = record["_id"]
+        fresh = [h for h in hits if h["path"] not in already]
+        detail = (
+            f"session {session_id} modified {len(hits)} protected path(s): "
+            + "; ".join(f"{h['path']} (rule {h['pattern']})" for h in hits[:10])
+        )
+        await self._event(
+            "policy:protected_touch", detail,
+            session_id=session_id, path=hits[0]["path"],
+            blocked=True, severity="critical",
+            extra={"hits": hits, "branch": record.get("branch")},
+        )
+        if fresh:
+            # Only new paths page: a Ralph-looped session checkpoints every few
+            # minutes, and re-raising the same file forever trains Ben to ignore
+            # the one alert that must never be ignored.
+            await self._alert(
+                "protected_path_touched", detail,
+                project_path=record.get("repo"), severity="critical",
+                needs_human=True, dedup_key=f"guard:protected:{session_id}",
+                cooldown_seconds=0,
+            )
+            record["raised_protected"] = sorted(already | {h["path"] for h in fresh})
+            await self._save_session(record)
+        return hits
 
     # -- session registry --------------------------------------------------
 
@@ -231,11 +335,31 @@ class GitGuard:
     async def prepare_session(
         self, repo: str, session_id: str, project_slug: Optional[str] = None
     ) -> dict:
-        """Worktree + branch + start tag + mirror. Idempotent."""
+        """Worktree + branch + start tag + mirror. Idempotent, and RECOVERABLE.
+
+        Recoverable is the part that was missing: reuse required
+        `isdir(worktree)`, and the fall-through re-ran `git worktree add` on a
+        path git still had registered ("fatal: … is already registered"), so a
+        session whose worktree directory had been deleted — by a `rm -rf`, a
+        crash, a full disk — could never be prepared again under that id. Its
+        checkpoints, branch and start tag all key off the id, so that is a
+        permanently unrecoverable session. `discard()` has always pruned; this
+        is the same one line, on the path that actually needs it.
+        """
         repo = os.path.abspath(os.path.expanduser(repo))
         existing = await self.get_session(session_id)
+        recovered = False
         if existing and os.path.isdir(existing.get("worktree", "")):
             return {**existing, "session_id": session_id, "reused": True}
+        if existing and existing.get("worktree"):
+            recovered = True
+            await self._git(["worktree", "prune"], cwd=repo)
+            await self._event(
+                "session:worktree_recovered",
+                f"worktree {existing['worktree']} was gone; pruning the stale "
+                f"registration and re-adding it on {existing.get('branch')}",
+                session_id=session_id, path=existing["worktree"], severity="warning",
+            )
 
         try:
             initialized = await asyncio.to_thread(ensure_repo, repo)
@@ -259,6 +383,12 @@ class GitGuard:
         add_args = (["worktree", "add", worktree, branch] if rc == 0
                     else ["worktree", "add", worktree, "-b", branch])
         rc, out, err = await self._git(add_args, cwd=repo)
+        if rc != 0 and "already registered" in (err or out):
+            # The stale-registration case for a session this GitGuard has never
+            # seen (a restart lost the in-memory map, Mongo lost the doc).
+            await self._git(["worktree", "prune"], cwd=repo)
+            recovered = True
+            rc, out, err = await self._git(add_args, cwd=repo)
         if rc != 0:
             raise GuardGitError(f"could not create worktree {worktree}: {err or out}")
 
@@ -313,7 +443,7 @@ class GitGuard:
             f"worktree {worktree} on {branch} (tag {start_tag or 'none'})",
             session_id=session_id, path=worktree,
         )
-        return {**record, "reused": False}
+        return {**record, "reused": False, "recovered": recovered}
 
     async def _current_branch(self, cwd: str) -> str:
         rc, out, _ = await self._git(["symbolic-ref", "--short", "HEAD"], cwd=cwd)
@@ -346,15 +476,9 @@ class GitGuard:
         skipped: list[dict] = []
         total = 0
         for rel in candidates:
-            full = os.path.join(worktree, rel)
-            try:
-                if not os.path.isfile(full) or os.path.islink(full):
-                    continue
-                size = os.path.getsize(full)
-            except OSError:
-                continue
-            if size > max_file:
-                skipped.append({"path": rel, "bytes": size})
+            verdict, size = _classify_candidate(worktree, rel, max_file)
+            if verdict is not None:
+                skipped.append(verdict)
                 continue
             total += size
             to_add.append(rel)
@@ -377,14 +501,26 @@ class GitGuard:
             # Never silently: a real source file lost to the size guard is a
             # data-loss bug, and the only way anyone finds out is this event.
             await self._event(
-                "checkpoint:skipped_large",
-                f"{len(skipped)} file(s) over {max_file // 1048576} MiB not checkpointed: "
-                + ", ".join(f"{s['path']} ({s['bytes'] // 1048576} MiB)" for s in skipped[:5]),
+                "checkpoint:skipped",
+                f"{len(skipped)} file(s) not checkpointed: "
+                + ", ".join(f"{s['path']} ({s['reason']})" for s in skipped[:5]),
                 session_id=session_id, path=worktree, severity="warning",
             )
 
         if not to_add and not deleted:
-            return {"ok": True, "committed": False, "reason": "clean", "skipped": skipped}
+            # NOT "clean" when something is still sitting in the worktree: the
+            # gate measures dirt with `git status --porcelain`, which counts the
+            # files this function just refused to stage, so reporting "clean"
+            # here sent the operator to run a checkpoint that could never help.
+            if skipped:
+                return {
+                    "ok": True, "committed": False, "reason": "blocked",
+                    "skipped": skipped, "blocking": skipped,
+                    "detail": "nothing could be staged; the worktree is NOT clean and the "
+                              "merge gate will stay red until these are resolved: "
+                              + "; ".join(f"{s['path']} ({s['reason']})" for s in skipped[:5]),
+                }
+            return {"ok": True, "committed": False, "reason": "clean", "skipped": []}
 
         for chunk in _chunks(to_add, 200):
             rc, _, err = await self._git(["add", "--ignore-errors", "--", *chunk], cwd=worktree)
@@ -396,6 +532,8 @@ class GitGuard:
         rc, _, _ = await self._git(["diff", "--cached", "--quiet"], cwd=worktree)
         if rc == 0:
             return {"ok": True, "committed": False, "reason": "nothing staged", "skipped": skipped}
+
+        protected = await self._raise_on_protected(record, to_add + deleted, policy)
 
         message = f"aria-ckpt: {_sid8(session_id)} {reason} {_now().strftime('%Y-%m-%dT%H:%M:%SZ')}"
         rc, out, err = await self._git(
@@ -421,7 +559,7 @@ class GitGuard:
             "ok": True, "committed": True, "sha": sha, "session_id": session_id,
             "branch": record["branch"], "files": len(to_add), "deletions": len(deleted),
             "bytes": total, "skipped": skipped, "skipped_count": len(skipped),
-            "reason": reason, "at": _now(), **push,
+            "protected": protected, "reason": reason, "at": _now(), **push,
         }
         if self.db is not None:
             try:
@@ -565,14 +703,43 @@ class GitGuard:
         return "HEAD"
 
     async def _check_worktree_clean(self, worktree: str) -> dict:
-        dirty = await self._zsplit(["status", "--porcelain", "-z"], worktree)
+        """Dirty tree = no merge. The DETAIL is the load-bearing part.
+
+        "Run a checkpoint first" is useless advice for a file no checkpoint can
+        ever stage (a symlink, or something over the file cap), and that was the
+        deadlock: the gate said run a checkpoint, the checkpoint said "clean",
+        and the session could never merge. Same classifier as `checkpoint()`, so
+        the two cannot drift apart again, and the message names the file and the
+        actual fix.
+        """
+        dirty = _porcelain_paths(await self._zsplit(["status", "--porcelain", "-z"], worktree))
+        if not dirty:
+            return {"name": "worktree_clean", "passed": True, "detail": "clean"}
+
+        policy = self.policy
+        blocking = [
+            verdict for verdict in (
+                _classify_candidate(worktree, rel, policy.checkpoint_max_file_bytes)[0]
+                for rel in dirty
+            ) if verdict is not None
+        ]
+        detail = (
+            f"{len(dirty)} uncommitted change(s) — run a checkpoint first, "
+            "a merge only carries committed work"
+        )
+        if blocking:
+            detail = (
+                f"{len(dirty)} uncommitted change(s), {len(blocking)} of which a checkpoint "
+                "CANNOT stage — running one will not clear the gate. Resolve them by hand "
+                "(delete, .gitignore, or commit deliberately): "
+                + "; ".join(f"{b['path']} ({b['reason']})" for b in blocking[:10])
+            )
         return {
             "name": "worktree_clean",
-            "passed": not dirty,
-            "detail": "clean" if not dirty else (
-                f"{len(dirty)} uncommitted change(s) — run a checkpoint first, "
-                "a merge only carries committed work"
-            ),
+            "passed": False,
+            "detail": detail,
+            "dirty": len(dirty),
+            "blocking": blocking,
         }
 
     async def _check_command(
@@ -595,15 +762,26 @@ class GitGuard:
                 command, cwd=worktree,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 env=session_env(os.environ, session_id=session_id),
+                start_new_session=True,
             )
+        except Exception as exc:  # noqa: BLE001
+            return {"name": "check_command", "passed": False,
+                    "detail": f"`{command}` could not be run: {exc}"}
+        try:
             stdout, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=settings.coding_gate_timeout_seconds
             )
         except asyncio.TimeoutError:
+            # Returning without killing it leaks the child: a hung `make check`
+            # is agent-authored code running as ben with a lock on the worktree,
+            # and nothing would ever reap it (`_git` in this file has always
+            # killed on timeout — this path simply did not).
+            await _terminate(proc)
             return {"name": "check_command", "passed": False,
                     "detail": f"`{command}` timed out after "
-                              f"{settings.coding_gate_timeout_seconds}s"}
+                              f"{settings.coding_gate_timeout_seconds}s and was killed"}
         except Exception as exc:  # noqa: BLE001
+            await _terminate(proc)
             return {"name": "check_command", "passed": False,
                     "detail": f"`{command}` could not be run: {exc}"}
 
@@ -684,9 +862,22 @@ class GitGuard:
                 binary, "detect", "--no-banner", "--redact", "--exit-code", "1",
                 "--source", worktree, "--log-opts", f"{base}..{head}",
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
         except Exception as exc:  # noqa: BLE001
+            return {"name": "gitleaks", "passed": False,
+                    "detail": f"gitleaks could not be run: {exc}"}
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=GITLEAKS_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            await _terminate(proc)
+            return {"name": "gitleaks", "passed": False,
+                    "detail": f"gitleaks did not finish within {GITLEAKS_TIMEOUT_SECONDS}s "
+                              "and was killed; the diff was NOT scanned"}
+        except Exception as exc:  # noqa: BLE001
+            await _terminate(proc)
             return {"name": "gitleaks", "passed": False,
                     "detail": f"gitleaks could not be run: {exc}"}
         text = stdout.decode("utf-8", errors="replace")[-1500:]
@@ -750,19 +941,13 @@ class GitGuard:
             return {"ok": False, "merged": False,
                     "reason": f"refusing to merge into {source!r}"}
 
-        # The pre-merge tag goes on FIRST and is the documented rollback point
-        # (§7.6). Tagging after the merge would leave the window where the thing
-        # you need to roll back to has no name.
-        stamp = _now().strftime("%Y%m%dT%H%M%SZ")
-        pre_tag = f"aria-pre-merge/{stamp}"
-        source_tip = await self._git_ok(["rev-parse", f"refs/heads/{source}"], cwd=repo)
-        rc, _, err = await self._git(["tag", "-f", pre_tag, source_tip], cwd=repo)
-        if rc != 0:
-            raise GuardGitError(f"could not create pre-merge tag {pre_tag}: {err}")
-        await self._push_safe(repo, [f"refs/tags/{pre_tag}:refs/tags/{pre_tag}"])
-
+        # Every refusal is decided BEFORE the tag is written. The tag used to be
+        # created and pushed first, so a merge refused for a dirty checkout —
+        # the common case, since Ben works in this tree — littered an
+        # `aria-pre-merge/<ts>` tag (and a mirror ref) on every attempt, for a
+        # merge that never happened. Tag creation still precedes the merge
+        # itself, which is the property §7.6 actually needs.
         checked_out = await self._checkout_of(repo, source)
-        message = f"aria-merge: {branch} ({_sid8(session_id)}) into {source}"
         if checked_out:
             dirty = await self._zsplit(["status", "--porcelain", "-z"], checked_out)
             if dirty:
@@ -772,12 +957,39 @@ class GitGuard:
                     "modification(s)",
                     session_id=session_id, blocked=True, severity="warning",
                 )
-                return {"ok": False, "merged": False, "pre_merge_tag": pre_tag,
+                return {"ok": False, "merged": False, "pre_merge_tag": None,
                         "reason": f"{source} is checked out at {checked_out} with local "
                                   "modifications; commit or stash them first"}
-            merged_sha = await self._merge_in_checkout(checked_out, branch, message, squash)
-        else:
-            merged_sha = await self._merge_detached(repo, source, source_tip, branch, message, squash)
+
+        stamp = _now().strftime("%Y%m%dT%H%M%SZ")
+        pre_tag = f"aria-pre-merge/{stamp}"
+        source_tip = await self._git_ok(["rev-parse", f"refs/heads/{source}"], cwd=repo)
+        rc, _, err = await self._git(["tag", "-f", pre_tag, source_tip], cwd=repo)
+        if rc != 0:
+            raise GuardGitError(f"could not create pre-merge tag {pre_tag}: {err}")
+        await self._push_safe(repo, [f"refs/tags/{pre_tag}:refs/tags/{pre_tag}"])
+
+        message = f"aria-merge: {branch} ({_sid8(session_id)}) into {source}"
+        try:
+            if checked_out:
+                merged_sha = await self._merge_in_checkout(
+                    checked_out, branch, message, squash, source_tip
+                )
+            else:
+                merged_sha = await self._merge_detached(
+                    repo, source, source_tip, branch, message, squash
+                )
+        except GuardMergeConflict as exc:
+            # A conflict is an ordinary answer ("this needs a human"), not a
+            # 500. The tree has been restored by this point — that is
+            # `_merge_in_checkout`'s contract — so the session stays mergeable
+            # after a rebase.
+            await self._event(
+                "merge:conflict", f"{branch} -> {source}: {exc}",
+                session_id=session_id, path=repo, blocked=True, severity="warning",
+            )
+            return {"ok": False, "merged": False, "pre_merge_tag": pre_tag,
+                    "conflict": True, "reason": str(exc)}
 
         await self._push_safe(repo, [
             f"refs/heads/{source}:refs/heads/{source}",
@@ -814,16 +1026,33 @@ class GitGuard:
         return None
 
     async def _merge_in_checkout(
-        self, checkout: str, branch: str, message: str, squash: bool
+        self, checkout: str, branch: str, message: str, squash: bool,
+        head_before: Optional[str] = None,
     ) -> str:
+        """Merge into a working tree a HUMAN may be sitting in.
+
+        ⚠️ `git merge --abort` is not the recovery primitive for a squash merge.
+        Verified with real git on 2026-08-15: `git merge --squash` records NO
+        `MERGE_HEAD`, so on a conflict `--abort` fails with "There is no merge to
+        abort" while the tree keeps `UU` conflict markers in tracked files. The
+        old code ran it, discarded its return code, and raised — leaving Ben's
+        checkout of `main` conflicted, the API returning 500, and nothing
+        recorded. The tree is restored to `head_before` explicitly instead, and
+        no recovery command's return code is ignored.
+        """
         identity = ["-c", f"user.name={GUARD_COMMITTER_NAME}",
                     "-c", f"user.email={GUARD_COMMITTER_EMAIL}"]
+        if head_before is None:
+            head_before = await self._git_ok(["rev-parse", "HEAD"], cwd=checkout)
         args = (["merge", "--squash", branch] if squash
                 else [*identity, "merge", "--no-ff", "--no-verify", "-m", message, branch])
         rc, out, err = await self._git(args, cwd=checkout)
         if rc != 0:
-            await self._git(["merge", "--abort"], cwd=checkout)
-            raise GuardGitError(f"merge of {branch} failed: {err or out}")
+            await self._restore_checkout(checkout, head_before)
+            raise GuardMergeConflict(
+                f"merge of {branch} could not be completed and the checkout was "
+                f"restored to {head_before[:12]}: {(err or out)[-500:]}"
+            )
         if squash:
             rc, out, err = await self._git(
                 ["-c", f"user.name={GUARD_COMMITTER_NAME}",
@@ -831,8 +1060,50 @@ class GitGuard:
                  "commit", "--no-verify", "-m", message], cwd=checkout,
             )
             if rc != 0:
-                raise GuardGitError(f"squash commit failed: {err or out}")
+                await self._restore_checkout(checkout, head_before)
+                raise GuardMergeConflict(
+                    f"the squash of {branch} could not be committed and the checkout was "
+                    f"restored to {head_before[:12]}: {(err or out)[-500:]}"
+                )
         return await self._git_ok(["rev-parse", "HEAD"], cwd=checkout)
+
+    async def _restore_checkout(self, checkout: str, head_before: str) -> None:
+        """Put a working tree back exactly as it was, or say loudly that we could not.
+
+        Called only after the dirty-check passed, so "as it was" means: HEAD at
+        `head_before`, no staged changes, no untracked files. `git clean -fd` is
+        safe for precisely that reason — `git status --porcelain` lists untracked
+        files too, so anything untracked here was created by the failed merge.
+        Ignored files are left alone (no `-x`).
+        """
+        problems: list[str] = []
+        rc, _, _ = await self._git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=checkout)
+        if rc == 0:
+            rc, out, err = await self._git(["merge", "--abort"], cwd=checkout)
+            if rc != 0:
+                problems.append(f"merge --abort: {err or out}")
+        for args in (["reset", "--hard", head_before], ["clean", "-fd"]):
+            rc, out, err = await self._git(args, cwd=checkout)
+            if rc != 0:
+                problems.append(f"{' '.join(args)}: {err or out}")
+
+        head_now = ""
+        rc, head_now, _ = await self._git(["rev-parse", "HEAD"], cwd=checkout)
+        leftover = await self._zsplit(["status", "--porcelain", "-z"], checkout)
+        if problems or head_now != head_before or leftover:
+            detail = (
+                f"could not restore {checkout} to {head_before[:12]} after a failed merge "
+                f"(HEAD is {head_now[:12] or 'unknown'}, {len(leftover)} path(s) still "
+                f"modified){'; ' + '; '.join(problems) if problems else ''}"
+            )
+            await self._event(
+                "merge:recovery_failed", detail, path=checkout,
+                blocked=True, severity="critical",
+            )
+            # The one place the guard leaves a human's tree changed. It must be
+            # impossible to miss, so it is an exception rather than a return
+            # value a caller could ignore.
+            raise GuardGitError(detail + " — this checkout needs manual repair")
 
     async def _merge_detached(
         self, repo: str, source: str, source_tip: str, branch: str, message: str, squash: bool
@@ -848,7 +1119,12 @@ class GitGuard:
             ["merge-tree", "--write-tree", source_tip, f"refs/heads/{branch}"], cwd=repo
         )
         if rc != 0:
-            raise GuardGitError(f"merge of {branch} into {source} conflicts: {out or err}")
+            # Nothing to restore: merge-tree writes to the object store and
+            # touches no working tree at all. That is why this is the safe half
+            # of the merge and `_merge_in_checkout` is the dangerous one.
+            raise GuardMergeConflict(
+                f"merge of {branch} into {source} conflicts: {(out or err)[-500:]}"
+            )
         tree = out.splitlines()[0].strip()
         parents = ["-p", source_tip] if squash else ["-p", source_tip, "-p", f"refs/heads/{branch}"]
         new_sha = await self._git_ok(
@@ -908,6 +1184,96 @@ class GitGuard:
 def _chunks(items: list[str], size: int):
     for start in range(0, len(items), size):
         yield items[start:start + size]
+
+
+async def _terminate(proc) -> None:
+    """Kill a subprocess we have stopped waiting for, and REAP it.
+
+    The whole process GROUP, because `make check` is a shell that spawns
+    children: killing only the shell leaves the pytest run holding the worktree,
+    which is the thing the timeout was trying to release. Both call sites pass
+    `start_new_session=True` so the group is the command's own, never ours.
+
+    Without the `wait()` the child becomes a zombie held by the event loop's
+    child watcher, so "we killed it" would be as untrue as not killing it.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        except Exception:  # noqa: BLE001
+            logger.warning("guard: could not kill a timed-out child", exc_info=True)
+            return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=10)
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+        logger.warning("guard: timed-out child did not reap")
+
+
+def _classify_candidate(
+    worktree: str, rel: str, max_file_bytes: int
+) -> tuple[Optional[dict], int]:
+    """(why this file cannot be checkpointed, size) — None means "stage it".
+
+    THE ONE definition of un-checkpointable, used by `checkpoint()` when it
+    decides what to stage and by `_check_worktree_clean` when it explains why
+    the gate is red. They disagreed before: the checkpoint skipped symlinks
+    silently and oversized files with a report, then returned `reason: "clean"`,
+    while the gate's `git status --porcelain` still counted both. A session in
+    that state could never merge and the operator was told to run a checkpoint,
+    which could not help — a permanent deadlock built out of two functions that
+    each believed they were right.
+    """
+    full = os.path.join(worktree, rel)
+    try:
+        if os.path.islink(full):
+            # Never silently (the module contract). A symlink in a checkpoint is
+            # not obviously wrong, but `git add` on one stores the link target,
+            # which is a path on this box — and the guard's job is to say what
+            # it did not capture.
+            return {"path": rel, "bytes": 0, "reason": "symlink"}, 0
+        if not os.path.exists(full):
+            # Raced with a delete; `ls-files -d` covers the deletion separately.
+            return None, 0
+        if not os.path.isfile(full):
+            return {"path": rel, "bytes": 0, "reason": "not a regular file"}, 0
+        size = os.path.getsize(full)
+    except OSError as exc:
+        return {"path": rel, "bytes": 0, "reason": f"unreadable ({exc.strerror or exc})"}, 0
+    if size > max_file_bytes:
+        return {
+            "path": rel, "bytes": size,
+            "reason": f"over the {max_file_bytes // 1048576} MiB file cap",
+        }, size
+    return None, size
+
+
+def _porcelain_paths(entries: list[str]) -> list[str]:
+    """Repo-relative paths out of `git status --porcelain -z` records.
+
+    With -z a rename is TWO records: `R  <new>` then a bare `<old>`. Splitting
+    on NUL and treating every record as `XY <path>` would turn the old path into
+    the nonsense path `me.py` (three characters eaten).
+    """
+    out: list[str] = []
+    expect_source = False
+    for entry in entries:
+        if expect_source:
+            expect_source = False
+            continue
+        if len(entry) > 3 and entry[2] == " ":
+            status, path = entry[:2], entry[3:]
+            if "R" in status or "C" in status:
+                expect_source = True
+            out.append(path.strip('"'))
+        else:
+            out.append(entry)
+    return out
 
 
 _git_guard: Optional[GitGuard] = None

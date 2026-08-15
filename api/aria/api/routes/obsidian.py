@@ -12,10 +12,9 @@ from __future__ import annotations
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
-from aria.api.deps import get_db, get_vault_reader
+from aria.api.deps import get_obsidian_writer, get_vault_reader
 from aria.integrations.obsidian import DOC_TYPES, ObsidianWriter
 
 router = APIRouter()
@@ -38,12 +37,11 @@ class ObsidianPublishRequest(BaseModel):
 @router.post("/obsidian/publish")
 async def publish_to_obsidian(
     request: ObsidianPublishRequest,
-    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+    writer: Annotated[ObsidianWriter, Depends(get_obsidian_writer)],
 ):
-    # The db handle is what records the content hash of this write. Publishing
-    # without it leaves the VaultReader no baseline, so ARIA's own document
-    # comes back on the next poll looking like an edit by Ben.
-    writer = ObsidianWriter(db=db)
+    # get_obsidian_writer is the only place a writer is constructed for a route:
+    # it carries the db handle that records the content hash of the write, and
+    # constructing one here by hand is how a caller ends up without it.
     if not writer.enabled():
         raise HTTPException(
             status_code=409,
@@ -78,5 +76,9 @@ async def poll_vault(reader=Depends(get_vault_reader)):
 
 @router.get("/vault/events")
 async def recent_vault_events(limit: int = 50, reader=Depends(get_vault_reader)):
-    """Recent vault change events (in-memory ring, newest last)."""
-    return {"events": reader.recent_events[-limit:], "last_poll_at": reader.last_poll_at}
+    """Recent vault change events, newest last.
+
+    Read from the `vault_events` collection, not from a process's memory: a poll
+    consumes each edit exactly once, so events that the worker read must still be
+    visible here afterwards."""
+    return {"events": await reader.recent(limit), "last_poll_at": reader.last_poll_at}

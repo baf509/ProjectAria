@@ -570,6 +570,53 @@ async def set_project_charter(
 
 
 @mcp.tool()
+async def steward_status() -> dict:
+    """What the steward is doing: whether it is enabled, its last tick per
+    chartered project, what it chose and why, and which projects are in the
+    active set (status=active AND kind=project AND a charter with a purpose)."""
+    return await _request("GET", "/api/v1/steward/status")
+
+
+@mcp.tool()
+async def steward_runs(limit: int = 20, project: str = "") -> dict:
+    """Recent steward ticks — what it saw, what it chose, and the reason. This is
+    the audit trail for autonomous action; read it before answering "why did it
+    do that?"."""
+    params: dict[str, Any] = {"limit": limit}
+    if project:
+        params["project"] = project
+    return await _request("GET", "/api/v1/steward/runs", params=params)
+
+
+@mcp.tool()
+async def steward_tick(slug: str) -> dict:
+    """Run one steward tick for a project NOW instead of waiting for the timer.
+
+    Respects that project's charter autonomy and budget exactly as the scheduled
+    tick would — this is a "do it now", not a "do it anyway"."""
+    return await _request("POST", f"/api/v1/steward/projects/{slug}/tick")
+
+
+@mcp.tool()
+async def improve_status() -> dict:
+    """The self-improvement loop: whether it is enabled, the current baseline
+    metrics, and how many clean promotions have accumulated. Improvement is
+    gated on measured outcomes — with no baseline it proposes nothing."""
+    return await _request("GET", "/api/v1/improve/status")
+
+
+@mcp.tool()
+async def improve_proposals(limit: int = 20, status: str = "") -> dict:
+    """Proposed changes to ARIA's own prompts/thresholds, with their gate
+    evidence. Promotion needs the admin key, which MCP deliberately does not
+    have — relay the proposal to Ben, do not try to apply it."""
+    params: dict[str, Any] = {"limit": limit}
+    if status:
+        params["status"] = status
+    return await _request("GET", "/api/v1/improve/proposals", params=params)
+
+
+@mcp.tool()
 async def guard_status() -> dict:
     """Guard health: sandbox preflight (bwrap/systemd-run present, MemAvailable,
     whether a spawn is allowed), the enforced policy hash and its tamper

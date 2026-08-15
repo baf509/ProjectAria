@@ -57,6 +57,34 @@ def _serialize(doc: dict) -> dict:
     return doc
 
 
+async def _project_root_clauses(db, project: str) -> list[dict]:
+    """Extra `$or` clauses matching alerts filed under a project's real roots.
+
+    `project_slug` used to be written as the directory basename, so every alert
+    for ~/Development/ProjectAria was filed as `ProjectAria` while db.projects
+    calls that project `aria` — and `GET /alerts?project=aria`, which is exactly
+    what the cockpit asks, returned zero rows. The writer is fixed
+    (notifications/service.py resolve_project_slug), but the rows it already
+    wrote are still in the queue and nothing can re-emit them, so the reader
+    also matches on the project's own roots."""
+    try:
+        doc = await db.projects.find_one({"slug": project}, {"path": 1, "relevant_paths": 1})
+    except Exception:
+        return []
+    clauses: list[dict] = []
+    seen: set[str] = set()
+    for raw in [(doc or {}).get("path"), *((doc or {}).get("relevant_paths") or [])]:
+        root = str(raw or "").rstrip("/")
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        clauses.append({"project_path": {"$regex": f"^{re.escape(root)}(/|$)"}})
+        basename = root.rsplit("/", 1)[-1]
+        if basename and basename != project:
+            clauses.append({"project_slug": basename})
+    return clauses
+
+
 def _oid(alert_id: str) -> ObjectId:
     try:
         return ObjectId(alert_id)
@@ -102,6 +130,7 @@ async def list_alerts(
             {"project_slug": project},
             {"project_path": project},
             {"project_path": {"$regex": f"/{re.escape(project)}/?$"}},
+            *await _project_root_clauses(db, project),
         ]
     cursor = db.alerts.find(query).sort("created_at", -1).limit(int(limit))
     alerts = [_serialize(doc) async for doc in cursor]

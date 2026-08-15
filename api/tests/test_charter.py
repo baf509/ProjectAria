@@ -21,10 +21,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 from bson import ObjectId
 from httpx import ASGITransport, AsyncClient
+from pymongo.errors import WriteError
 
 from aria.config import settings
-from aria.planning.models import Charter, ProjectUpdateRequest
-from aria.planning.service import PlanningService, effective_budget
+from aria.planning.models import (
+    Charter,
+    ProjectCreateRequest,
+    ProjectUpdateRequest,
+)
+from aria.planning import service as planning_service
+from aria.planning.service import (
+    CharterRefused,
+    PlanningService,
+    active_set_blockers,
+    effective_budget,
+)
 from aria.shells import harvest as harvest_mod
 from aria.shells.harvest import harvest
 
@@ -32,10 +43,25 @@ from aria.shells.harvest import harvest
 # --------------------------------------------------------------- fake mongo
 
 def _dotted_set(doc: dict, path: str, value) -> None:
+    """A dotted `$set`, INCLUDING MongoDB's refusal to address into a non-document
+    parent. Verified against the live mongod 8.2.0:
+
+        {"$set": {"steward.paused_reason": ...}} on {steward: null}
+        -> WriteError: Cannot create field 'paused_reason' in element {steward: null}
+
+    A MISSING parent auto-creates; a NULL one does not. The fake used to create
+    the parent either way, which is exactly why a green fake-only suite coexisted
+    with a `steward: None` on every newly created project that made the first
+    steward tick raise. Do not "simplify" this back."""
     parts = path.split(".")
     cur = doc
-    for part in parts[:-1]:
+    for depth, part in enumerate(parts[:-1]):
         nxt = cur.get(part)
+        if part in cur and not isinstance(nxt, dict):
+            raise WriteError(
+                f"Cannot create field '{parts[depth + 1]}' in element "
+                f"{{{part}: {nxt!r}}}"
+            )
         if not isinstance(nxt, dict):
             nxt = {}
             cur[part] = nxt
@@ -309,6 +335,88 @@ async def test_set_charter_rejects_an_unknown_approval_surface():
         await svc.set_charter("aria", {"purpose": "p"}, actor="human", via="telepathy")
 
 
+def test_harvest_actor_constant_agrees_with_the_harvester():
+    """set_charter tells a glob-set `ignored` from a human-set one by this
+    actor string; if the two copies drift, every ignored row starts reading as
+    a human decision and charters get refused wholesale."""
+    assert planning_service.HARVEST_ACTOR == harvest_mod.HARVEST_ACTOR
+
+
+@pytest.mark.asyncio
+async def test_charter_promotes_a_row_the_globs_marked_ignored():
+    """kind=ignored is a GLOB verdict on all 18 live ignored rows
+    (source.kind.actor=project-harvester) — HARVEST_IGNORE_NAMES matches
+    basenames like `*-wt` and `session-*` anywhere on the box. A human charter
+    outranks a glob; the alternative was a 200 that did nothing."""
+    db = _FakeDB([
+        _project_doc(
+            "rocmfpx-decode-fusion-wt",
+            kind="ignored",
+            source={"kind": {"actor": harvest_mod.HARVEST_ACTOR}},
+        )
+    ])
+    svc = PlanningService(db)
+
+    proj = await svc.set_charter(
+        "rocmfpx-decode-fusion-wt", {"purpose": "Land the decode fusion"},
+        actor="human", via="vault",
+    )
+
+    assert proj.kind == "project"
+    assert [p.slug for p in await svc.active_projects()] == ["rocmfpx-decode-fusion-wt"]
+
+
+@pytest.mark.asyncio
+async def test_charter_on_a_human_ignored_row_is_refused_not_swallowed():
+    """The one case that is a real human 'no'. It must fail loudly and leave a
+    review row — never store a charter nothing will ever read."""
+    db = _FakeDB([
+        _project_doc("noise", kind="ignored", source={"kind": {"actor": "human"}})
+    ])
+    svc = PlanningService(db)
+
+    with pytest.raises(CharterRefused) as excinfo:
+        await svc.set_charter("noise", {"purpose": "sneak it in"}, actor="human", via="api")
+
+    assert "kind=ignored" in excinfo.value.reason
+    assert "kind=project" in excinfo.value.remedy
+    stored = await db.projects.find_one({"slug": "noise"})
+    assert stored.get("charter") is None, "a refused charter was stored anyway"
+    assert stored["kind"] == "ignored"
+    assert [d["kind"] for d in db.scan_review.docs] == ["charter_kind_conflict"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_kind_on_create_is_recorded_as_a_human_decision():
+    """What makes the refusal above possible: a hand-created `ignored` row has
+    to be distinguishable from a glob-classified one."""
+    db = _FakeDB()
+    svc = PlanningService(db)
+    await svc.create_project(ProjectCreateRequest(name="Noise", kind="ignored"))
+    stored = await db.projects.find_one({"slug": "noise"})
+    assert stored["source"]["kind"]["actor"] == "human"
+
+    with pytest.raises(CharterRefused):
+        await svc.set_charter("noise", {"purpose": "p"}, actor="human", via="api")
+
+    # ...and a project created without naming a kind stays the harvester's to
+    # reclassify (the ambient extractor never passes one).
+    await svc.create_project(ProjectCreateRequest(name="Ambient"))
+    assert "source" not in (await db.projects.find_one({"slug": "ambient"}))
+
+
+@pytest.mark.asyncio
+async def test_charter_without_a_purpose_never_promotes_or_refuses():
+    """A budget-only amendment is not a claim that this is a project."""
+    db = _FakeDB([
+        _project_doc("noise", kind="ignored", source={"kind": {"actor": "human"}})
+    ])
+    svc = PlanningService(db)
+    proj = await svc.set_charter("noise", {"budget": {"lines_merge": 10}}, actor="human", via="api")
+    assert proj.kind == "ignored"
+    assert proj.charter.budget.lines_merge == 10
+
+
 @pytest.mark.asyncio
 async def test_patch_project_merges_charter_instead_of_replacing_it():
     oid = ObjectId()  # update_project addresses by ObjectId, unlike set_charter
@@ -322,6 +430,73 @@ async def test_patch_project_merges_charter_instead_of_replacing_it():
 
     assert proj.charter.purpose == "keep me", "PATCH replaced the charter instead of merging"
     assert proj.charter.goals == ["g", "h"]
+
+
+# ------------------------------------------- steward state / null sub-documents
+#
+# MongoDB cannot create a field under a NULL parent. Both writers of the steward
+# sub-document address it with dotted paths, so persisting `steward: None` made
+# every project created after 2026-08-15 permanently unusable by the steward and
+# made its first tick raise. The 59 legacy rows survived only because their
+# parent is MISSING, not null — an accident, not a design.
+
+def test_fake_mongo_models_the_null_parent_write_error():
+    """Guard on the guard: if this fake ever goes back to auto-creating a null
+    parent, every test below stops being able to see the production failure."""
+    with pytest.raises(WriteError):
+        _dotted_set({"steward": None}, "steward.paused_reason", "x")
+    # missing parent auto-creates, exactly like the real server
+    doc: dict = {}
+    _dotted_set(doc, "steward.paused_reason", "x")
+    assert doc == {"steward": {"paused_reason": "x"}}
+
+
+@pytest.mark.asyncio
+async def test_created_project_accepts_a_steward_write():
+    """Every REST/MCP/ambient-extractor project goes through create_project."""
+    db = _FakeDB()
+    svc = PlanningService(db)
+    await svc.create_project(ProjectCreateRequest(name="Fresh Thing"))
+
+    stored = await db.projects.find_one({"slug": "fresh-thing"})
+    assert stored["steward"] == {}, "a null parent makes the first steward tick raise"
+
+    assert await svc.propose_pause("fresh-thing", "21 days idle") is True
+    after = await svc.update_steward_state("fresh-thing", {"no_progress_streak": 2})
+    assert after.steward.no_progress_streak == 2
+    assert after.steward.paused_reason == "21 days idle"
+
+
+@pytest.mark.asyncio
+async def test_harvested_project_accepts_a_steward_write(monkeypatch):
+    """The harvester discovering a repo is the other insert path."""
+    db = _FakeDB()
+    _patch_discovery(monkeypatch, "/home/ben/Development/fresh-thing")
+    monkeypatch.setattr(harvest_mod, "_looks_like_project", lambda p: True)
+
+    await harvest(db, roots=["/home/ben/Development"])
+
+    assert (await db.projects.find_one({"slug": "fresh-thing"}))["steward"] == {}
+    svc = PlanningService(db)
+    assert await svc.propose_pause("fresh-thing", "budget exhausted") is True
+    stored = await db.projects.find_one({"slug": "fresh-thing"})
+    assert stored["steward"]["paused_reason"] == "budget exhausted"
+
+
+@pytest.mark.asyncio
+async def test_steward_write_heals_a_row_that_already_holds_null():
+    """Rows written by the broken code are already in the collection; the first
+    steward write must repair them rather than raise forever (they cannot be
+    migrated away by a code fix alone)."""
+    db = _FakeDB([_project_doc("legacy-null", steward=None)])
+    svc = PlanningService(db)
+
+    proj = await svc.update_steward_state("legacy-null", {"no_progress_streak": 1})
+
+    assert proj.steward.no_progress_streak == 1
+    assert await svc.propose_pause("legacy-null", "ladder exhausted") is True
+    stored = await db.projects.find_one({"slug": "legacy-null"})
+    assert stored["steward"]["paused_reason"] == "ladder exhausted"
 
 
 # ----------------------------------------------------------------- active set
@@ -361,6 +536,39 @@ async def test_active_projects_survives_an_unparseable_row():
     good = _project_doc("fine", charter={"purpose": "x"})
     svc = PlanningService(_FakeDB([bad, good]))
     assert [p.slug for p in await svc.active_projects()] == ["fine"]
+
+
+@pytest.mark.asyncio
+async def test_active_set_blockers_name_the_failing_condition():
+    """The set the steward iterates and the answer a human is given come from
+    the same function, so 'why isn't ARIA working on this?' has an answer."""
+    svc = PlanningService(_FakeDB())
+    keeper = svc._project_from_doc(_project_doc("keeper", charter={"purpose": "ship it"}))
+    assert active_set_blockers(keeper) == []
+
+    outside = svc._project_from_doc(_project_doc("noise", kind="ignored", status="paused"))
+    assert len(active_set_blockers(outside)) == 3
+    assert any("kind=ignored" in b for b in active_set_blockers(outside))
+    assert any("status=paused" in b for b in active_set_blockers(outside))
+    assert any("purpose" in b for b in active_set_blockers(outside))
+
+
+@pytest.mark.asyncio
+async def test_active_projects_can_exclude_the_steward_stand_down():
+    """propose_pause promises `steward.paused_reason` stops the steward
+    iterating a project — but `status` is human-owned and stays `active`, so
+    the definitional set still contains it. A worker that spends budget asks
+    for the filtered set; a human listing gets the default."""
+    chartered = {"purpose": "ship it"}
+    db = _FakeDB([
+        _project_doc("keeper", charter=dict(chartered)),
+        _project_doc("stood-down", charter=dict(chartered),
+                     steward={"paused_reason": "budget exhausted"}),
+    ])
+    svc = PlanningService(db)
+
+    assert [p.slug for p in await svc.active_projects()] == ["keeper", "stood-down"]
+    assert [p.slug for p in await svc.active_projects(include_stood_down=False)] == ["keeper"]
 
 
 @pytest.mark.asyncio
@@ -601,7 +809,9 @@ async def test_harvest_writes_nothing_human_on_insert_beyond_defaults(monkeypatc
     await harvest(db, roots=["/home/ben/Development"])
 
     on_insert = db.projects.updates[-1]["update"]["$setOnInsert"]
-    assert on_insert["charter"] is None and on_insert["steward"] is None
+    # `steward` is an empty document, never null: MongoDB cannot create
+    # `steward.<field>` under a null parent, and the steward writes nothing else.
+    assert on_insert["charter"] is None and on_insert["steward"] == {}
     assert on_insert["status"] == "active" and on_insert["summary"] == ""
 
 
@@ -679,6 +889,68 @@ async def test_charter_route_rejects_out_of_range_autonomy(client):
         "/api/v1/projects/aria/charter", json={"charter": {"autonomy": 7}}
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_charter_route_reports_whether_the_steward_will_see_it(client):
+    """A 200 that said nothing about the active set is how a charter on an
+    ignored row looked identical to a charter on a live project."""
+    resp = await client.put(
+        "/api/v1/projects/aria/charter", json={"charter": {"budget": {"lines_merge": 10}}}
+    )
+    body = resp.json()
+    assert body["in_active_set"] is False
+    assert any("purpose" in b for b in body["active_set_blockers"])
+
+    resp = await client.put(
+        "/api/v1/projects/aria/charter", json={"charter": {"purpose": "Be the steward"}}
+    )
+    body = resp.json()
+    assert body["in_active_set"] is True and body["active_set_blockers"] == []
+
+
+@pytest.mark.asyncio
+async def test_charter_route_409s_on_a_human_ignored_row(client):
+    """`noise` is kind=ignored by a human decision. The old code answered 200
+    with the charter echoed and the steward never looked at the row again."""
+    client.db.projects.docs[1]["source"] = {"kind": {"actor": "human"}}
+
+    resp = await client.put(
+        "/api/v1/projects/noise/charter", json={"charter": {"purpose": "sneak it in"}}
+    )
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "charter_refused" and detail["project"] == "noise"
+    assert "kind=project" in detail["remedy"]
+    assert (await client.db.projects.find_one({"slug": "noise"})).get("charter") is None
+
+
+@pytest.mark.asyncio
+async def test_patch_can_settle_the_kind_and_the_charter_in_one_call(client):
+    """The remedy the 409 hands back has to actually work: `kind` lands before
+    the charter, so one PATCH resolves the contradiction."""
+    client.db.projects.docs[1]["source"] = {"kind": {"actor": "human"}}
+
+    resp = await client.patch(
+        "/api/v1/projects/noise",
+        json={"kind": "project", "charter": {"purpose": "actually a project"}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "project"
+    assert resp.json()["charter"]["purpose"] == "actually a project"
+
+
+@pytest.mark.asyncio
+async def test_charter_route_promotes_a_glob_ignored_row(client):
+    """`noise` with no `source` provenance is a glob verdict, not a human one."""
+    resp = await client.put(
+        "/api/v1/projects/noise/charter", json={"charter": {"purpose": "real work"}}
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kind"] == "project"
+    assert resp.json()["in_active_set"] is True
 
 
 @pytest.mark.asyncio

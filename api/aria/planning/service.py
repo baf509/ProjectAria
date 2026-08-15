@@ -63,6 +63,12 @@ CHARTER_HUMAN_ACTORS = frozenset({"human", "ben", "vault", "api", "mcp"})
 CHARTER_NESTED_FIELDS = ("cadence", "budget", "guard")
 CHARTER_PROPOSAL_KIND = "charter_proposal"
 PAUSE_PROPOSAL_KIND = "project_pause_proposal"
+CHARTER_REFUSED_KIND = "charter_kind_conflict"
+# Mirrors shells.harvest.HARVEST_ACTOR. Duplicated rather than imported because
+# `aria.shells.__init__` pulls in ShellService; test_charter asserts the two
+# stay equal. It is how set_charter tells "a glob classified this row" from
+# "a human classified this row" — the two deserve opposite answers.
+HARVEST_ACTOR = "project-harvester"
 
 
 def _now() -> datetime:
@@ -131,6 +137,64 @@ def effective_budget(charter: Optional[Charter | dict]) -> dict:
         ),
         "lines_merge": pick("lines_merge", settings.steward_default_lines_merge),
     }
+
+
+class CharterRefused(Exception):
+    """A human charter that cannot take effect on this project, refused loudly
+    instead of being stored where nothing will ever read it.
+
+    The failure this exists for: a charter written to a `kind=ignored` row was
+    accepted, echoed back with a 200, and then never seen again — the steward
+    only iterates kind=project, so the charter was a no-op with a success
+    response. Silence is the one thing this layer must not do; either the row
+    is promoted (a glob classified it) or the caller is told why not (a human
+    classified it) and how to resolve it.
+    """
+
+    def __init__(self, slug: str, reason: str, remedy: str):
+        self.slug = slug
+        self.reason = reason
+        self.remedy = remedy
+        super().__init__(f"{slug}: {reason} — {remedy}")
+
+
+def active_set_blockers(project: Project) -> list[str]:
+    """Why `project` is NOT in the steward's active set. Empty list = it is.
+
+    The single definition of the active set, read by `active_projects()` (which
+    filters on it) and by the charter response (which reports it), so the set
+    the steward iterates and the set a human is told about can never drift.
+    """
+    blockers: list[str] = []
+    if project.status != "active":
+        blockers.append(f"status={project.status}, needs status=active")
+    if project.kind != "project":
+        blockers.append(f"kind={project.kind}, needs kind=project")
+    if not (project.charter and project.charter.purpose.strip()):
+        blockers.append("charter.purpose is empty — the steward has nothing to act on")
+    return blockers
+
+
+def _steward_set(doc: dict, patch: dict) -> dict:
+    """Build the `$set` operand for a write to the worker-owned steward state.
+
+    Steward bookkeeping is addressed with dotted paths (`steward.plan_hash`),
+    and MongoDB cannot create a field under a NULL parent. Verified against the
+    live mongod 8.2.0:
+
+        {"$set": {"steward.paused_reason": ...}} on {steward: null}
+        -> WriteError: Cannot create field 'paused_reason' in element {steward: null}
+
+    A MISSING parent auto-creates, which is the only reason this never fired on
+    the 59 legacy rows. Rows that already carry an explicit null (anything
+    written by create_project/harvest before this was fixed) are healed here by
+    replacing the whole sub-document, so the first steward tick repairs them
+    instead of raising.
+    """
+    stored = doc.get("steward")
+    if "steward" in doc and not isinstance(stored, dict):
+        return {"steward": dict(patch)}
+    return {f"steward.{key}": value for key, value in patch.items()}
 
 
 def _merge_charter(existing: dict, patch: dict) -> dict:
@@ -281,12 +345,26 @@ class PlanningService:
                 if body.charter is not None
                 else None
             ),
-            "steward": None,
+            # An EMPTY DOCUMENT, never null. `steward` is written with dotted
+            # paths and MongoDB refuses to create a field under a null parent
+            # ("Cannot create field 'no_progress_streak' in element {steward:
+            # null}", live mongod 8.2.0) — persisting null here made every
+            # newly created project permanently unusable by the steward and
+            # raised on its first tick. `charter` stays null because it is only
+            # ever written wholesale (set_charter replaces the field).
+            "steward": {},
             "recent_activity": [],
             "created_at": now,
             "updated_at": now,
             "last_signal_at": None,
         }
+        # Provenance for `kind`, but only when the creator actually chose one.
+        # An explicit kind here is a human decision — the harvester must not
+        # reclassify it (_reconcile_kind) and set_charter must not silently
+        # promote it away. The ambient extractor never passes `kind`, so the
+        # rows it creates stay harvester-reclassifiable.
+        if "kind" in body.model_fields_set:
+            doc["source"] = {"kind": {"actor": "human", "at": now}}
         result = await self.projects.insert_one(doc)
         doc["_id"] = result.inserted_id
         return self._project_from_doc(doc)
@@ -310,12 +388,17 @@ class PlanningService:
         return self._project_from_doc(doc) if doc else None
 
     async def update_project(self, project_id: str, body: ProjectUpdateRequest) -> Optional[Project]:
-        oid = _safe_object_id(project_id)
-        if oid is None:
+        # ObjectId OR slug, like every other project entry point. It used to be
+        # id-only, which made the one documented way to change `kind`
+        # unreachable for callers that hold a slug — MCP and the vault address
+        # projects by slug and nothing else.
+        doc = await self._find_project_doc(project_id)
+        if doc is None:
             return None
+        oid = doc["_id"]
         update = body.model_dump(exclude_unset=True)
         if not update:
-            return await self.get_project(project_id)
+            return self._project_from_doc(doc)
         if "next_steps" in update and update["next_steps"] is not None:
             update["next_steps"] = update["next_steps"][:MAX_NEXT_STEPS]
         # A charter arriving on a PATCH goes through the merge path, not $set:
@@ -325,6 +408,11 @@ class PlanningService:
         # deliberately retiring the charter, so it clears the field.
         has_charter = "charter" in update
         update.pop("charter", None)
+        # The rest of the PATCH lands FIRST, and `kind` rides in it. That
+        # ordering is the escape hatch for a row a human marked `ignored`:
+        # {"kind": "project", "charter": {...}} in one PATCH resolves the
+        # contradiction before set_charter looks at it, instead of the caller
+        # having to make two calls to get past the refusal.
         if update:
             update["updated_at"] = _now()
             await self.projects.update_one({"_id": oid}, {"$set": update})
@@ -337,7 +425,7 @@ class PlanningService:
                 return await self.set_charter(
                     project_id, body.charter.model_dump(exclude_unset=True), actor="human", via="api"
                 )
-        return await self.get_project(project_id)
+        return await self._reread(oid)
 
     async def delete_project(self, project_id: str) -> bool:
         oid = _safe_object_id(project_id)
@@ -478,10 +566,39 @@ class PlanningService:
 
         update: dict = {"charter": final, "updated_at": now}
         # A human writing a purpose is the statement that this IS a project;
-        # without this a charter on a harvester-classified `scratch` row would
-        # be silently absent from the active set. An explicit `ignored` stands —
-        # that was a deliberate human "no".
-        if final.get("purpose") and doc.get("kind") in (None, "scratch"):
+        # without this the charter would sit silently outside the active set.
+        #
+        # `ignored` gets promoted too when the harvester put it there. Almost
+        # every ignored row is a glob match, not a decision: HARVEST_IGNORE_NAMES
+        # applies basename globs (`session-*`, `*-wt`, `*-smoke.*`) to every path
+        # on the box, and all 18 ignored rows live on 2026-08-15 carry
+        # source.kind.actor=project-harvester. Treating a glob as a human "no"
+        # is what made `infrastructure/rocmfpx-decode-fusion-wt` uncharterable.
+        # A human-set ignore IS a "no" and is refused loudly below — never
+        # stored-and-forgotten, which is the bug class this layer exists to kill.
+        kind = doc.get("kind")
+        kind_actor = ((doc.get("source") or {}).get("kind") or {}).get("actor")
+        if final.get("purpose") and kind != "project":
+            if kind == "ignored" and kind_actor not in (None, HARVEST_ACTOR):
+                reason = (
+                    f"kind=ignored was set by {kind_actor}, not by the harvester's "
+                    "ignore globs — a chartered project must be kind=project, and "
+                    "one human decision must not silently overwrite another"
+                )
+                remedy = (
+                    f"PATCH /api/v1/projects/{slug} with kind=project first "
+                    "(kind and charter may travel in the same PATCH — the kind is "
+                    "applied before the charter)"
+                )
+                await add_review_item(
+                    self.db,
+                    kind=CHARTER_REFUSED_KIND,
+                    subject=slug,
+                    detail=f"charter refused ({actor} via {via}): {reason}"[:2000],
+                    source=actor,
+                )
+                logger.warning("set_charter(%s): refused — %s", slug, reason)
+                raise CharterRefused(slug, reason, remedy)
             update["kind"] = "project"
             update["source.kind"] = {"actor": actor, "at": now}
         update["source.charter"] = {"actor": actor, "at": now, "via": via}
@@ -489,14 +606,24 @@ class PlanningService:
         await self.projects.update_one({"_id": doc["_id"]}, {"$set": update})
         return await self._reread(doc["_id"])
 
-    async def active_projects(self) -> list[Project]:
+    async def active_projects(self, *, include_stood_down: bool = True) -> list[Project]:
         """THE ACTIVE SET — the only projects the steward acts on:
-        status=active AND kind=project AND a charter with a non-empty purpose.
+        status=active AND kind=project AND a charter with a non-empty purpose
+        (the three conditions live in `active_set_blockers`, so this and the
+        charter response can never disagree about who is in the set).
 
         Everything else in `projects` is inventory. The purpose test is not
         cosmetic: it is the text every research question and steward plan is
         derived from, so a charter without one gives the steward nothing to act
         on and would produce generic busywork.
+
+        `include_stood_down=False` also drops projects carrying
+        `steward.paused_reason`. That field is the steward's own stand-down
+        (budget exhausted, ladder exhausted, pause proposed and pending) and
+        propose_pause promises it "stops it iterating this project" — but
+        `status` stays human-owned and therefore still `active`, so the
+        definitional set contains them. A worker that iterates and spends must
+        pass False; a human-facing listing wants the default.
 
         Filtered in Python rather than in the query because rows predating
         `kind` have no such field at all (all 59 of them, 2026-08-15) and must
@@ -510,9 +637,9 @@ class PlanningService:
             except Exception as exc:  # a malformed row must not blind the steward
                 logger.warning("active_projects: skipping unparseable project %s: %s", doc.get("slug"), exc)
                 continue
-            if proj.kind != "project":
+            if active_set_blockers(proj):
                 continue
-            if not (proj.charter and proj.charter.purpose.strip()):
+            if not include_stood_down and proj.steward and proj.steward.paused_reason:
                 continue
             out.append(proj)
         return out
@@ -535,10 +662,9 @@ class PlanningService:
             detail=f"steward proposes pausing '{slug}': {reason}"[:2000],
             source="steward",
         )
-        await self.projects.update_one(
-            {"_id": doc["_id"]},
-            {"$set": {"steward.paused_reason": reason, "updated_at": _now()}},
-        )
+        update = _steward_set(doc, {"paused_reason": reason})
+        update["updated_at"] = _now()
+        await self.projects.update_one({"_id": doc["_id"]}, {"$set": update})
         return True
 
     async def update_steward_state(self, ident: str, patch: dict) -> Optional[Project]:
@@ -549,9 +675,10 @@ class PlanningService:
         if doc is None:
             return None
         known = set(StewardState.model_fields)
-        update = {f"steward.{k}": v for k, v in (patch or {}).items() if k in known}
-        if not update:
+        accepted = {k: v for k, v in (patch or {}).items() if k in known}
+        if not accepted:
             return self._project_from_doc(doc)
+        update = _steward_set(doc, accepted)
         update["updated_at"] = _now()
         await self.projects.update_one({"_id": doc["_id"]}, {"$set": update})
         return await self._reread(doc["_id"])

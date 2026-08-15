@@ -70,6 +70,56 @@ _INPUT_PATTERNS = [
     re.compile(r"\$\s*$"),
 ]
 
+# --- Stuck signals for the MetaSupervisor (proposal §6.1) -------------------
+# The watchdog already holds 100 lines of fresh pane text on every tick, so the
+# pane-derived signals are computed HERE and published on `_session_state`;
+# re-reading the pane from a second worker would double the tmux capture cost
+# and could disagree with what the watchdog acted on. The watchdog only
+# *observes* — steward/supervisor.py owns the escalation ladder, because an
+# action that stops or re-routes a session needs the charter, the budget and
+# the guard, none of which belong in a pane monitor.
+
+_ERROR_LINE_RE = re.compile(
+    r"(error|exception|traceback|failed|failure|fatal|refused|timed out|timeout"
+    r"|not found|no such file|permission denied|cannot|could not)",
+    re.IGNORECASE,
+)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def repeated_error_line(output: str, threshold: int) -> tuple[str, int] | None:
+    """The most-repeated error-ish line in the tail, if it repeats >= threshold.
+
+    Distinct from `diagnose_stuck`'s RETRY_LOOP check, which only compares the
+    last two 3-line blocks: an agent that retries the same failing command with
+    unrelated chatter in between never matches that, and it is the exact shape
+    of the four consecutive "Request timed out." turns found on the live pi
+    transcript. Counting identical lines catches it regardless of spacing.
+    """
+    if threshold <= 0 or not output:
+        return None
+    counts: dict[str, int] = {}
+    for raw in output.splitlines()[-120:]:
+        line = _WHITESPACE_RE.sub(" ", raw).strip()
+        # Short lines are prompts, spinners and box-drawing, not errors.
+        if len(line) < 12 or not _ERROR_LINE_RE.search(line):
+            continue
+        counts[line[:300]] = counts.get(line[:300], 0) + 1
+    if not counts:
+        return None
+    line, count = max(counts.items(), key=lambda item: item[1])
+    return (line, count) if count >= threshold else None
+
+
+def reply_hash(output: str) -> str:
+    """Hash of what the agent last *said*, insensitive to trailing whitespace.
+
+    Used for nudge echo: the same reply to two consecutive nudges means the
+    nudge is not landing, which no amount of further nudging will fix.
+    """
+    lines = [ln.rstrip() for ln in (output or "").splitlines() if ln.strip()]
+    return hashlib.md5("\n".join(lines[-20:]).encode("utf-8")).hexdigest()
+
 
 def diagnose_stuck(output: str, previous_output: str | None = None) -> StuckReason:
     """Analyze agent output to determine why it appears stuck.
@@ -158,6 +208,58 @@ class CodingWatchdog:
             "running": self._task is not None and not self._task.done(),
             "tracked_sessions": len(self._session_state),
         }
+
+    # ----- Stuck signals published for the MetaSupervisor (proposal §6.1) ---
+
+    def signals(self, session_id: str) -> dict:
+        """Pane-derived signals for one session. Empty dict if untracked."""
+        return dict((self._session_state.get(session_id) or {}).get("signals") or {})
+
+    def signal_snapshot(self) -> dict[str, dict]:
+        """Every tracked session's signals, for one supervisor tick."""
+        return {sid: self.signals(sid) for sid in self._session_state}
+
+    def _observe_signals(self, session_id: str, session: dict, output: str, state: dict) -> None:
+        """Record pane-derived stuck signals on the session's tracking state.
+
+        Observation only — nothing here notifies, nudges or stops. Never raises:
+        a signal that cannot be computed must not take down the stall detection,
+        the Ralph loop or the budget guard that share this tick.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            idle_for = (now - state.get("last_changed_at", now)).total_seconds()
+            stalled = idle_for >= settings.coding_stall_seconds
+            signals: dict = {
+                "observed_at": now,
+                "idle_seconds": idle_for,
+                "stalled": stalled,
+                "stuck_reason": state.get("stuck_reason"),
+                "repeated_error": None,
+                "nudge_echo": None,
+            }
+
+            repeated = repeated_error_line(output, settings.meta_repeated_error_threshold)
+            if repeated is not None:
+                signals["repeated_error"] = {"line": repeated[0], "count": repeated[1]}
+
+            # Nudge echo: sample the reply once per nudge, at the moment the
+            # session goes quiet again. Sampling every tick would compare a
+            # reply against itself and report an echo for any idle session.
+            nudges = int(session.get("loop_nudges") or 0) + int(session.get("meta_nudges") or 0)
+            if stalled and nudges > int(state.get("reply_sampled_at_nudge", -1)):
+                current = reply_hash(output)
+                history = list(state.get("reply_hashes") or [])
+                history.append(current)
+                state["reply_hashes"] = history[-2:]
+                state["reply_sampled_at_nudge"] = nudges
+            history = list(state.get("reply_hashes") or [])
+            if len(history) == 2 and history[0] == history[1]:
+                signals["nudge_echo"] = {"hash": history[-1], "nudges": nudges}
+
+            state["signals"] = signals
+        except Exception as exc:  # noqa: BLE001 — telemetry, never load-bearing
+            logger.debug("signal observation failed for %s: %s", session_id, exc)
 
     async def set_deadline(self, session_id: str, minutes: int) -> None:
         self._session_state.setdefault(session_id, {})["deadline_at"] = datetime.now(timezone.utc) + timedelta(minutes=minutes)
@@ -290,6 +392,10 @@ class CodingWatchdog:
                             detail=detail,
                             cooldown_seconds=60,
                         )
+
+            # Publish the pane-derived signals for the MetaSupervisor. Placed
+            # after the stall branch so `stuck_reason` is this tick's verdict.
+            self._observe_signals(session_id, session, output, state)
 
             deadline_at = state.get("deadline_at")
             if deadline_at and datetime.now(timezone.utc) >= deadline_at:

@@ -252,10 +252,29 @@ class ResearchService:
             # Coherence C6: auto-publish the finished report into the Obsidian
             # vault (decision log #5 — auto for research). Best-effort: a vault
             # problem never fails a completed run.
+            #
+            # `db=` and `accepted:` are what make this a loop instead of a
+            # broadcast. Without the db handle no content hash is recorded, so
+            # the VaultReader reads ARIA's own report back as an edit by Ben;
+            # without `accepted:` the note carries no key for him to answer, so
+            # nothing he does to it is a decision the steward can act on.
+            # `project` stays None deliberately: ResearchConfig has no project
+            # field today, so there is nothing to pass — every report lands in
+            # the default `ARIA/Research/` folder. The steward's ResearchPlanner
+            # (§4.1) is what will carry the project through; wiring a guess here
+            # would file reports under the wrong repo folder in the meantime.
             if settings.obsidian_auto_publish_research and report_text:
                 from aria.integrations.obsidian import ObsidianWriter
-                published = await ObsidianWriter().publish(
-                    report_text, title=config.query, doc_type="Research"
+                published = await ObsidianWriter(db=self.db).publish(
+                    report_text,
+                    title=config.query,
+                    doc_type="Research",
+                    project=None,
+                    frontmatter={
+                        "accepted": "pending",
+                        "research_id": research_id,
+                        "query": config.query,
+                    },
                 )
                 if published:
                     await self._update_run(

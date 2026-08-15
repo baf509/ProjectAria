@@ -8,19 +8,29 @@ brings the tree back, so that is what these assert.
 Nothing here needs MongoDB (GitGuard takes db=None and keeps its session registry
 in-process), a live aria-api, or the network. bwrap is never executed — the
 sandbox tests assert on the argv the guard would run.
+
+⚠️ Nothing here may touch `~/.aria/guard/accepted_policy.json` either. An earlier
+version of these tests did, and the hash of a tmp_path policy file ended up in
+the production acceptance record — which `main.py` turns into an e-stop with
+`auto_thaw=False` on the next aria-api restart. The autouse `guard_state_isolation`
+fixture below is what makes that impossible; do not remove it, and do not add a
+test that unsets it.
 """
 
 import dataclasses
+import json
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
 
 import pytest
 
 from aria.config import settings
+from aria.guard import gitguard as guard_gitguard
 from aria.guard import policy as guard_policy
 from aria.guard import sandbox as guard_sandbox
-from aria.guard.gitguard import GitGuard
+from aria.guard.gitguard import GitGuard, GuardGitError, GuardMergeConflict
 from aria.guard.policy import (
     GuardPolicy,
     PolicyError,
@@ -28,6 +38,30 @@ from aria.guard.policy import (
     load_policy,
     parse_simple_yaml,
 )
+
+
+def _production_state_fingerprint():
+    path = os.path.expanduser(guard_policy.DEFAULT_GUARD_STATE_PATH)
+    try:
+        stat = os.stat(path)
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def guard_state_isolation(tmp_path, monkeypatch):
+    """Every test gets its own accepted-hash file, and proves it left the real
+    one alone. See the module docstring."""
+    before = _production_state_fingerprint()
+    monkeypatch.setenv(
+        guard_policy.GUARD_STATE_ENV, str(tmp_path / "guard-state" / "accepted.json")
+    )
+    yield
+    assert _production_state_fingerprint() == before, (
+        f"a guard test modified {guard_policy.DEFAULT_GUARD_STATE_PATH} — that file is "
+        "the production tamper baseline and a wrong value e-stops aria-api at boot"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +153,7 @@ def guard(tmp_path):
 
 
 SID = "sess-abcdef-0123456789"
+SID8 = "sess-abc-cba999"   # 8 readable chars + 6 of sha256(SID) — see _sid8
 
 
 async def prepared(guard: GitGuard, repo) -> dict:
@@ -236,6 +271,58 @@ class TestPolicyFile:
         assert policy.diff_max_lines == settings.guard_diff_max_lines
         assert policy.diff_max_files == 3
 
+    def test_file_cannot_open_a_hole_in_the_sandbox(self, tmp_path):
+        """The reviewer's policy: `ro_paths: ["~/.ssh"]`, `rw_paths: ["/home/ben"]`.
+
+        Unioning those with the floor put `--ro-bind-try ~/.ssh` and
+        `--bind /home/ben /home/ben` AFTER the masks, which un-masked the SSH
+        keys and made the whole home writable. Exception lists intersect.
+        """
+        path = self._write(tmp_path, (
+            "sandbox:\n"
+            "  tmpfs_paths:\n    - ~/.ssh\n"
+            "  ro_paths:\n    - ~/.ssh\n    - ~/.pi/agent/models.json\n"
+            "  rw_paths:\n    - /home/ben\n    - ~/.pi/agent/sessions\n"
+        ))
+        policy = load_policy(path, force=True)
+
+        assert os.path.expanduser("~/.ssh") not in [
+            os.path.expanduser(p) for p in policy.sandbox_ro_paths
+        ]
+        assert "/home/ben" not in [os.path.expanduser(p) for p in policy.sandbox_rw_paths]
+        # Masks still union (deny side), and the floor's own exceptions survive.
+        assert "~/.ssh" in policy.sandbox_tmpfs_paths
+        assert "~/.pi/agent/models.json" in policy.sandbox_ro_paths
+        assert "~/.pi/agent/sessions" in policy.sandbox_rw_paths
+        # ...and the attempt is reported rather than silently dropped.
+        rejected = {(r["list"], r["path"]) for r in policy.rejected}
+        assert ("ro_paths", "~/.ssh") in rejected
+        assert ("rw_paths", "/home/ben") in rejected
+
+    def test_file_may_still_drop_an_exception(self, tmp_path):
+        """Removing an ro/rw entry is a tightening, so the file keeps that power."""
+        path = self._write(tmp_path, "sandbox:\n  ro_paths:\n    - ~/.claude\n")
+        policy = load_policy(path, force=True)
+        assert policy.sandbox_ro_paths == ["~/.claude"]
+        assert "~/.pi/agent/models.json" not in policy.sandbox_ro_paths
+
+    def test_omitting_a_sandbox_key_keeps_the_floor(self, tmp_path):
+        """Absent means "no opinion" — otherwise deleting a key would break every
+        session instead of tightening anything."""
+        policy = load_policy(self._write(tmp_path, "protected_paths:\n  - docs/**\n"), force=True)
+        assert policy.sandbox_ro_paths == list(settings.guard_sandbox_ro_paths)
+        assert policy.sandbox_rw_paths == list(settings.guard_sandbox_rw_paths)
+
+    def test_regex_cache_is_bounded(self):
+        """Keyed by caller-supplied strings (charter allowed_paths), so unbounded
+        is a slow leak in a process that never restarts."""
+        for i in range(guard_policy._REGEX_CACHE_MAX + 200):
+            guard_policy.match_any("a/b.py", [f"pattern-{i}/**"])
+        assert len(guard_policy._regex_cache) <= guard_policy._REGEX_CACHE_MAX
+
+    def test_absurd_pattern_is_refused_not_compiled(self):
+        assert guard_policy.match_any("a.py", ["x" * 5000]) is None
+
     def test_malformed_file_falls_back_without_shrinking_the_deny_list(self, tmp_path):
         path = self._write(tmp_path, "protected_paths: [oops]\n")
         policy = load_policy(path, force=True)
@@ -291,6 +378,111 @@ class TestTamperDetection:
         )
         assert event["kind"] == "test:event" and event["blocked"] is True
 
+    async def test_deleting_the_accepted_hash_is_tamper_not_first_use(
+        self, tmp_path, monkeypatch
+    ):
+        """The one-delete bypass: Mongo is bound 0.0.0.0 with no auth and the
+        sandbox leaves the network open, so a session can drop
+        `app_state/_id=guard_policy` itself. That used to re-arm
+        trust-on-first-use, which blessed an edited policy.yaml on the next boot
+        with no tamper event and no e-stop.
+        """
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        db = FakeDB()
+        assert (await guard_policy.verify_policy(db))["status"] == "trusted_on_first_use"
+
+        # The attack: edit the policy, then delete the single document.
+        path.write_text("protected_paths:\n  - docs/**\nsandbox:\n  ro_paths:\n    - ~/.claude\n")
+        db.app_state.docs.clear()
+
+        verdict = await guard_policy.verify_policy(db)
+        assert verdict["ok"] is False
+        assert verdict["status"] == "tamper"
+        assert "deletion, not a first run" in verdict["detail"]
+        assert "guard/policy/accept" in verdict["remedy"]
+        kinds = [e["kind"] for e in db[guard_policy.GUARD_EVENTS_COLLECTION].docs]
+        assert "policy:state_reset" in kinds
+        # Single-use: the document is restored from disk, so the next boot
+        # compares against a real baseline instead of re-arming again.
+        assert db.app_state.docs and db.app_state.docs[0]["hash"]
+
+    async def test_tofu_leaves_evidence_outside_mongo(self, tmp_path, monkeypatch):
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        await guard_policy.verify_policy(FakeDB())
+
+        state = json.loads(open(guard_policy.guard_state_path()).read())
+        assert state["hash"] == guard_policy.policy_hash()
+        assert state["history"][0]["actor"] == "trust-on-first-use"
+        assert oct(os.stat(guard_policy.guard_state_path()).st_mode)[-3:] == "600"
+
+    async def test_unreadable_accepted_hash_fails_closed(self, tmp_path, monkeypatch):
+        """`main.py` e-stops on `not ok`; returning ok=True with
+        status="unknown" meant an unreadable baseline produced no e-stop at
+        all — the failure mode a tamper check must never have."""
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+
+        class BrokenDB(FakeDB):
+            @property
+            def app_state(self):
+                raise RuntimeError("mongo is unreachable")
+
+        verdict = await guard_policy.verify_policy(BrokenDB())
+        assert verdict["ok"] is False
+        assert verdict["status"] == "unknown"
+
+    async def test_corrupt_state_file_fails_closed(self, tmp_path, monkeypatch):
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        state = guard_policy.guard_state_path()
+        os.makedirs(os.path.dirname(state), exist_ok=True)
+        with open(state, "w") as handle:
+            handle.write("{ not json")
+
+        verdict = await guard_policy.verify_policy(FakeDB())
+        assert verdict["ok"] is False and verdict["status"] == "unknown"
+        # Absent and unreadable are DIFFERENT answers; only absent is first use.
+        assert "unreadable" in verdict["detail"]
+
+    async def test_mongo_outage_with_a_matching_disk_record_does_not_estop(
+        self, tmp_path, monkeypatch
+    ):
+        """The one non-fail-closed branch, and why: the on-disk record is the
+        harder of the two stores to reach from a session, so a match there is
+        positive evidence. E-stopping on a Mongo hiccup would make the guard the
+        outage."""
+        path = tmp_path / "policy.yaml"
+        path.write_text("protected_paths:\n  - docs/**\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        db = FakeDB()
+        await guard_policy.verify_policy(db)
+
+        class BrokenDB(FakeDB):
+            @property
+            def app_state(self):
+                raise RuntimeError("mongo is unreachable")
+
+        verdict = await guard_policy.verify_policy(BrokenDB())
+        assert verdict["ok"] is True and verdict["status"] == "ok_disk_only"
+
+    async def test_a_widening_policy_file_is_reported_as_critical(self, tmp_path, monkeypatch):
+        path = tmp_path / "policy.yaml"
+        path.write_text("sandbox:\n  rw_paths:\n    - /home/ben\n")
+        monkeypatch.setattr(guard_policy, "policy_file_path", lambda: str(path))
+        db = FakeDB()
+        await guard_policy.verify_policy(db)
+        events = db[guard_policy.GUARD_EVENTS_COLLECTION].docs
+        assert any(
+            e["kind"] == "policy:rejected_widening" and e["severity"] == "critical"
+            for e in events
+        )
+
 
 # ---------------------------------------------------------------------------
 # Sandbox profile
@@ -301,6 +493,10 @@ class TestSandboxPrefix:
     def layout(self, tmp_path):
         dev = tmp_path / "Development"
         (dev / "ProjectAria" / ".worktrees" / "demo-sess").mkdir(parents=True)
+        (dev / "ProjectAria" / ".claude").mkdir()
+        (dev / "ProjectAria" / ".env").write_text("ADMIN_KEY=super-secret\n")
+        (dev / "ProjectAria" / ".env.bak-20260721").write_text("API_KEY=old\n")
+        (dev / "ProjectAria" / ".claude" / "settings.local.json").write_text("{}\n")
         (dev / "infrastructure").mkdir()
         (dev / "war-audio-game").mkdir()
         return dev
@@ -361,6 +557,102 @@ class TestSandboxPrefix:
         assert str(layout / "war-audio-game") in masked
         assert str(layout / "ProjectAria") not in masked
 
+    def test_the_visible_repos_credential_files_are_masked(self, layout, tmp_path):
+        """The session's own repo stays readable so the agent can read the
+        source tree — which left `<repo>/.env` (ADMIN_KEY, API_KEY) readable
+        under `--ro-bind / /`. `.env` is gitignored, so it is not in the
+        worktree, but it is at the repo root; with the network open that key
+        authorises POST /guard/sessions/{id}/merge on localhost:8200. Stripping
+        the ENVIRONMENT was never enough — the FILE has to go too.
+        """
+        argv = self.build(layout, tmp_path)
+        repo = layout / "ProjectAria"
+        for secret in (".env", ".env.bak-20260721", ".claude/settings.local.json"):
+            assert has_triple(argv, "--ro-bind", "/dev/null", str(repo / secret)), secret
+
+    def test_the_agents_own_worktree_is_not_credential_masked(self, layout, tmp_path):
+        """The worktree is the agent's writable space and the repo's real .env
+        is gitignored (so it is not in the worktree at all) — masking a .env the
+        session created there would break its work to protect it from itself."""
+        worktree = layout / "ProjectAria" / ".worktrees" / "demo-sess"
+        (worktree / ".env").write_text("PORT=8080\n")
+        argv = self.build(layout, tmp_path)
+        assert not has_triple(argv, "--ro-bind", "/dev/null", str(worktree / ".env"))
+
+    def test_claude_credentials_are_masked_after_the_claude_ro_bind(self, layout, tmp_path):
+        """`~/.claude` is ro-bound so claude_code can authenticate, and that bind
+        mounts over any earlier mask — so the credential file mask has to be
+        re-applied AFTER it, or the ro-bind hands back the Anthropic token that
+        the `_API_KEY` env-strip was meant to remove."""
+        argv = self.build(layout, tmp_path)
+        creds = os.path.expanduser("~/.claude/.credentials.json")
+        claude = os.path.expanduser("~/.claude")
+        bind_at = max(i for i, t in enumerate(argv)
+                      if t == "--ro-bind-try" and argv[i + 1] == claude)
+        mask_at = max(i for i, t in enumerate(argv)
+                      if t == "--ro-bind" and argv[i + 2] == creds)
+        assert mask_at > bind_at
+
+    def test_a_policy_bind_can_never_unmask_or_widen(self, tmp_path, layout, monkeypatch):
+        """Second line of defence, at the argv the guard actually emits: even if
+        `ro_paths`/`rw_paths` somehow contained these, the profile must not.
+
+        The three shapes that matter, all from the reviewer's run:
+          - ro-bind of a masked directory        (~/.ssh un-masked)
+          - rw-bind of an ANCESTOR of a mask     (/home/ben remounts over ~/.ssh)
+          - bind of a path inside a masked dir   (content resurfaces in a tmpfs)
+        """
+        home = os.path.expanduser("~")
+        hostile = dataclasses.replace(
+            load_policy(),
+            sandbox_ro_paths=["~/.ssh", f"{home}/.hermes/config.yaml"],
+            sandbox_rw_paths=[home, "~/.pi/agent/sessions"],
+        )
+        argv = guard_sandbox.build_sandbox_prefix(
+            str(layout / "ProjectAria" / ".worktrees" / "demo-sess"),
+            "sess-1234",
+            source_repo=str(layout / "ProjectAria"),
+            development_root=str(layout),
+            tmp_root=str(tmp_path / "tmp"),
+            create_tmp=False,
+            policy=hostile,
+        )
+        ro_targets = flag_targets(argv, "--ro-bind-try")
+        rw_targets = flag_targets(argv, "--bind-try") + flag_targets(argv, "--bind")
+        assert os.path.expanduser("~/.ssh") not in ro_targets
+        assert f"{home}/.hermes/config.yaml" not in ro_targets
+        assert home not in rw_targets
+        # The legitimate exception still survives the filter.
+        assert os.path.expanduser("~/.pi/agent/sessions") in rw_targets
+
+    def test_absent_paths_are_not_masked(self, layout, tmp_path, monkeypatch):
+        """bwrap cannot create a mount point under `--ro-bind / /`:
+        `--tmpfs ~/.missing` exits 1 with "Read-only file system" and refuses the
+        WHOLE session. Masking an absent path protects nothing and breaks
+        everything — which is what `~/.git-credentials` (absent on this box) did
+        to every spawn until 2026-08-15.
+        """
+        policy = dataclasses.replace(
+            load_policy(), sandbox_tmpfs_paths=[str(tmp_path / "nope"), str(layout)]
+        )
+        argv = guard_sandbox.build_sandbox_prefix(
+            str(layout / "ProjectAria" / ".worktrees" / "demo-sess"), "sess-1234",
+            source_repo=str(layout / "ProjectAria"), development_root=str(layout),
+            tmp_root=str(tmp_path / "tmp"), create_tmp=False, policy=policy,
+        )
+        assert str(tmp_path / "nope") not in flag_targets(argv, "--tmpfs")
+        assert str(layout) in flag_targets(argv, "--tmpfs")
+
+    def test_the_accepted_policy_record_is_masked(self, layout, tmp_path):
+        """A session that can edit the acceptance file can re-arm
+        trust-on-first-use — the other half of the G2 attack."""
+        argv = self.build(layout, tmp_path)
+        state_dir = os.path.dirname(guard_policy.guard_state_path())
+        masked = flag_targets(argv, "--tmpfs")
+        assert any(
+            state_dir == m or state_dir.startswith(m.rstrip("/") + "/") for m in masked
+        ), (state_dir, masked)
+
     def test_worktree_and_session_tmp_are_the_writable_surface(self, layout, tmp_path):
         worktree = str(layout / "ProjectAria" / ".worktrees" / "demo-sess")
         session_tmp = str(tmp_path / "tmp" / "aria-sess-1234")
@@ -369,9 +661,11 @@ class TestSandboxPrefix:
         assert has_triple(argv, "--bind", session_tmp, session_tmp)
         assert argv[-2:] == ["--chdir", worktree]
 
-    def test_masks_precede_binds(self, layout, tmp_path):
-        # bwrap applies operations in order, so a mask emitted after a bind
-        # would silently blank the writable path it was supposed to protect.
+    def test_directory_masks_precede_binds(self, layout, tmp_path):
+        # bwrap applies operations in order, so a DIRECTORY mask emitted after a
+        # bind would silently blank the writable path it was supposed to
+        # protect. (File masks are deliberately re-applied afterwards — see
+        # test_claude_credentials_are_masked_after_the_claude_ro_bind.)
         argv = self.build(layout, tmp_path)
         worktree = str(layout / "ProjectAria" / ".worktrees" / "demo-sess")
         last_mask = max(i for i, t in enumerate(argv) if t == "--tmpfs")
@@ -381,12 +675,63 @@ class TestSandboxPrefix:
 
 
 class TestPreflight:
+    @pytest.fixture(autouse=True)
+    def no_canary_cache(self):
+        """The canary is cached process-wide; a stale entry would make these
+        tests depend on each other's order."""
+        guard_sandbox._canary_cache.update({"key": None, "at": 0.0, "result": None})
+
     def test_fails_closed_without_bwrap(self, monkeypatch):
         monkeypatch.setattr(settings, "guard_sandbox_enabled", True)
         monkeypatch.setattr(guard_sandbox.shutil, "which", lambda name: None)
         result = guard_sandbox.preflight()
         assert result["spawn_allowed"] is False
         assert any("not on PATH" in r for r in result["reasons"])
+
+    def test_a_sandbox_that_cannot_start_a_process_refuses_the_spawn(self, monkeypatch):
+        """`which("bwrap")` answers a different question than the one that
+        matters. On 2026-08-15 the profile named `~/.git-credentials`, absent on
+        this box, so every spawn died with "Can't mkdir …: Read-only file
+        system" before exec — and the red-team drill scored 5/9 "contained"
+        against a sandbox that had never run a process, because every probe was
+        "the secret did not appear in the output". An actuator needs an oracle
+        that is not its own exit code.
+        """
+        monkeypatch.setattr(settings, "guard_sandbox_enabled", True)
+        monkeypatch.setattr(
+            guard_sandbox, "sandbox_canary",
+            lambda **_: {"ok": False, "detail": "Can't mkdir /home/ben/.git-credentials"},
+        )
+        result = guard_sandbox.preflight()
+        assert result["spawn_allowed"] is False
+        assert any("cannot start a process" in r for r in result["reasons"])
+        assert result["canary"]["ok"] is False
+
+    def test_the_canary_is_cached(self, monkeypatch):
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=guard_sandbox._CANARY_TOKEN + "\n", stderr=""
+            )
+
+        monkeypatch.setattr(guard_sandbox.subprocess, "run", fake_run)
+        monkeypatch.setattr(guard_sandbox.shutil, "which", lambda name: "/usr/bin/bwrap")
+        assert guard_sandbox.sandbox_canary()["ok"] is True
+        second = guard_sandbox.sandbox_canary()
+        assert second["ok"] is True and second["cached"] is True
+        assert len(calls) == 1
+
+    def test_the_canary_asserts_on_output_not_on_rc(self, monkeypatch):
+        """rc=0 with no output is exactly the silent success this exists to
+        catch, so the token has to be *printed*."""
+        monkeypatch.setattr(guard_sandbox.shutil, "which", lambda name: "/usr/bin/bwrap")
+        monkeypatch.setattr(
+            guard_sandbox.subprocess, "run",
+            lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+        )
+        assert guard_sandbox.sandbox_canary()["ok"] is False
 
     def test_refuses_below_the_memory_floor(self, monkeypatch):
         monkeypatch.setattr(guard_sandbox, "mem_available_gib", lambda: 2.0)
@@ -447,7 +792,7 @@ class TestPrepareSession:
         result = await prepared(guard, repo)
 
         assert os.path.isdir(result["worktree"])
-        assert result["branch"] == "aria/demo/sess-abc"
+        assert result["branch"] == f"aria/demo/{SID8}"
         assert result["source_branch"] == "main"
         assert git(["rev-parse", "--abbrev-ref", "HEAD"], result["worktree"]) == result["branch"]
 
@@ -475,6 +820,33 @@ class TestPrepareSession:
         assert second["reused"] is True
         assert second["worktree"] == first["worktree"]
 
+    async def test_recovers_a_worktree_that_was_deleted(self, guard, repo):
+        """Reuse required isdir(worktree); otherwise it fell through to
+        `git worktree add` on a path git still had registered, which fails
+        forever. `discard()` prunes — this path did not, so a session whose
+        directory was removed could never be prepared under its id again, and
+        the id is what its branch, tag and checkpoints all key off.
+        """
+        first = await prepared(guard, repo)
+        shutil.rmtree(first["worktree"])
+
+        second = await prepared(guard, repo)
+        assert second["recovered"] is True
+        assert os.path.isdir(second["worktree"])
+        assert second["branch"] == first["branch"]
+        assert git(["rev-parse", "--abbrev-ref", "HEAD"], second["worktree"]) == first["branch"]
+
+    async def test_two_ids_sharing_a_prefix_get_different_worktrees(self, guard, repo):
+        """ARIA's session ids are `sess-<uuid-ish>`, so the first 8 characters
+        are `sess-abc` for every session ever created; truncating to 8 made the
+        second `worktree add` fail and that id permanently unpreparable."""
+        other = SID[:-1] + "X"
+        first = await guard.prepare_session(str(repo), SID, "demo")
+        second = await guard.prepare_session(str(repo), other, "demo")
+        assert first["branch"] != second["branch"]
+        assert first["worktree"] != second["worktree"]
+        assert os.path.isdir(second["worktree"])
+
 
 class TestCheckpoint:
     async def test_commits_as_aria_guard(self, guard, repo):
@@ -488,7 +860,7 @@ class TestCheckpoint:
 
         wt = session["worktree"]
         assert git(["log", "-1", "--format=%an"], wt) == "aria-guard"
-        assert git(["log", "-1", "--format=%s"], wt).startswith("aria-ckpt: sess-abc test")
+        assert git(["log", "-1", "--format=%s"], wt).startswith(f"aria-ckpt: {SID8} test")
         assert "feature.py" in git(["ls-files"], wt).splitlines()
         assert git(["rev-parse", "HEAD"], wt) == result["sha"]
 
@@ -530,6 +902,76 @@ class TestCheckpoint:
         assert result["aborted"] is True and result["committed"] is False
         assert "MiB budget" in result["reason"]
         assert git(["rev-parse", "HEAD"], wt) == head_before
+
+    async def test_symlinks_are_reported_not_skipped_silently(self, guard, repo):
+        """"Never silently" is the module's stated contract, and a silent skip
+        plus `reason: "clean"` is what deadlocked the gate: `git status
+        --porcelain` still counts the symlink, so the gate stays red and the
+        advice ("run a checkpoint first") can never clear it."""
+        session = await prepared(guard, repo)
+        wt = session["worktree"]
+        os.symlink("/etc/passwd", os.path.join(wt, "sneaky-link"))
+
+        result = await guard.checkpoint(SID)
+        assert result["committed"] is False
+        assert result["reason"] == "blocked"          # NOT "clean"
+        assert [s["path"] for s in result["skipped"]] == ["sneaky-link"]
+        assert result["skipped"][0]["reason"] == "symlink"
+        assert "sneaky-link" in result["detail"]
+
+    async def test_the_gate_explains_what_a_checkpoint_cannot_clear(self, guard, repo):
+        """The two notions of clean must agree, or the gate must say precisely
+        what is blocking it and what to do about it."""
+        session = await prepared(guard, repo)
+        wt = session["worktree"]
+        os.symlink("/etc/passwd", os.path.join(wt, "sneaky-link"))
+        await guard.checkpoint(SID)
+
+        verdict = await guard.merge_gate(SID, check_command="true")
+        check = next(c for c in verdict["checks"] if c["name"] == "worktree_clean")
+        assert check["passed"] is False
+        assert "CANNOT stage" in check["detail"]
+        assert "sneaky-link" in check["detail"]
+        assert [b["path"] for b in check["blocking"]] == ["sneaky-link"]
+
+    async def test_a_protected_path_raises_at_write_time(self, repo, tmp_path):
+        """policy.yaml: "A touch is an immediate raise, not merely a merge
+        rejection". Until this existed, `is_protected` had no caller outside the
+        merge gate — an agent could rewrite api/aria/guard/** and have the guard
+        itself commit it every ten minutes, silently, until someone ran a gate.
+        """
+        db = FakeDB()
+        alerts: list[dict] = []
+
+        class FakeNotifier:
+            async def notify(self, **kwargs):
+                alerts.append(kwargs)
+                return {"queued": True}
+
+        guard = GitGuard(db=db, mirror_root=str(tmp_path / "git-safe"),
+                         notifier=FakeNotifier())
+        session = await guard.prepare_session(str(repo), SID, "demo")
+        target = os.path.join(session["worktree"], "api", "aria", "guard", "policy.py")
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w") as handle:
+            handle.write("# the agent rewrote its own evaluator\n")
+
+        result = await guard.checkpoint(SID)
+        assert result["committed"] is True            # captured, so it is revertible
+        assert [h["path"] for h in result["protected"]] == ["api/aria/guard/policy.py"]
+
+        event = next(e for e in db[guard_policy.GUARD_EVENTS_COLLECTION].docs
+                     if e["kind"] == "policy:protected_touch")
+        assert event["severity"] == "critical" and event["blocked"] is True
+        assert alerts and alerts[0]["needs_human"] is True
+        assert alerts[0]["source"] == "guard"
+
+        # A Ralph loop checkpoints every few minutes; re-raising the same path
+        # forever is how the one alert that must not be ignored gets ignored.
+        with open(target, "a") as handle:
+            handle.write("# again\n")
+        await guard.checkpoint(SID)
+        assert len(alerts) == 1
 
     async def test_records_events_when_a_db_is_present(self, repo, tmp_path):
         db = FakeDB()
@@ -627,6 +1069,53 @@ class TestMergeGate:
         assert "gitleaks" in verdict["skipped"]
         assert "NOT scanned" in check["detail"]
 
+    async def test_a_timed_out_check_command_is_killed(self, guard, repo, monkeypatch):
+        """Returning on timeout without killing leaves agent-authored code
+        running as ben, holding the worktree, forever. `_git` in the same file
+        has always killed on timeout; these two paths simply did not."""
+        await _work(guard, repo, {"feature.py": "x = 1\n"})
+        monkeypatch.setattr(settings, "coding_gate_timeout_seconds", 1)
+
+        started = []
+        real = guard_gitguard.asyncio.create_subprocess_shell
+
+        async def spy(*args, **kwargs):
+            proc = await real(*args, **kwargs)
+            started.append(proc)
+            return proc
+
+        monkeypatch.setattr(guard_gitguard.asyncio, "create_subprocess_shell", spy)
+        verdict = await guard.merge_gate(SID, check_command="sleep 60")
+
+        check = next(c for c in verdict["checks"] if c["name"] == "check_command")
+        assert check["passed"] is False and "timed out" in check["detail"]
+        assert started and started[0].returncode is not None, "the child was leaked"
+
+    async def test_a_timed_out_gitleaks_is_killed(self, guard, repo, tmp_path, monkeypatch):
+        fake = tmp_path / "gitleaks"
+        fake.write_text("#!/bin/sh\nsleep 60\n")
+        fake.chmod(0o755)
+        monkeypatch.setattr("aria.guard.gitguard.shutil.which", lambda name: str(fake))
+        monkeypatch.setattr(guard_gitguard, "GITLEAKS_TIMEOUT_SECONDS", 1)
+        guard._policy = dataclasses.replace(load_policy(), gitleaks_enabled=True)
+        await _work(guard, repo, {"feature.py": "x = 1\n"})
+
+        started = []
+        real = guard_gitguard.asyncio.create_subprocess_exec
+
+        async def spy(program, *args, **kwargs):
+            proc = await real(program, *args, **kwargs)
+            if program == str(fake):
+                started.append(proc)
+            return proc
+
+        monkeypatch.setattr(guard_gitguard.asyncio, "create_subprocess_exec", spy)
+        verdict = await guard.merge_gate(SID, check_command="true")
+
+        check = next(c for c in verdict["checks"] if c["name"] == "gitleaks")
+        assert check["passed"] is False and "killed" in check["detail"]
+        assert started and started[0].returncode is not None, "the scanner was leaked"
+
     async def test_enforces_charter_allowed_paths(self, guard, repo):
         await _work(guard, repo, {"feature.py": "x = 1\n"})
         inside = await guard.merge_gate(SID, check_command="true", allowed_paths=["*.py"])
@@ -690,6 +1179,75 @@ class TestMerge:
         assert result["merged"] is False
         assert "local modifications" in result["reason"]
         assert open(os.path.join(repo, "README.md")).read() == "ben was editing this\n"
+        # And no rollback tag for a merge that never happened: the tag used to
+        # be created and pushed BEFORE this refusal, littering one per attempt.
+        assert result["pre_merge_tag"] is None
+        assert [t for t in git(["tag", "-l"], repo).splitlines()
+                if t.startswith("aria-pre-merge/")] == []
+
+    async def test_a_conflicting_merge_leaves_bens_tree_exactly_as_it_was(self, repo, tmp_path):
+        """The one that corrupts a human's checkout.
+
+        `git merge --squash` records NO MERGE_HEAD, so `git merge --abort` fails
+        with "There is no merge to abort" — and the old code ran it, discarded
+        the return code, and raised. Ben has `main` checked out and clean, the
+        dirty-check passes, and the guard leaves his working tree full of `UU`
+        conflict markers while the API returns 500 and records nothing.
+        """
+        db = FakeDB()
+        guard = GitGuard(db=db, mirror_root=str(tmp_path / "git-safe"))
+        await _work(guard, repo, {"README.md": "the agent's version\n"})
+        assert (await guard.merge_gate(SID, check_command="true"))["passed"] is True
+
+        # Ben commits a conflicting change on main and leaves the tree clean.
+        with open(os.path.join(repo, "README.md"), "w") as handle:
+            handle.write("ben's version\n")
+        git(["commit", "-q", "-am", "ben edits the same lines"], repo)
+        main_before = git(["rev-parse", "main"], repo)
+
+        result = await guard.merge(SID)
+
+        assert result["merged"] is False and result["conflict"] is True
+        assert git(["rev-parse", "main"], repo) == main_before
+        assert git(["status", "--porcelain"], repo) == ""
+        assert open(os.path.join(repo, "README.md")).read() == "ben's version\n"
+        kinds = [e["kind"] for e in db[guard_policy.GUARD_EVENTS_COLLECTION].docs]
+        assert "merge:conflict" in kinds
+
+    async def test_a_conflicting_merge_into_an_unchecked_out_branch_is_also_clean(
+        self, guard, repo
+    ):
+        await _work(guard, repo, {"README.md": "the agent's version\n"})
+        assert (await guard.merge_gate(SID, check_command="true"))["passed"] is True
+        with open(os.path.join(repo, "README.md"), "w") as handle:
+            handle.write("ben's version\n")
+        git(["commit", "-q", "-am", "ben edits the same lines"], repo)
+        main_before = git(["rev-parse", "main"], repo)
+        git(["switch", "-c", "bens-work", "--quiet"], repo)
+
+        result = await guard.merge(SID)
+        assert result["merged"] is False and result["conflict"] is True
+        assert git(["rev-parse", "main"], repo) == main_before
+
+    async def test_a_failed_restore_is_loud(self, guard, repo, monkeypatch):
+        """The one case that must NOT be swallowed: we could not put the tree
+        back. That is a GuardGitError (a 500 and a critical event), not a 409."""
+        session = await _work(guard, repo, {"README.md": "the agent's version\n"})
+        assert (await guard.merge_gate(SID, check_command="true"))["passed"] is True
+        with open(os.path.join(repo, "README.md"), "w") as handle:
+            handle.write("ben's version\n")
+        git(["commit", "-q", "-am", "conflict"], repo)
+
+        real_git = guard._git
+
+        async def sabotaged(args, cwd, timeout=120):
+            if args[:2] == ["reset", "--hard"]:
+                return 1, "", "simulated: could not reset"
+            return await real_git(args, cwd, timeout)
+
+        monkeypatch.setattr(guard, "_git", sabotaged)
+        with pytest.raises(GuardGitError, match="needs manual repair"):
+            await guard.merge(SID)
 
 
 class TestDiscard:
@@ -699,12 +1257,12 @@ class TestDiscard:
 
         assert result["ok"] is True
         assert not os.path.isdir(session["worktree"])
-        assert result["parked_branch"] == "parked/demo/sess-abc"
+        assert result["parked_branch"] == f"parked/demo/{SID8}"
         branches = [b.strip("* ") for b in git(["branch", "--list"], repo).splitlines()]
-        assert "parked/demo/sess-abc" in branches
+        assert f"parked/demo/{SID8}" in branches
         # Parked, not lost: the work is still reachable for the postmortem.
         assert "feature.py" in git(
-            ["ls-tree", "--name-only", "parked/demo/sess-abc"], repo
+            ["ls-tree", "--name-only", f"parked/demo/{SID8}"], repo
         ).splitlines()
 
 

@@ -19,6 +19,18 @@ Shape:
 - Structured events are RETURNED, never acted on. The steward decides; this
   module only reports what changed. A parse failure is itself an event, so a
   half-typed charter is surfaced to Ben instead of silently dropping his edit.
+- Events are PERSISTED to `vault_events` before they are returned, and that
+  collection — not the in-memory ring — is what `GET /vault/events` reads. The
+  ring is a cache. It had to change: polling permanently advances each file's
+  state, so whichever caller polls first consumes the events, and an in-memory
+  ring on a second reader instance meant the worker's poll left the endpoint
+  showing nothing at all.
+- First sight is not adoption. A doc ARIA has never read before is reported by
+  its current control-key values (`generated_by: aria` survives Ben's edit — he
+  flips `accepted:`, not the provenance key), marked `first_sight`. Silently
+  adopting it would swallow every decision he made before the reader was
+  enabled, which is exactly the state the vault is in today: research
+  auto-publish has been live for weeks with `vault_reader_enabled=False`.
 
 Related Spec Sections:
 - ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md §3.1 #8, §3.2, §4.1, §5 step 5
@@ -39,9 +51,24 @@ from aria.integrations.obsidian import (
     content_hash,
     extract_section,
     parse_frontmatter,
+    unrecorded_write_digest,
 )
 
 logger = logging.getLogger(__name__)
+
+# Events live here, not only in a process's memory. `vault_docs` (the hash-state
+# collection) holds per-file state; this holds the change log.
+EVENTS_COLLECTION = "vault_events"
+
+# The ring is a cache in front of EVENTS_COLLECTION, kept for the no-db case and
+# for a caller that wants the last tick without a round trip.
+RING_SIZE = 200
+
+# Boot settle before the first tick: aria-api's lifespan is still bringing up
+# workers, and a vault sweep competing with that buys nothing on a surface where
+# 60 s of latency is irrelevant. A module constant so a test can drive `_run`
+# without waiting it out.
+SETTLE_SECONDS = 15
 
 # Documents that carry control state. Everything else in the vault is prose
 # ARIA has no business reading.
@@ -154,6 +181,24 @@ class VaultReader:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
 
+    # ----------------------------------------------------------------- db
+
+    @property
+    def db(self):
+        """The reader's Mongo handle. It lives on the state store and nowhere
+        else — `reader.db = db` used to create a phantom attribute that nothing
+        ever read (deps.py did exactly that, with a comment claiming it rebound
+        the handle). Property + setter so both spellings reach the real one."""
+        return self.state.db
+
+    @db.setter
+    def db(self, value) -> None:
+        self.state.db = value
+
+    @property
+    def _events(self):
+        return None if self.db is None else self.db[EVENTS_COLLECTION]
+
     # ------------------------------------------------------------- worker
 
     def enabled(self) -> bool:
@@ -184,7 +229,7 @@ class VaultReader:
 
     async def _run(self) -> None:
         try:
-            await asyncio.wait_for(self._stop.wait(), timeout=15)  # settle on boot
+            await asyncio.wait_for(self._stop.wait(), timeout=SETTLE_SECONDS)
         except asyncio.TimeoutError:
             pass
         while not self._stop.is_set():
@@ -193,10 +238,11 @@ class VaultReader:
                 if events and self.on_events is not None:
                     try:
                         await self.on_events(events)
-                    except Exception as exc:  # pragma: no cover
+                    except Exception as exc:
                         # A consumer that blows up must not stop the reader: the
-                        # events are still in recent_events and the file state is
-                        # already advanced, so the next edit is still detected.
+                        # events are already in `vault_events` (and the ring) and
+                        # the file state is already advanced, so the next edit is
+                        # still detected and this one is still recoverable.
                         logger.warning("vault reader consumer failed: %s", exc)
             except Exception as exc:  # pragma: no cover
                 logger.warning("vault reader tick failed: %s", exc)
@@ -285,12 +331,57 @@ class VaultReader:
                 logger.warning("vault reader: %s failed: %s", path, exc)
         self.last_poll_at = datetime.now(timezone.utc)
         if events:
-            self.recent_events = (self.recent_events + events)[-200:]
+            await self._persist_events(events)
             logger.info(
                 "vault reader: %d event(s): %s",
                 len(events), ", ".join(sorted({e["type"] for e in events})),
             )
         return events
+
+    # ------------------------------------------------------------- events
+
+    async def _persist_events(self, events: list[dict]) -> None:
+        """Store the tick's events in `vault_events`, then in the ring.
+
+        Mongo is the source of truth because a poll is destructive: it advances
+        each file's `last_hash`, so an edit is reportable exactly once. When the
+        worker held the only copy in its own memory, `GET /vault/events` (served
+        by a different instance) returned an empty list for edits that had
+        already been consumed — Ben's decision existed nowhere a human could see.
+        """
+        self.recent_events = (self.recent_events + events)[-RING_SIZE:]
+        coll = self._events
+        if coll is None:
+            return
+        try:
+            # Copies: insert_many stamps `_id` into the dicts it is handed, and
+            # these dicts are about to be returned to the steward and serialized
+            # to JSON by the route.
+            await coll.insert_many([dict(e) for e in events])
+        except Exception as exc:
+            logger.error(
+                "vault reader: could not persist %d event(s) to %s (%s) — they "
+                "survive only in this process's ring",
+                len(events), EVENTS_COLLECTION, exc,
+            )
+
+    async def recent(self, limit: int = 50) -> list[dict]:
+        """Recent events, newest LAST, from `vault_events`.
+
+        Falls back to the in-memory ring only when there is no db or the read
+        fails — the ring is a cache, never the answer of record.
+        """
+        coll = self._events
+        if coll is None:
+            return self.recent_events[-limit:]
+        try:
+            docs = await coll.find({}).sort("_id", -1).to_list(length=max(1, limit))
+        except Exception as exc:
+            logger.warning("vault reader: %s read failed: %s", EVENTS_COLLECTION, exc)
+            return self.recent_events[-limit:]
+        for doc in docs:
+            doc.pop("_id", None)
+        return list(reversed(docs))
 
     def _base_event(self, path: Path, kind: str, doc: Optional[str]) -> dict:
         try:
@@ -329,6 +420,16 @@ class VaultReader:
         last_hash = state.get("last_hash")
         first_sight = not last_hash and not aria_hash
 
+        # A write whose hash record never reached Mongo is still ARIA's write.
+        # The writer remembers it in-process precisely so this branch does not
+        # report ARIA's own frontmatter back as a control input from Ben.
+        if aria_hash is None and unrecorded_write_digest(path) == digest:
+            aria_hash = digest
+            logger.info(
+                "vault reader: %s matches an ARIA write whose hash record was lost; "
+                "treating it as ARIA's own, not as an edit", path,
+            )
+
         if digest == aria_hash:
             # ARIA's own bytes. Sync the reader's bookkeeping so a later human
             # edit is measured against what ARIA actually wrote, and say nothing.
@@ -361,24 +462,23 @@ class VaultReader:
             logger.info("vault reader: parse error in %s: %s", path, exc)
             return [ev]
 
-        if first_sight and frontmatter.get("generated_by") == "aria":
-            # ARIA published this through a writer with no db handle, so there
-            # is no hash record — its own frontmatter signature says so. Adopt
-            # it silently instead of reporting ARIA's research note as an edit
-            # by Ben.
-            await self.state.set(str(path), {
-                "last_hash": digest,
-                "last_seen_frontmatter": frontmatter,
-                "last_parse_error": None,
-                "doc": doc,
-                "last_polled_at": datetime.now(timezone.utc),
-            })
-            return []
+        # A doc ARIA has never had a hash record for. It used to be adopted
+        # silently whenever it carried `generated_by: aria` — but that key
+        # survives Ben's edit (he flips `accepted:`, not the provenance key), so
+        # on the day `vault_reader_enabled` flipped, every research note he had
+        # already answered would have been adopted with zero events: his
+        # decisions, silently discarded. Report the control keys as they stand;
+        # only the "a human touched this file" claim is withheld, because for a
+        # doc ARIA wrote we genuinely do not know that.
+        aria_authored = first_sight and frontmatter.get("generated_by") == "aria"
 
         previous = state.get("last_seen_frontmatter")
         if previous is None:
             previous = state.get("frontmatter") or {}
-        events = self._change_events(path, doc, frontmatter, previous, body)
+        events = self._change_events(
+            path, doc, frontmatter, previous, body,
+            include_human_edit=not aria_authored,
+        )
 
         notes = extract_section(body, NOTES_HEADING)
         notes_hash = content_hash(notes) if notes else None
@@ -386,6 +486,13 @@ class VaultReader:
             ev = self._base_event(path, EV_NOTES, doc)
             ev["value"] = notes
             events.append(ev)
+
+        if first_sight:
+            # Marked, never dropped: the steward can weigh "this is the state I
+            # found" differently from "this changed under me", but it has to see
+            # both. `previous` is empty here, so every value looks new.
+            for ev in events:
+                ev["first_sight"] = True
 
         await self.state.set(str(path), {
             "last_hash": digest,
@@ -402,12 +509,17 @@ class VaultReader:
 
     def _change_events(
         self, path: Path, doc: Optional[str], fm: dict, previous: dict, body: str,
+        *, include_human_edit: bool = True,
     ) -> list[dict]:
+        """Events for one doc. `include_human_edit=False` suppresses only the
+        "a human changed this file" claim (a doc ARIA authored and has no record
+        of); the control-key events below are emitted either way."""
         events: list[dict] = []
 
-        edit = self._base_event(path, EV_HUMAN_EDIT, doc)
-        edit["frontmatter"] = fm
-        events.append(edit)
+        if include_human_edit:
+            edit = self._base_event(path, EV_HUMAN_EDIT, doc)
+            edit["frontmatter"] = fm
+            events.append(edit)
 
         # --- charter -------------------------------------------------------
         charter = fm.get("charter")

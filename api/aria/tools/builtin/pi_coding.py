@@ -57,6 +57,17 @@ class PiCodingAgentTool(BaseTool):
                 required=False,
                 default="pi-coding",
             ),
+            ToolParameter(
+                name="create_worktree",
+                type="boolean",
+                description=(
+                    "Run Pi in a dedicated git worktree branched from `workspace` "
+                    "(the Guard's default) instead of the live checkout. Omit to "
+                    "follow guard_worktree_default; pass false only when the task "
+                    "must edit the checkout in place."
+                ),
+                required=False,
+            ),
         ]
 
     async def execute(self, arguments: dict) -> ToolResult:
@@ -74,12 +85,16 @@ class PiCodingAgentTool(BaseTool):
             )
 
         profile = str(arguments.get("profile") or "pi-coding").strip()
+        # Absent means "follow guard_worktree_default"; only an explicit false
+        # opts Pi back into the live checkout (see StartCodingSessionTool).
+        create_worktree = arguments.get("create_worktree")
         try:
             session = await self._manager.start_session(
                 workspace=workspace,
                 backend=None,
                 prompt=task,
                 subagent_profile=profile,
+                create_worktree=None if create_worktree is None else bool(create_worktree),
             )
         except Exception as exc:
             return ToolResult(
@@ -96,6 +111,8 @@ class PiCodingAgentTool(BaseTool):
                 "status": session.get("status"),
                 "shell_name": session.get("shell_name"),
                 "workspace": session.get("workspace"),
+                "source_repo": session.get("source_repo"),
+                "guard": session.get("guard"),
                 "model": session.get("model"),
                 "profile": profile,
                 "message": "Pi is running as an ARIA coding shell; use coding-session/shell tools to observe or drive it.",
