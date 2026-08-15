@@ -10,12 +10,22 @@ never hand-maintained:
 
 Projects are keyed by canonical path (git toplevel when available). Derived
 fields are overwritten on every run; human-editable fields (summary, next_steps,
-status, name, tags) are only set on insert so the dashboard can edit them.
+status, name, tags, check_command, charter) are only set on insert so the
+dashboard can edit them.
+
+Discovery is not curation: everything found is registered, but only what looks
+like a real project is registered AS one. `kind` (project/scratch/ignored)
+carries that distinction so the cockpit and the steward's active set stop
+treating ~/Downloads and a .worktrees checkout as work Ben cares about. Rows
+matching HARVEST_IGNORE are reconciled to kind=ignored rather than skipped —
+skipping would leave the 20 junk rows already in the collection untouched
+forever, and S3 says vanished/rejected things go stale, never deleted.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -32,6 +42,60 @@ PRUNE_DIRS = {"node_modules", ".venv", "venv", ".git", "__pycache__", "Archive",
 CLAUDE_PROJECTS = Path("/home/ben/.claude/projects")
 PI_SESSIONS = Path("/home/ben/.pi/agent/sessions")
 ACTIVE_WINDOW_DAYS = 7
+
+# Provenance actor for every field this module writes (S3 `source.<field>`).
+# It is also how the kind reconciler tells "the harvester guessed this" from
+# "a human decided this" — the latter is never overwritten.
+HARVEST_ACTOR = "project-harvester"
+
+# Paths that are not projects, as full-path globs (`~` expanded, fnmatch
+# semantics so `*` crosses `/`). Measured against the live collection on
+# 2026-08-15, these 20 of 59 rows are what this kills:
+#   Desktop, Documents, Downloads, Public   — ~/ inbox dirs, never code
+#   venv                                    — /home/ben/venv, a virtualenv
+#   vault                                   — /home/ben/Obsidian/vault, the notes
+#   tmp, workspace, routetest, rt2,
+#   scratchpad, ui-test-*, session-*,
+#   aria-pi-{,id-,session-id-}smoke.*       — /tmp scratch and pi smoke-test dirs
+#   ridge_review-*, session-*               — **/.worktrees/* agent checkouts
+#   rocmfpx-decode-fusion-wt                — a *-wt worktree by naming convention
+#   Dev, Development                        — the harvest ROOTS themselves; a row
+#     for a parent directory swallows its children in PathIndex attribution
+# A human can always override any of these by setting `kind` on the row; the
+# harvester will then leave it alone (see _reconcile_kind).
+HARVEST_IGNORE = [
+    "~/Downloads", "~/Downloads/**",
+    "~/Desktop", "~/Desktop/**",
+    "~/Documents", "~/Documents/**",
+    "~/Public", "~/Public/**",
+    "~/Obsidian", "~/Obsidian/**",
+    "~/venv", "~/venv/**",
+    "~/Dev", "~/Development",
+    "/tmp", "/tmp/**",
+    "/var/tmp", "/var/tmp/**",
+    "**/.worktrees/**",
+    "**/venv/**", "**/.venv/**",
+    "**/node_modules/**",
+    "**/site-packages/**",
+    "**/.cache/**",
+]
+
+# Basename globs. `*-smoke.*` is pi's mkstemp-suffixed smoke dirs, `session-*`
+# the watchdog's worktree branches, `*-wt` the hand-made worktree convention
+# used in infrastructure/.
+HARVEST_IGNORE_NAMES = [
+    "*-smoke.*",
+    "session-*",
+    "*-wt",
+    "scratchpad",
+]
+
+# What makes a discovered directory a project rather than scratch. Deliberately
+# cheap and structural: a remote means someone else has seen it, three commits
+# means it survived a sitting, a README/CLAUDE.md means it was explained to
+# somebody. Anything else starts as `scratch` and a human can promote it.
+PROJECT_MARKER_FILES = ("README.md", "README", "README.rst", "README.txt", "CLAUDE.md", "AGENTS.md")
+PROJECT_MIN_COMMITS = 3
 
 
 def _utcnow() -> datetime:
@@ -64,6 +128,78 @@ def _canonical(path: str) -> Optional[str]:
         return None
     top = _git(path, "rev-parse", "--show-toplevel")
     return top or os.path.realpath(path)
+
+
+def _is_ignored(path: str) -> bool:
+    """True if this path is inventory, not a project (HARVEST_IGNORE)."""
+    p = os.path.normpath(path)
+    for pattern in HARVEST_IGNORE:
+        if fnmatch.fnmatchcase(p, os.path.expanduser(pattern)):
+            return True
+    name = os.path.basename(p)
+    return any(fnmatch.fnmatchcase(name, pat) for pat in HARVEST_IGNORE_NAMES)
+
+
+def _looks_like_project(path: str) -> bool:
+    """A git remote OR >= PROJECT_MIN_COMMITS commits OR a README/CLAUDE.md.
+
+    Each is evidence somebody intended this directory to outlive an afternoon;
+    a bare `git init` with one commit and no docs is scratch until a human says
+    otherwise."""
+    if _git(path, "remote"):
+        return True
+    count = _git(path, "rev-list", "--count", "HEAD")
+    try:
+        if count is not None and int(count.strip()) >= PROJECT_MIN_COMMITS:
+            return True
+    except ValueError:
+        pass
+    return any((Path(path) / marker).exists() for marker in PROJECT_MARKER_FILES)
+
+
+def _desired_kind(path: str, existing: Optional[dict] = None) -> str:
+    """Classify a path, skipping the git probes when the answer cannot change:
+    a row already believed to be a project is never demoted (see
+    _reconcile_kind), so re-running `git remote`/`rev-list` on ~40 repos every
+    30 minutes would buy nothing."""
+    if _is_ignored(path):
+        return "ignored"
+    if existing and existing.get("kind") == "project":
+        return "project"
+    return "project" if _looks_like_project(path) else "scratch"
+
+
+def _reconcile_kind(existing: Optional[dict], desired: str) -> tuple[Optional[str], Optional[str]]:
+    """Decide what `kind` the harvester may write on an existing row.
+
+    Returns (kind_to_set, conflict_detail). The rules, in S3 terms:
+      - a human-set kind is never overwritten (provenance actor != harvester);
+      - an ignore-list match always wins over a previous harvester guess — that
+        is how the junk rows already in the collection get reconciled;
+      - otherwise the harvester only ever *upgrades* scratch -> project. It
+        never demotes: a project whose README is momentarily missing must not
+        silently drop out of the steward's active set.
+    """
+    if not existing:
+        return desired, None
+    current = existing.get("kind")
+    actor = ((existing.get("source") or {}).get("kind") or {}).get("actor")
+    human_owned = current is not None and actor != HARVEST_ACTOR
+    if human_owned:
+        # Propose, don't clobber — but only for the one combination that costs
+        # something: a human-blessed project living on an ignored path is in the
+        # active set, so the steward will spend budget in a directory that /tmp
+        # or a pruned worktree can delete out from under it.
+        if desired == "ignored" and current == "project":
+            return None, f"kind=project was set by hand on an ignored path ({existing.get('path')})"
+        return None, None
+    if current is None:
+        return desired, None
+    if desired == "ignored" and current != "ignored":
+        return "ignored", None
+    if current == "scratch" and desired == "project":
+        return "project", None
+    return None, None
 
 
 def _find_git_repos(roots: list[str], max_depth: int = 3) -> list[str]:
@@ -236,6 +372,8 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
 
     upserts = 0
     merged = 0
+    ignored_rows = 0
+    conflicts = 0
     for slug, rec in agg.items():
         last_activity = max(rec["activity"]) if rec["activity"] else None
         is_active = bool(last_activity and last_activity >= active_cutoff)
@@ -265,47 +403,87 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
                     {"relevant_paths": primary_path},
                 ],
             },
-            {"_id": 1, "slug": 1},
+            {"_id": 1, "slug": 1, "kind": 1, "relevant_paths": 1, "source": 1, "path": 1},
         )
+        # `current` is the row as it stands, so this run can MERGE rather than
+        # overwrite. The claim lookup above already read it when it hit, so only
+        # the ordinary same-slug case costs a second query.
         if existing:
             key = {"_id": existing["_id"]}
+            current = existing
             merged += 1
             logger.debug(
                 "harvest: %s already claims %s — refreshing it instead of "
                 "creating duplicate slug '%s'",
                 existing.get("slug"), primary_path, slug,
             )
+        else:
+            current = await db.projects.find_one(
+                key, {"kind": 1, "relevant_paths": 1, "source": 1, "path": 1, "slug": 1}
+            )
 
-        await db.projects.update_one(
-            key,
-            {
-                "$setOnInsert": {
-                    "slug": slug,
-                    "name": slug,
-                    "summary": "",
-                    "next_steps": [],
-                    # Human lifecycle status — always a valid ProjectStatus on
-                    # insert so PlanningService can deserialize the doc. Machine
-                    # active/idle lives in `activity_status` below. Dashboard owns
-                    # this field thereafter (only set on insert).
-                    "status": "active",
-                    "tags": [],
-                    "recent_activity": [],
-                    "created_at": now,
-                },
-                "$set": {
-                    "path": primary_path,
-                    "relevant_paths": sorted(rec["paths"]),
-                    "last_activity_at": last_activity,
-                    "activity_status": "active" if is_active else "idle",
-                    "sources": rec["sources"],
-                    "git": git_info,
-                    "harvested_at": now,
-                    "updated_at": now,
-                },
+        desired_kind = _desired_kind(primary_path, current)
+        kind_to_set, kind_conflict = _reconcile_kind(current, desired_kind)
+        if desired_kind == "ignored":
+            ignored_rows += 1
+        if kind_conflict:
+            conflicts += 1
+            await _propose_kind_review(db, current.get("slug") or slug, kind_conflict)
+
+        # relevant_paths is human-editable (ProjectUpdateRequest exposes it) and
+        # was being flattened to the discovered set on every 30-minute tick, so
+        # any path Ben added by hand survived at most half an hour. Union
+        # instead: discovery adds, it does not decide. A path that disappears
+        # from disk stays listed (S3: vanished things go stale, not deleted).
+        discovered_paths = set(rec["paths"])
+        known_paths = set((current or {}).get("relevant_paths") or [])
+        set_fields: dict = {
+            "path": primary_path,
+            "relevant_paths": sorted(discovered_paths | known_paths),
+            "last_activity_at": last_activity,
+            "activity_status": "active" if is_active else "idle",
+            "sources": rec["sources"],
+            "git": git_info,
+            "harvested_at": now,
+            "updated_at": now,
+        }
+        if kind_to_set is not None:
+            set_fields["kind"] = kind_to_set
+            set_fields["source.kind"] = {"actor": HARVEST_ACTOR, "at": now}
+
+        update: dict = {
+            "$setOnInsert": {
+                "slug": slug,
+                "name": slug,
+                "summary": "",
+                "next_steps": [],
+                # Human lifecycle status — always a valid ProjectStatus on
+                # insert so PlanningService can deserialize the doc. Machine
+                # active/idle lives in `activity_status` below. Dashboard owns
+                # this field thereafter (only set on insert).
+                "status": "active",
+                "tags": [],
+                "check_command": None,
+                # Human-owned (charter) and worker-owned-by-someone-else
+                # (steward) fields exist from insert so their absence never
+                # reads as "not yet harvested". The harvester writes neither
+                # again, ever.
+                "charter": None,
+                "steward": None,
+                "recent_activity": [],
+                "created_at": now,
             },
-            upsert=True,
-        )
+            "$set": set_fields,
+        }
+        if last_activity is not None:
+            # `last_signal_at` was null on all 59 rows, which broke every
+            # staleness check downstream: the only other timestamp, updated_at,
+            # is bumped by this worker every 30 minutes whether or not anything
+            # happened, so nothing could ever look stale. $max (not $set) so a
+            # fresher signal from append_project_activity is never walked back.
+            update["$max"] = {"last_signal_at": last_activity}
+
+        await db.projects.update_one(key, update, upsert=True)
         upserts += 1
 
     return {
@@ -316,7 +494,23 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
         # minting a duplicate slug.
         "matched_existing": merged,
         "repos": len(repos),
+        "ignored": ignored_rows,
+        "kind_conflicts": conflicts,
     }
+
+
+async def _propose_kind_review(db, slug: str, detail: str) -> None:
+    """Surface a human/harvester `kind` contradiction instead of overwriting it.
+
+    Import is local because harvest() must keep working if the shared-services
+    review surface is unavailable — classification is convenience, not safety."""
+    try:
+        from aria.shared.review import add_review_item
+
+        await add_review_item(db, kind="project_kind_conflict", subject=slug, detail=detail,
+                              source=HARVEST_ACTOR)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("harvest: could not file kind conflict for %s: %s", slug, exc)
 
 
 class ProjectHarvestWorker:

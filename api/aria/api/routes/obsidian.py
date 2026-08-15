@@ -9,11 +9,13 @@ raw filesystem writes.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel, Field
 
+from aria.api.deps import get_db, get_vault_reader
 from aria.integrations.obsidian import DOC_TYPES, ObsidianWriter
 
 router = APIRouter()
@@ -34,8 +36,14 @@ class ObsidianPublishRequest(BaseModel):
 
 
 @router.post("/obsidian/publish")
-async def publish_to_obsidian(request: ObsidianPublishRequest):
-    writer = ObsidianWriter()
+async def publish_to_obsidian(
+    request: ObsidianPublishRequest,
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+):
+    # The db handle is what records the content hash of this write. Publishing
+    # without it leaves the VaultReader no baseline, so ARIA's own document
+    # comes back on the next poll looking like an edit by Ben.
+    writer = ObsidianWriter(db=db)
     if not writer.enabled():
         raise HTTPException(
             status_code=409,
@@ -55,3 +63,20 @@ async def publish_to_obsidian(request: ObsidianPublishRequest):
     if not path:
         raise HTTPException(status_code=500, detail="publish failed (see logs)")
     return {"path": path}
+
+
+@router.post("/vault/poll")
+async def poll_vault(reader=Depends(get_vault_reader)):
+    """Read the vault's control docs right now and return what changed.
+
+    The worker already does this on a timer; this exists so a human or the
+    steward can force a read after telling Ben "edit the plan and I'll pick it
+    up", without waiting out the interval."""
+    events = await reader.poll_once()
+    return {"count": len(events), "events": events, "at": reader.last_poll_at}
+
+
+@router.get("/vault/events")
+async def recent_vault_events(limit: int = 50, reader=Depends(get_vault_reader)):
+    """Recent vault change events (in-memory ring, newest last)."""
+    return {"events": reader.recent_events[-limit:], "last_poll_at": reader.last_poll_at}

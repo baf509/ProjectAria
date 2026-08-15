@@ -42,9 +42,17 @@ class _FakeProjects:
         self.calls = []
 
     async def find_one(self, query, projection=None):
-        # Only the path-claim lookup is exercised here.
+        # Two query shapes now: the path-claim lookup below, and (since the
+        # charter/kind work of 2026-08-15) the harvester reading the row it is
+        # about to update so it can MERGE relevant_paths instead of flattening
+        # them. A plain {"_id": …} / {"slug": …} lookup used to raise here.
+        if "_id" in query:
+            return next((d for d in self.docs if d.get("_id") == query["_id"]), None)
+        slug_cond = query.get("slug")
+        if isinstance(slug_cond, str):
+            return next((d for d in self.docs if d.get("slug") == slug_cond), None)
         or_clauses = query.get("$or") or []
-        ne_slug = (query.get("slug") or {}).get("$ne")
+        ne_slug = (slug_cond or {}).get("$ne")
         for doc in self.docs:
             if ne_slug is not None and doc.get("slug") == ne_slug:
                 continue

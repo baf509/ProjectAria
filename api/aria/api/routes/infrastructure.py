@@ -21,6 +21,7 @@ from aria.api.deps import (
     get_model_pull_service,
     get_model_server_manager,
     get_service_manager,
+    require_admin,
 )
 from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
@@ -152,7 +153,10 @@ async def get_llm_route(
     }
 
 
-@router.put("/llm-route")
+# The route pin decides which model every /llm/v1 consumer reaches; an
+# agent that could move it could point ARIA's own workers at a model of
+# its choosing.
+@router.put("/llm-route", dependencies=[Depends(require_admin)])
 async def set_llm_route(
     body: LlmRouteRequest,
     manager: ModelServerManager = Depends(get_model_server_manager),

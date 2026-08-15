@@ -18,6 +18,7 @@ from aria.api.deps import (
     get_coding_session_manager,
     get_coding_watchdog,
     get_estop_manager,
+    require_admin,
 )
 from aria.db.models import CodingSessionCreate, CodingSessionInput, CodingSessionResponse
 
@@ -344,7 +345,9 @@ async def activate_estop(
     return state.to_dict()
 
 
-@router.post("/estop/deactivate")
+# Same rule as the killswitch: freezing is cheap and reversible, un-freezing
+# is the decision. Activation stays open (anything may stop the world).
+@router.post("/estop/deactivate", dependencies=[Depends(require_admin)])
 async def deactivate_estop(
     estop: EstopManager = Depends(get_estop_manager),
 ):

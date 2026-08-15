@@ -209,6 +209,12 @@ async def client(mock_db, mock_tool_router, mock_orchestrator):
     app.dependency_overrides[deps.get_db] = lambda: mock_db
     app.dependency_overrides[deps.get_tool_router] = lambda: mock_tool_router
     app.dependency_overrides[deps.get_orchestrator] = lambda: mock_orchestrator
+    # The admin-key split (steward plan §7.3) guards the irreversible routes —
+    # PUT /agents, killswitch/estop deactivate, llm-route, model start/stop.
+    # These tests exercise route LOGIC, so the gate is satisfied here and tested
+    # on its own in TestAdminKeyGate below; otherwise every such test would be
+    # asserting the auth layer instead of the behaviour it names.
+    app.dependency_overrides[deps.require_admin] = lambda: True
 
     # The middleware calls get_rate_limiter() and reads settings directly (not
     # via Depends), so we patch them at the module level.
@@ -877,3 +883,81 @@ class TestRoot:
         assert data["name"] == "ARIA"
         assert "version" in data
         assert data["docs"] == "/docs"
+
+
+# ===================================================================
+# Admin-key split (steward plan §7.3)
+# ===================================================================
+
+
+class TestAdminKeyGate:
+    """The global API key must not be enough to take an irreversible action.
+
+    Anything running as `ben` — including an unsandboxed coding agent — can read
+    API_KEY out of .env. So the routes that change what future sessions do, or
+    that lift a stop, sit behind ADMIN_KEY, which never enters a session
+    environment. These tests deliberately do NOT override require_admin.
+    """
+
+    @pytest.fixture
+    async def raw_client(self, mock_db, mock_tool_router, mock_orchestrator):
+        from aria.main import app
+        from aria.api import deps
+
+        app.dependency_overrides[deps.get_db] = lambda: mock_db
+        app.dependency_overrides[deps.get_tool_router] = lambda: mock_tool_router
+        app.dependency_overrides[deps.get_orchestrator] = lambda: mock_orchestrator
+        mock_rate_limiter = MagicMock()
+        mock_rate_limiter.check = MagicMock(return_value=(True, 100))
+        with (
+            patch("aria.main.settings") as mock_settings,
+            patch("aria.main.get_rate_limiter", return_value=mock_rate_limiter),
+        ):
+            mock_settings.api_auth_enabled = False
+            mock_settings.cors_origins = ["*"]
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as ac:
+                yield ac
+        app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_unset_admin_key_refuses_rather_than_falling_back(self, raw_client):
+        """Fails CLOSED. An unset ADMIN_KEY must not silently accept API_KEY —
+        that would make the whole split cosmetic."""
+        with patch("aria.config.settings.admin_key", ""):
+            resp = await raw_client.put(
+                f"/api/v1/agents/{VALID_OID}", json={"enabled": False}
+            )
+        assert resp.status_code == 503
+        assert "ADMIN_KEY" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_wrong_admin_key_is_rejected(self, raw_client):
+        with patch("aria.config.settings.admin_key", "s3cret-admin-key"):
+            resp = await raw_client.put(
+                f"/api/v1/agents/{VALID_OID}",
+                json={"enabled": False},
+                headers={"X-Admin-Key": "not-the-key"},
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_correct_admin_key_is_accepted(self, raw_client, mock_db):
+        doc = _make_agent_doc(oid=VALID_OID)
+        mock_db.agents.find_one = AsyncMock(return_value=doc)
+        mock_db.agents.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+        with patch("aria.config.settings.admin_key", "s3cret-admin-key"):
+            resp = await raw_client.put(
+                f"/api/v1/agents/{VALID_OID}",
+                json={"enabled": False},
+                headers={"X-Admin-Key": "s3cret-admin-key"},
+            )
+        assert resp.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_killswitch_deactivate_is_gated(self, raw_client):
+        """Lifting a stop is the decision; activating one stays open to anything."""
+        with patch("aria.config.settings.admin_key", "s3cret-admin-key"):
+            resp = await raw_client.post("/api/v1/killswitch/deactivate")
+        assert resp.status_code == 403

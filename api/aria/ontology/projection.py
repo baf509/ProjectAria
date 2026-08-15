@@ -302,10 +302,22 @@ class OntologyProjector:
                 embed=embed,
             )
             seen.add(slug)
-            # Off-box servers (Ridge) run somewhere else — saying they run on
-            # corsair would be exactly the kind of false edge this rewrite is
-            # meant to prevent.
-            host = LOCAL_HOST_SLUG if spec.onbox else "machine:ridge"
+            # Off-box servers run somewhere else — saying they run on corsair
+            # would be exactly the kind of false edge this rewrite is meant to
+            # prevent. But hardcoding `machine:ridge` for every off-box server
+            # was the same mistake in the other direction: once RED was declared
+            # (2026-08-15) the graph asserted that RED's model server runs on
+            # Ridge. The host is now declared per spec, and an off-box entry
+            # that forgets to declare one gets NO edge rather than a wrong one —
+            # a missing edge is visibly incomplete, a wrong edge reads as fact.
+            host = LOCAL_HOST_SLUG if spec.onbox else spec.host_machine
+            if not host:
+                logger.warning(
+                    "ontology: %s is off-box with no host_machine declared; "
+                    "skipping its runs_on edge rather than guessing",
+                    spec.slug,
+                )
+                continue
             await self.store.upsert_relation(slug, "runs_on", host, actor=ACTOR_MODEL_SERVER)
             edges += 1
 

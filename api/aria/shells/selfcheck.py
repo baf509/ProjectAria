@@ -141,14 +141,31 @@ async def run_checks(db) -> list[dict]:
         ok, detail = await _check_http(emb)
         checks.append({"name": "embeddings", "ok": ok, "detail": detail})
 
-    # Extraction freshness — newest last_run_at across shells should be recent
+    # Extraction freshness — newest last_run_at across shells should be recent.
+    #
+    # Skipped entirely when the worker is switched off, for the same reason the
+    # retrieval probes above are: a capability that is stopped ON PURPOSE must
+    # never page. `SHELLS_EXTRACTION_ENABLED=false` has been set by the
+    # `deepseek-research-safety.conf` drop-in since the DS4 characterization, so
+    # this check reported "last run 5096m ago" on every tick — and because the
+    # cooldown lived in memory and aria-api restarted 37 times, it produced 31
+    # duplicate `selfcheck/degraded` alerts. That queue is what Ben stopped
+    # reading. A stopped worker is not a degradation; it is a decision.
     newest = None
-    async for s in db.shell_extraction_state.find({}, {"last_run_at": 1}):
-        t = s.get("last_run_at")
-        if t and (newest is None or t > newest):
-            newest = t
+    if not settings.shells_extraction_enabled:
+        checks.append({
+            "name": "extraction",
+            "ok": True,
+            "detail": "disabled (shells_extraction_enabled=false) — not a degradation",
+        })
+    else:
+        async for s in db.shell_extraction_state.find({}, {"last_run_at": 1}):
+            t = s.get("last_run_at")
+            if t and (newest is None or t > newest):
+                newest = t
     if newest is None:
-        checks.append({"name": "extraction", "ok": True, "detail": "no runs yet"})
+        if settings.shells_extraction_enabled:
+            checks.append({"name": "extraction", "ok": True, "detail": "no runs yet"})
     else:
         if newest.tzinfo is None:
             newest = newest.replace(tzinfo=timezone.utc)

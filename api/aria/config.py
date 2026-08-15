@@ -189,14 +189,20 @@ class Settings(BaseSettings):
     # GPU idles, and four pi sessions would over-subscribe the slots reserved
     # for them. This is the cap that must track the server's -np.
     #
-    # Budget at -np 4: reserve one slot for Hermes and one for a directly-run
-    # Pi/other foreground caller, leaving two watched-shell Pi sessions. Most
-    # background/auxiliary Hermes work runs on the separate CPU-only Gemma.
-    # `check_pi_slot_budget()` warns if this drifts from the production unit.
-    coding_max_concurrent_pi_sessions: int = 2
+    # Budget at -np 1 (rewritten 2026-08-15): pi's model is DS4-XXS on the Halo
+    # APU, served as exactly ONE 131K slot, and DS4 is MoE — concurrent slots
+    # activate different experts, so multi-slot anti-scales (measured per-request
+    # 10.06/6.97/5.58 t/s at 2/4/6 slots vs 30.69 single). Hermes moved to Qwen
+    # on the R9700 on 2026-08-15, so nothing else contends for this slot, and the
+    # right cap is one session with nothing reserved. The old 2+2 was budgeted
+    # for a retired -np 4 deployment and over-subscribed the live server 4:1 —
+    # which does not fail loudly, it just makes every turn pay a cold prefill
+    # (39.5 s vs 4.2 s warm). `check_pi_slot_budget()` warns if this drifts.
+    coding_max_concurrent_pi_sessions: int = 1
     # Slots on the local server NOT available to pi sub-agents (Hermes main,
-    # the system pi-coding agent, background workers).
-    coding_pi_reserved_slots: int = 2
+    # the system pi-coding agent, background workers). Zero now that Hermes and
+    # ARIA's background work both live on Qwen/R9700 rather than on pi's server.
+    coding_pi_reserved_slots: int = 0
 
     # Master switch, independent of everything below: False refuses any
     # pool-backed coding session up front (start_session) with a clear error,
@@ -780,6 +786,173 @@ class Settings(BaseSettings):
     report_enabled: bool = True
     report_weekday: int = 6
     report_hour: int = 9
+
+    # =====================================================================
+    # Steward layer (approved 2026-08-15; vault:
+    # ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md)
+    #
+    # ARIA becomes the steward of a set of chartered projects: it plans, does
+    # proactive research, supervises every agent, and improves itself — while
+    # Hermes is reduced to Ben's channel. Every knob below defaults OFF or to a
+    # conservative value: the design principle is that a phase is enabled only
+    # after its gate passes, so a fresh checkout never starts acting on its own.
+    # =====================================================================
+
+    # --- Alerts v2 / relay -------------------------------------------------
+    # Alerts gain severity/kind/needs_human/dedup_key/decision. Cooldowns move
+    # into Mongo because the in-memory dict reset on every aria-api restart —
+    # with 37 restarts since 08-11 that turned "once per state transition" into
+    # 31 duplicate `selfcheck degraded` rows.
+    alerts_cooldown_persist: bool = True
+    # The relay (Hermes 'ARIA outbox' cron) heartbeats through MCP. No heartbeat
+    # for this long means Ben is not receiving anything — the failure that has
+    # silently happened three times (2026-06-29, 07-28, 08-10).
+    alert_relay_heartbeat_timeout_minutes: int = 20
+    alert_relay_watchdog_enabled: bool = True
+    alert_relay_watchdog_interval_seconds: int = 120
+    # Break-glass (decision D5): the ONE sanctioned exception to "ARIA never
+    # pushes". Only relay:dead and estop may take this path, and only via the
+    # signal-cli JSON-RPC daemon Hermes already runs. ARIA's legacy SignalService
+    # points at a REST API on :8088 that is not running — do not confuse them.
+    alert_breakglass_enabled: bool = True
+    alert_breakglass_kinds: list[str] = ["relay:dead", "estop"]
+    signal_cli_rpc_url: str = "http://127.0.0.1:8090/api/v1/rpc"
+    signal_breakglass_recipient: str = ""      # set in .env; empty disables sending
+    signal_breakglass_account: str = ""        # the sending signal-cli account
+    # An unanswered urgent decision expires to HOLD — never to APPLY.
+    alert_decision_timeout_minutes: int = 240
+
+    # --- Guard (sandbox + git rollback substrate) --------------------------
+    # The guard holds the git pen: agents never commit, push or merge. See the
+    # proposal §7. Enabled per-mechanism so a broken sandbox cannot block work.
+    guard_enabled: bool = True
+    # Wrap coding sessions in bwrap. OFF until the red-team drill passes on this
+    # box (proposal P2 gate) — a sandbox that breaks pi's auth or npm cache is
+    # worse than none, because it fails at agent-start with no diagnosis.
+    guard_sandbox_enabled: bool = False
+    guard_sandbox_backends: list[str] = ["pi-code", "claude_code", "codex"]
+    # Masked with an empty tmpfs inside a session: credentials and blast radius.
+    guard_sandbox_tmpfs_paths: list[str] = [
+        "~/.ssh", "~/.gnupg", "~/.config/gh", "~/.docker",
+        "~/.config/corsair-backup", "~/.hermes", "~/.aria", "~/git-safe",
+    ]
+    # Read-only inside a session: pi needs its provider table, Claude its creds.
+    guard_sandbox_ro_paths: list[str] = ["~/.pi/agent/models.json", "~/.claude"]
+    # Writable inside a session besides the worktree itself. pi streams its
+    # structured transcript here, and losing it would blind the supervisor.
+    guard_sandbox_rw_paths: list[str] = ["~/.pi/agent/sessions"]
+    # Resource envelope per session. 4G, not 6G: MemAvailable runs ~11.9 GiB and
+    # the co-resident model floor is 7 GiB, so the real slack is ~5 GiB.
+    guard_session_memory_max: str = "4G"
+    guard_session_cpu_quota: str = "400%"
+    guard_min_mem_available_gib: float = 9.0
+    # Git protocol.
+    guard_worktree_default: bool = True        # every ARIA session gets its own worktree
+    guard_checkpoint_enabled: bool = True      # real commits, not Mongo metadata
+    guard_checkpoint_interval_seconds: int = 600
+    guard_mirror_root: str = "~/git-safe"      # bare mirrors; push target for aria/* branches
+    guard_branch_prefix: str = "aria"
+    # Merge gate. A merge is proposed to Ben (A<=2) or auto (A3) only if all of
+    # these pass. Gate work runs in ARIA's process, outside the sandbox.
+    guard_merge_gate_enabled: bool = True
+    guard_diff_max_lines: int = 400
+    guard_diff_max_files: int = 20
+    guard_gitleaks_enabled: bool = True
+    guard_gitleaks_binary: str = "gitleaks"
+    # Tamper protection (principle 12): paths no agent may modify at any
+    # autonomy level. A touch is an immediate raise, not a merge rejection.
+    guard_protected_paths: list[str] = [
+        "api/aria/guard/**",
+        "api/aria/agents/watchdog.py",
+        "api/aria/agents/estop.py",
+        "api/aria/core/killswitch.py",
+        "api/aria/notifications/service.py",
+        "api/aria/config.py",
+        ".env",
+        ".env.example",
+        "**/.claude/settings*.json",
+        "**/settings.local.json",
+        "CLAUDE.md",
+        "**/hooks/**",
+        "api/tests/**",
+        "**/evalstack/**",
+    ]
+    guard_policy_path: str = "guard/policy.yaml"
+
+    # --- Charters / steward -------------------------------------------------
+    steward_enabled: bool = False
+    steward_interval_minutes: int = 30
+    # Explicit slug, never the /llm/v1 "largest resident" auto-route: that
+    # resolves to DS4, which is pi's single slot, and every steward tick would
+    # evict a coding agent's warm prefix (4.2 s warm vs 39.5 s cold).
+    steward_backend: str = "llamacpp"
+    steward_model: str = "qwen3.8-27b-rocmfp4-r9700"
+    steward_endpoint: str = "http://127.0.0.1:8080/v1"
+    steward_max_actions_per_tick: int = 2
+    # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before
+    # `content`, so a tight token budget returns finish_reason="length" with an
+    # EMPTY content string (measured 2026-08-15: a one-line reply needed 41
+    # completion tokens, 17 of them reasoning; at max_tokens=24 content was ""
+    # while reasoning_content was full). Every steward/research/triage call must
+    # budget generously AND treat empty content as a failure — writing the empty
+    # result is exactly how DS4 silently labelled every memory with zero
+    # entities (see CLAUDE.md, Ontology Memory Map).
+    steward_max_tokens: int = 2048
+    steward_idle_days_before_pause_proposal: int = 21
+    # Default per-project budget when a charter does not set one (decision D13).
+    steward_default_sessions_per_day: int = 3
+    steward_default_session_minutes: int = 60
+    steward_default_cloud_usd_per_day: float = 2.0
+    steward_default_research_runs_per_week: int = 2
+    steward_default_lines_merge: int = 400
+
+    # --- Vault (the shared notepad, read AND write) -------------------------
+    # ARIA has always written to the vault and never read it. The reader is what
+    # makes a phone edit of `approval:` an actual control input.
+    vault_reader_enabled: bool = False
+    vault_reader_interval_seconds: int = 60
+    # Human-edit detection is by content hash, not mtime: the LiveSync bridge
+    # rewrites mtimes, so the existing 10-minute mtime guard cannot tell a human
+    # edit from a sync echo or from ARIA's own write.
+    vault_hash_state_collection: str = "vault_docs"
+
+    # --- Meta supervisor ----------------------------------------------------
+    meta_supervisor_enabled: bool = False
+    meta_supervisor_interval_seconds: int = 30
+    # Stuck signals. Thresholds follow OpenHands' stuck detector, which are the
+    # only published, tested values for this.
+    meta_no_diff_nudges: int = 2               # nudges with no worktree diff change
+    meta_repeated_error_threshold: int = 3     # identical error line repeats
+    meta_tool_loop_threshold: int = 4          # identical (tool, args) repeats
+    meta_alternating_loop_threshold: int = 6   # A-B-A-B tool cycles
+    meta_monologue_threshold: int = 3          # turns with no tool call
+    meta_crash_grace_seconds: int = 60         # exit faster than this + no diff = failed
+    # Escalation ladder: how far it may climb before Ben is involved.
+    meta_ladder_max_rung: int = 4              # 0 log,1 nudge,2 restart,3 re-route,4 decompose,5 raise
+    meta_raises_per_project_per_day: int = 3   # 4th within 24h → auto-pause that project
+    meta_worker_liveness_enabled: bool = True
+
+    # --- Outcomes / self-improvement ---------------------------------------
+    outcome_scoring_enabled: bool = True
+    # Different-family review: a verifier cascade only helps when the verifiers
+    # are uncorrelated, so local diffs are reviewed by the cloud tier.
+    outcome_review_family: str = "cloud"
+    improver_enabled: bool = False
+    improver_interval_hours: int = 168          # weekly
+    improver_max_proposals_per_run: int = 1
+    # Only these may be rewritten by an improvement proposal. Everything in
+    # guard_protected_paths is immutable regardless.
+    improver_mutable_paths: list[str] = [
+        "api/prompts/*.md",
+    ]
+    improver_eval_suite: str = "agentic_core"
+
+    # --- Admin key split ----------------------------------------------------
+    # The global API_KEY is readable by anything running as ben, including a
+    # coding agent — so it must not be enough to deactivate the killswitch,
+    # repoint an agent, or start/stop a model server. Those move behind
+    # ADMIN_KEY, which is never placed in a session environment.
+    admin_key: str = ""
 
     debug: bool = False
 

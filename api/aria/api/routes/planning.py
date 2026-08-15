@@ -18,6 +18,8 @@ from aria.api.deps import get_db, get_planning_service, get_task_runner
 from aria.config import settings
 from aria.planning.extraction import TaskExtractor
 from aria.planning.models import (
+    CharterResponse,
+    CharterSetRequest,
     Project,
     ProjectCreateRequest,
     ProjectListResponse,
@@ -29,7 +31,7 @@ from aria.planning.models import (
     TaskStatus,
     TaskUpdateRequest,
 )
-from aria.planning.service import PlanningService
+from aria.planning.service import PlanningService, effective_budget
 from aria.tasks.runner import TaskRunner
 
 logger = logging.getLogger(__name__)
@@ -191,6 +193,24 @@ async def create_project(
     return await service.create_project(body)
 
 
+# ⚠️ Named `active-set`, not `active`, on purpose: `GET/PUT /projects/active`
+# already exists in routes/digest.py as the server-side *active project pointer*
+# (one slug, the cockpit's current focus), and digest registers before planning
+# in main.py precisely so its literal paths beat `/projects/{project_id}`.
+# Two different concepts — one pointer, one set — so they get two paths rather
+# than one path whose meaning depends on which router won.
+# Declared above `/projects/{project_id}` because within a router FastAPI still
+# matches in declaration order.
+@router.get("/projects/active-set", response_model=ProjectListResponse)
+async def list_active_set(
+    service: Annotated[PlanningService, Depends(get_planning_service)],
+):
+    """The ACTIVE SET the steward iterates: status=active AND kind=project AND
+    a charter with a non-empty purpose. Everything else in `projects` is
+    inventory."""
+    return ProjectListResponse(projects=await service.active_projects())
+
+
 @router.get("/projects/{project_id}", response_model=Project)
 async def get_project(
     project_id: str,
@@ -229,6 +249,49 @@ async def delete_project(
     if not ok:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
     return None
+
+
+@router.get("/projects/{ident}/charter", response_model=CharterResponse)
+async def get_project_charter(
+    ident: str,
+    service: Annotated[PlanningService, Depends(get_planning_service)],
+):
+    proj = await service.get_project_by_ident(ident)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {ident}")
+    return CharterResponse(
+        project_id=proj.id,
+        slug=proj.slug,
+        kind=proj.kind,
+        charter=proj.charter,
+        steward=proj.steward,
+        effective_budget=effective_budget(proj.charter),
+    )
+
+
+@router.put("/projects/{ident}/charter", response_model=CharterResponse)
+async def set_project_charter(
+    ident: str,
+    body: CharterSetRequest,
+    service: Annotated[PlanningService, Depends(get_planning_service)],
+):
+    """Set or amend a charter. The body is a PARTIAL charter — only the keys
+    present are merged, so a vault/phone edit of one field cannot blank the
+    rest. This route is a human surface (it always writes as actor `human`);
+    workers call PlanningService.set_charter with their own actor and get
+    propose-into-scan_review semantics instead."""
+    patch = body.charter.model_dump(exclude_unset=True)
+    proj = await service.set_charter(ident, patch, actor="human", via=body.via)
+    if not proj:
+        raise HTTPException(status_code=404, detail=f"Project not found: {ident}")
+    return CharterResponse(
+        project_id=proj.id,
+        slug=proj.slug,
+        kind=proj.kind,
+        charter=proj.charter,
+        steward=proj.steward,
+        effective_budget=effective_budget(proj.charter),
+    )
 
 
 @router.get("/projects/{project_id}/tasks", response_model=TaskListResponse)

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Optional
 
-from aria.api.deps import get_killswitch, get_task_runner, get_notification_service, get_escalation_manager
+from aria.api.deps import get_killswitch, get_task_runner, get_notification_service, get_escalation_manager, require_admin
 from aria.notifications.escalation import EscalationManager
 from aria.core.killswitch import Killswitch
 from aria.tasks.runner import TaskRunner
@@ -38,7 +38,10 @@ async def activate_killswitch(
     )
 
 
-@router.post("/killswitch/deactivate")
+# Deactivating a kill switch is the one action an agent must never be able
+# to take on its own behalf — o3 rewrote a shutdown script in 7/100 runs
+# even when told to allow shutdown (Palisade 2025). ADMIN_KEY, not API_KEY.
+@router.post("/killswitch/deactivate", dependencies=[Depends(require_admin)])
 async def deactivate_killswitch(
     killswitch: Killswitch = Depends(get_killswitch),
 ):

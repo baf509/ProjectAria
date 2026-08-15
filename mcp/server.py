@@ -19,9 +19,11 @@ Tool groups:
   - Reading a shell: get_shell_screen, get_shell_snapshot, get_shell_events, search_shells
   - Driving a shell: send_shell_input, create_shell, delete_shell, set_shell_tags, resize_shell
   - Projects/tasks : list_projects, get_project, list_tasks, create_task, update_task
-  - Alerts (relay) : list_alerts, ack_alert  — ProjectAria queues alerts here and
-                     Hermes relays them over Signal, since ProjectAria no longer
-                     pushes notifications directly.
+  - Alerts (relay) : list_alerts, ack_alert, decide_alert, mark_alert_delivered,
+                     relay_heartbeat — ProjectAria queues alerts here and Hermes
+                     relays them over Signal, since ProjectAria no longer pushes
+                     notifications directly. Only `needs_human` alerts are for
+                     Ben; the rest are cockpit material.
   - Model servers  : list_model_servers, list_gpu_devices,
                      model_server_utilization, start_model_server,
                      stop_model_server, bind_model_server, unbind_model_server
@@ -444,14 +446,212 @@ async def update_task(
 # Hermes (which owns the signal-cli daemon) relays them over Signal, then acks.
 
 @mcp.tool()
-async def list_alerts(unacked_only: bool = True, limit: int = 50) -> dict:
-    """List ProjectAria alerts (selfcheck failures, idle shells, weekly report).
-    Default returns only un-acked alerts — relay these over Signal then ack
-    each one so it isn't sent again."""
+async def list_alerts(
+    unacked_only: bool = True,
+    limit: int = 50,
+    needs_human_only: bool = False,
+    undelivered_only: bool = False,
+    severity: Optional[str] = None,
+    kind: Optional[str] = None,
+    project: Optional[str] = None,
+) -> dict:
+    """List ProjectAria alerts.
+
+    ⚠️ Relaying to Ben wants `needs_human_only=true, undelivered_only=true`.
+    That is the small set a human must actually decide. Everything else —
+    session stalls, budget notices, recoveries — is `severity="info"` cockpit
+    and digest material and must NOT be sent to Signal: relaying lifecycle
+    noise is what trains a person to stop reading their own alert queue.
+    Deliver → mark_alert_delivered → ack_alert."""
     params: dict[str, Any] = {"limit": limit}
     if unacked_only:
         params["unacked_only"] = "true"
+    if needs_human_only:
+        params["needs_human"] = "true"
+    if undelivered_only:
+        params["undelivered"] = "true"
+    if severity:
+        params["severity"] = severity
+    if kind:
+        params["kind"] = kind
+    if project:
+        params["project"] = project
     return await _request("GET", "/api/v1/alerts", params=params)
+
+
+@mcp.tool()
+async def decide_alert(
+    action: str,
+    alert_id: Optional[str] = None,
+    id: Optional[str] = None,
+    by: str = "ben",
+    note: Optional[str] = None,
+) -> dict:
+    """Record Ben's typed answer to a raise: APPLY | REJECT | STOP | HOLD | IGNORE.
+
+    The reply grammar is typed on purpose: the previous flow relied on recalling
+    from conversation memory which fix a bare "APPLY" referred to, so nothing
+    bound the decision to an alert and there was no audit trail. IGNORE means
+    the raise was unnecessary and feeds the false-raise metric. Acks the alert."""
+    return await _request(
+        "POST",
+        f"/api/v1/alerts/{_one_id(alert_id, id, 'alert_id')}/decide",
+        json={"action": action, "by": by, "note": note},
+    )
+
+
+@mcp.tool()
+async def mark_alert_delivered(
+    alert_id: Optional[str] = None, id: Optional[str] = None, by: str = "hermes-outbox"
+) -> dict:
+    """Call after a Signal send succeeds. Delivered is NOT acked: delivered means
+    Ben saw it, acked means it is closed. Keeping them separate is what makes a
+    dead relay visible instead of looking like a quiet week."""
+    return await _request(
+        "POST",
+        f"/api/v1/alerts/{_one_id(alert_id, id, 'alert_id')}/delivered",
+        json={"by": by},
+    )
+
+
+@mcp.tool()
+async def list_active_projects() -> dict:
+    """The ACTIVE SET the steward acts on: status=active AND kind=project AND an
+    approved charter with a purpose. Everything else in the registry is
+    inventory — 59 rows were being tracked as "projects" including Downloads,
+    /tmp/workspace and .worktrees/*, which is why the attention ranking read
+    zero for everything. Use list_projects for the full inventory."""
+    return await _request("GET", "/api/v1/projects/active-set")
+
+
+@mcp.tool()
+async def get_project_charter(slug: str) -> dict:
+    """A project's charter — purpose, goals, non-goals, research topics,
+    autonomy, allowed tiers, cadence, budget, guard — plus ARIA's steward state
+    and the budget with config defaults already resolved."""
+    return await _request("GET", f"/api/v1/projects/{slug}/charter")
+
+
+@mcp.tool()
+async def set_project_charter(
+    slug: str,
+    purpose: Optional[str] = None,
+    goals: Optional[list] = None,
+    success_criteria: Optional[list] = None,
+    non_goals: Optional[list] = None,
+    research_topics: Optional[list] = None,
+    autonomy: Optional[int] = None,
+    tiers_allowed: Optional[list] = None,
+    cadence: Optional[dict] = None,
+    budget: Optional[dict] = None,
+    guard: Optional[dict] = None,
+) -> dict:
+    """Set or amend a project's charter. PARTIAL merge: only what you pass is
+    written, so amending a budget cannot blank the purpose.
+
+    Autonomy: 0 observe / 1 propose / 2 execute in a sandboxed worktree with a
+    merge gate (local models cap here) / 3 auto-merge behind the full gate.
+
+    ⚠️ A charter is Ben's statement of what a project is FOR — it drives what
+    the steward researches and what agents are allowed to do unattended. Relay
+    his words; never invent one to fill the field."""
+    charter = {
+        k: v for k, v in {
+            "purpose": purpose, "goals": goals, "success_criteria": success_criteria,
+            "non_goals": non_goals, "research_topics": research_topics,
+            "autonomy": autonomy, "tiers_allowed": tiers_allowed,
+            "cadence": cadence, "budget": budget, "guard": guard,
+        }.items() if v is not None
+    }
+    return await _request(
+        "PUT", f"/api/v1/projects/{slug}/charter",
+        json={"charter": charter, "via": "mcp"},
+    )
+
+
+@mcp.tool()
+async def guard_status() -> dict:
+    """Guard health: sandbox preflight (bwrap/systemd-run present, MemAvailable,
+    whether a spawn is allowed), the enforced policy hash and its tamper
+    verdict, and event/checkpoint counts."""
+    return await _request("GET", "/api/v1/guard/status")
+
+
+@mcp.tool()
+async def guard_events(limit: int = 50, session_id: str = "", blocked_only: bool = False) -> dict:
+    """Recent guard events — blocked actions, protected-path touches, tamper
+    checks, checkpoints, merges. blocked_only=True is the raise-worthy subset."""
+    params: dict[str, Any] = {"limit": limit, "blocked_only": blocked_only}
+    if session_id:
+        params["session_id"] = session_id
+    return await _request("GET", "/api/v1/guard/events", params=params)
+
+
+@mcp.tool()
+async def guard_checkpoints(session_id: str = "", limit: int = 20) -> dict:
+    """Checkpoint commits for a coding session. Each sha is a rollback target;
+    ARIA makes these commits itself so an agent cannot skip its own checkpoint."""
+    params: dict[str, Any] = {"limit": limit}
+    if session_id:
+        params["session_id"] = session_id
+    return await _request("GET", "/api/v1/guard/checkpoints", params=params)
+
+
+@mcp.tool()
+async def checkpoint_coding_session(session_id: str, reason: str = "manual") -> dict:
+    """Commit a coding session's current worktree state. No-op on a clean tree."""
+    return await _request(
+        "POST", f"/api/v1/guard/sessions/{session_id}/checkpoint", json={"reason": reason}
+    )
+
+
+@mcp.tool()
+async def rollback_coding_session(session_id: str, to: str = "start") -> dict:
+    """git reset --hard inside that session's worktree ONLY. 'start' is the
+    pre-session tag aria/ckpt/<sid>/start. The live checkout is never touched."""
+    return await _request(
+        "POST", f"/api/v1/guard/sessions/{session_id}/rollback", json={"to": to}
+    )
+
+
+@mcp.tool()
+async def coding_session_merge_gate(session_id: str, check_command: str = "") -> dict:
+    """Run the merge gate — check command, diff size, protected paths, gitleaks,
+    charter allowed_paths — and return the verdict.
+
+    It NEVER merges. A merge at autonomy <= 2 is Ben's APPLY and needs the admin
+    key, which MCP deliberately does not have."""
+    params = {"check_command": check_command} if check_command else None
+    return await _request("GET", f"/api/v1/guard/sessions/{session_id}/merge-gate", params=params)
+
+
+@mcp.tool()
+async def vault_poll() -> dict:
+    """Read Ben's Obsidian vault control docs now (CHARTER.md, STEWARD_PLAN.md,
+    Research/*.md) and return what a HUMAN changed: approval/autonomy/accepted
+    flips, charter edits, the '## Notes from Ben' section, and parse errors.
+
+    Human edits are detected by content hash against what ARIA last wrote, not
+    by mtime — the LiveSync bridge rewrites mtimes, so mtime cannot tell Ben's
+    edit from a sync echo of ARIA's own write."""
+    return await _request("POST", "/api/v1/vault/poll")
+
+
+@mcp.tool()
+async def vault_events(limit: int = 50) -> dict:
+    """Recent vault change events (newest last)."""
+    return await _request("GET", "/api/v1/vault/events", params={"limit": limit})
+
+
+@mcp.tool()
+async def relay_heartbeat(source: str = "hermes-outbox") -> dict:
+    """Report that the outbox relay ran — EVERY pass, including quiet ones.
+
+    Silence for alert_relay_heartbeat_timeout_minutes makes ARIA raise
+    relay:dead, write STEWARD_INBOX.md into the vault, and send one break-glass
+    Signal message. A relay that only heartbeats when it has something to say
+    cannot be distinguished from a dead one."""
+    return await _request("POST", "/api/v1/alerts/relay-heartbeat", json={"source": source})
 
 
 @mcp.tool()
@@ -545,10 +745,17 @@ async def update_agent(
     """Enable/disable an agent or repoint its backend/model. `agent_slug`
     takes a slug ('search-agent', 'pi-coding') or raw id.
 
+    ⚠️ SINCE 2026-08-15 THIS REQUIRES THE ADMIN KEY AND WILL RETURN 403 HERE.
+    Repointing an agent changes what every future session does, durably and
+    invisibly, so `PUT /agents/{id}` moved behind ADMIN_KEY (steward plan §7.4)
+    — and ADMIN_KEY is deliberately not available to MCP, because MCP is
+    reachable by Hermes and therefore by anything that can talk to Hermes.
+    Ben applies these from the TUI/CLI. Report the 403 and what you wanted to
+    change; do not try to route around it by editing the database.
+
     backend/model use the LLM-ADAPTER vocabulary (llamacpp, agentic, ridge,
     anthropic...) — NOT create_coding_session's (claude_code/codex/pi-code/
-    pool). Only fields you pass change; omitted ones are untouched. Use this
-    rather than asking a human to hand-edit the database."""
+    pool)."""
     body: dict[str, Any] = {}
     if enabled is not None:
         body["enabled"] = enabled

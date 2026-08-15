@@ -4,6 +4,11 @@ ARIA - Planning Models (tasks + projects)
 Pydantic shapes for the to-do list and long-term project tracker. Tasks have
 a lifecycle (proposed -> active -> done | dismissed); projects are coarse
 groupings the user works on with a rolling activity log.
+
+Projects also carry the steward layer (proposal §4): `kind` separates a project
+from scratch/ignored inventory, `charter` says why the project exists (human-
+owned), and `steward` is ARIA's own bookkeeping (worker-owned). The three
+together define the ACTIVE SET — the only projects the steward acts on.
 """
 
 from __future__ import annotations
@@ -16,6 +21,12 @@ from pydantic import BaseModel, Field
 TaskStatus = Literal["proposed", "active", "done", "dismissed"]
 ProjectStatus = Literal["active", "paused", "archived"]
 TaskSourceType = Literal["manual", "conversation", "shell", "awareness", "import"]
+# `kind` separates "a directory on disk" from "a thing Ben works on". Before it
+# existed the harvester registered 59 rows — Downloads, /tmp/workspace, venv,
+# the Obsidian vault, .worktrees/* and pi smoke dirs included — all status=active,
+# which is why the cockpit's attention ranking was noise.
+ProjectKind = Literal["project", "scratch", "ignored"]
+CharterVia = Literal["vault", "api", "mcp"]
 
 
 class TaskSource(BaseModel):
@@ -76,6 +87,87 @@ class ProjectActivity(BaseModel):
     note: str
 
 
+class CharterCadence(BaseModel):
+    """How often the steward looks at this project, and how often it researches.
+    Free-form strings (`30m`, `daily`, `weekly`, `manual`) parsed by the steward,
+    not here — the schema must not have to change to add a cadence."""
+    steward: str = "30m"
+    research: str = "weekly"
+
+
+class CharterBudget(BaseModel):
+    """Per-project spend caps. Every field is Optional and *unset means unset* —
+    defaults come from `settings.steward_default_*` via
+    `planning.service.effective_budget()`, so Ben can retune the fleet-wide
+    defaults in config without rewriting every charter."""
+    sessions_per_day: Optional[int] = Field(default=None, ge=0)
+    session_minutes: Optional[int] = Field(default=None, ge=1)
+    local_tokens_per_day: Optional[int] = Field(default=None, ge=0)
+    cloud_usd_per_day: Optional[float] = Field(default=None, ge=0)
+    research_runs_per_week: Optional[int] = Field(default=None, ge=0)
+    lines_merge: Optional[int] = Field(default=None, ge=0)
+
+
+class CharterGuard(BaseModel):
+    """Per-project blast radius. `protected_paths` is additive to the fleet-wide
+    `settings.guard_protected_paths` — a charter can narrow what an agent may
+    touch, never widen it."""
+    allowed_paths: list[str] = Field(default_factory=list)
+    protected_paths: list[str] = Field(default_factory=list)
+    merge_gate: Literal["check_command", "tests", "none"] = "check_command"
+    reviewer_family: Literal["cloud", "qwen"] = "cloud"
+
+
+class Charter(BaseModel):
+    """Why a project exists — the input every steward and research decision keys
+    off. HUMAN-OWNED under S3: a worker may propose changes (they land in
+    `db.scan_review`) but never writes this field.
+
+    Every field is optional so a partial charter is valid; the *active set* only
+    requires `purpose` to be non-empty, because a purpose is the minimum a
+    research question or a steward plan can be derived from.
+
+    `autonomy` — what the steward may do on this project without asking:
+      A0 observe   — harvest, cockpit, digest lines only. The default.
+      A1 propose   — write STEWARD_PLAN.md, propose tasks/topics, run research
+                     (read-only web + vault writes). No coding sessions.
+      A2 execute   — spawn coding sessions ONLY in a sandboxed worktree on
+                     aria/<project>/<sid8>; the merge gate must pass and the
+                     merge itself is *proposed* to Ben. Local models cap here.
+      A3 auto-merge — squash-merge behind the full gate (gate green +
+                     different-family review + allowed_paths + lines_merge).
+                     Cloud tier only, per-project opt-in, never for protected
+                     paths.
+    """
+    purpose: str = ""
+    goals: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    non_goals: list[str] = Field(default_factory=list)
+    research_topics: list[str] = Field(default_factory=list)
+    autonomy: int = Field(default=0, ge=0, le=3)
+    tiers_allowed: list[str] = Field(default_factory=list)  # local|ridge|red|cloud
+    cadence: CharterCadence = Field(default_factory=CharterCadence)
+    budget: CharterBudget = Field(default_factory=CharterBudget)
+    guard: CharterGuard = Field(default_factory=CharterGuard)
+    approved_at: Optional[datetime] = None
+    approved_via: Optional[CharterVia] = None
+
+
+class StewardState(BaseModel):
+    """The steward's own bookkeeping for a project. WORKER-owned — the human
+    lifecycle is `Project.status`, and nothing here may change it.
+
+    `paused_reason` is the steward standing down on this project (budget
+    exhausted, ladder exhausted, pause proposed and pending); the project stays
+    `status=active` until Ben decides."""
+    enabled: bool = False
+    last_run_at: Optional[datetime] = None
+    plan_hash: Optional[str] = None  # hash of the last STEWARD_PLAN.md ARIA wrote
+    last_report_ref: Optional[str] = None
+    no_progress_streak: int = 0
+    paused_reason: Optional[str] = None
+
+
 class Project(BaseModel):
     """A long-running effort the user is working on."""
     id: str
@@ -96,6 +188,14 @@ class Project(BaseModel):
     # default ("make check"); a project with no usable check either way is
     # skipped, not blocked.
     check_command: Optional[str] = None
+
+    # --- Steward layer (proposal §4). `kind` is set by the harvester on insert
+    # and by a human thereafter; `charter` is human-only; `steward` is
+    # worker-only. The active set the steward iterates is
+    # status=active AND kind=project AND charter.purpose non-empty.
+    kind: ProjectKind = "project"
+    charter: Optional[Charter] = None
+    steward: Optional[StewardState] = None
 
     # --- Derived fields, written by the project harvester (never hand-edited).
     # `status` above stays the human lifecycle (active/paused/archived); machine
@@ -123,6 +223,8 @@ class ProjectCreateRequest(BaseModel):
     relevant_paths: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     check_command: Optional[str] = None
+    kind: ProjectKind = "project"
+    charter: Optional[Charter] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -133,6 +235,35 @@ class ProjectUpdateRequest(BaseModel):
     relevant_paths: Optional[list[str]] = None
     tags: Optional[list[str]] = None
     check_command: Optional[str] = None
+    kind: Optional[ProjectKind] = None
+    # A charter sent here is MERGED, not replaced (PlanningService.update_project
+    # routes it through set_charter): a vault or phone edit legitimately carries
+    # only the keys that changed, and a plain $set would blank the rest.
+    # `steward` is deliberately absent — it is worker-owned state.
+    charter: Optional[Charter] = None
+
+
+class CharterSetRequest(BaseModel):
+    """Body of PUT /projects/{ident}/charter. The charter is a PARTIAL patch —
+    only the keys actually present are merged. `via` records the approval
+    surface (D10: the vault copy is the approval source, the API and MCP are
+    equals); the actor is always human, because this route IS a human surface —
+    workers call PlanningService.set_charter() in-process with their own actor
+    and get proposal-not-write semantics."""
+    charter: Charter = Field(default_factory=Charter)
+    via: CharterVia = "api"
+
+
+class CharterResponse(BaseModel):
+    """GET/PUT /projects/{ident}/charter. `effective_budget` is the resolved
+    view (charter values over settings.steward_default_*) so a caller never has
+    to re-derive the defaults."""
+    project_id: str
+    slug: str
+    kind: ProjectKind
+    charter: Optional[Charter] = None
+    steward: Optional[StewardState] = None
+    effective_budget: dict
 
 
 class ProjectListResponse(BaseModel):

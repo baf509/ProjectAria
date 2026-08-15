@@ -219,6 +219,13 @@ class ModelServerSpec:
     # remote start. Without this a remote start could only report "command
     # sent", which is the kind of unverified success this codebase avoids.
     remote_health_url: Optional[str] = None
+    # Which machine this server actually runs on, as an ontology entity slug.
+    # Required for off-box servers: the ontology projection used to hardcode
+    # `machine:ridge` for everything with onbox=False, so RED's server claimed
+    # to run on Ridge in the knowledge graph — a false structural edge in the
+    # one place that is supposed to be derived truth (found 2026-08-15). On-box
+    # servers fall back to machine:corsair-ai.
+    host_machine: Optional[str] = None
     # Seconds to get the box reachable after a wake (RED ~180, Ridge ~90 cold).
     remote_wake_deadline: float = 240.0
     # Seconds for the model service to answer health once the box is up.
@@ -1368,6 +1375,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         startable=True,
         memory_pool=POOL_REMOTE,
         devices=("Ridge RTX 3090 (remote CUDA)",),
+        host_machine="machine:ridge",
         consumers_note="pi-coding-ridge",
         # ── remote operate (2026-08-15) ───────────────────────────────────
         # Previously startable=False: the only way Ridge's model came up was a
@@ -1416,6 +1424,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         startable=True,
         memory_pool=POOL_REMOTE,
         devices=("RED RTX 5090 (remote CUDA)",),
+        host_machine="machine:red",
         consumers_note="war-audio-game (via :8094), coding agents (T1)",
         # Control goes through gateway-ctl.ps1 on RED, NOT the RedLlmGateway
         # scheduled task. Three defects made the task unusable from here
@@ -2279,10 +2288,18 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
 
 
 def check_pi_slot_budget(
-    slug: str = "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
+    slug: str = "DS4-0731-IQ3_XXS-Halo-Vulkan",
 ) -> Optional[str]:
     """Complaint string if the coding-session cap over-subscribes the server's
     slots, else None.
+
+    ⚠️ The default slug must name the server pi ACTUALLY runs on. Until
+    2026-08-15 it named `DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K`, retired
+    with the rest of the :18211 deployment — `_BY_SLUG.get()` therefore returned
+    None and this check silently returned "no complaint" for weeks while the cap
+    (2 + 2 reserved) sat over a one-slot server. A budget check that cannot find
+    its subject must not read as a pass; if you re-point pi's model, re-point
+    this default in the same commit.
 
     The cap is policy (how many slots sub-agents may take) and the unit is
     mechanism (how many exist), so they are legitimately two numbers — but they
@@ -2292,7 +2309,13 @@ def check_pi_slot_budget(
     """
     spec = _BY_SLUG.get(slug)
     if spec is None:
-        return None
+        # Loud, not silent: an unknown slug means this check has no subject, and
+        # "no complaint" would be a lie (see the docstring — that is exactly how
+        # a 4:1 over-subscription hid for weeks).
+        return (
+            f"pi slot budget cannot be checked: no registry entry named {slug!r}. "
+            "The slug was probably retired without re-pointing check_pi_slot_budget()."
+        )
     slots = read_launch_geometry(spec).slots
     if not slots:
         return None

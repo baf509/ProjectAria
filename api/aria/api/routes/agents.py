@@ -9,7 +9,7 @@ Related Spec Sections:
 """
 
 from datetime import datetime, timezone
-from aria.api.deps import valid_object_id
+from aria.api.deps import valid_object_id, require_admin
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -86,7 +86,11 @@ async def get_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)):
     return AgentResponse(**serialize_agent(agent))
 
 
-@router.put("/agents/{agent_id}", response_model=AgentResponse)
+# Repointing an agent's backend/model or its system_prompt changes what
+# every future session does, silently and durably — the improvement loop
+# proposes such changes, it does not apply them.
+@router.put("/agents/{agent_id}", response_model=AgentResponse,
+            dependencies=[Depends(require_admin)])
 async def update_agent(
     agent_id: str, body: AgentUpdate, db: AsyncIOMotorDatabase = Depends(get_db)
 ):

@@ -8,10 +8,10 @@ Related Spec Sections:
 - Section 9.4: Dependency Injection
 """
 
-from typing import Annotated
+from typing import Annotated, Optional
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.db.mongodb import get_database
 from aria.core.orchestrator import Orchestrator
@@ -75,6 +75,7 @@ _skill_registry: SkillRegistry = None
 _groupchat_service: GroupChatService = None
 _autopilot_service: AutopilotService = None
 _heartbeat_service: HeartbeatService = None
+_vault_reader = None  # aria.integrations.vault_reader.VaultReader
 _dream_service: DreamService = None
 _awareness_service: AwarenessService = None
 _estop_manager: EstopManager = None
@@ -575,3 +576,67 @@ async def get_planning_service(
         _planning_service.tasks = db.tasks
         _planning_service.projects = db.projects
     return _planning_service
+
+
+async def get_obsidian_writer(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+):
+    """ObsidianWriter WITH a db handle.
+
+    The handle is not optional in practice: it is what records the content hash
+    of everything ARIA writes into the vault. Without it the VaultReader has no
+    baseline to compare against and reads ARIA's own note back as one of Ben's
+    edits — a self-triggering loop on the one surface that is supposed to carry
+    his intent.
+    """
+    from aria.integrations.obsidian import ObsidianWriter
+
+    return ObsidianWriter(db=db)
+
+
+async def get_vault_reader(
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+):
+    """Shared VaultReader so an on-demand poll and the worker see one state."""
+    global _vault_reader
+    from aria.integrations.vault_reader import VaultReader
+
+    if _vault_reader is None:
+        _vault_reader = VaultReader(db=db)
+    else:
+        _vault_reader.db = db
+    return _vault_reader
+
+
+async def require_admin(
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
+):
+    """Gate for actions the global API key must NOT authorise.
+
+    The steward plan's key split (§7.3): anything running as `ben` — including
+    an unsandboxed coding agent — can read API_KEY out of .env, so API_KEY
+    cannot be what stands between an agent and an irreversible action. Merging
+    to trunk, deactivating the killswitch or e-stop, repointing an agent,
+    changing the LLM route, starting/stopping a model server and flipping a
+    retrieval capability all move behind ADMIN_KEY, which is never placed in a
+    session environment.
+
+    Fails CLOSED: an unset ADMIN_KEY refuses rather than falling back to
+    API_KEY. Silently accepting the global key when the admin key is
+    unconfigured would make the whole split cosmetic.
+    """
+    import hmac
+
+    from aria.config import settings
+
+    if not settings.admin_key:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "ADMIN_KEY is not configured; admin actions are refused. "
+                "Set ADMIN_KEY in .env (it is never placed in a session environment)."
+            ),
+        )
+    if not hmac.compare_digest(x_admin_key or "", settings.admin_key):
+        raise HTTPException(status_code=403, detail="Valid X-Admin-Key required")
+    return True

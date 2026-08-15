@@ -4,6 +4,12 @@ ARIA - Planning Service (tasks + projects)
 CRUD for the to-do list and project tracker, plus the dedup helpers used by
 the ambient TaskExtractor. Intentionally thin: the service owns persistence
 shape and idempotency rules; the extractor owns the LLM call.
+
+Also owns the charter/active-set rules (proposal §4): a charter is human-owned
+(a worker proposes into `db.scan_review`, never writes), budgets resolve against
+`settings.steward_default_*` rather than being baked into the schema, and the
+project lifecycle (draft -> active -> paused -> archived) stays human-owned —
+the steward may only *propose* a pause.
 """
 
 from __future__ import annotations
@@ -18,18 +24,23 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from aria.config import settings
 from aria.planning.models import (
+    Charter,
     Project,
     ProjectActivity,
     ProjectCreateRequest,
     ProjectStatus,
     ProjectUpdateRequest,
+    StewardState,
     Task,
     TaskCreateRequest,
     TaskSource,
     TaskStatus,
     TaskUpdateRequest,
 )
+from aria.shared.ownership import merge_owned
+from aria.shared.review import add_review_item
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +50,19 @@ MAX_NEXT_STEPS = 5
 # Tasks with these statuses are "open" — dedup checks against this set so a
 # completed task with the same title can be re-created.
 OPEN_STATUSES: tuple[TaskStatus, ...] = ("proposed", "active")
+
+# Actors permitted to WRITE a charter. Everything else — the steward, the
+# harvester, a coding agent reporting back — can only propose (S3, and proposal
+# principle 12: the thing being evaluated must not be able to rewrite its own
+# objective). Kept as a set rather than a bool flag so the provenance written
+# into `charter.source.<field>.actor` stays meaningful.
+CHARTER_HUMAN_ACTORS = frozenset({"human", "ben", "vault", "api", "mcp"})
+# Charter sub-objects that must merge KEY-BY-KEY. A vault or phone edit sends
+# only the keys that changed ({"budget": {"sessions_per_day": 1}}); a shallow
+# merge would blank the other five budget fields.
+CHARTER_NESTED_FIELDS = ("cadence", "budget", "guard")
+CHARTER_PROPOSAL_KIND = "charter_proposal"
+PAUSE_PROPOSAL_KIND = "project_pause_proposal"
 
 
 def _now() -> datetime:
@@ -70,6 +94,60 @@ def _safe_object_id(value: str) -> Optional[ObjectId]:
         return ObjectId(value)
     except (InvalidId, TypeError):
         return None
+
+
+def effective_budget(charter: Optional[Charter | dict]) -> dict:
+    """Resolve a charter's budget against the fleet-wide defaults.
+
+    The defaults deliberately live in `settings.steward_default_*` (decision
+    D13) and NOT in `CharterBudget`: retuning what an unattended project may
+    spend must be a config change Ben can make in one place, not a migration
+    over every charter document. An unset field here therefore means "use the
+    current default", not "unlimited".
+
+    `local_tokens_per_day` has no configured default on purpose — local tokens
+    are free in dollars and the real constraint is slot contention (Qwen slot 2
+    prefill), which the steward enforces by scheduling, not by a token count.
+    None means uncapped.
+    """
+    if isinstance(charter, Charter):
+        budget = charter.budget.model_dump()
+    elif isinstance(charter, dict):
+        budget = dict((charter.get("budget") or {}))
+    else:
+        budget = {}
+
+    def pick(field: str, default):
+        value = budget.get(field)
+        return default if value is None else value
+
+    return {
+        "sessions_per_day": pick("sessions_per_day", settings.steward_default_sessions_per_day),
+        "session_minutes": pick("session_minutes", settings.steward_default_session_minutes),
+        "local_tokens_per_day": budget.get("local_tokens_per_day"),
+        "cloud_usd_per_day": pick("cloud_usd_per_day", settings.steward_default_cloud_usd_per_day),
+        "research_runs_per_week": pick(
+            "research_runs_per_week", settings.steward_default_research_runs_per_week
+        ),
+        "lines_merge": pick("lines_merge", settings.steward_default_lines_merge),
+    }
+
+
+def _merge_charter(existing: dict, patch: dict) -> dict:
+    """Deep-merge a partial charter patch over the stored charter.
+
+    Nested budget/guard/cadence objects merge key-by-key (see
+    CHARTER_NESTED_FIELDS); lists and scalars replace, because "the goals are
+    now these three" has to be expressible."""
+    merged = dict(existing)
+    for field, value in patch.items():
+        if field in CHARTER_NESTED_FIELDS and isinstance(value, dict):
+            base = dict(merged.get(field) or {})
+            base.update({k: v for k, v in value.items()})
+            merged[field] = base
+        else:
+            merged[field] = value
+    return merged
 
 
 class PlanningService:
@@ -190,6 +268,20 @@ class PlanningService:
             "relevant_paths": list(body.relevant_paths),
             "tags": list(body.tags),
             "check_command": body.check_command,
+            "kind": body.kind,
+            # A hand-created project with a charter is approved at creation —
+            # the creator is a human surface (the harvester never calls this).
+            "charter": (
+                {
+                    **body.charter.model_dump(),
+                    "approved_at": body.charter.approved_at or now,
+                    "approved_via": body.charter.approved_via or "api",
+                    "source": {"purpose": {"actor": "human", "at": now}},
+                }
+                if body.charter is not None
+                else None
+            ),
+            "steward": None,
             "recent_activity": [],
             "created_at": now,
             "updated_at": now,
@@ -226,8 +318,25 @@ class PlanningService:
             return await self.get_project(project_id)
         if "next_steps" in update and update["next_steps"] is not None:
             update["next_steps"] = update["next_steps"][:MAX_NEXT_STEPS]
-        update["updated_at"] = _now()
-        await self.projects.update_one({"_id": oid}, {"$set": update})
+        # A charter arriving on a PATCH goes through the merge path, not $set:
+        # PATCH bodies are partial by definition, and a $set of a partial
+        # charter would blank every key the caller happened not to send.
+        # An explicit `charter: null` is the one exception — that is a human
+        # deliberately retiring the charter, so it clears the field.
+        has_charter = "charter" in update
+        update.pop("charter", None)
+        if update:
+            update["updated_at"] = _now()
+            await self.projects.update_one({"_id": oid}, {"$set": update})
+        if has_charter:
+            if body.charter is None:
+                await self.projects.update_one(
+                    {"_id": oid}, {"$set": {"charter": None, "updated_at": _now()}}
+                )
+            else:
+                return await self.set_charter(
+                    project_id, body.charter.model_dump(exclude_unset=True), actor="human", via="api"
+                )
         return await self.get_project(project_id)
 
     async def delete_project(self, project_id: str) -> bool:
@@ -273,6 +382,179 @@ class PlanningService:
             {"$set": {"next_steps": steps, "updated_at": _now()}},
         )
         return True
+
+    # ------------------------------------------------- charters / active set
+    async def _find_project_doc(self, ident: str) -> Optional[dict]:
+        """Resolve an ObjectId *or* a slug. Agents address projects by slug (it
+        is the stable name); the UI has the id."""
+        oid = _safe_object_id(ident)
+        if oid is not None:
+            doc = await self.projects.find_one({"_id": oid})
+            if doc:
+                return doc
+        return await self.projects.find_one({"slug": ident})
+
+    async def get_project_by_ident(self, ident: str) -> Optional[Project]:
+        doc = await self._find_project_doc(ident)
+        return self._project_from_doc(doc) if doc else None
+
+    async def _reread(self, doc_id) -> Optional[Project]:
+        """Re-read by the raw _id we already hold — never by str(_id), which
+        would go back through the ObjectId-or-slug resolver and lose any id
+        shape that is not a 24-hex ObjectId."""
+        doc = await self.projects.find_one({"_id": doc_id})
+        return self._project_from_doc(doc) if doc else None
+
+    async def set_charter(
+        self,
+        ident: str,
+        charter: dict,
+        *,
+        actor: str = "human",
+        via: str = "api",
+    ) -> Optional[Project]:
+        """Merge a partial charter into a project. Returns None if no such
+        project.
+
+        S3 ownership: the charter is HUMAN-owned. An actor outside
+        CHARTER_HUMAN_ACTORS never writes it — the proposal is queued into
+        `db.scan_review` and the stored charter is returned unchanged. This is
+        principle 12 in the proposal: an agent that can rewrite its own charter
+        can rewrite its own budget, autonomy level and allowed paths, which is
+        exactly the failure shape documented in DGM / AI Scientist / METR.
+
+        The patch is merged, never substituted, because the vault is the
+        approval surface (D10) and a phone edit carries only what changed.
+        """
+        if via not in ("vault", "api", "mcp"):
+            raise ValueError(f"invalid charter approval surface: {via!r}")
+        doc = await self._find_project_doc(ident)
+        if doc is None:
+            return None
+
+        slug = doc.get("slug") or str(doc.get("_id"))
+        known = set(Charter.model_fields)
+        patch = {k: v for k, v in (charter or {}).items() if k in known}
+        ignored = set(charter or {}) - known
+        if ignored:
+            logger.warning("set_charter(%s): ignoring unknown field(s) %s", slug, sorted(ignored))
+
+        if actor not in CHARTER_HUMAN_ACTORS:
+            # Propose, don't clobber. Deduped by (kind, subject) while unacked,
+            # so a worker re-proposing every tick is one review row, not a flood.
+            await add_review_item(
+                self.db,
+                kind=CHARTER_PROPOSAL_KIND,
+                subject=slug,
+                detail=f"{actor} proposes charter change: {sorted(patch)} — {patch}"[:2000],
+                source=actor,
+            )
+            logger.info("set_charter(%s): %s is not a human actor — proposed for review", slug, actor)
+            return self._project_from_doc(doc)
+
+        now = _now()
+        existing = dict(doc.get("charter") or {})
+        merged = _merge_charter(existing, patch)
+        # A human touching the charter IS the approval event, so stamp it —
+        # unless the caller supplied its own (the VaultReader replays the
+        # frontmatter's own approved_at rather than inventing a new one).
+        if "approved_at" not in patch:
+            merged["approved_at"] = now
+        if "approved_via" not in patch:
+            merged["approved_via"] = via
+        final = Charter(**merged).model_dump()
+
+        # Per-field provenance, S3 shape (`source.<field>.actor`). Conflicts are
+        # structurally impossible on this branch — a human owns every charter
+        # field, and every non-human actor returned above — so merge_owned is
+        # used here only for the provenance shape the review surface reads.
+        # NB: the project doc's `sources` (plural) is the harvester's discovery
+        # provenance — different field, different meaning; do not merge them.
+        owned_set, _ = merge_owned(existing, patch, worker_fields=set(patch), actor=actor)
+        provenance = dict(existing.get("source") or {})
+        provenance.update(owned_set.get("source") or {})
+        final["source"] = provenance
+        final["last_verified_at"] = now
+
+        update: dict = {"charter": final, "updated_at": now}
+        # A human writing a purpose is the statement that this IS a project;
+        # without this a charter on a harvester-classified `scratch` row would
+        # be silently absent from the active set. An explicit `ignored` stands —
+        # that was a deliberate human "no".
+        if final.get("purpose") and doc.get("kind") in (None, "scratch"):
+            update["kind"] = "project"
+            update["source.kind"] = {"actor": actor, "at": now}
+        update["source.charter"] = {"actor": actor, "at": now, "via": via}
+
+        await self.projects.update_one({"_id": doc["_id"]}, {"$set": update})
+        return await self._reread(doc["_id"])
+
+    async def active_projects(self) -> list[Project]:
+        """THE ACTIVE SET — the only projects the steward acts on:
+        status=active AND kind=project AND a charter with a non-empty purpose.
+
+        Everything else in `projects` is inventory. The purpose test is not
+        cosmetic: it is the text every research question and steward plan is
+        derived from, so a charter without one gives the steward nothing to act
+        on and would produce generic busywork.
+
+        Filtered in Python rather than in the query because rows predating
+        `kind` have no such field at all (all 59 of them, 2026-08-15) and must
+        read as projects, not vanish.
+        """
+        cursor = self.projects.find({"status": "active"})
+        out: list[Project] = []
+        async for doc in cursor:
+            try:
+                proj = self._project_from_doc(doc)
+            except Exception as exc:  # a malformed row must not blind the steward
+                logger.warning("active_projects: skipping unparseable project %s: %s", doc.get("slug"), exc)
+                continue
+            if proj.kind != "project":
+                continue
+            if not (proj.charter and proj.charter.purpose.strip()):
+                continue
+            out.append(proj)
+        return out
+
+    async def propose_pause(self, ident: str, reason: str) -> bool:
+        """Record a proposal to pause a project. NEVER sets `status`.
+
+        The lifecycle (draft -> active -> paused -> archived) is human-owned;
+        the steward standing down is recorded in `steward.paused_reason`, which
+        stops it iterating this project while Ben's decision is pending.
+        """
+        doc = await self._find_project_doc(ident)
+        if doc is None:
+            return False
+        slug = doc.get("slug") or str(doc.get("_id"))
+        await add_review_item(
+            self.db,
+            kind=PAUSE_PROPOSAL_KIND,
+            subject=slug,
+            detail=f"steward proposes pausing '{slug}': {reason}"[:2000],
+            source="steward",
+        )
+        await self.projects.update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"steward.paused_reason": reason, "updated_at": _now()}},
+        )
+        return True
+
+    async def update_steward_state(self, ident: str, patch: dict) -> Optional[Project]:
+        """Worker-owned bookkeeping (last_run_at, plan_hash, streaks). Rejects
+        anything outside StewardState so a caller cannot smuggle `status` or
+        `charter` in through the steward's own write path."""
+        doc = await self._find_project_doc(ident)
+        if doc is None:
+            return None
+        known = set(StewardState.model_fields)
+        update = {f"steward.{k}": v for k, v in (patch or {}).items() if k in known}
+        if not update:
+            return self._project_from_doc(doc)
+        update["updated_at"] = _now()
+        await self.projects.update_one({"_id": doc["_id"]}, {"$set": update})
+        return await self._reread(doc["_id"])
 
     # --------------------------------------------------- ambient/dedup helpers
     async def find_open_task_by_hash(self, content_hash: str) -> Optional[Task]:

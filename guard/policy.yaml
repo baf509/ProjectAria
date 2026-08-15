@@ -1,0 +1,98 @@
+# ARIA guard policy — the human-readable half of the safety layer.
+#
+# Loaded by api/aria/guard/policy.py. Two rules govern this file:
+#
+#   1. IT CAN ONLY TIGHTEN. Every list here is UNIONed with the compiled-in
+#      defaults in api/aria/config.py, and every numeric cap takes the smaller
+#      of the two. Deleting a line from this file does NOT unprotect anything —
+#      it just gives up the extra protection this file was adding. That is
+#      deliberate: an agent that rewrites this file must not be able to widen
+#      its own blast radius (proposal §2 principle 12).
+#
+#   2. ITS BYTES ARE THE TAMPER HASH. sha256 of this file is checked against the
+#      accepted hash in Mongo (app_state/_id=guard_policy) on every guard tick;
+#      a mismatch is a critical guard event. After editing this file on purpose:
+#          curl -XPOST localhost:8200/api/v1/guard/policy/accept \
+#               -H "X-Admin-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
+#               -d "{\"hash\": \"$(sha256sum guard/policy.yaml | cut -d' ' -f1)\"}"
+#      (the hash is over the raw file bytes, prefixed 'file:' — read it from
+#       GET /api/v1/guard/status rather than computing it by hand).
+#
+# The parser understands a strict subset of YAML: nested mappings, lists of
+# scalars, and scalars. No anchors, no flow collections ([a, b]), no multi-line
+# strings, no tabs. Anything else makes the file unparseable, which falls back to
+# the config.py defaults and raises a critical event — it never silently
+# half-applies.
+
+# Paths no agent may modify at any autonomy level. A touch is an immediate raise,
+# not merely a merge rejection. Patterns are gitignore-ish: `**` crosses
+# directories, `*` does not, and a pattern with no `/` matches that basename at
+# any depth (so `.env` also covers `api/.env`).
+protected_paths:
+  # The guard itself, its policy, and git's own metadata. Also hard-coded as an
+  # immutable floor in policy.py — listed here so the file is a complete
+  # statement of what is protected, not a diff against the code.
+  - "guard/**"
+  - "api/aria/guard/**"
+  - ".git/**"
+  # The key split and the MCP surface: a tool added here is reachable by Hermes
+  # (and therefore by anything that can talk to Hermes) with no further review,
+  # which is how "the agent may not deactivate the killswitch" gets undone.
+  - "api/aria/api/deps.py"
+  - "api/aria/api/routes/guard.py"
+  - "api/aria/api/routes/killswitch.py"
+  - "mcp/server.py"
+  # The evidence trail. If an agent can edit the audit log's writer, the record
+  # of what it did is worth nothing.
+  - "api/aria/security/**"
+  # Service definitions and units — persistence and self-restart live here.
+  - "**/systemd/**"
+  - "scripts/aria-tmux-server"
+  - "scripts/aria-tmux-hook.conf"
+  - ".github/**"
+
+sandbox:
+  # Masked with an empty tmpfs (directories) or /dev/null (files) inside every
+  # guarded session, on top of the config.py list.
+  tmpfs_paths:
+    # The vault is Ben's notepad and the approval surface: a session that can
+    # edit CHARTER.md frontmatter can approve its own autonomy level.
+    - "~/Obsidian"
+    # Credential stores config.py's guard list does not name yet.
+    - "~/.gitconfig"
+    - "~/.git-credentials"
+    - "~/.netrc"
+    - "~/.aws"
+    - "~/.kube"
+    - "~/.password-store"
+    - "~/.config/gcloud"
+    # User units: an agent that writes here survives its own session and can
+    # disable aria-tmux (which owns every watched shell).
+    - "~/.config/systemd/user"
+    - "~/.local/share/aria-mcp"
+  # Read-only inside the session. Removing an entry here does not "unmask" it —
+  # it just stops being explicitly readable, and pi/claude break. See config.py
+  # guard_sandbox_ro_paths for why each one is load-bearing.
+  ro_paths:
+    - "~/.pi/agent/models.json"
+    - "~/.claude"
+  # Writable besides the worktree itself. ~/.pi/agent/sessions is pi's structured
+  # transcript: the MetaSupervisor's loop/stall signals are parsed from it, so
+  # masking it would blind the meta layer while looking like it worked.
+  rw_paths:
+    - "~/.pi/agent/sessions"
+
+merge_gate:
+  diff_max_lines: 400
+  diff_max_files: 20
+  gitleaks_enabled: true
+
+# Size guards for `checkpoint()`. These numbers are not arbitrary: on 2026-08-15
+# a naive `git add -A` in this house hashed 18 GB of unignored model weights and
+# left 6 GB of loose objects in .git before it was killed. Files over
+# max_file_bytes are skipped and reported; a checkpoint whose total exceeds
+# max_total_bytes is abandoned rather than half-written. If you hit the total
+# budget, fix .gitignore — do not raise the cap.
+checkpoint:
+  max_file_bytes: 10485760
+  max_total_bytes: 536870912

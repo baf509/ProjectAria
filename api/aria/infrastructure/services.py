@@ -260,7 +260,13 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     ServiceSpec(
         slug="hermes-webui",
         description="Hermes browser/mobile UI backend (hermex app).",
-        expected_state="always_up",
+        # on_demand since 2026-08-15: the unit is `disabled` AND `inactive`, and
+        # has been for weeks — Ben reaches Hermes over Signal, not this UI. While
+        # it was declared always_up, every health tick counted it as an incident,
+        # which is precisely the noise that trains a human to ignore the alert
+        # queue. Declaring the truth is the fix; start it and flip this back if
+        # the browser UI ever becomes part of the workflow.
+        expected_state="on_demand",
         kind="app",
         user_unit="hermes-webui.service",
         depends_on=("hermes-gateway",),

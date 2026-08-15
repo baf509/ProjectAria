@@ -23,7 +23,7 @@ from aria.core.logging import setup_logging
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology
+from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology, guard
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -82,6 +82,44 @@ async def lifespan(app: FastAPI):
     # Validate critical services at startup
     import httpx
     db = await get_database()
+
+    # --- Guard: policy tamper check (steward plan §7.4, principle 12) -------
+    # Every documented self-improvement failure has the same shape: the agent
+    # edits the thing that judges or stops it (DGM removing its hallucination
+    # markers, AI Scientist raising its own timeout, o3 rewriting a shutdown
+    # script). So the enforced guard policy is hashed on first run and verified
+    # on every boot; a mismatch is an e-stop, not a log line, because the only
+    # innocent explanation is a deliberate change that should have been blessed.
+    if settings.guard_enabled:
+        from aria.guard.policy import verify_policy
+
+        try:
+            _guard_verdict = await verify_policy(db)
+            if not _guard_verdict.get("ok"):
+                startup_logger.critical(
+                    "GUARD POLICY %s: %s", _guard_verdict.get("status"), _guard_verdict
+                )
+                from aria.api.deps import resolve_estop_manager
+
+                # auto_thaw=False: a rate-limit freeze may lift itself, but a
+                # policy that no longer matches its blessed hash must be looked
+                # at by a human before agents run again.
+                await (await resolve_estop_manager(db)).activate(
+                    reason=(
+                        f"guard policy {_guard_verdict.get('status')} "
+                        f"({_guard_verdict.get('path')})"
+                    ),
+                    triggered_by="guard",
+                    auto_thaw=False,
+                )
+            else:
+                startup_logger.info(
+                    "Guard policy %s (%s)",
+                    _guard_verdict.get("status"),
+                    _guard_verdict.get("source"),
+                )
+        except Exception:
+            startup_logger.exception("Guard policy verification failed at startup")
 
     # Check embedding service. The persisted capability switch is loaded later
     # in this lifespan (it needs the migrations to have run), so this early
@@ -360,6 +398,32 @@ async def lifespan(app: FastAPI):
         await linear_sync.start()
         app.state.linear_sync = linear_sync
 
+    # Relay watchdog (steward plan §6.4). ARIA enqueues alerts and Hermes relays
+    # them; that relay has died silently three times (2026-06-29, 07-28, 08-10 —
+    # the last left 31 alerts undelivered for five days) and nothing noticed.
+    # Deliberately NOT inside the `shells_enabled` block: it watches delivery,
+    # not the fleet, and must keep running when the fleet is off.
+    if settings.alert_relay_watchdog_enabled:
+        from aria.notifications.relay import RelayWatchdog
+        relay_watchdog = RelayWatchdog(db, get_notification_service())
+        await relay_watchdog.start()
+        app.state.relay_watchdog = relay_watchdog
+
+    # Vault reader (steward plan §3.2). The vault stops being write-only here:
+    # Ben edits `approval:` / `autonomy:` / `accepted:` on his phone, LiveSync
+    # lands it on this disk within seconds, and this is the thing that reads it
+    # back. Without it the shared notepad is a broadcast, not a control surface.
+    if settings.vault_reader_enabled:
+        from aria.integrations.vault_reader import VaultReader
+        vault_reader = VaultReader(
+            db=db, interval_seconds=settings.vault_reader_interval_seconds
+        )
+        steward = getattr(app.state, "steward", None)
+        if steward is not None:
+            vault_reader.on_events = steward.handle_vault_events
+        await vault_reader.start()
+        app.state.vault_reader = vault_reader
+
     # Planning subsystem (tasks + projects) — index bootstrap. Cheap, idempotent.
     try:
         await db.tasks.create_index([("status", 1), ("updated_at", -1)])
@@ -372,6 +436,11 @@ async def lifespan(app: FastAPI):
         await db.projects.create_index([("slug", 1)], unique=True)
         await db.projects.create_index([("status", 1), ("last_signal_at", -1)])
         await db.alerts.create_index([("acked", 1), ("created_at", -1)])
+        # Alerts v2 read paths: the relay selects needs_human+undelivered every
+        # 5 minutes, and dedup does a keyed lookup on every single notify().
+        await db.alerts.create_index([("dedup_key", 1), ("acked", 1)])
+        await db.alerts.create_index([("needs_human", 1), ("acked", 1), ("created_at", -1)])
+        await db.alerts.create_index([("delivered_at", 1)], sparse=True)
         startup_logger.info("Planning indexes ready")
     except Exception as exc:  # pragma: no cover - non-fatal
         startup_logger.warning("Planning index creation failed: %s", exc)
@@ -424,6 +493,7 @@ async def lifespan(app: FastAPI):
         "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",
         "project_harvester", "scan_worker", "selfcheck", "report_worker",
         "shell_adopter", "shell_worker", "linear_sync", "embedding_backfill",
+        "relay_watchdog", "vault_reader",
     ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
@@ -638,6 +708,7 @@ app.include_router(nodes.router, prefix="/api/v1", tags=["nodes"])
 app.include_router(digest.router, prefix="/api/v1", tags=["cockpit"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
+app.include_router(guard.router, prefix="/api/v1", tags=["guard"])
 
 
 @app.get("/")

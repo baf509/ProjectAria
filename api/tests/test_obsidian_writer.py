@@ -38,7 +38,17 @@ async def test_publish_writes_into_default_folder(tmp_path):
     assert path is not None
     assert f"/{settings.obsidian_default_folder}/Research/" in path
     text = open(path, encoding="utf-8").read()
-    assert text.startswith("# GPU memory research")
+    # Published docs lead with YAML frontmatter as of 2026-08-15 (steward plan
+    # §3.1 item 8). Every human-authored doc in the vault carries `created:` /
+    # `updated:` keys, and the VaultReader now parses that block to pick up
+    # Ben's `approval:` / `accepted:` edits — so a doc ARIA writes without
+    # frontmatter is a doc the read-back loop cannot see. The H1 still follows.
+    assert text.startswith("---\n")
+    fm, _, body = text.partition("\n---\n")
+    assert "title: GPU memory research" in fm
+    assert "generated_by: aria" in fm
+    assert "created:" in fm and "updated:" in fm
+    assert body.lstrip().startswith("# GPU memory research")
     assert "Published by ARIA on" in text
     assert "The findings." in text
 
