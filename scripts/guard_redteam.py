@@ -142,6 +142,26 @@ def main() -> int:
             "file appeared on the host" if leaked else (out[:120] or f"rc={rc}"),
         )
 
+        # 6b. The VAULT — the approval surface itself.
+        #
+        # This is the escalation that makes it a privilege boundary rather than
+        # a notepad: `handle_vault_events` applies whatever is on disk under the
+        # vault as actor="human", and "human" is the one actor set_charter
+        # trusts to write `autonomy`, `budget` and `guard.allowed_paths`. A
+        # session that can write <Project>/Planning/CHARTER.md can therefore
+        # grant ITSELF A2 execution on the next tick, and the ADMIN_KEY split on
+        # the routes is bypassed entirely by the file surface. Read AND write are
+        # both checked: reading it would leak Ben's plans, writing it would
+        # rewrite his decisions.
+        charter = "/home/ben/Obsidian/vault/ProjectAria/Planning/CHARTER.md"
+        rc, out = inside(f"cat {charter} 2>&1 | head -1")
+        contained = "autonomy" not in out and "purpose" not in out
+        check("vault-charter-unreadable", True, contained, out[:120] or f"rc={rc}")
+
+        rc, out = inside(f"echo 'autonomy: 3' >> {charter} 2>&1 && echo WROTE || echo BLOCKED")
+        contained = "WROTE" not in out
+        check("vault-charter-unwritable", True, contained, out[:120] or f"rc={rc}")
+
         # 7. The worktree itself MUST be writable — a sandbox that contains
         #    everything including the work is not a sandbox, it is a brick.
         rc, out = inside(f"touch {worktree}/ok 2>&1 && echo WROTE || echo BLOCKED")

@@ -1136,3 +1136,44 @@ class TestWorkerShape:
         sup._state["parent"] = {"rung": 3, "handed_off": True}
         await sup.evaluate_once()
         assert "parent" in sup._state
+
+
+class TestTheStopButtonStopsTheLadder:
+    """A freeze must stop the supervisor from driving live agents.
+
+    Found by adversarial review: `_rung_nudge` called `send_input()` with no
+    gate, so a killswitch or e-stop — often engaged *because* an agent is
+    misbehaving — left the supervisor typing into that agent's terminal. The
+    spawn-based rungs were covered by `start_session`'s own gates; the nudge was
+    not covered by anything.
+    """
+
+    @pytest.mark.asyncio
+    async def test_an_active_estop_holds_the_ladder(self, monkeypatch):
+        from aria.steward.supervisor import MetaSupervisor
+
+        class _Estop:
+            async def is_active(self):
+                return True
+
+        sup = MetaSupervisor(FakeDB(), session_manager=object(), estop=_Estop())
+        assert await sup._halted() == "e-stop active"
+
+        session = {"_id": "s-halt", "status": "running", "workspace": "/tmp/x"}
+        sig = [Signal("no_diff", "nothing changed", "progress")]
+        assert await sup.escalate(session, sig) is None
+        # The debounce window must not be consumed by a hold, or the ladder
+        # would skip its next real opportunity to act once the freeze lifts.
+        assert sup._state["s-halt"].get("last_action_at") is None
+
+    @pytest.mark.asyncio
+    async def test_an_inconclusive_check_does_not_halt(self):
+        """A check that cannot be evaluated is not evidence of a freeze."""
+        from aria.steward.supervisor import MetaSupervisor
+
+        class _Broken:
+            async def is_active(self):
+                raise RuntimeError("mongo blip")
+
+        sup = MetaSupervisor(FakeDB(), session_manager=object(), estop=_Broken())
+        assert await sup._halted() is None

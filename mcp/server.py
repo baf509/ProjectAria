@@ -1232,6 +1232,7 @@ async def create_coding_session(
     loop: bool = False,
     host: Optional[str] = None,
     subagent_profile: Optional[str] = None,
+    create_worktree: Optional[bool] = None,
 ) -> dict:
     """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
 
@@ -1243,6 +1244,10 @@ async def create_coding_session(
     host: an aria-node id to run remotely; omit for this host.
     subagent_profile: a db.agents slug whose backend/model/role apply; an
         explicit backend still wins.
+    create_worktree: leave unset. None means "use the configured default",
+        which is TRUE — the session gets its own git worktree, ARIA makes its
+        checkpoint commits, and it can be rolled back. Passing False opts out of
+        the guard for that session and is a deliberate act, not a shortcut.
 
     Returns immediately (queued/running) — it does NOT wait. Short task: call
     wait_for_coding_session next to block for the result rather than making the
@@ -1254,6 +1259,8 @@ async def create_coding_session(
         body["loop"] = {}  # server defaults fill in the loop config
     if host:
         body["host"] = host
+    if create_worktree is not None:
+        body["create_worktree"] = create_worktree
     if subagent_profile:
         body["subagent_profile"] = subagent_profile
     return await _request("POST", "/api/v1/coding/sessions", json=body)

@@ -335,7 +335,18 @@ class CodingSessionCreate(BaseModel):
     # session runs there instead. `workspace` is initialized as a git repo
     # first if it isn't one already. `branch`, if set, names the new branch;
     # otherwise one is auto-generated from worktree_name/timestamp.
-    create_worktree: bool = False
+    #
+    # ⚠️ `None` means "use settings.guard_worktree_default" (True) — it does NOT
+    # mean "no worktree". It was `bool = False` until 2026-08-15, which made the
+    # Guard INERT on the path that carries essentially all traffic: every
+    # session created over REST, MCP, the TUI or Hermes arrived with an explicit
+    # False, so `_guard_plan` returned before preflight ever ran — no worktree,
+    # no sandbox, no memory floor, no credential scrub, no checkpoints, no
+    # rollback point — and, worse, recorded a clean guard verdict for a spawn
+    # the guard never examined. Only a caller that passes False explicitly now
+    # opts out, and that is a deliberate act (decision D15: worktree by default
+    # for every ARIA-spawned session, Ben's own included).
+    create_worktree: Optional[bool] = None
     worktree_name: Optional[str] = None  # slug hint for the worktree dir + branch name
 
 

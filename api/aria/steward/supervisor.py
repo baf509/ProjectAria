@@ -281,6 +281,7 @@ class MetaSupervisor:
         watchdog=None,
         planning_service=None,
         guard=None,
+        estop=None,
         interval_seconds: Optional[int] = None,
     ):
         self.db = db
@@ -289,6 +290,7 @@ class MetaSupervisor:
         self.watchdog = watchdog
         self.planning_service = planning_service
         self._guard = guard
+        self._estop = estop
         self.interval = max(5, int(
             interval_seconds
             if interval_seconds is not None
@@ -604,6 +606,37 @@ class MetaSupervisor:
 
     # ------------------------------------------------------------ the ladder
 
+    async def _halted(self) -> Optional[str]:
+        """The reason the ladder must not act right now, or None.
+
+        A DEFINITIVE "the stop button is pressed" holds the ladder. A check that
+        cannot be evaluated (no DB in a unit test, a Mongo blip) is logged and
+        does NOT — an inconclusive read is not evidence of a freeze, and a
+        supervisor that halts itself on a transient becomes the outage it exists
+        to notice. That is safe here specifically because the rungs that spawn
+        work re-check authoritatively and fail closed inside `start_session`;
+        the rung this gate uniquely covers is the L1 nudge, which types into a
+        live agent's terminal without going near that path.
+        """
+        try:
+            from aria.api.deps import get_killswitch
+
+            if get_killswitch().is_active():
+                return "killswitch active"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("meta supervisor: killswitch check inconclusive (%s)", exc)
+        try:
+            estop = self._estop
+            if estop is None:
+                from aria.api.deps import resolve_estop_manager
+
+                estop = await resolve_estop_manager(self.db)
+            if await estop.is_active():
+                return "e-stop active"
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("meta supervisor: e-stop check inconclusive (%s)", exc)
+        return None
+
     async def escalate(self, session: dict, signals: list[Signal]) -> Optional[dict]:
         """Climb one rung. Returns the recorded escalation, or None if it was
         too soon to act again."""
@@ -616,6 +649,24 @@ class MetaSupervisor:
         # in three minutes and park a session that was about to answer.
         last = _aware(state.get("last_action_at"))
         if last and (now - last).total_seconds() < settings.coding_stall_seconds:
+            return None
+
+        # The killswitch and the e-stop gate NEW WORK, and every rung above L0
+        # is new work aimed at a live agent: a nudge types into its terminal, a
+        # restart and a re-route spawn a session, a decompose spawns several.
+        # `start_session` and the Ralph loop both re-check these gates for
+        # exactly that reason (session.py, watchdog.py `_maybe_nudge`); a
+        # supervisor that kept driving agents through a freeze would make the
+        # stop button a lie — and the freeze is often engaged *because* an agent
+        # is misbehaving. L0 (log) stays allowed: recording what happened during
+        # a freeze is how you find out why it was pressed.
+        halted = await self._halted()
+        if halted:
+            state["last_action_at"] = None  # do not consume the debounce window
+            logger.info(
+                "meta supervisor: holding the ladder for session %s (%s)",
+                session_id, halted,
+            )
             return None
 
         rung = int(state.get("rung") or L0_LOG)
