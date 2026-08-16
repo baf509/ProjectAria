@@ -315,11 +315,56 @@ class ResearchPlanner:
         ran = sum(1 for r in results if r.get("status") not in {"skipped", "error"})
         return {"ran": ran, "results": results}
 
+    async def _plan_approval(self, project: Project) -> Optional[str]:
+        """`approval:` from the project's STEWARD_PLAN.md, or None.
+
+        Deliberately the file and not the Mongo mirror — the vault is the
+        approval surface, and gating on a remembered copy would run research Ben
+        had since revoked. Any failure to read or parse returns None, which the
+        caller treats as "not approved".
+        """
+        try:
+            from aria.integrations.obsidian import parse_frontmatter
+
+            path = self._plan_path(project)
+            if path is None or not path.exists():
+                return None
+            fm, _ = parse_frontmatter(path.read_text(encoding="utf-8"))
+            value = fm.get("approval")
+            return value.strip().lower() if isinstance(value, str) else None
+        except Exception as exc:  # noqa: BLE001 — unreadable is not approved
+            logger.debug(
+                "research planner: plan approval unreadable for %s (%s)",
+                project.slug, exc,
+            )
+            return None
+
+    def _plan_path(self, project: Project):
+        """Where this project's STEWARD_PLAN.md lives — resolved through the
+        writer's own folder rule, so we read the file the steward writes."""
+        try:
+            folder_for = getattr(self.writer, "_folder_for", None)
+            if callable(folder_for):
+                return folder_for(project.path or project.slug) / "Planning" / "STEWARD_PLAN.md"
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
     async def _is_due(self, project: Project) -> tuple[bool, str]:
         charter = project.charter
         cadence = (charter.cadence.research if charter and charter.cadence else "weekly") or "weekly"
         if cadence.strip().lower() == "manual":
             return False, "cadence_manual"
+        # BEN MUST HAVE APPROVED THE PLAN. Research reaches the public internet,
+        # spends a token budget and publishes into his vault — it is an outward
+        # action, not a proposal, and he asked for it to wait on his review
+        # (2026-08-15). Read from the plan FILE, the same authority the steward
+        # uses, because an approval ARIA merely remembers is not an approval.
+        # Fails closed: pending, rejected, missing, unreadable and unparseable
+        # all mean "not approved".
+        approval = await self._plan_approval(project)
+        if approval != "approved":
+            return False, f"plan_not_approved:{approval or 'pending'}"
         if project.steward and project.steward.paused_reason:
             # The steward has stood down on this project pending Ben's decision;
             # spending its research budget in the meantime is exactly the kind

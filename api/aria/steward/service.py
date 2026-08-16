@@ -415,7 +415,7 @@ class StewardWorker:
             approval=approval,
         )
 
-        allowed = self._allowed_kinds(autonomy_effective, budget, tier)
+        allowed = self._allowed_kinds(autonomy_effective, budget, tier, approval)
         run["allowed_kinds"] = sorted(allowed)
 
         # The pause proposal is a charter-independent lifecycle question, so it
@@ -775,11 +775,25 @@ class StewardWorker:
             effective = 1
         return effective
 
-    def _allowed_kinds(self, autonomy: int, budget: dict, tier: str) -> set[str]:
+    def _allowed_kinds(
+        self, autonomy: int, budget: dict, tier: str, approval: Optional[str] = None
+    ) -> set[str]:
         allowed = {"note"}
         if autonomy >= 1:
             allowed.add("task")
-            if budget["research_remaining"] > 0:
+            # RESEARCH NEEDS BEN'S APPROVAL, not merely A1 (Ben, 2026-08-15:
+            # "it should not keep doing external research until I've reviewed
+            # and approved it to go forward").
+            #
+            # A1 was originally "propose, don't act", and research was filed
+            # under propose because it writes no code. But a research run is not
+            # a proposal: it reaches the public internet, spends a real token
+            # budget, and publishes an artifact into Ben's vault. That is an
+            # outward-facing action, and outward-facing actions are exactly what
+            # the plan says must be proposed rather than taken (§2, principle 2).
+            # So A1 may PROPOSE research topics — the plan lists them for him to
+            # read — and only an approved plan may run one.
+            if budget["research_remaining"] > 0 and approval == "approved":
                 allowed.add("research")
         if autonomy >= 2 and budget["sessions_remaining"] > 0 and tier in TIER_BACKENDS:
             allowed.add("session")

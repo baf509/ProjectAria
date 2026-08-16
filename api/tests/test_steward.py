@@ -1134,3 +1134,38 @@ async def test_route_tick_404_and_409(client):
     )
     assert resp.status_code == 409
     assert "no charter purpose" in resp.json()["detail"]
+
+
+class TestResearchNeedsAnApprovedPlan:
+    """A1 may PROPOSE research topics; only an approved plan may RUN one.
+
+    Ben, 2026-08-15. The distinction is proposal vs outward action: proposing a
+    topic writes a line into a plan he reads, while running it reaches the
+    public internet, spends a token budget and publishes an artifact.
+    """
+
+    def test_a1_without_approval_cannot_run_research(self):
+        from aria.steward.service import StewardWorker
+
+        w = StewardWorker.__new__(StewardWorker)
+        budget = {"research_remaining": 5, "sessions_remaining": 5}
+        allowed = w._allowed_kinds(1, budget, "local", approval=None)
+        assert "research" not in allowed
+        assert "task" in allowed          # proposing is still fine at A1
+        assert "session" not in allowed
+
+    def test_a1_with_approval_may_run_research(self):
+        from aria.steward.service import StewardWorker
+
+        w = StewardWorker.__new__(StewardWorker)
+        budget = {"research_remaining": 5, "sessions_remaining": 5}
+        allowed = w._allowed_kinds(1, budget, "local", approval="approved")
+        assert "research" in allowed
+
+    def test_an_exhausted_research_budget_still_wins(self):
+        from aria.steward.service import StewardWorker
+
+        w = StewardWorker.__new__(StewardWorker)
+        budget = {"research_remaining": 0, "sessions_remaining": 5}
+        allowed = w._allowed_kinds(2, budget, "local", approval="approved")
+        assert "research" not in allowed

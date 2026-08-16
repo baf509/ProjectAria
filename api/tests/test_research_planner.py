@@ -886,7 +886,8 @@ class TestTickGating:
         project = make_project()
         project.steward = SimpleNamespace(paused_reason="pause proposed", enabled=True)
         planner = make_planner(db)
-        with patch.object(planner.planning, "active_projects", return_value=[project]):
+        with patch.object(planner.planning, "active_projects", return_value=[project]), \
+             patch.object(planner, "_plan_approval", return_value="approved"):
             out = await planner.tick()
         assert out["results"][0]["reason"] == "steward_paused"
 
@@ -898,7 +899,8 @@ class TestTickGating:
             "planner": {"project_slug": project.slug, "topic_hash": "h"},
         })
         planner = make_planner(db)
-        with patch.object(planner.planning, "active_projects", return_value=[project]):
+        with patch.object(planner.planning, "active_projects", return_value=[project]), \
+             patch.object(planner, "_plan_approval", return_value="approved"):
             out = await planner.tick()
         assert out["results"][0]["reason"] == "cadence_not_due"
 
@@ -907,7 +909,8 @@ class TestTickGating:
         projects = [make_project(id="p1", slug="a", name="A"),
                     make_project(id="p2", slug="b", name="B")]
         planner = make_planner(db)
-        with patch.object(planner.planning, "active_projects", return_value=projects):
+        with patch.object(planner.planning, "active_projects", return_value=projects), \
+             patch.object(planner, "_plan_approval", return_value="approved"):
             with patch.object(planner, "run_project",
                               return_value={"status": "completed"}) as run:
                 out = await planner.tick()
@@ -1010,3 +1013,46 @@ class TestSchedulerResearchAction:
         await db.schedules.insert_one(schedule)
         await scheduler._execute_schedule(schedule)
         assert submitted == []
+
+
+class TestResearchWaitsForBensApproval:
+    """External research does not start until Ben has approved the plan.
+
+    Ben, 2026-08-15: "It should not keep doing external research until I've
+    reviewed and approved it to go forward." A1 was originally "propose, don't
+    act", and research was filed under propose because it writes no code — but a
+    run reaches the public internet, spends a token budget and publishes into his
+    vault. That is an outward action, so it waits for consent like any other.
+    """
+
+    async def test_an_unapproved_plan_blocks_the_run(self):
+        db = FakeDB()
+        project = make_project()
+        planner = make_planner(db)
+        with patch.object(planner.planning, "active_projects", return_value=[project]), \
+             patch.object(planner, "_plan_approval", return_value="pending"):
+            out = await planner.tick()
+        assert out["ran"] == 0
+        assert out["results"][0]["reason"] == "plan_not_approved:pending"
+
+    async def test_a_missing_or_unreadable_plan_fails_closed(self):
+        db = FakeDB()
+        project = make_project()
+        planner = make_planner(db)
+        for value in (None, "rejected", "APPROVED-ish"):
+            with patch.object(planner.planning, "active_projects", return_value=[project]), \
+                 patch.object(planner, "_plan_approval", return_value=value):
+                out = await planner.tick()
+            assert out["ran"] == 0, f"{value!r} must not authorise a run"
+            assert out["results"][0]["reason"].startswith("plan_not_approved")
+
+    async def test_an_approved_plan_lets_it_through_to_the_next_gate(self):
+        db = FakeDB()
+        project = make_project()
+        planner = make_planner(db)
+        with patch.object(planner.planning, "active_projects", return_value=[project]), \
+             patch.object(planner, "_plan_approval", return_value="approved"):
+            with patch.object(planner, "run_project",
+                              return_value={"status": "completed"}) as run:
+                out = await planner.tick()
+        assert run.await_count == 1 and out["ran"] == 1
