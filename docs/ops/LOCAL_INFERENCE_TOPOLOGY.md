@@ -278,7 +278,7 @@ arrived.
 
 Every component that reports to a human inherits this hop. A relay-liveness check
 ("has any alert been delivered in N hours?") belongs in the selfcheck worker
-before more components depend on the channel. Flagged in `COHERENCE_DESIGN.md` §6.
+before more components depend on the channel. Flagged in `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §6.
 
 Measured alert rate: **49 in 30 days ≈ 1.6/day** (30 `agent_task_done`, 10
 `degraded`, 5 weekly report, 4 `recovered`). The Hermes triage cron was cut from
@@ -354,7 +354,7 @@ see §1's `-fit off` warning) meant it just stayed down until Hermes's next
 real request failed after 3 retries.
 
 **Root cause — a different resource than the one already ruled out.**
-`COHERENCE_DESIGN.md` §5 #19 already measured that `--cache-ram`/`-ctxcp` don't
+`vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #19 already measured that `--cache-ram`/`-ctxcp` don't
 move *total* GTT memory growth — that finding stands, this isn't a
 contradiction of it. What actually ran out is a **separate, tiny (~1 GiB)
 dedicated VRAM aperture** used for GPU command submission
@@ -431,7 +431,7 @@ pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total`** — not
    `.env`, cron jobs, skills, docs, and compose are five independently-stale
    places the same endpoint can live in.
 
-**Design-level writeup:** `COHERENCE_DESIGN.md` §5 #24–28.
+**Design-level writeup:** `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #24–28.
 
 **2026-07-30 follow-up — ctx bumped back to max, stress-tested against the
 actual trigger.** At Ben's request, qwen's `-c` was raised 100000 → 262144

@@ -1,5 +1,9 @@
 # ARIA - Autonomous Reasoning & Intelligence Architecture
 
+> **New here?** [`vault/ProjectAria/START_HERE.md`](/home/ben/Obsidian/vault/ProjectAria/START_HERE.md)
+> explains what ARIA is and how it decides things in plain English, in about five minutes.
+> This README is the technical setup; that one is the approach.
+
 > Personal AI agent with persistent memory, autonomous sub-agents, background processes, and multiple interfaces — runs as a self-hosted service on your Linux machine.
 
 ARIA is not a chatbot. She's a self-hosted AI agent with her own evolving identity ([SOUL.md](api/prompts/)), long-term memory, the ability to spawn autonomous coding agents, and background processes that run while you sleep. She works with any LLM backend and runs entirely on your infrastructure.

@@ -5,6 +5,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Quick Start for New Sessions
 
 **Always start by reading these files in order:**
+0. **`vault/ProjectAria/START_HERE.md`** — what this system is and how it decides things,
+   in plain English, in about five minutes. Read it first if you have not worked on ARIA
+   before; it is also the map of which vault docs are current and which are historical.
 1. `PROJECT_STATUS.md` - Current phase and checklist
 2. `CHANGELOG.md` (last 50 lines) - Recent changes
 3. `SPECIFICATION.md` - Detailed architecture and requirements (now in Obsidian: `/home/ben/Obsidian/vault/ProjectAria/Specs/SPECIFICATION.md`)
@@ -710,7 +713,7 @@ resolves profiles from `~/.config/aria/hosts`; resolution precedence is flag →
 `ARIA_API_URL`/`.env` → `default` profile → `http://localhost:8200`. Build the
 Apple-Silicon binary with `cd tui && make build-darwin` (see **`tui/README.md`**
 for the Taildrop/scp transfer + one-time ad-hoc `codesign` recipe). See *Multi-machine fleet* below for making the *fleet itself* span machines
-(designed in **`MULTI_MACHINE_FLEET_DESIGN.md`**).
+(designed in **`vault/ProjectAria/Design/MULTI_MACHINE_FLEET_DESIGN.md`** (stub: `docs/design/`)).
 
 ### Multi-machine fleet (`api/aria/nodes/`, `api/aria/node/`)
 
