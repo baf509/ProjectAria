@@ -2,13 +2,15 @@
 
 **Runbook. Read before starting, stopping, or debugging `shared-mongot` or `shared-embeddings`.**
 
+Last updated: 2026-08-15T23:14:42-04:00
+
 Design rationale (why two switches, why the flag is the queue):
 `vault/ProjectAria/Design/RETRIEVAL_CAPABILITIES.md`.
 Code: `api/aria/memory/capabilities.py`, `api/aria/memory/backfill.py`.
 
 ---
 
-## CURRENT STATE — BOTH SWITCHED OFF (2026-08-15T17:19-04:00)
+## CURRENT STATE — BOTH SWITCHED OFF since 2026-08-15T17:19-04:00
 
 | | switch | container | set by | reason |
 |---|---|---|---|---|
@@ -17,8 +19,8 @@ Code: `api/aria/memory/capabilities.py`, `api/aria/memory/backfill.py`.
 
 **`retrieval_mode` is therefore `fallback`.** Every memory search is served by the
 mongod-native scan in `LongTermMemory._fallback_search` — token overlap +
-importance, no BM25, no vectors. Results are real and useful (verified against
-the live 19,889-memory collection) but materially worse than hybrid search.
+importance, no BM25, no vectors. Results are real and useful (spot-checked
+against the live collection) but materially worse than hybrid search.
 **If recall looks bad, this is why — check the switches before debugging search.**
 
 `shared-mongot` was deliberately left running: it is shared with
@@ -26,16 +28,22 @@ AgentBenchPlatform, so stopping the container is a cross-project decision, not
 an ARIA one. ARIA simply no longer sends it queries. To reclaim its memory too,
 see *Stopping mongot's container* below.
 
-**Backlog waiting to be re-embedded: 826 memories + 21 ontology entities**
-(825 pre-existed this change — they accumulated during past embeddings outages
-back when nothing ever came back for them). This drains automatically the
-moment embeddings are switched back on; see *Restoring* below.
-
-Verify current state at any time:
+⚠️ **The re-embed backlog GROWS while the switch is off, and nothing drains it.**
+`EmbeddingBackfillWorker.run_once` returns early when `embeddings_enabled` is
+false — by design, or the switch would defeat itself. So every new memory lands
+`embedding_pending: true` and stays there. Measured accumulation on 2026-08-15:
+**826 → 1,849 memories in 5h40m, ≈180 memories/hour**, plus a trickle of ontology
+entities. **Never quote a backlog number from a doc** — one was frozen into four
+files on 2026-08-15 and all four were wrong within hours. Read it live:
 
 ```bash
-curl -s localhost:8200/api/v1/capabilities/retrieval -H "X-API-Key: $ARIA_API_KEY" | jq
+KEY=$(grep -E '^API_KEY=' /home/ben/Development/ProjectAria/.env | cut -d= -f2-)
+curl -s localhost:8200/api/v1/capabilities/retrieval -H "X-API-Key: $KEY" | jq '.backfill.pending'
 ```
+
+`backfill.pending` on `GET /api/v1/capabilities/retrieval` is the only authority.
+The same call returns both switch states, `retrieval_mode`, and live container
+state.
 
 ---
 
@@ -112,9 +120,17 @@ curl -s -X PUT localhost:8200/api/v1/capabilities/retrieval \
 treats the start as a no-op, so this is safe in the current state.
 
 **There is no repair step.** Re-enabling embeddings wakes the backfill worker
-immediately (`RetrievalCapabilities.set_backfill_trigger` → `kick()`), which
-drains `embedding_pending` at 100 docs per pass. With ~826 waiting that is ~9
-passes; on the 300s timer, ~45 minutes unattended. To drive it faster:
+immediately (`RetrievalCapabilities.set_backfill_trigger` → `kick()`).
+
+**Sizing the drain, since the backlog depends on how long the switch was off.**
+The worker is bounded to `embedding_backfill_batch_size` (100) per tick on the
+`embedding_backfill_interval_seconds` (300 s) timer — so **at most 1,200 docs/hour
+unattended**, against ~180/hour still arriving. Net drain ≈1,000/hour. The bound
+is deliberate: the embeddings service is CPU-only on this box and a greedy drain
+starves live memory writes waiting on the same hardware.
+
+So read `backfill.pending` first, divide by ~1,000, and if that is more than a few
+minutes, **drive it by hand rather than leaving it to the timer**:
 
 ```bash
 # One synchronous pass; returns counts + what is still pending. Repeat to drain.

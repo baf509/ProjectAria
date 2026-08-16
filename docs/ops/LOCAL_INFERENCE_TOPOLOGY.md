@@ -173,6 +173,33 @@ allocation) → that too corrected 2026-08-15 as specific to the sealed-O5 affin
 and *wrong by an order of magnitude* on today's stacks (~90 KiB/token f16 DS4,
 ~34 KiB/token q4_0 Qwen). Measure the stack you are actually running.
 
+## Measured tuning rules (do not re-derive these)
+
+Salvaged from `COHERENCE_DESIGN.md` §5 before that file was deleted. Each is a *measurement*,
+not a guess, and each cost real time to establish. The disproven hypotheses that surrounded
+them are in `vault/ProjectAria/Planning/REFUTED_AND_CLOSED.md`.
+
+- **Slot save/restore silently no-ops.** `POST /slots/{id}?action=save` returns **HTTP 200**
+  with `n_saved: 0` / `n_restored: 0`, writing a 28-byte header — a success status over a
+  no-op. **Any consumer must check the counts, not the status.** Do not design anything that
+  assumes a parked KV state survives.
+- **Slots are nearly free in memory but cost decode**: 4→8 slots is **+0.15 GiB but −8.1%
+  decode**, roughly 2% per slot (20.12 t/s @3, 19.69 @4, 18.09 @8). Add slots for
+  concurrency, never for throughput.
+- **`-ub` 256→512 costs ~12.5 GiB for +34% prefill, and it is GLOBAL, not per-slot**
+  (measured identical at `-np 3` and `-np 8`). The curve is steeply nonlinear — an earlier
+  extrapolation from the 128→256 step (0.81 GiB) was wrong by an order of magnitude.
+- **`-c` does not change total memory**, it shifts it between load time and runtime:
+  `c=262144` leaves 33 GB free at load then grows ~25 GiB; `c=131072` leaves 45.8 GB then
+  grows ~33 GiB. Both converge on ~110 GiB.
+- **Concurrency divides throughput; it never adds.** Three concurrent requests measured
+  82.9 / 63.7 / 60.2 t/s prefill — about 207 t/s aggregate, the same a single stream gets.
+  **Poll cadence is therefore a real design parameter, not a free knob.**
+- **Prefix warmth is the largest single effect on this box**: a stable prompt prefix is
+  **2.2 s**, a cold one **~150 s** (16.6–17.4× measured). llama.cpp caches by token prefix, so
+  **any consumer whose prompt head varies between turns destroys this** — for itself and for
+  everyone sharing the server.
+
 ## Model-specific KV: check the GGUF metadata first
 
 **Gemma 4's KV cache is not comparable to a dense model's.** Its GGUF metadata carries

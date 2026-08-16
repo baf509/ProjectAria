@@ -198,7 +198,16 @@ Use these memories to provide personalized and contextual responses.
             except Exception as e:
                 logger.debug("Awareness context injection skipped: %s", e)
 
-        # Inject watched shells context if enabled
+        # Inject watched shells context if enabled.
+        #
+        # Why this is injected DIRECTLY rather than through the awareness sensor
+        # framework, which is the obvious place for it: awareness runs on a
+        # 30-minute schedule and updates a summary file, which is far too slow to
+        # answer "what is in my shell right now". Direct injection is the right
+        # call for a signal whose whole value is that it is current. (Rationale
+        # salvaged from docs/archive/SHELLS_DESIGN.md before that directory was
+        # deleted 2026-08-15; it was the one design rationale in 142 KB that was
+        # true, unique, and still described running code.)
         shells_context = ""
         if settings.shells_enabled and settings.shells_include_in_chat_context:
             try:

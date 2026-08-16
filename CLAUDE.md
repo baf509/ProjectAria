@@ -153,7 +153,7 @@ All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
 
 Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter.py`, `fireworks.py`. The OpenRouter and Fireworks adapters use the OpenAI SDK internally (OpenAI-compatible); `fireworks.py` subclasses `OpenRouterAdapter` to reuse its GLM reasoning-mode handling. Manager (`manager.py`) handles backend selection and fallback chain.
 
-**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; rewritten **2026-08-14** for the two-GPU box — full detail in `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` **§11–§12** and `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #36):
+**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; rewritten **2026-08-14** for the two-GPU box — full detail in `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md`):
 - **TWO GPUs, two separate memory pools — this is the governing fact now.** An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB of its own VRAM) sits alongside the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). A model on one does **not** compete with a model on the other, so the normal deployment is **one of each**: DS4 Flash on the Halo + Qwen3.8-27B on the R9700, both resident, verified live 2026-08-14 (`infrastructure/DUAL-SERVING.md`). ⚠️ **DRM enumeration is inverted from what you would guess**: `card0` = R9700 (discrete), `card1` = Strix Halo. The old hardcoded `/sys/class/drm/card0/.../mem_info_gtt_*` read therefore reported the *dGPU's* near-empty pool while the Halo held ~98 GiB; `infrastructure/gpu_devices.py` classifies cards by VRAM instead and reports **per pool**, and `model_servers.py` + `selfcheck.py` both gate on the pool a server actually draws from. ⚠️ **`Vulkan0` now means the R9700, not the iGPU** — every compose file written before the dGPU arrived is wrong about its device (those entries are flagged `startable=False` pending an audit). ⚠️ **Start order matters:** the dGPU model FIRST — it needs host RAM only transiently to reach VRAM, while the Halo model takes and holds ~100 GiB (reversing it OOM-killed the Halo model 17 MiB short).
 - **Which model, and how it loads, are both selectable.** Each live deployment is a self-contained folder under `infrastructure/` (`ds4-halo-xxs`, `ds4-hybrid`, `ds4-affine`, `qwen-r9700`, `qwen3.8-27b`) holding `model/`, `runtime/`, and a `serve.sh` whose env knobs — device placement, KV type, context, drafter, slots, prompt cache — ARE the "how". The registry declares those knobs as `parameters`, and `start(overrides=...)` applies them **as a systemd drop-in** (`<unit>.d/zz-aria-overrides.conf`, sorts last) rather than by building a command line, so every ExecStartPre guard, the `OOMScoreAdjust=900` backstop and the launcher's MemAvailable floors survive — and the override is a file Ben can read or delete. A start with **no** overrides clears ARIA's drop-in, so a context size chosen for one experiment cannot silently outlive it. Deployments with a `serve.sh` but no unit of their own (`ds4-affine`, `ds4-hybrid`) get an ARIA-generated `aria-model-<slug>.service`, with the guard env declared in the registry entry.
 - **The Halo side, one at a time (86–100 GiB each).** `DS4-0731-IQ3_XXS-Halo-Vulkan` (`:8108`, `ds4-halo-xxs.service`, Nathan's Vulkan fork — it implements the DeepSeek-V4 kernels mainline Vulkan disables, which is why it beats both mainline Vulkan and mainline ROCm here) is the **APU-only** profile — since 2026-08-15T16:35 the **single-slot coding-agent (pi) model** (q8_0 KV, one 131K slot, no drafter; Hermes's default moved to Qwen3.8 on the R9700). `DS4-0731-IQ3_S-Hybrid-ROCm-Dual` (`:18211`, mainline HIP dual-arch) **splits the higher-quality IQ3_S across both cards** (80/20, `PLACEMENT=split|hybrid`). `DS4-0731-ROCmFPX-Affine-Quality` (`:8107`, sealed O5 runtime) is the **quality/long-recall reference** — 238/256 broad, 24/24 long-context, and slow; type-108 tensors load on that runtime ONLY. **`gemma-aux`** (`:8104`, Gemma 4 E4B Q4_0, **CPU-only**) takes Hermes's ~16 auxiliary side-tasks + crons plus ARIA's shell- and ontology-extraction workers, and coexists with anything.
@@ -214,7 +214,7 @@ One `projects` collection fed by **two** extractors: the ambient LLM
 `activity_status` (active/idle). To-dos live in `tasks`. Routes: `/api/v1/todos`,
 `/api/v1/projects/{id|slug}`.
 
-### Coherence Layer (implemented 2026-07-29 → 2026-08-02; design: `vault/ProjectAria/Design/COHERENCE_DESIGN.md`)
+### Coherence Layer (implemented 2026-07-29 → 2026-08-02)
 
 The work-coherence components hung off existing seams — "the bottleneck moved
 from producing to maintaining coherence." All shipped except C5 (experiment
@@ -304,7 +304,7 @@ read as "stopped on purpose" and silence the alert. A disjointness test
 
 A queryable knowledge graph of Ben's world — machines, services, projects,
 datastores, networks, devices — cross-linked into `aria.memories`. Design:
-`vault/ProjectAria/Design/ONTOLOGY_MEMORY_DESIGN.md`. Built 2026-08-07.
+`vault/ProjectAria/Design/ARCHITECTURE.md` (Ontology Memory Map). Built 2026-08-07.
 
 **The rule that shapes everything: project what churns, hand-author what
 doesn't.** The original plan hand-seeded ~40 entities including every service;
@@ -732,7 +732,7 @@ resolves profiles from `~/.config/aria/hosts`; resolution precedence is flag →
 `ARIA_API_URL`/`.env` → `default` profile → `http://localhost:8200`. Build the
 Apple-Silicon binary with `cd tui && make build-darwin` (see **`tui/README.md`**
 for the Taildrop/scp transfer + one-time ad-hoc `codesign` recipe). See *Multi-machine fleet* below for making the *fleet itself* span machines
-(designed in **`vault/ProjectAria/Design/MULTI_MACHINE_FLEET_DESIGN.md`** (stub: `docs/design/`)).
+(designed in **`vault/ProjectAria/Design/ARCHITECTURE.md`**, Multi-machine fleet).
 
 ### Multi-machine fleet (`api/aria/nodes/`, `api/aria/node/`)
 
@@ -870,7 +870,7 @@ Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB 
 ### When Making Changes
 
 1. Check `CHANGELOG.md` for what shipped most recently
-2. Read relevant section in `SPECIFICATION.md`
+2. Read the relevant section in `vault/ProjectAria/Design/ARCHITECTURE.md`
 3. Follow established code patterns
 4. Update `CHANGELOG.md` with changes
 5. Update `BACKLOG.md` if you closed or opened an item there

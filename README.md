@@ -222,7 +222,7 @@ docs/{design,specs}/  migration stubs pointing into the Obsidian vault
 
 Design, spec, analysis and planning docs live in the vault at
 `/home/ben/Obsidian/vault/ProjectAria/`, not here. Agent-operational docs (`CLAUDE.md`,
-`PROJECT_STATUS.md`, `BACKLOG.md`, `docs/ops/`) stay in the repo.
+`CHANGELOG.md`, `BACKLOG.md`, `docs/ops/`) stay in the repo.
 
 ## Development
 

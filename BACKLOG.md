@@ -69,7 +69,24 @@ Concrete pieces:
 
 ---
 
-## 3. Open operational questions
+## 3. Memory confidence decay is documented but never runs
+
+Raised 2026-04, **verified still true 2026-08-15**. The docs have long claimed that
+"confidence scores decay over time; frequently accessed memories rank higher." The only
+implementation is `POST /memories/maintenance`
+(`api/aria/api/routes/memories.py:340-384`), and **nothing calls it** — no scheduler entry,
+no worker, no reference anywhere outside its own definition.
+
+Why it matters more than it looks: the store grows monotonically (20k+ memories, 82 of them
+with `access_count > 0`), so "confidence" is permanently whatever the extraction LLM guessed
+at write time. Retrieval quality degrades quietly, which is the worst way for it to degrade.
+
+Salvaged from `docs/archive/SHELLS_CHAT_TRANSCRIPT.md` before that directory was deleted; it
+was the one open defect in 142 KB of retired planning material.
+
+---
+
+## 4. Open operational questions
 
 - **Qwen3.8 tool-call reliability with Hermes is unmeasured.** It has been Hermes's default
   since 2026-08-15T16:35 and is live at `:8080` (`-c 327680 -np 2`). Worth watching for a day
@@ -82,7 +99,7 @@ Concrete pieces:
 
 ---
 
-## 4. Gated on evidence, not on effort
+## 5. Gated on evidence, not on effort
 
 These are built and deliberately switched off. They are not backlog items in the usual sense
 — nothing needs writing — but they need a human decision or a body of data:

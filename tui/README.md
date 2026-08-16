@@ -114,6 +114,6 @@ EOF
 
 ## Related
 
-- [`../MULTI_MACHINE_FLEET_DESIGN.md`](../MULTI_MACHINE_FLEET_DESIGN.md) — the plan
+- `vault/ProjectAria/Design/ARCHITECTURE.md` (Multi-machine fleet) — the design
   to make the **fleet itself** span corsair + Mac (Layer A remote cockpit is done;
   Layer B2 the `aria-node` agent is planned).

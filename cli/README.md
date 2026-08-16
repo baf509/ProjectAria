@@ -57,4 +57,4 @@ profiles and running the cockpit remotely (e.g. from a MacBook over the tailnet)
 
 ## Documentation
 
-See main repository README and GETTING_STARTED.md for full documentation.
+See the main repository README for full documentation.
