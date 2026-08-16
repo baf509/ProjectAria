@@ -6,8 +6,8 @@ Purpose: Fill `memories.entities[]` with entity slugs and emit `mentions`
 edges, connecting the flat memory store into the graph.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §7 (re-scoped cross-link), §7a (categories[]),
-  §8 (phase split)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
+  (phase split: forward-only extraction + a resumable curated backfill)
 
 SCOPE, AND WHY IT IS NOT "ONE PASS OVER aria.memories"
 ======================================================
@@ -583,7 +583,7 @@ async def run_targeted_backfill(
         "excluded_source_types": list(BULK_SOURCE_TYPES),
         "note": (
             "shell_extraction + claude_session_digest are excluded by decision "
-            "(ONTOLOGY_MEMORY_DESIGN.md §8, phase 5e — closed 2026-08-07). "
+            "(closed 2026-08-07). "
             "Resumable: processed memories carry entity_extraction_at."
         ),
         "at": datetime.now(timezone.utc).isoformat(),

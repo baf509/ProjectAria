@@ -6,7 +6,7 @@ Purpose: Keep the projected half of the graph current, riding the existing S2
 scan/reconcile worker rather than adding a second scanner.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §4a, §5a (phase table), §7
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
 - aria/shared/scan.py (the S2 substrate this registers on)
 
 `always_run = True` matters. The default emitter contract fires only when the

@@ -9,7 +9,7 @@ over existing collections — no new storage beyond the fixed-_id active-project
 doc.
 
 Related Spec Sections:
-- COHERENCE_DESIGN.md C4 (Project Cockpit)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Coherence C4) (Project Cockpit)
 """
 
 from __future__ import annotations

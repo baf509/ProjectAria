@@ -651,7 +651,7 @@ class Settings(BaseSettings):
     shells_event_token_budget: int = 150000  # ~600KB of recent scrollback/shell
     shells_prune_interval_hours: int = 6
 
-    # Idle-session reaper (COHERENCE_DESIGN.md C9): capture-then-reap ARIA
+    # Idle-session reaper (vault/ProjectAria/Design/ARCHITECTURE.md (Coherence C9)): capture-then-reap ARIA
     # coding sessions idle > N days — the agent is first asked to save its
     # learnings (reply with the done token), then the shell is killed. Default
     # OFF (destructive); tag a shell `keep` to protect it.
@@ -713,7 +713,7 @@ class Settings(BaseSettings):
     git_scan_roots: list[str] = []
     git_scan_min_change_lines: int = 10
 
-    # Ontology Memory Map (ONTOLOGY_MEMORY_DESIGN.md) — the knowledge graph of
+    # Ontology Memory Map (vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
     # machines/services/projects and its cross-link into aria.memories.
     #
     # `ontology_enabled` runs the PROJECTION (§4a) — deriving service/project/

@@ -6,8 +6,8 @@ Purpose: Derive `project` / `service` / `machine` entities from the collections
 that already own those facts, so the graph cannot go stale independently.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §4a (projected entities), §4b (durable seed),
-  §4c (the non-LLM service registry this reads)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map), and
+  api/aria/infrastructure/services.py (the non-LLM service registry this reads)
 
 THE RULE: project what churns, hand-author what doesn't.
 

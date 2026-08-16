@@ -12,7 +12,7 @@ everything else is left open. Keep/kill/do-now actions live in the C4 cockpit
 routes (api/routes/linear.py) and write back to Linear.
 
 Related Spec Sections:
-- COHERENCE_DESIGN.md C3 (Linear Reconciliation)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Coherence C3) (Linear Reconciliation)
 """
 
 from __future__ import annotations

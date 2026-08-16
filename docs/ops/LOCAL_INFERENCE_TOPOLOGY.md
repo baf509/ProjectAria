@@ -1,819 +1,346 @@
-# Local inference topology (updated 2026-08-15 — two GPUs, two models, roles assigned)
+# Local inference topology — the hardware gotchas
 
-> ## ⚠️ READ §13 FIRST — §§1–12 are history
+**Read before changing any `*_URL`, any llama-server flag, or adding a worker that
+calls an LLM.** Everything here is a trap someone already walked into on this box.
+Several cost a reboot or a day of silent wrong answers.
+
+Last updated: 2026-08-15T23:14:42-04:00
+
+> **This file no longer carries the topology tables.** It used to, and the copies
+> drifted from their sources within days. Which model runs where, on what geometry,
+> at what throughput, lives in:
 >
-> As of **2026-08-15T16:35** the box runs **two models at once, one per GPU**:
-> **Qwen3.8-27B (ROCmFP4) on the R9700 `:8080` = Hermes's default**, served as
-> one 320K unified KV pool over 2 slots; and **DS4 Flash UD-IQ3_XXS on the Halo
-> `:8108` = the single-slot coding-agent (pi) model**, q8_0 KV, one 131K slot.
-> §11's "one big server, six slots" (affine `:8107`) and §12's first dual-serving
-> layout are superseded — see §13 for what is true today and where each number
-> comes from.
+> - `vault/ProjectAria/Planning/HOUSE_AGENT_ARCHITECTURE_20260815.md` §1.1 / §4.1 —
+>   the layout decision and every measurement behind it.
+> - `vault/infrastructure/Planning/MEMORY_BUDGET_POLICY_20260814.md` §7 — residency
+>   and host-memory floors.
+> - **Live truth, always:** `GET /api/v1/infrastructure/model-servers`,
+>   `/model-servers/utilization`, `/model-servers/devices`,
+>   `/api/v1/infrastructure/running`.
 >
-> *(Banner as of 2026-08-10, kept for the record:)* the box ran **affine DS4 Flash
-> (`:8107`, 6 slots, 64K per agent)** by default. `gemma-aux` remains the CPU-only helper but is stopped
-> while DS4 owns the large-model residency. IQ2_M+DSpark is an exclusive optional
-> throughput profile, not the quality default. The
-> two-server split narrated below, the `:8103`/`:8102`/`:8105` consumer
-> assignments in §§1/3, and the "point a worker at the server whose prompt
-> shape it matches" rule are **superseded** — there is only one big server now,
-> and consumers are separated by llama.cpp **slot**, not by server.
->
-> §§1–10 are kept because the *reasoning* (why sharing a server hurts, what
-> evicts what, why docker can't see GPU memory, the retired-endpoint hazards)
-> is still exactly right and still explains the current design. Read them for
-> the why; read **§11** for what is true today.
+> A number copied into this file is a number that will disagree with the registry
+> later. Read the endpoint.
 
-Operational runbook for how ARIA reaches a model, after the day this host became
-**local-only**. Companion docs: `infrastructure/laguna/LAGUNA_TUNING_20260726.md`
-(server tuning + benchmarks) and `Development/Hermes/HERMES_TUNING_20260726.md`
-(Hermes client side).
-
-> **Same-day correction:** the split below originally repointed BOTH
-> `LLAMACPP_URL` and `AGENTIC_URL` at `chadrock` (:8102) as a quick fix for the
-> dead-laguna-port bug in §4 — but chadrock is the `pool` CLI's dedicated
-> `--parallel 1` server, so that silently put ARIA's own chat agent and Search
-> Agent back into the exact "asymmetric consumers on one server" problem this
-> split exists to prevent. Corrected: `LLAMACPP_URL`/`AGENTIC_URL` now point at
-> `qwen3.6-35b-a3b` (renamed from `qwen-hermes` — it's no longer Hermes-only
-> either), and `pi-coding` moved off the local box entirely onto
-> `backend=ridge` — **Ridge is now the only backend any pi-coding-family agent
-> runs on.** Sections below are updated to match; where a section still
-> narrates the original same-day incident as history, it says so.
-
-> This is an **agent-operational** doc, so it lives in the repo per the
-> `project-docs` routing rule. Design-level consequences were written into
-> `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 — entries 11–13 (2026-07-26,
-> now partly superseded) and entries 14–23 (2026-07-28, the two-server split).
-
-> **2026-07-30 correction (supersedes the "Ridge is now the only backend any
-> pi-coding-family agent runs on" line above):** Ben's 1:1 rule — one
-> pi-coding instance per model — moved `pi-coding` (`db.agents` `backend`)
-> from `ridge` to **`agentic`, now `:8105` chadrockv2** (Chadrockv2 Qwen3.6-27B
-> ROCmFP6). `pi-coding-ridge` is unchanged, still on Ridge. So the two no
-> longer both crowd onto Ridge as they did after the 07-28 correction below —
-> everywhere §3/§3.1 says pi-coding-family agents "run on Ridge" or "no longer
-> backs anything named pi-coding" (laguna/chadrock), read that as
-> `pi-coding-ridge` only; `pi-coding` itself is local again, just on
-> chadrockv2 instead of laguna/chadrock.
+> **Old section-number citations.** Running code cites this file by section:
+> `api/aria/config.py:181` and `api/aria/agents/session.py:137` cite **§3.1** for the
+> Ridge "one request at a time" rule — that is now *[Ridge is off-box](#ridge-is-off-box-and-behaves-differently)*.
+> `api/aria/infrastructure/gpu_devices.py:9` cites this file for the device map —
+> that is now *[Reading GPU memory truthfully](#reading-gpu-memory-truthfully)*.
 
 ---
 
-## 1. There are TWO model servers (split 2026-07-28)
+## Routing: do not "fix" these back
 
-Hermes and the coding agents no longer share a model. They never share a KV
-cache, which is the entire point.
+**`/llm/v1` is pinned, on purpose.** `LLAMACPP_URL` / `AGENTIC_URL` /
+Hermes's `base_url` all point at ARIA's own passthrough
+(`http://localhost:8200/llm/v1`, `api/routes/llm_proxy.py`). That passthrough
+would *auto*-resolve to the largest resident server — which is DS4 on the Halo —
+but it is **pinned to Qwen on the R9700** and must stay that way:
 
-| endpoint | model | consumer | measured |
-|---|---|---|---|
-| `:8102` **chadrock** | Laguna S 2.1 ROCmFP4 (Vulkan), `-c 131072` (unchanged, kept at max — see §10) | **pool CLI → ProjectAria** only — genuinely only, as of the same-day correction above | decode 36.03 t/s, 66.8 GiB; **unmonitored until §10** |
-| `:8103` **qwen3.6-35b-a3b** (renamed from `qwen-hermes`) | Qwen3.6-35B-A3B-MTP ROCmFP4 (Vulkan), `-c` trimmed **131072 → 100000** same evening (§10), then **bumped to 262144 = n_ctx_train on 2026-07-30** — see the 2026-07-30 note in §10 below | **Hermes main chat only** as of §10 — ARIA's default chat agent (`aria`) and Search Agent are both **disabled** (`enabled=false`), so despite `LLAMACPP_URL`/`AGENTIC_URL` still pointing here, neither sends real traffic today; Hermes's auxiliary tasks + 2 cron jobs moved off to `gemma-aux` (below) the same evening | decode 64–68 t/s measured 2026-07-28 (below the model card's 78–90 t/s floor — open question, not yet root-caused), prefill 840–940 t/s @ 7–19K context measured clean/uncontended (the "140.1" figure above was very likely taken under real Hermes slot contention, not a clean single request — not directly comparable). **Crashed once, §10 — but see the 2026-07-30 concurrent stress-test result there before assuming the ctx bump reopens that risk** |
-| `:8104` **gemma-aux** (new, 2026-07-28 evening) | Gemma 4 E4B, Q4_0 GGUF, **CPU-only** (`-ngl 0`) | Hermes's ~16 "auxiliary" side-tasks (title generation, compression, curator, approval, triage_specifier, mcp, etc.) + both cron jobs (alert triage, stock scanner) | see §10 for why CPU, the reasoning-mode gotcha, and real KV-cache sizing |
-| `:8105` **chadrockv2** (new, 2026-07-30) | Chadrockv2 Qwen3.6-27B **ROCmFP6** STRIX QUALITY, `-c 262144` (= n_ctx_train, bumped from 65536 same day), q8_0 KV, MTP draft, text-only | `pi-coding` (`backend=agentic`), bound same day per Ben's 1:1 rule | **STOPPED by default** (wired + verified, start on demand before driving pi-coding). MEASURED ~30 GiB at 65536 ctx, ~38.7 GiB at 262144 ctx |
-| `:8106` **qwythos** (new, 2026-07-30) | Qwythos-27B-v1 MTP Q8_0 + F16 vision projector, `-c 65536`, q8_0 KV | unbound — **the only vision-capable local model on this box** | **STOPPED** (wired + verified). MEASURED ~32 GiB |
-| `:8095` laguna | Laguna S 2.1 Q4_K_M (HIP) | — | **STOPPED**, incumbent, one command back |
-| `:8092` `qwen3.6-35b-a3b-Q4` / `:8093` `qwen3.6-27b-Q8` (renamed 2026-07-29 from `qwen-chat`/`qwen-agentic`) | — | — | retired, containers not created. ⚠ `:8092` is additionally held by `ridge-llama-proxy` on the tailnet IP, so this service **cannot** be started there as-is |
-
-**Both 2026-07-30 additions run on the EXISTING `chadrock-rocmfpx:latest`
-image** (ciru-ai/ROCmFPX @090e317b, Vulkan) — no new build was needed.
-Chadrockv2's model card implies a HIP build is required (`DEVICE=ROCm0`, and
-`LLAMA_SERVER_BIN` pointing at a `build-strix-rocmfp4-quality-hip` path on the
-author's machine). That is **wrong for this box**: the ROCmFPX tensor types are
-a *fork* feature, not a backend feature, and the FP6 types are already in the
-pinned commit. Verified by loading the exact GGUF on the Vulkan build and
-generating correctly. Don't spend an hour building a HIP image for these.
-
-**Start/stop these through ARIA, not docker.** Since 2026-07-29 the
-model-server registry (`api/aria/infrastructure/model_servers.py`) is the
-control plane: it knows which runtime fork each model needs, enforces
-RAM exclusivity + a live GTT check, and is reachable from the dashboard,
-`POST /api/v1/infrastructure/model-servers/{slug}/start|stop`, or Hermes MCP.
-
-`qwen3.6-35b-a3b` is now genuinely **single-consumer** (Hermes main chat) as of
-this evening — the auxiliary-task sharing this table used to describe was
-itself a smaller-scale repeat of the "asymmetric consumers on one server"
-problem the two-server split was built to prevent (different prompt shapes:
-Hermes's ~30K stable tool-schema prefix vs. 16 short, varied side-task
-prompts), and got fixed the same way: split it onto its own server rather
-than keep tuning the shared pool. See §10 for the full incident and why
-"single consumer per model" turned out not to be the whole story on this
-hardware.
-
-**"~89.4 GiB, ~30 GB free" (the original split-day estimate above) does not
-hold as a static number — do not treat it as a budget.** Real usage is
-whatever the two GPU-offloaded models' *combined current context* costs, and
-that's read from `/sys/class/drm/card0/device/mem_info_gtt_used` /
-`_gtt_total`, not from a fixed baseline. See §10.
-
-**Why split.** Every hard problem measured on 2026-07-27/28 came from one cause:
-asymmetric consumers sharing a single unified KV pool. Hermes holds a ~30K stable
-tool-schema prefix and is latency-sensitive; coding agents grow past 100K. They
-evicted each other, and no amount of slot pinning, `--cache-ram` or checkpoint
-tuning fixed it. Two servers retire the whole class.
-
-> ⚠️ **`-fit off` is mandatory on every llama-server on this box.** Without it the
-> process deadlocks in "fitting params to device memory" on Vulkan (which reports
-> the full 128 GB as free) and becomes an **unkillable D-state process holding the
-> GPU** — SIGKILL does nothing, and recovery is a hard reboot.
-
-Restore the incumbent if you need it:
 ```
-cd ~/Development/infrastructure/laguna && \
-  LAGUNA_SLOTS="-np 3 --kv-unified" docker compose up -d laguna
+GET /api/v1/infrastructure/llm-route
+→ {"pinned":"Qwen3.8-27B-R9700-HIP", "reason":"pinned in ARIA (Qwen3.8-27B-R9700-HIP)"}
 ```
 
----
+DS4 `:8108` is the coding agent's **single 131K slot**. Every background call that
+took the auto-route evicted its warm prefix — 4.2 s warm turns into 39.5 s cold.
+Unpinning re-breaks pi. If you need to change it, use `PUT /api/v1/infrastructure/llm-route`
+or the `/operate` "Local model route" panel, and know what you are evicting.
 
-## 2. Slot topology — RETIRED
+**Do not pin a `*_URL` at a model port either.** That broke four times running
+(qwen → laguna → chadrock → DS4): the big servers are mutually RAM-exclusive, so
+the named port goes dark the moment another server starts, and `selfcheck` then
+pages `llm (ConnectError)` every 10 minutes. `LLAMACPP_API_KEY` must equal `API_KEY`.
 
-`laguna-slot-proxy` is **stopped and disabled**. Ports 8096–8100 no longer listen.
+**Bind addresses are not uniform, and the asymmetry has caused repeated
+misdiagnosis.** Verified live 2026-08-15:
 
-It existed to stop consumers evicting each other inside one shared pool. With one
-consumer per server there is nothing to pin against, so the proxy is dead weight.
-All 20 references to it in `~/.hermes/config.yaml` were repointed to `:8103`;
-their upstream (`:8095`) is stopped, so every one of them was broken.
-
-Slot counts now:
-
-| server | slots | why |
+| listener | bind | note |
 |---|---|---|
-| `:8102` chadrock | `--parallel 1` | single consumer; the vendor-validated profile |
-| `:8103` qwen3.6-35b-a3b (renamed from qwen-hermes) | `--parallel 2 --kv-unified` | Hermes main + auxiliary tools, which previously used a *separate* laguna slot so they would not evict Hermes's prefix. Since the same-day correction above, ARIA's own chat agent + Search Agent also share these 2 slots. |
+| `:8080` Qwen (R9700) | `127.0.0.1` only | not reachable over the tailnet |
+| `:8108` DS4 (Halo) | `127.0.0.1` only | not reachable over the tailnet |
+| `:8092` `ridge-llama-proxy` | **`100.123.245.84` only** | `localhost:8092` is connection-refused *even though `ss` shows a listener* |
+| `:8200` ARIA | `0.0.0.0` | the only thing that knows which of the above is up |
 
-Measured: slots cost ~2% decode each and ~0.15 GiB for 4→8. Do not add them
-without a consumer that needs one.
+Check with `ss -ltnp`, and read the *address*, not just the port.
 
----
+## Reading GPU memory truthfully
 
-## 3. Which agent uses which server
-
-> Updated 2026-07-28 (same-day correction, supersedes the first split): `pool`
-> is the ONLY consumer of `:8102` chadrock. `aria` and `search-agent` are
-> **both disabled** (`enabled=false`) as of later the same day — their
-> `db.agents` rows still resolve to `:8103` qwen3.6-35b-a3b, but neither sends
-> real traffic today, so qwen's only active consumer is Hermes. Both
-> pi-coding-family agents (`pi-coding` chat tool and `pi-coding-ridge` coding
-> session) run on Ridge — laguna no longer backs anything named "pi-coding".
-> The `:8097`/`:8095` slot references below are historical (pre-split,
-> laguna-slot-proxy era).
-
-`db.agents`:
-
-| slug | backend | resolves to |
-|---|---|---|
-| `aria` | `llamacpp` | `:8103` qwen3.6-35b-a3b (was chadrock `:8102` for part of 2026-07-28; corrected same day) |
-| `pi-coding` | `agentic` | `:8105` chadrockv2 (was `ridge` 2026-07-28 – 2026-07-30, then repointed local per Ben's 1:1 rule — see 2026-07-30 correction above) |
-| `pi-coding-ridge` | `ridge` | `:8092` → **Ridge's RTX 3090** (see §3.1) |
-| `search-agent` | `llamacpp` | `:8103` qwen3.6-35b-a3b — **was `context1`**, retired and down; repointed 2026-07-26, then moved off chadrock same-day as `aria` above |
-
-### 3.1 `ridge` — the one backend that is NOT on this box (2026-07-27)
-
-`RIDGE_URL=http://100.123.245.84:8092/v1` is corsair's `ridge-llama-proxy`, which
-Wake-on-LANs the Ridge PC and holds the request while it boots. Behind it, Ridge
-runs **NInfer** (not llama.cpp) serving Qwen3.6-35B-A3B at ~259 tok/s with a
-**147456-token context**. That context came from disabling CUDA graphs, measured
-at ~2% throughput cost for +57% context; disabling MTP as well would reach 172032
-but at 141 tok/s (-46%), so it was rejected. `D:\ninfer\run-ninfer.bat` carries
-the full measurement table — read it before retuning.
-
-Agent `pi-coding-ridge` **thinks on Ridge but acts on corsair** — every
-filesystem/shell tool call executes locally here. Ridge holds no repositories.
-
-Things that bite:
-
-- **Cold path ~90s.** Ridge sleeps after 30 min idle. The orchestrator therefore
-  gives the **first** chunk its own budget (`ridge_timeout_seconds`, 420s); the
-  normal 60s `stream_chunk_timeout_seconds` applies to every chunk after it.
-  Without that split the turn died at 60s with "LLM stream stalled" and persisted
-  **nothing** — no assistant message at all.
-- **One request at a time.** NInfer has no continuous batching, so concurrent
-  ridge callers queue. Do not point background workers at it.
-- **Thinking is verbose** (~1k tokens before content). `max_tokens` below ~2000
-  returns EMPTY content with `finish_reason=length`.
-- **Not health-probed.** A probe would either report DOWN while it is merely
-  asleep, or wake a gaming PC every tick. See the comment in `health.py`.
-- **NInfer vs Chatterbox TTS is exclusive** — 20.82 GiB of weights must be
-  GPU-resident, so Ridge's TTS (`:8890`) is disabled. See
-  `infrastructure/endpoints.env`.
-
-`CodingSessionManager` resolves `db.agents` slug `pi-coding` as an external Pi
-launch profile. A bare `backend="pi-code"` session therefore starts the real
-Pi executable against local Chadrockv2 on `:8105`; the explicit
-`pi-coding-ridge` profile selects Ridge instead. The profile system prompt is
-passed through Pi's native `--append-system-prompt`, while Pi owns the agent
-loop, tools, context files, and JSONL transcript. ARIA owns the watched tmux
-shell, concurrency, watchdog, worktree, review, and lifecycle.
-
-### Hermes must spin pi-coding through ARIA
-`~/.hermes/config.yaml` `agent.environment_hint` now distinguishes:
-- `backend="claude_code"` — default for anything non-trivial.
-- `backend="pi-code"` — **only** on explicit request for Pi/local inference.
-  Launches the real Pi TUI with an explicit provider/model and still inherits
-  ARIA's watchdog, e-stop and concurrency limiter.
-
-"Use the local model" means `backend="pi-code"` **through
-`create_coding_session`** — never a coding loop inside Hermes.
-
----
-
-## 4. Backends that were silently failing
-
-Both were pointed at a credit-exhausted OpenRouter account and erroring on every
-call. Repointed to laguna in `.env`:
-
-| setting | was | now |
-|---|---|---|
-| `PLANNING_AMBIENT_BACKEND` | `openrouter` / `deepseek-v4-flash` | `llamacpp` / `laguna-s-2.1` |
-| `HEARTBEAT_BACKEND` | `openrouter` / `deepseek-v4-flash` | `llamacpp` / `laguna-s-2.1` |
-
-`planning_ambient_capture_enabled` is **true**, so ambient task extraction fires
-on **every conversation turn** — and it feeds the `tasks` collection that C3's
-Linear reconciliation consumes. It had been failing for as long as the credits
-had been gone.
-
-`OPENROUTER_API_KEY` is commented out; `GET /api/v1/health` now reports
-`available (llamacpp, agentic)`.
-
-**Design consequence:** there is no cloud fallback anywhere. The "cheap fast
-cloud model for the hot path" escape hatch that some designs assume **no longer
-exists** — new components must budget for laguna's ~204 t/s prefill /
-~18–23 t/s decode.
-
----
-
-## 5. Which background work actually costs tokens
-
-Audited by reading each worker for LLM calls, because `/usage/cost` returns **0**
-for local backends and is blind to this question. The laguna server log is the
-only place background load is visible.
-
-**Costs tokens:**
-- **shells extraction** — every 10 min *per watched shell*, LLM call once a shell
-  has ≥ `shells_extraction_min_events` (20) new events. Legitimate (it's how
-  long-term memory gets built); the fix was routing, not frequency.
-- **ambient task capture** — every conversation turn.
-- weekly report.
-- **Hermes's ~16 auxiliary side-tasks + 2 cron jobs** — as of 2026-07-28 evening
-  these run on `gemma-aux` (`:8104`, CPU-only), **not** qwen. Moving them off
-  qwen doesn't change that they cost tokens, just which server pays for them —
-  noted here so "what's calling qwen" audits aren't fooled by their absence.
-
-**Costs nothing — verified, leave alone:** `selfcheck` (10 min, HTTP probes
-only), `projects harvest` (30 min, deterministic), `shells snapshot`/`adopt`/
-`reconcile`/`coding watchdog` (15–120 s, tmux + Mongo only), `prune` (6 h).
-
-**Already off, and expensive if enabled:** `dream` (6 h), `awareness` (sensors
-2 min + analysis 30 min), `shared_scan`, `shells_reap`.
-
-**Disabled 2026-07-26:** the heartbeat. See §7.
-
----
-
-## 6. The alert relay is a single unmonitored hop
-
-ARIA enqueues alerts; **Hermes owns the only relay to a human.** That relay was
-broken from **2026-06-29 to 2026-07-26** — 91 failures in the final 14 days — and
-nothing detected it. ARIA kept enqueuing correctly; the alerts just never
-arrived.
-
-Every component that reports to a human inherits this hop. A relay-liveness check
-("has any alert been delivered in N hours?") belongs in the selfcheck worker
-before more components depend on the channel. Flagged in `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §6.
-
-Measured alert rate: **49 in 30 days ≈ 1.6/day** (30 `agent_task_done`, 10
-`degraded`, 5 weekly report, 4 `recovered`). The Hermes triage cron was cut from
-`*/10` → hourly on that basis.
-
-> **Schema gotcha:** the `alerts` collection uses **`acked`**, not
-> `acknowledged`. Querying the wrong field returns a scary "0 acked" that looks
-> like a bug and isn't.
-
----
-
-## 7. Heartbeat — read this before "fixing" it
-
-`~/.aria/HEARTBEAT.md` is an **input, not an output**.
-`heartbeat/service.py::_ensure_heartbeat_file()` writes it **once** from a
-template if missing and never again; the file's own comment says *"Edit this file
-to customize what ARIA monitors."* Its old mtime marks creation, **not** a
-malfunction — a mid-session analysis got this backwards.
-
-The real output path is `notification_service.notify(source="heartbeat")` →
-`alerts`. Measured there: **0 heartbeat alerts in the entire 107-alert history**,
-and over 7 days **114 "Heartbeat OK" + 63 "Heartbeat LLM call failed" + 0
-"Heartbeat alert"**.
-
-So it isn't broken — it ran ~25×/day and never had anything to say, because the
-checklist is still the untouched default whose items ("scheduled tasks failed",
-"missed reminders") duplicate the selfcheck worker and the triage cron.
-`HEARTBEAT_ENABLED=false`. Re-enabling is only worthwhile with a checklist
-covering something not already monitored.
-
----
-
-## 8. Stale-endpoint hazard in skills
-
-`~/.hermes/skills/devops/systems-ops/references/aria-alert-diagnosis.md` — the
-skill the **diagnostic agent loads when an alert fires** — instructed it to curl
-`:8081`, `:8092`, `:8093` and mislabelled them ("openrouter proxy", "context").
-All three are retired. A diagnostic agent following that would produce confident
-false conclusions. Corrected 2026-07-26.
-
-**Check skills, not just config, when endpoints move.** Skills are prompt-level
-instructions to agents and drift silently.
-
----
-
-## 9. Quick verification
-
-```bash
-curl -s localhost:8102/health                          # chadrock (pool CLI only)
-curl -s localhost:8103/health                           # qwen3.6-35b-a3b (Hermes main chat only)
-curl -s localhost:8104/health                           # gemma-aux (Hermes auxiliary + cron)
-curl -s localhost:8200/api/v1/health                     # expect available (llamacpp, agentic, ridge)
-systemctl --user is-active aria-api hermes-gateway
-docker logs qwen3.6-35b-a3b 2>&1 | grep 'selected slot by id' | tail -4   # pinning working
-bash infrastructure/scripts/health                       # no dead-qwen probe
-cat /sys/class/drm/card0/device/mem_info_gtt_used /sys/class/drm/card0/device/mem_info_gtt_total
-                                                          # real GPU memory pressure — see §10, NOT docker stats
-```
-
-Backups: `ProjectAria/.env.bak-openrouter-20260726`, and the `~/.hermes/*.bak-*`
-set listed in the Hermes doc.
-
----
-
-## 10. The 2026-07-28 evening crash: GPU command-submission contention, docker's blind spot, and a third server
-
-**What happened.** `:8103` (then `qwen-hermes`) crashed — `vk::DeviceLostError`,
-`radv/amdgpu: Not enough memory for command submission` — mid-prompt-processing
-on a long-context turn, at the same moment chadrock was deep in its own
-87K–95K token coding session. Crash backtrace: inside a checkpoint-restore copy
-(`llama_io_write_device` / `state_seq_get_data`). `restart: "no"` (deliberate,
-see §1's `-fit off` warning) meant it just stayed down until Hermes's next
-real request failed after 3 retries.
-
-**Root cause — a different resource than the one already ruled out.**
-`vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #19 already measured that `--cache-ram`/`-ctxcp` don't
-move *total* GTT memory growth — that finding stands, this isn't a
-contradiction of it. What actually ran out is a **separate, tiny (~1 GiB)
-dedicated VRAM aperture** used for GPU command submission
-(`/sys/class/drm/card0/device/mem_info_vis_vram_{total,used}` — NOT the ~124 GiB
-GTT pool). It sits at **~78–96% used essentially all the time regardless of
-load** (structural, not a spike) — any simultaneous command submission from
-two GPU-offloaded processes is a latent risk on this hardware, independent of
-how much of the large GTT pool is free.
-
-**Mitigation applied (qwen only, unverified by repeat-crash testing — a
-hypothesis about this narrower resource, not a proven fix):**
-```diff
--ctxcp 32 → 10
---cache-ram 8192 → 2560
-```
-Chadrock's own checkpoint config was **not** touched — it needs max context,
-by explicit decision.
-
-**⚠️ The bigger finding: docker/cgroup memory limits do not see GPU-offloaded
-memory on this hardware.** Confirmed empirically the night of the crash:
-`docker stats` showed **~5 GiB combined** for chadrock+qwen while
-`mem_info_gtt_used` showed **~97 GiB**. `-ngl 999` GPU-offloaded allocations on
-this unified-memory Strix Halo APU are accounted to the kernel's DRM/GTT
-memory manager, not to the container's cgroup. **`docker run --memory` /
-compose `mem_limit` is a no-op safeguard for chadrock or qwen** — it only
-works for a genuinely CPU-only service (confirmed on gemma-aux, which does
-carry a real `mem_limit: 6g`). **The only ground truth for real memory
-pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total`** — not
-`docker stats`, not `free -h`'s "used" column.
-
-**Fixes landed:**
-1. **qwen's `-ctxcp`/`--cache-ram` shrunk** (above).
-2. **qwen's `-c` trimmed 131072 → 100000** — ~24% cut to its own KV-cache
-   ceiling (~10.25 → ~7.8 GiB max), freeing real headroom for chadrock. Modest,
-   honestly sized — not a structural fix by itself.
-3. **Hermes's ~16 auxiliary tasks + 2 cron jobs moved to a new third server**,
-   `gemma-aux` (`:8104`, Gemma 4 E4B Q4_0, CPU-only) — the same
-   asymmetric-consumers pattern the two-server split fixed, recurring at
-   smaller scale *inside* Hermes's own qwen usage. CPU-only doesn't buy
-   separate memory headroom here (same GTT pool either way) but does keep it
-   out of the ~1 GiB VRAM command-submission aperture above — it can never be
-   a third contender for *that* specific resource. Two things worth knowing if
-   you add another small model to this box:
-   - Gemma 4 has a real hybrid local/global attention pattern (its GGUF
-     metadata carries a per-layer `sliding_window_pattern` — 35 of 42 layers
-     window-capped at 512 tokens, only 7 scale with `--ctx-size` at all) that
-     makes its KV cache far cheaper than a dense model at the same context:
-     ~0.26 GiB computed at 8192 ctx, ~1.78 GiB at 65536 — not the 8× a dense
-     model would cost. (`--ctx-size` was in fact raised 8192→65536 the same
-     evening: Hermes hard-rejects any configured model below a 64,000-token
-     context floor regardless of what a given task actually sends — "ARIA
-     alert triage" started failing with "Model gemma-4-e4b-it has a context
-     window of 8,192 tokens, which is below the minimum 64,000 required by
-     Hermes Agent." `mem_limit` bumped 6g→8g to match.) Check any future
-     model's GGUF metadata for this before assuming its KV cache scales like
-     chadrock/qwen's (dense, no such pattern) — and check Hermes's context
-     floor before picking a small model's `--ctx-size` at all.
-   - Gemma 4 has a **stochastic reasoning mode** that can silently consume an
-     entire `max_tokens` budget (`reasoning_content` preamble, empty `content`,
-     `finish_reason: length`) — disabled with `--reasoning off
-     --reasoning-budget 0`, same as chadrock already carries.
-4. **Chadrock had zero automated health monitoring until this incident**,
-   despite the identical crash risk and identical `restart: "no"` policy as
-   qwen. `api/aria/shells/selfcheck.py` (the code that actually pages via
-   Signal) only ever probed `llamacpp_url`. Added a `pool_api_url` check.
-5. **New `gpu_memory` selfcheck check** — reads the real GTT figures above,
-   alerts >90%. First automated signal this box has had for either model
-   server's crash risk before a human notices via a failed reply.
-6. **A third, unrelated stale-config bug found in the same pass:** Hermes's
-   two cron jobs (hourly alert triage, daily stock scanner) were hardcoded to
-   `:8100` — the slot-proxy port retired in §2 — silently failing on every run
-   since. Fixed alongside the auxiliary-task repoint. Same lesson as §6/§8:
-   a topology change isn't done until every consumer's config is audited —
-   `.env`, cron jobs, skills, docs, and compose are five independently-stale
-   places the same endpoint can live in.
-
-**Design-level writeup:** `vault/ProjectAria/Design/COHERENCE_DESIGN.md` §5 #24–28.
-
-**2026-07-30 follow-up — ctx bumped back to max, stress-tested against the
-actual trigger.** At Ben's request, qwen's `-c` was raised 100000 → 262144
-(`n_ctx_train`, full model capacity), reversing the trim in fix #2 above.
-Before trusting it, re-read what the root cause actually was: **not** total
-GTT capacity, and **not** anything specific to the Laguna model — it was two
-GPU-offloaded (Vulkan) processes issuing concurrent command submissions and
-colliding on the separate ~1 GiB VRAM aperture, while qwen was
-mid-long-context-prompt and chadrock was deep in an 87–95K token session *at
-the same moment*. That structural condition (two concurrent GPU processes)
-is still present today — chadrockv2 (:8105) plays chadrock's old role now.
-So this was tested against the real trigger, not just a solo clean load:
-fired ~64,500-token prompts at qwen and chadrockv2 **simultaneously**
-(comparable scale to the original 87–95K trigger). Result: both completed
-cleanly (285s / 492s respectively), zero container state changes, peak
-combined GTT 72.4 GiB, no `device.lost` or `ggml_rocm_init` errors beyond
-the expected benign ROCm-probe-falls-back-to-Vulkan line every start already
-has. qwen's own solo footprint at 262144 ctx measured ~29 GiB — barely above
-its 100000-ctx figure, well under the ~40 GiB conservative projection made
-before testing. The `-ctxcp 10` / `--cache-ram 2560` mitigations from fix #1
-were left unchanged. Not proof the failure mode can never recur — the
-original incident only needed one bad coincidence — but it no longer
-reproduces under a load comparable to what caused it the first time.
-
----
-
-## 11. Current topology (2026-08-10): one big server, six slots
-
-Supersedes §§1–3 for anything operational. §§4–10 still apply as written.
-
-### What runs
-
-| server | port | runs how | serves |
-|---|---|---|---|
-| **DS4-0731-ROCMFPX-affine-256k** | `:8107` | systemd `deepseek-v4-quality-256k.service` | Hermes main chat, the system pi-coding agent, every pi sub-agent, ARIA's background workers |
-| **gemma-4-e4b-Q4** (`gemma-aux`) | `:8104` | docker, **CPU-only** (`-ngl 0`) | Hermes's 16 auxiliary tasks + 3 crons, ARIA's shell-extraction and ontology-extraction workers |
-
-Everything else in the registry (`:8095`, `:8102`, `:8103`, `:8105`, `:8106`,
-`:8108`, `:8110`, `:8081`, `:8093`) is **stopped on purpose, not dead** —
-on-demand servers, RAM-exclusive with DS4. Start them through ARIA's registry,
-which stops DS4 first. Do not "clean up" references to them.
-
-⚠️ **DS4 binds the TAILNET IP ONLY** (`100.123.245.84:8107`). `localhost:8107`
-is connection-refused even with DS4 up. Same class of trap as `:8092`, and it
-has now bitten twice — Hermes's `qwen-chat` provider pointed at
-`localhost:8107` until 2026-08-08.
-
-### The slot budget — this is the part to keep consistent
-
-```
--c 65536  -np 6  --kv-unified -ub 256  →  64K per agent, six slots
-```
-
-⚠️ **`-c` is PER SEQUENCE — it is NOT a total to divide by `-np`.** llama.cpp
-reports `n_ctx_seq == -c` and gives every slot its own full-size cache, so
-**total KV = `-c` × `-np`**. Verified on the live server 2026-08-10:
-
-```
-llama_context: n_ctx_seq (65536) < n_ctx_train (1048576)
-srv    load_model: initializing slots, n_slots = 6
-slot   load_model: id  0 | new slot, n_ctx = 65536      (x6)
-```
-
-> ⚠️ **Corrected 2026-08-15:** the 6,880 B/token figure below is specific to the
-> *affine sealed-O5 stack* it was measured on. On the stacks that serve today it is
-> wrong by an order of magnitude — **~90 KiB/token f16, ~45 KiB q8_0, ~22.5 KiB
-> q4_0 on DS4 (Nathan / mainline)**, and **~34 KiB/token q4_0 on Qwen3.8**, all
-> measured (`MEMORY_BUDGET_POLICY_20260814` §3, `phase7/SESSION-FINDINGS`, and the
-> Qwen state-size log). The "+1.26 GiB per +32K per agent" derivation and the
-> "2.52 GiB total KV" line below inherit the same error. Also: on the mainline and
-> Nathan stacks KV is allocated **lazily** for DS4 (a *filled* slot costs memory,
-> `-c` costs ~nothing at load) but **up front** for Qwen (`-c × -np` is paid at load).
-
-**KV costs 6880 bytes/token** *(on the affine stack — see the correction above)*, known exactly rather than estimated: a first
-attempt at `-c 1382400 -np 6` — built on the inverted assumption — tried to
-allocate 57,065,472,000 bytes and OOM'd, and `57065472000 / (1382400 * 6)`
-is 6880 on the nose. So total KV here is `65536 * 6 * 6880` = **2.52 GiB**.
-The registry's 103.4 GiB projection includes the measured 15.6 GiB peak buffer
-allowance; the independent live guard is authoritative for shared host memory.
-
-Raising context costs `+32768 * 6 * 6880` = **1.26 GiB per +32K per agent**.
-`n_ctx_train` is 1048576, so the ceiling is KV memory, not the model.
-
-| slot | consumer |
-|---|---|
-| 0 | Hermes main chat |
-| 1 | system pi-coding agent |
-| 2–4 | pi sub-agents (`coding_max_concurrent_pi_sessions = 3`) |
-| 5 | ARIA background workers (ambient capture, heartbeat, research, selfcheck) |
-
-**One slot per consumer is the whole cache design.** Each slot holds its
-agent's prefix permanently, so nobody evicts anybody and no restore path has to
-work. Over-subscribe the slots and you do not get an error — you get every
-agent cold-prefilling every turn, which reads as "the model got slow."
-`check_pi_slot_budget()` exists to make that noisy.
-
-**Do NOT design around the parked prompt cache.** `--cache-ram`/`--cache-disk`
-would in principle let many agents share few slots, but on DS4 it has **never
-restored once**: `loads=0` across every run, and the one time it was needed it
-logged `forcing full prompt re-processing due to lack of cache data (likely due
-to SWA or hybrid/recurrent memory)` at `n_swa = 128`. In-slot *context
-checkpoints* do work (measured: 22,091 tokens restored in ~0.5 s). `--cache-ram`
-is 1024 MiB and nothing depends on it. Re-check `loads=` before revisiting.
-
-`--cache-reuse` is not set and should not be: it is inert on sliding-window
-models (§5 of `infrastructure/laguna/LAGUNA_TUNING_20260726.md` — the server
-refuses the flag and logs `cache_reuse is not supported by this context`).
-
-### Served context is set in ONE place
-
-`deepseek-v4-quality-256k.service`'s `ExecStart`. **Nothing else declares it.**
-
-ARIA's `infrastructure/model_servers.py` parses `-c`/`-np` out of the unit
-(`read_launch_geometry()`) and computes the footprint from it
-(`effective_resident_gib()` = weights + KV(served `-c`) + buffers). So:
-
-- `GET /api/v1/infrastructure/model-servers` reports live `served_ctx`,
-  `slots`, `ctx_per_slot`;
-- the start-time GTT gate projects from the real `-c` — the 2026-08-05 failure
-  (declared 86.5 GiB while holding 94.08 after a `-c` change) cannot recur;
-- **to change context, edit the unit and restart. That is the whole change.**
-
-Two consumers still hold a *copy* of the number and must be updated by hand,
-because they are outside ARIA: Hermes's `ds4`/`ds4-fast` and pi's `ds4`
-provider (`context_length: 65536`). Read the truth from
-`GET :8200/api/v1/infrastructure/model-servers` (`ctx_per_slot`) or
-`GET :8107/v1/models` (`meta.n_ctx`) and match it. Too low silently truncates;
-too high overflows.
-
-### Monitoring slot utilisation
-
-`GET /api/v1/infrastructure/model-servers/utilization` — live occupancy and
-throughput for every running on-box server:
-
-```json
-{"slug":"DS4-0731-ROCMFPX-affine-256k","busy_slots":1,"total_slots":6,
- "free_slots":5,"slot_utilisation":0.167,"ctx_per_slot":65536,
- "declared_slots":6,"declared_ctx_per_slot":65536,
- "saturated":false,"requests_deferred":0,
- "prompt_tokens_per_second":142.3,"predicted_tokens_per_second":15.9}
-```
-
-Read `saturated` first. Full slots are fine; **queued** requests are not —
-`requests_deferred > 0` means a request waited, and a waiting request lands in
-whichever slot frees first rather than the one holding its prefix. Sustained
-saturation is how warm caches quietly decay into a cold prefill per turn. It is
-the runtime counterpart to `check_pi_slot_budget()`, which can only catch the
-static misconfiguration.
-
-`declared_*` vs the live values is a **drift check**: they disagree when the
-unit was edited without a restart.
-
-Sources: `/slots` (always available) and `/metrics` (**requires `--metrics` on
-the launch line**; a server without it reports `metrics_available: false` plus a
-hint rather than faking zeros). `saturated`/throughput are `null` without it.
-
-⚠️ **GTT is ~10 GiB higher loaded than idle.** DS4 measured 94.56 GiB right
-after load and **104.82 GiB** with one slot active — compute buffers for an
-in-flight batch. `overhead_gib` for DS4 is therefore 10.7, not the 2.1 default:
-the start-time gate must be sized for a loaded server, or it under-counts by
-~9 GiB whenever aria-api restarts while DS4 is stopped.
-
-### Routing — who reaches DS4 how
-
-| consumer | path |
-|---|---|
-| Hermes main | `custom:ds4` → `100.123.245.84:8107` **direct** (no autostart safety net; provider-level `chat_template_kwargs` is why it isn't on the passthrough) |
-| ARIA agents / workers | `LLAMACPP_URL` → `:8200/llm/v1` passthrough → resident server |
-| pi (ARIA-launched) | `pi --provider ds4`, from `PI_CODING_PROVIDER_LLAMACPP`/`_AGENTIC` |
-| pi (hand-run) | `~/.pi/agent/settings.json` `defaultProvider: ds4` |
-| shell extraction | `SHELLS_EXTRACTION_BACKEND=llamacpp` + `_MODEL=gemma-4-e4b-Q4` → gemma |
-
-**Two mapping layers, both of which have drifted before.** ARIA's
-`PI_CODING_PROVIDER_*` settings name a provider *inside pi's own*
-`~/.pi/agent/models.json`, which has its own base_urls. Changing ARIA's backend
-is not enough; check both. As of 2026-08-08 pi's `llama-cpp` (`:8103`) and
-`agentic` (`:8105`) entries still point at stopped servers — they are unused
-now that both settings name `ds4`, but fix them if you ever repoint back.
-
-### Fixed 2026-08-08
-
-- `AGENTIC_URL` `:8105` → `:8200` passthrough. It named a **stopped-by-default**
-  server, and the shell-extraction worker dialled it every 10 minutes.
-- `shells/extraction.py` no longer hardcodes `llm_backend="agentic"`.
-- Hermes `qwen-chat` `localhost:8107` → `:8103` (was DS4's tailnet-only port).
-- Hermes `ds4`/`ds4-fast` `context_length` 131072/262144 → both `230400`, then `204800` (2026-08-09).
-- pi `settings.json` default `llama-cpp`/`qwen35b-a3b-mtp` → `ds4`.
-- Stale `id_slot` prose removed from `config.py` and `agents/backends/pool.py`.
-
-### Open
-
-Both of the open items this section originally carried were **closed on
-2026-08-09 by the cutover itself**, one of them the hard way:
-
-- ~~The `-c ÷ -np` division is inferred~~ → **it was wrong.** `-c` is per
-  sequence; total KV multiplies by `-np`. The first start attempt OOM'd and
-  segfaulted. Confirmed correct now — 6 slots at `n_ctx = 204800`.
-- ~~The 11 KiB/token KV constant is derived, not measured~~ → **measured at
-  6880 bytes/token** from that OOM's exact allocation size. The old 11.0 figure
-  was wrong in magnitude *and* applied with the wrong multiplier.
-
-Still worth knowing:
-
-- **llama.cpp segfaults on the KV-allocation failure path** (`status=11/SEGV`
-  after `failed to allocate DeepSeek4 compressed KV cache buffer`). A bad `-c`
-  does not fail cleanly, and `Restart=on-failure` will retry it on a loop —
-  during the cutover an auto-restart of the *old* config raced an edit and
-  produced a confusing second failure. Stop the unit before editing `-c`.
-- **The prompt cache is still unproven on DS4** (`loads=0` historically). The
-  new run has `--cache-ram 1024` and the disk cache enabled; nothing depends on
-  either. Re-check `loads=` before designing around it.
-
----
-
-## 12. Two GPUs (2026-08-14): pick the model, pick the placement
-
-An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB VRAM) now sits alongside
-the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). That
-turns one question into two — *which* model, and *where and how* it loads —
-and both are now answerable through ARIA.
-
-### The device map (read this before trusting any `-dev` flag)
+Two GPUs, two independent pools. **DRM enumeration is inverted from what you would
+guess**, and three separate inversions bite:
 
 | DRM card | PCI | device | pool | capacity |
 |---|---|---|---|---|
-| `card0` | `0000:c6:00.0` | Radeon AI PRO R9700 (discrete) | `r9700-vram` | 31.9 GiB VRAM |
-| `card1` | `0000:c8:00.0` | Radeon 8060S / Strix Halo (integrated) | `halo-gtt` | 124 GiB GTT |
+| `card0` | `0000:c6:00.0` | Radeon AI PRO R9700 (**discrete**) | `r9700-vram` | 31.9 GiB VRAM |
+| `card1` | `0000:c8:00.0` | Radeon 8060S / Strix Halo (**integrated**) | `halo-gtt` | 124 GiB GTT |
 
-Three inversions bite here, all of them measured, none of them guessable:
+1. **`card0` is the discrete card.** Every historical read of
+   `/sys/class/drm/card0/device/mem_info_gtt_used` — ARIA's start gate, `selfcheck.py`,
+   and the old verification block in this very file — was reporting the dGPU's
+   near-empty pool. Measured 2026-08-14: card0 GTT 0.22 GiB while card1 held 97.8 GiB.
+   A gate reading that number would approve a second 100 GiB model onto a full box.
+   Fixed in `api/aria/infrastructure/gpu_devices.py`, which classifies by VRAM size,
+   not enumeration order.
+2. **`Vulkan0` is the R9700; `Vulkan1` is the Halo.** Backwards from every reference
+   guide, because those machines have no dGPU. Omitting `-dev` on the Halo deployment
+   sends a 97 GiB model to a 32 GiB card and spills ~78 GiB over OCuLink — it still
+   answers, at **1.65 tok/s**.
+3. **`ROCm0`/`ROCm1` depend on the build.** The dual-arch HIP build enumerates both
+   (`ROCm1` = Halo, `ROCm0` = R9700); a gfx1151-only build such as the sealed O5
+   runtime sees only the Halo, so *its* `ROCm0` is a different card. Verify placement
+   after any runtime change. **Never port a `-dev` flag across runtimes.**
 
-1. **`card0` is the DISCRETE card.** Every historical read of
-   `/sys/class/drm/card0/device/mem_info_gtt_used` — ARIA's start-time gate and
-   `selfcheck.py` alike — was therefore reporting the dGPU's near-empty pool.
-   Verified live 2026-08-14: card0 GTT read 0.22 GiB while card1 held 97.8 GiB.
-   A gate reading that number would approve a second 100 GiB model onto a full
-   box. Fixed in `api/aria/infrastructure/gpu_devices.py`, which classifies
-   cards by VRAM size rather than enumeration order.
-2. **`Vulkan0` is the R9700; `Vulkan1` is the Halo.** Backwards from every
-   reference guide, because those machines have no dGPU. Omitting `-dev` on the
-   Halo deployment sends a 97 GiB model to a 32 GiB card and spills ~78 GiB
-   over OCuLink — it still answers, at **1.65 tok/s**.
-3. **`ROCm0`/`ROCm1` depend on the build.** The dual-arch HIP build enumerates
-   both (`ROCm1` = Halo, `ROCm0` = R9700); a gfx1151-only build such as the
-   sealed O5 runtime sees only the Halo, so its `ROCm0` is a different card.
-   Verify placement after any runtime change; do not port a `-dev` flag across
-   runtimes.
+### `docker stats` cannot see any of this
 
-### The pools are independent — that is the point
+On this unified-memory APU, `-ngl 999` allocations are accounted to the kernel's
+DRM/GTT manager, not to the container cgroup. Measured the night of the 2026-07-28
+crash: `docker stats` showed **~5 GiB combined** for two servers while
+`mem_info_gtt_used` showed **~97 GiB**.
 
-A model in the R9700's own VRAM does not compete with one in the Halo's shared
-memory, so the standard deployment is **one of each**, both resident. ARIA
-gates each start against the pool that server actually draws from, and the
-exclusivity groups are per pool. Two couplings remain:
+**`docker run --memory` / compose `mem_limit` is a no-op safeguard for any
+GPU-offloaded server.** It works only for a genuinely CPU-only service (confirmed on
+`gemma-aux`, which does carry a real `mem_limit`). **The only ground truth for memory
+pressure on this box is `mem_info_gtt_used` vs `mem_info_gtt_total` on `card1`** — not
+`docker stats`, not `free -h`'s "used" column.
 
-- **`ds4-hybrid` spans both cards** (80/20 layer split), so it conflicts with
-  everything on either side.
-- **A dGPU model that does not fit its VRAM spills into GTT**, which is system
-  RAM — at which point it is competing with the Halo after all. That is what
-  `-fit off` prevents and what `pool.spilling` reports. A failed fit serves
-  correctly at ~0.4 tok/s, so **check decode speed after a restart, not just
-  `/health`**.
-- **Start the dGPU model FIRST.** It needs host RAM only transiently on its way
-  to VRAM; the Halo model takes and holds ~100 GiB. Reversed, loading Qwen
-  drove DS4's OOM guard under its floor and killed it 17 MiB short.
-
-### Measuring what a server actually holds
+### Per-process residency: fdinfo, not KFD
 
 `process_gpu_bytes()` reads amdgpu's per-fd `drm-resident-{gtt,vram}` from
-`/proc/<pid>/fdinfo`, grouped by `drm-pdev`. This replaced a KFD-tree read that
-only ever worked for HIP: a RADV Vulkan server has no KFD entry at all, so
-every Vulkan deployment measured as ~0 GiB while holding ~98. Live reading
-2026-08-14, both models up:
+`/proc/<pid>/fdinfo`, grouped by `drm-pdev`. This replaced a KFD-tree read that only
+ever worked for HIP: **a RADV Vulkan server has no KFD entry at all**, so every Vulkan
+deployment measured ~0 GiB while holding ~98. Live right now, DS4 measures
+**98.96 GiB** by fdinfo while its cgroup sees nearly nothing.
 
-```
-DS4-0731-IQ3_XXS-Halo-Vulkan   97.73 GiB  halo-gtt     (Vulkan, no KFD entry)
-Qwen3.8-27B-Q6_K-R9700-HIP     22.84 GiB  r9700-vram   (HIP)
-```
+### The ~1 GiB command-submission aperture
 
-### Choosing how a model loads
+Separate from the 124 GiB GTT pool there is a **tiny (~1 GiB) dedicated VRAM aperture**
+used for GPU command submission:
+`/sys/class/drm/card1/device/mem_info_vis_vram_{used,total}`. It sits at **~78–96%
+used essentially all the time, regardless of load** — structural, not a spike. Read
+just now with one server idle: **993,316,864 / 1,073,741,824 = 92.5%**.
 
-Each live deployment is a folder under `infrastructure/` holding `model/`,
-`runtime/` and a `serve.sh` whose env knobs are the configuration surface:
+This is what actually ran out in the 2026-07-28 `vk::DeviceLostError` /
+`radv/amdgpu: Not enough memory for command submission` crash — not the big pool.
+**Any simultaneous command submission from two GPU-offloaded processes is a latent
+risk on this hardware, independent of how much GTT is free.** The R9700 (card0) has
+34.2 GiB visible via resizable BAR, so this is Halo-specific; a CPU-only helper can
+never be a third contender for it.
 
-| deployment | device | knobs |
+The follow-up stress test (two concurrent ~64,500-token prompts, 2026-07-30) completed
+cleanly and the failure has not reproduced — but the mitigation applied at the time
+(`-ctxcp 32→10`, `--cache-ram 8192→2560`) was a hypothesis about this narrower
+resource and was **never verified by repeat-crash testing**. Treat "does not reproduce"
+as what it says.
+
+## llama-server flags that are load-bearing
+
+**`-fit off` is mandatory on every llama-server on this box.** Two distinct failures
+if you omit it:
+
+- On Vulkan (which reports the full 128 GB as free) the process deadlocks in
+  "fitting params to device memory" and becomes an **unkillable D-state process
+  holding the GPU**. SIGKILL does nothing. Recovery is a hard reboot.
+- On the dGPU, a failed VRAM fit silently serves from host memory at **~0.4 tok/s**
+  and eats the RAM the Halo model needs. So **check decode speed after a restart,
+  not just `/health`.**
+
+Present and required in `qwen-r9700/serve-rocmfp4.sh:35`, `ds4-halo-xxs/bench.sh:17`,
+and `qwen3.8-27b/docker-compose.yml:85` (which says "REQUIRED here, not cosmetic").
+
+**`-c` is PER SEQUENCE. Total KV = `-c` × `-np`.** Building on the inverted assumption
+made the first start attempt request 57,065,472,000 bytes.
+
+**Stop the unit before editing `-c`.** llama.cpp **segfaults on the KV-allocation
+failure path** — `status=11/SEGV` after `failed to allocate DeepSeek4 compressed KV
+cache buffer`. A bad `-c` does not fail cleanly, and `Restart=on-failure` retries it
+in a loop; during one cutover an auto-restart of the *old* config raced an edit and
+produced a confusing second failure.
+
+**`--cache-reuse` is not set and should not be.** It is inert on sliding-window
+models — the server refuses the flag and logs `cache_reuse is not supported by this
+context`.
+
+**Do not design around the parked prompt cache on DS4.** `--cache-ram`/`--cache-disk`
+have **never restored once**: `loads=0` across every run, and the one time it was
+needed it logged `forcing full prompt re-processing due to lack of cache data (likely
+due to SWA or hybrid/recurrent memory)` at `n_swa = 128`. In-slot *context checkpoints*
+do work (measured: 22,091 tokens restored in ~0.5 s). Re-check `loads=` before
+revisiting.
+
+**Never derive a KV bytes/token constant and build on it.** This has been wrong twice.
+11 KiB/token (derived) → corrected to 6,880 B/token (measured off an OOM's exact
+allocation) → that too corrected 2026-08-15 as specific to the sealed-O5 affine stack
+and *wrong by an order of magnitude* on today's stacks (~90 KiB/token f16 DS4,
+~34 KiB/token q4_0 Qwen). Measure the stack you are actually running.
+
+## Model-specific KV: check the GGUF metadata first
+
+**Gemma 4's KV cache is not comparable to a dense model's.** Its GGUF metadata carries
+a per-layer `sliding_window_pattern`: **35 of 42 layers are window-capped at 512
+tokens, and only 7 scale with `--ctx-size` at all**. So ~0.26 GiB at 8192 ctx and
+~1.78 GiB at 65536 — not the 8× a dense model would cost. `gemma-4-e4b-Q4` is still a
+registered server at `-c 65536` on that basis.
+
+Check any new model's GGUF metadata for this before assuming its KV scales densely.
+Also check **Hermes's context floor** before picking a small model's `--ctx-size`:
+Hermes hard-rejects any configured model declaring below **64,000** tokens, on the
+*declared* value, not the served `-c`. That is why gemma went 8192 → 65536.
+
+**Gemma 4 also has a stochastic reasoning mode** that can silently consume an entire
+`max_tokens` budget (`reasoning_content` preamble, empty `content`,
+`finish_reason: length`) — disabled with `--reasoning off --reasoning-budget 0`.
+Qwen has the same shape by design: budget generously and **treat empty `content` as a
+failure**, because writing the empty result is exactly how DS4 once labelled every
+memory with zero entities.
+
+## Ridge is off-box and behaves differently
+
+*(This is what `config.py:181` and `session.py:137` cite as "§3.1".)*
+
+`RIDGE_URL=http://100.123.245.84:8092/v1` is corsair's `ridge-llama-proxy`, which
+Wake-on-LANs the Ridge PC and holds the request while it boots. Behind it Ridge runs
+**NInfer** (not llama.cpp). Registry slug `Ridge-Qwen3.8-27B`; as of 2026-08-15 it is
+`startable=True` with `wake_command` / `remote_start_command` / `remote_stop_command` /
+`sleep_command`, so ARIA can wake, start, stop and sleep it over ssh. `onbox=False`.
+Current state reads `asleep`.
+
+Agent `pi-coding-ridge` **thinks on Ridge but acts on corsair** — every
+filesystem/shell tool call runs locally here. Ridge holds no repositories.
+
+- **Cold path ~90 s.** Ridge sleeps after 30 min idle, so the orchestrator gives the
+  **first** chunk its own budget (`ridge_timeout_seconds`, 420 s); the normal 60 s
+  `stream_chunk_timeout_seconds` applies to every chunk after it. Without that split
+  the turn died at 60 s with "LLM stream stalled" and persisted **nothing** — no
+  assistant message at all.
+- **One request at a time.** NInfer has no continuous batching, so concurrent callers
+  queue. **Do not point background workers at it.**
+- **Thinking is verbose** (~1k tokens before content). `max_tokens` below ~2000 returns
+  EMPTY content with `finish_reason=length`.
+- **Deliberately not health-probed.** A probe would either report DOWN while it is
+  merely asleep, or wake a gaming PC every tick. See the comment in `health.py`.
+- **NInfer and Ridge's Chatterbox TTS (`:8890`) are mutually exclusive** — 20.82 GiB of
+  weights must be GPU-resident, so the TTS is disabled.
+- Tuning record: `D:\ninfer\run-ninfer.bat` holds the measurement table. The shape
+  worth keeping — disabling CUDA graphs bought **+57% context for ~2% throughput**
+  (accepted); also disabling MTP would have reached 172032 ctx **at 141 tok/s, −46%**
+  (measured and rejected). Absolute numbers are stale (NInfer 0.6.0 / Qwen3.8-27B now);
+  the tradeoff shape is the record.
+
+## Which background work actually costs tokens
+
+`/usage/cost` returns **0** for local backends and is blind to this question, so this
+was audited by reading each worker for LLM calls. Live flag values, verified
+2026-08-15:
+
+| worker | LLM? | state |
 |---|---|---|
-| `ds4-halo-xxs` | Halo (Vulkan1) | `KV`, `CTX`, `DRAFT`, `VER`, `DEV`, `CACHE_RAM`, `PORT` |
-| `ds4-hybrid` | Halo + R9700 (ROCm) | `PLACEMENT` (split/hybrid), `CTX`, `PORT` |
-| `ds4-affine` | Halo (sealed O5) | `CTX`, `NP`, `PORT` |
-| `qwen-r9700` | R9700 (ROCm0) | `MODEL`, `CTX`, `PORT` |
-| `qwen3.8-27b` | R9700 (Vulkan0) | none — compose-frozen |
+| shells extraction | yes — per watched shell, every 10 min once ≥20 new events | routed to `gemma-4-e4b-Q4` explicitly (`SHELLS_EXTRACTION_*`) |
+| ambient task capture | yes — **every conversation turn** | on |
+| weekly report | yes | on |
+| `dream` (6 h) | yes | **ON** (`DREAM_ENABLED=true`) |
+| `awareness` (sensors 2 min / analysis 30 min) | yes | **ON** (`AWARENESS_ENABLED=true`) |
+| `shared_scan` | no LLM (deterministic emitters) | **ON** (`SHARED_SCAN_ENABLED=true`) |
+| `shells_reap` | no | off (`shells_reap_enabled` default `False`, no `.env` override) |
+| heartbeat | yes | off (`HEARTBEAT_ENABLED=false`) |
+| ontology LLM extraction | yes | off (`ONTOLOGY_EXTRACTION_ENABLED=false`) |
+| `selfcheck` (10 min), `projects harvest` (30 min), `shells snapshot`/`adopt`/`reconcile`, `coding watchdog`, `prune` | **no** — HTTP probes, tmux and Mongo only | leave alone |
 
-ARIA applies a choice as a systemd drop-in (`<unit>.d/zz-aria-overrides.conf`,
-which sorts last and therefore wins), **not** as a generated command line. That
-is deliberate: the ExecStartPre guards, `OOMScoreAdjust=900`, and the
-launcher's `DS4_MIN_START_KIB`/`DS4_MIN_RUN_KIB` floors all still run, and the
-override stays a file you can read or delete. Deployments with no unit of their
-own get an ARIA-generated `aria-model-<slug>.service`.
+⚠️ This table used to claim dream, awareness and `shared_scan` were **off** — they are
+on. Re-check the flags before quoting this; that is one `grep` in `.env` plus the
+defaults in `config.py`.
+
+Background load is visible at `GET /api/v1/infrastructure/model-servers/utilization`.
+**`saturated` is the field to watch** — `requests_deferred > 0` means a request lands
+in whichever slot frees first rather than the one holding its prefix. `null` there
+means *unknown* (server has no `--metrics`), not "fine". `declared_*` vs live is the
+drift check for "unit edited, not restarted".
+
+## Two schema/file gotchas that look like bugs and aren't
+
+- **`db.alerts` uses `acked`, not `acknowledged`.** No `acknowledged` field exists.
+  Querying the wrong name returns a scary "0 acked" that is purely your typo.
+  (`notifications/service.py:558,593,595`.)
+- **`~/.aria/HEARTBEAT.md` is an INPUT, not an output.**
+  `heartbeat/service.py::_ensure_heartbeat_file()` writes it **once** from a template if
+  missing and never again. Its old mtime marks creation, **not** a malfunction — a
+  mid-session analysis got exactly this backwards. The real output path is
+  `notify(source="heartbeat")` → `alerts`, and there were **0 heartbeat alerts in the
+  entire 107-alert history**: it ran ~25×/day and never had anything to say, because the
+  checklist is still the untouched default whose items duplicate the selfcheck worker.
+  Re-enabling is only worth it with a checklist covering something not already monitored.
+
+## An endpoint change is not done when the servers are up
+
+Three instances of one failure mode, all found weeks late:
+
+- Hermes's two cron jobs were hardcoded to `:8100` — a slot-proxy port retired long
+  before — and **failed silently on every run**.
+- `~/.hermes/skills/devops/systems-ops/references/aria-alert-diagnosis.md`, the skill a
+  **diagnostic agent loads when an alert fires**, told it to curl three retired ports
+  with wrong labels. A diagnostic agent following that produces confident false
+  conclusions. **Skills are prompt-level instructions and drift silently — check them,
+  not just config.**
+- `~/.local/share/aria-mcp/server.py` was a hand-made *copy* of `mcp/server.py`, so
+  "edit and restart" reloaded the old toolset. The drift was 19 tools deep (71 deployed
+  vs 90 in repo) when found. Now a symlink.
+
+**`.env`, cron jobs, skills, docs, and compose are five independently-stale places the
+same endpoint can live in.** Audit all five.
+
+## Quick verification
 
 ```bash
-# what exists, where it runs, and how it is currently configured
-curl -sH "X-API-Key: $API_KEY" localhost:8200/api/v1/infrastructure/model-servers
-curl -sH "X-API-Key: $API_KEY" localhost:8200/api/v1/infrastructure/model-servers/devices
+KEY=$(grep -E '^API_KEY=' /home/ben/Development/ProjectAria/.env | cut -d= -f2-)
 
-# start with a chosen configuration
-curl -sH "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
-  -X POST localhost:8200/api/v1/infrastructure/model-servers/DS4-0731-IQ3_XXS-Halo-Vulkan/start \
-  -d '{"overrides": {"kv": "q8_0", "ctx": "131072", "draft": "none"}}'
+# what is running, across BOTH registries (LLM + non-LLM)
+curl -sH "X-API-Key: $KEY" localhost:8200/api/v1/infrastructure/running | jq
 
-# start with the deployment's own defaults — ALSO clears any override ARIA set
-curl -sH "X-API-Key: $API_KEY" -X POST \
-  localhost:8200/api/v1/infrastructure/model-servers/DS4-0731-IQ3_XXS-Halo-Vulkan/start -d '{}'
+# where each model sits, its geometry, and declared-vs-live drift
+curl -sH "X-API-Key: $KEY" localhost:8200/api/v1/infrastructure/model-servers | jq
+curl -sH "X-API-Key: $KEY" localhost:8200/api/v1/infrastructure/model-servers/utilization | jq
+
+# per-GPU pools — this is what the start gate reads, and it reads the RIGHT card
+curl -sH "X-API-Key: $KEY" localhost:8200/api/v1/infrastructure/model-servers/devices | jq
+
+# where /llm/v1 actually goes right now
+curl -sH "X-API-Key: $KEY" localhost:8200/api/v1/infrastructure/llm-route | jq
+
+# raw pressure, if you must read sysfs: card1 is the Halo, card0 is the dGPU
+cat /sys/class/drm/card1/device/mem_info_gtt_{used,total}          # big pool
+cat /sys/class/drm/card1/device/mem_info_vis_vram_{used,total}     # ~1 GiB aperture
+
+# who is listening, and on WHICH address
+ss -ltnp | grep llama-server
 ```
 
-Also on the web UI's `/operate` (Launch configuration panel), in the TUI under
-`g`, and via the MCP tools `start_model_server(overrides=…)` and
-`list_gpu_devices`.
+⚠️ **Start and stop model servers only through the registry**
+(`POST /api/v1/infrastructure/model-servers/{slug}/start|stop`, `/operate`, TUI `g`,
+or the MCP tools). A raw `docker start` / `systemctl start` / `serve.sh` checks none of
+RAM exclusivity, per-pool fit, or port conflicts. Rule since 2026-07-29.
+**Start the dGPU model FIRST** — it needs host RAM only transiently on its way to VRAM,
+while the Halo model takes and holds ~100 GiB. Reversed, loading Qwen drove DS4's OOM
+guard under its floor and killed it **17 MiB short**.
 
-Every parameter reports a `source`, which is the field to read before changing
-anything: `aria_override` (ARIA set it, and a plain start clears it),
-`unit_dropin` (a hand-written drop-in — ARIA leaves it alone), `script_default`
-(the serve.sh fallback) or `declared_default`.
+## Known-open defects (found 2026-08-15, not yet fixed)
 
-### What the consolidation removed
+Both are the "two mapping layers, both of which have drifted before" problem recurring.
 
-The 2026-08-11..14 reorganisation moved every runtime bundle into the
-deployment folders. Ling and Step kept their weights but **lost their runtimes**
-(`runtime-bundles/` no longer exists); the IQ2_M profile lost both; the
-Laguna/chadrockv2 GGUFs are gone. Those registry entries are kept with
-`startable=False` and a stated reason rather than deleted — the reason is the
-record of what happened, and deleting them invites re-adding a model that is
-already here.
+1. **An ARIA-launched pi session takes a dead path.** `.env` has
+   `PI_CODING_PROVIDER_LLAMACPP=ds4` / `_AGENTIC=ds4`; those name a provider inside
+   *pi's own* `~/.pi/agent/models.json`, where `providers.ds4.baseUrl =
+   http://127.0.0.1:18211/v1` — and **nothing listens on `:18211`**. Pi's own
+   `defaultProvider` (`llama-cpp` → `:8108`) is fine, which is why this hides.
+2. **`db.agents` `pi-coding.llm.model = "DS4-0731-UD-IQ3-XXS-Halo-DSpark"` is not a
+   registry slug** (the registry has `DS4-0731-IQ3_XXS-Halo-Vulkan`). So
+   `llm_route.match_requested()` cannot match it and the request silently falls through
+   to the Qwen pin.
 
-## 13. Current topology (2026-08-15): two GPUs, two models, roles assigned
+## Companion docs
 
-Supersedes §11 and the layout in §12 for anything operational. The *reasoning* in
-§§1–12 still holds; this is what is true today and where each number comes from.
-
-### What runs
-
-| server | port | registry slug | serves | geometry | measured |
-|---|---|---|---|---|---|
-| **Qwen3.8-27B ROCmFP4** on the **R9700** (ROCmFPX HIP gfx1201 build, `qwen-r9700.service`, ExecStart `serve-rocmfp4.sh` via drop-in) | `:8080` | `Qwen3.8-27B-R9700-HIP` (renamed 2026-08-15 from `…-Q6_K-…`) | **Hermes main chat + Hermes crons** (`~/.hermes/config.yaml` default `custom:qwen38-r9700`, declared 250000) | `-c 327680 -np 2 --kv-unified`, q4_0 KV — **one 320K KV pool**, each slot capped at the model's native 262144 (`/slots` → `n_ctx 262144 ×2`) | 23.7 GiB VRAM; 26.3 t/s short, 22.2 @13K, 852 t/s prefill; a 13K cold prefill on one slot pulls the other's decode to ~6 t/s while it runs |
-| **DS4 Flash 0731 UD-IQ3_XXS** on the **Strix Halo** (Nathan v0.6.1 Vulkan, `ds4-halo-xxs.service`, `-dev Vulkan1`) | `:8108` | `DS4-0731-IQ3_XXS-Halo-Vulkan` | **the coding agent (pi)** — pi provider `llama-cpp` → `:8108`, contextWindow 120000; Hermes keeps `ds4-halo` as a *non-default* provider | `-c 131072 -np 1`, **q8_0 KV**, ub2048, `--cache-ram 1024`, **no drafter** (`profile-flowz13.conf`) | 97.8 GiB GTT; 19.3 t/s short, 16.1 @23K, 250 t/s prefill; MemAvailable ~18 GiB fresh → ~15 after a 23K fill |
-| **gemma-4-e4b-Q4** (`gemma-aux`) | `:8104` | `gemma-4-e4b-Q4` | Hermes auxiliary side-tasks; ARIA shell/ontology extraction | CPU-only | coexists with anything |
-
-`LLAMACPP_URL`/`AGENTIC_URL` still point at ARIA's `:8200/llm/v1` passthrough,
-which resolves to the largest resident server (DS4) unless the request names a
-model or a pin is set — unchanged (§ CLAUDE.md).
-
-### The four facts that decided this layout (2026-08-15, all measured)
-
-1. **Qwen + DS4 co-reside easily** — Qwen costs the Halo budget 0.65 GiB. What does
-   *not* fit is DS4's DSpark **drafter** (~13 GiB of system RAM incl. its own KV),
-   with or without Qwen; and it cannot be pinned to the R9700 on Nathan v0.6.1
-   (the DSpark head shares the target's `output.weight` → aborts). Hence no drafter.
-2. **DS4 gets one slot on purpose.** MoE anti-scales under concurrent decode
-   (per-request 10/7/5.6 t/s at 2/4/6 slots), the parked prompt cache never restores
-   on DS4 (`loads=0`), and a *filled* 128K q8_0 slot ≈ 5.6 GiB against a 7 GiB
-   floor. One dedicated consumer keeps its prefix warm (4.2 s vs 39.5 s cold).
-3. **Qwen is dense, so slots are cheap** — but this build allocates KV up front
-   (`-c × -np`), so heterogeneous conversations need `--kv-unified`: one pool any
-   slot can grow into. 320K = 256K main + ~64K cron at ~34 KiB/token = 10.9 GiB;
-   the next step (384K, ~30.5 GiB) is too tight to run blind.
-4. **Hermes hard-requires a declared per-model `context_length` ≥ 64000** (journal
-   2026-08-14 20:08:42, verified) — on the *declared* value, not the served `-c`.
-
-### Where the numbers live
-
-- Residency + floors: `vault/infrastructure/Planning/MEMORY_BUDGET_POLICY_20260814.md` §7
-- The A-vs-B topology decision and every measurement behind it:
-  `vault/ProjectAria/Planning/HOUSE_AGENT_ARCHITECTURE_20260815.md` (Prime question)
-  — moved out of `vault/infrastructure/Planning/` on 2026-08-15: it is an
-  agent-architecture doc, and the topology is an input to it
-- Deployment folders: `infrastructure/ds4-halo-xxs/`, `infrastructure/qwen-r9700/`;
-  drop-ins under `~/.config/systemd/user/{ds4-halo-xxs,qwen-r9700}.service.d/`
-- Live truth: `GET /api/v1/infrastructure/model-servers/utilization` (`declared_*`
-  vs live is the drift check) — start/stop ONLY through the registry.
-
-### Fixed the same day (so nobody re-diagnoses them)
-
-- **Hermes's `aria` MCP had been dead ~24 h**: `mcp>=1.2` in `mcp/server.py`
-  resolved to mcp 2.0.0, which dropped `mcp.server.fastmcp`. Pinned `<2`.
-- `endpoints.env` had `LING3_FLASH_URL`→`:8108` (now DS4), `QWEN38_27B_URL`→`:8110`
-  (Qwen is `:8080`) and `DS4_URL`→`:18211` (not running) — corrected 2026-08-15.
-
+- `vault/ProjectAria/Planning/HOUSE_AGENT_ARCHITECTURE_20260815.md` — current layout,
+  geometry and throughput, and why.
+- `vault/infrastructure/Planning/MEMORY_BUDGET_POLICY_20260814.md` §7 — residency and floors.
+- `docs/ops/RETRIEVAL_CAPABILITIES.md` — the mongot/embeddings switches.
+- `infrastructure/laguna/LAGUNA_TUNING_20260726.md` and
+  `Development/Hermes/HERMES_TUNING_20260726.md` — historical server/client tuning; both
+  describe retired servers, so read them for method, not for endpoints.

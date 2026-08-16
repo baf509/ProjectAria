@@ -6,7 +6,7 @@ Purpose: CRUD + query over ontology_entities / ontology_relations, with the
 S3 ownership rule enforced at the write boundary.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §3 (data model + indexes), §5 (HTTP API surface)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
 - SHARED_SERVICES_DESIGN.md S3 (retired doc; convention lives in
   aria/shared/ownership.py)
 

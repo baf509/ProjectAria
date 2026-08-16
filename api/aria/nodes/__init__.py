@@ -4,7 +4,7 @@ ARIA - Multi-machine nodes (aria-node agents)
 Purpose: let the watched-shell fleet span this host plus remote nodes (e.g. a
 MacBook). A remote node registers its tmux shells + coding sessions into the one
 central brain over the API and is driven back through a pull-based command queue.
-See MULTI_MACHINE_FLEET_DESIGN.md.
+See vault/ProjectAria/Design/ARCHITECTURE.md (Multi-machine fleet)
 """
 
 from __future__ import annotations

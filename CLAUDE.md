@@ -8,11 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 0. **`vault/ProjectAria/START_HERE.md`** — what this system is and how it decides things,
    in plain English, in about five minutes. Read it first if you have not worked on ARIA
    before; it is also the map of which vault docs are current and which are historical.
-1. `PROJECT_STATUS.md` - Current phase and checklist
-2. `CHANGELOG.md` (last 50 lines) - Recent changes
-3. `SPECIFICATION.md` - Detailed architecture and requirements (now in Obsidian: `/home/ben/Obsidian/vault/ProjectAria/Specs/SPECIFICATION.md`)
+1. `CHANGELOG.md` (last 50 lines) — what actually shipped, most recent first.
+   *(`PROJECT_STATUS.md` was deleted 2026-08-15. It was a hand-maintained "current state"
+   page that duplicated CHANGELOG and drifted: on the evening the steward layer shipped it
+   still asserted that one item was in progress. A status page nobody updates in the same
+   commit as the work is worse than no status page — read the changelog and the live API.)*
+2. **`vault/ProjectAria/Design/ARCHITECTURE.md`** — how it is built: the agent-safety
+   subsystems, the memory schema, the fleet. *(`SPECIFICATION.md` was deleted 2026-08-15;
+   about 90% of it described a system that was never built or was rebuilt, and what was true
+   now lives in ARCHITECTURE.md or here.)*
 
-> **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault at `/home/ben/Obsidian/vault/ProjectAria/` (synced to all devices). Agent-operational docs (this file, `PROJECT_STATUS.md`, `BACKLOG.md`, handoffs, READMEs) stay in the repo. See the `project-docs` skill.
+> **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault at `/home/ben/Obsidian/vault/ProjectAria/` (synced to all devices). Agent-operational docs (this file, `CHANGELOG.md`, `BACKLOG.md`, `docs/ops/`, READMEs) stay in the repo. See the `project-docs` skill.
 >
 > ⚠️ The vault has **both** a `ProjectAria/` and an `infrastructure/` folder. File by what the doc is *about*: agent architecture, routing, ARIA operations → `ProjectAria/`; how a model is built, quantized, tuned or measured → `infrastructure/`. (`HOUSE_AGENT_ARCHITECTURE_20260815` moved `infrastructure/Planning` → `ProjectAria/Planning` on 2026-08-15 for exactly this reason.)
 
@@ -425,6 +431,13 @@ only if declarative proves too limiting.
 A coding task started with **no explicit backend/model** is classified into a
 tier and run on that tier's model — `deep` (planning/design/strategy) → Opus 4.8,
 `standard` (scoped implementation) → Sonnet 5, `light` (research) → Sonnet 5.
+**Why these three choices** (the reasoning lived only in PROJECT_STATUS.md, now deleted):
+*Sonnet is the floor, and sub-Sonnet is reachable only on quota exhaustion, because* **cheap
+models cost more in rework than they save — the fallback exists to keep working when the
+subscription is out, not to save money.** *Routing happens inside `start_session()` rather
+than per-caller because* **one chokepoint means Hermes, `/code`, the TUI, autostart and
+remote-node sessions all inherit routing with no per-surface work.**
+
 Sonnet is the floor; the sub-Sonnet fallback (`pi-code` on the local
 open-weights server) is reachable only when the Claude quota is cooling down. Three stages, cheap-first: a
 heuristic prefilter, then a Sonnet-class judge (`coding_routing_judge_transport`:
@@ -547,6 +560,12 @@ every row.
 no sessions) · A2 execute in a sandboxed worktree, merge proposed to Ben ·
 A3 auto-merge behind the full gate. **Local models cap at A2** until the
 eval gate in the plan's §8 passes.
+
+**Why OS-level containment rather than an allowlist** — the founding rationale for
+`guard/sandbox.py`, written down before it existed: **kernel-level masking of the network and
+the credential directories survives an allowlist bug in a way a Python string check cannot —
+and, unlike a check running inside the agent's own process, it cannot be switched off by the
+model it is containing.**
 
 ⚠️ **The guard holds the git pen, not the agent.** Checkpoint commits, pushes,
 merges and rollbacks happen in the ARIA process. An agent that can skip its own
@@ -850,11 +869,11 @@ Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB 
 
 ### When Making Changes
 
-1. Check current phase in `PROJECT_STATUS.md`
+1. Check `CHANGELOG.md` for what shipped most recently
 2. Read relevant section in `SPECIFICATION.md`
 3. Follow established code patterns
 4. Update `CHANGELOG.md` with changes
-5. Update `PROJECT_STATUS.md` if completing checklist items
+5. Update `BACKLOG.md` if you closed or opened an item there
 
 ## Testing
 

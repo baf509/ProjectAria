@@ -1,113 +1,152 @@
-# ARIA - Autonomous Reasoning & Intelligence Architecture
+# ARIA
 
-> **New here?** [`vault/ProjectAria/START_HERE.md`](/home/ben/Obsidian/vault/ProjectAria/START_HERE.md)
-> explains what ARIA is and how it decides things in plain English, in about five minutes.
-> This README is the technical setup; that one is the approach.
+ARIA is a local-first **agent substrate and project steward** that runs as an always-on
+service on `corsair-ai`. It owns long-term memory, tool execution, the watched-shell fleet,
+coding-session orchestration, the local model control plane, and — since 2026-08-15 — a
+steward layer that keeps chartered projects moving while nobody is watching. It is a thing
+other programs and a human operator *drive*, not a thing you chat with.
 
-> Personal AI agent with persistent memory, autonomous sub-agents, background processes, and multiple interfaces — runs as a self-hosted service on your Linux machine.
+**The conversational front door is Hermes**, a separate agent with its own service, which
+reaches ARIA only through ARIA's MCP server (`mcp/server.py`). ARIA's own default chat agent
+is deliberately disabled — `POST /api/v1/conversations` returns
+`{"detail":"Agent 'aria' is currently disabled"}`, and that is the intended behaviour, not a
+broken install. It was a third redundant path that duplicated Hermes and made it easy to
+accidentally rebuild a human-facing ARIA chat surface. The Web UI's `/chat` page and
+`aria chat` still exist as code and hit the same refusal.
 
-ARIA is not a chatbot. She's a self-hosted AI agent with her own evolving identity ([SOUL.md](api/prompts/)), long-term memory, the ability to spawn autonomous coding agents, and background processes that run while you sleep. She works with any LLM backend and runs entirely on your infrastructure.
+## Read these first
 
-## What Makes ARIA Different
+| Doc | What it gives you |
+|---|---|
+| `/home/ben/Obsidian/vault/ProjectAria/START_HERE.md` | What this system is and how it decides things, in plain English, in five minutes. Not in this repo — it lives in the Obsidian vault, which is synced to Ben's devices. |
+| `CLAUDE.md` (this repo) | The authority on how things actually work today: model topology, registries, gotchas, every subsystem. Long, and worth it. |
+| This README | What runs, how to start it, how to check it. |
 
-Most AI chat apps are stateless wrappers around an API. ARIA is an **agent platform**:
+## What actually runs
 
-- **She remembers everything** — Hybrid vector + lexical search across all conversations, all interfaces
-- **She can delegate work** — Spawns Claude Code or Codex sessions that code autonomously with `--dangerously-skip-permissions`
-- **She runs background processes** — Dreams, research, heartbeat checks, self-correction, all running as autonomous Claude Code subprocesses
-- **She's everywhere** — Same agent accessible from terminal (TUI/CLI), browser, desktop widget, or REST API — plus the MCP bridge to the Hermes agent, which relays alerts to Signal
-- **She evolves** — Dream cycle reflects on memories, proposes changes to her own identity (with your approval)
+Verified live 2026-08-15T23:12-04:00:
 
-## Architecture
+| Service | Port | How it runs | State |
+|---|---|---|---|
+| `aria-api` | 8200 | systemd **user** unit `aria-api` — native, not Docker | running |
+| `aria-tmux` | — | systemd user unit, oneshot; owns the tmux server for watched shells | `active (exited)` **by design** |
+| `aria-ui` | 3000 | Docker, `ProjectAria/docker-compose.yml` | running |
+| `shared-mongod` | 27017 | Docker, `infrastructure/docker-compose.yml`, bound `127.0.0.1` | running |
+| `shared-mongot` | — | Docker, infrastructure; no host port, reached through mongod | running, but **switched off** in ARIA |
+| `shared-embeddings` | 8001 | Docker, infrastructure | **stopped on purpose** |
+| `shared-tts` | 8002 | Docker, `infrastructure/docker-compose.yml` | running — `hexgrad/Kokoro-82M`, 27 speakers |
+| `aria-stt` | 8003 | Docker, `ProjectAria/docker-compose.yml` | stopped; classified `on_demand` |
+| `hermes-gateway` | — | systemd user unit | running |
+| `signal-cli` | 8090 | systemd user unit | running |
 
-```
-                    You
-                     |
-        +------------+------------+
-        |            |            |
-     Web UI     TUI (Go)     Widget / CLI / REST / MCP
-        |            |            |
-        +------------+------------+
-                     |
-              +------+------+
-              |    ARIA     |
-              | Orchestrator|
-              +------+------+
-                     |
-       +-------------+-------------+
-       |             |             |
-  Sub-Agents    Background     Tools &
-  (Coding)      Processes       MCP
-       |             |             |
-  Claude Code   Dream Cycle    Filesystem
-  Codex         Research       Shell
-  Pi Coding     Heartbeat      Web Fetch
-                Autopilot      Screenshot
-                Awareness      Skills
-                OODA Loop      MCP Servers
-                Summarization
-                Memory Extract
-```
+Model servers, two resident on two separate memory pools:
 
-Every user message flows through the orchestrator, which assembles context (identity, memories, conversation history, awareness data), streams through the LLM with tool execution, and fires background tasks (memory extraction, summarization) after each exchange.
+| Model server | Port | Device | Role |
+|---|---|---|---|
+| `DS4-0731-IQ3_XXS-Halo-Vulkan` | 8108 | Strix Halo iGPU (`gfx1151`), ~100 GiB | the pi coding agent's single 131K slot |
+| `Qwen3.8-27B-R9700-HIP` | 8080 | Radeon AI PRO R9700 (`gfx1201`), ~24 GiB | Hermes's default + ARIA's background LLM work |
 
-## Sub-Agents
+**Don't trust the tables above — ask the machine.** `GET /api/v1/infrastructure/running` is a
+union read over ARIA's two registries and cannot go stale the way a doc can. The API docs are
+at `http://localhost:8200/docs`.
 
-ARIA delegates specialized work to autonomous sub-agents. These persist until you explicitly close them — no timeouts.
+The tts row is an example of why: the non-LLM service registry still describes `:8002` as
+"Qwen3-TTS 0.6B" from `ProjectAria/docker-compose.yml`, while the container actually serving
+it is `infrastructure-tts` running Kokoro. ARIA's own `aria-tts` container is not running.
 
-### Claude Code Sessions
+## Starting it
 
-Interactive coding sessions using the Claude Code CLI. ARIA spawns these as autonomous subprocesses with full filesystem and shell access.
-
-- **Binary**: `claude --dangerously-skip-permissions`
-- **Monitoring**: Watchdog checks every 5s, notifies on stalls, auto-responds to prompts
-- **Review**: Auto-runs tests, lint, and git diff when sessions complete
-- **Persistence**: Sessions stay alive until the process exits or you stop them
-
-### Codex Sessions
-
-Same infrastructure as Claude Code but using OpenAI's Codex CLI with `--sandbox workspace-write --ask-for-approval never`.
-
-### Pi Coding Agent
-
-Interactive coding sessions using the real upstream `pi` CLI. ARIA launches Pi
-inside the same watched tmux-shell substrate as Claude Code, with an explicit
-provider/model selected from the `pi-coding` or `pi-coding-ridge` launch
-profile. Pi owns its coding loop, tools, context files, and session transcript;
-ARIA owns worktree setup, fleet capture, input/stop controls, concurrency,
-watchdog, review, and Ralph-loop supervision.
-
-> **Note on coding sub-agents:** ARIA-spawned coding sessions now run on the **watched-shell substrate** — each becomes an interactive `claude-coding-*` tmux shell, captured and visible in the fleet/TUI and drivable via the same tools, with the watchdog/checkpoint/review overlay still managing it. A session can opt into the **Ralph loop** to keep running: the watchdog re-feeds it whenever it idles (re-checking killswitch/e-stop each nudge) until it emits `RALPH_DONE` or hits a nudge/deadline cap. Toggle it from the TUI (`l`), `POST /coding/sessions/{id}/loop`, or the MCP `set_coding_loop` tool.
-
-## Watched Shells
-
-ARIA can observe and interact with tmux sessions *you* own — separate from the coding sub-agents she spawns herself. Point her at your Claude Code or Codex sessions and she gains situational awareness of what you're working on, can answer prompts for you, and extracts memories from the conversations.
-
-> Originally a separate service (`aria-shells`), this subsystem was absorbed back
-> into ARIA so it is the single always-on service. It is also surfaced to the
-> remote **Hermes** agent through ARIA's MCP server (see *MCP Bridge* below).
-
-**How it works:**
-- **Auto-adopt** — any tmux session named `claude-*` is picked up automatically, with no explicit "create" step. Real-time via a tmux hook (`scripts/aria-tmux-hook.conf` → `aria-shell-register --ensure-capture`), backstopped by a poll reconciler (`ShellAdoptWorker`) that re-attaches capture to any session the hook missed.
-- A `pipe-pane` capture subprocess streams every line into the `shell_events` collection with ANSI stripping and server-assigned line numbers.
-- A **snapshot** worker periodically captures the full pane buffer for rehydration after restarts.
-- An **idle notifier** watches for shells stuck at an interactive prompt (`[y/n]`, `Human:`, etc.) and enqueues an alert that the Hermes agent relays over Signal.
-- A **memory extraction** worker (per-call timeout + cursor self-heal) feeds accumulated events through the memory extractor so long-running coding sessions become searchable facts.
-- A **prune** worker enforces per-shell scrollback retention by token budget; a **selfcheck** worker monitors DB/LLM/embeddings/extraction health and raises alerts; a weekly **report** worker texts an "all good" heartbeat (via Hermes) so silence is never ambiguous.
-- A **project harvester** derives the project registry from git repos + Claude/pi sessions + live shells.
-- The orchestrator injects a recent-activity summary into every chat so ARIA can reference "your coding agent in proj" without asking.
-
-**Using it:**
+Order matters: shared infrastructure first, then the API, then ARIA's own containers.
 
 ```bash
-# Enable the tmux hook once
-tmux source-file scripts/aria-tmux-hook.conf
+# one-time, if the network does not exist yet
+docker network create shared-infra
 
-# Start a watched session — any name prefixed with claude-
-tmux new -s claude-myproject
+# 1. shared infrastructure — Mongo (replica set rs0), mongot, embeddings.
+#    Also used by AgentBenchPlatform; stopping it breaks both projects.
+cd /home/ben/Development/infrastructure && docker compose up -d
 
-# Or via CLI
-aria shells list                    # list registered shells
+# 2. ARIA API — native systemd user service, binds :8200
+systemctl --user start aria-api
+systemctl --user status aria-api
+journalctl --user -u aria-api -f
+
+# 3. ARIA's own containers (ui, stt)
+cd /home/ben/Development/ProjectAria && docker compose up -d
+```
+
+⚠️ **Never hand-run `docker`/`systemctl`/`serve.sh` to start or stop a model server.** All of
+that goes through ARIA's model-server registry
+(`api/aria/infrastructure/model_servers.py`), which enforces RAM exclusivity, per-GPU-pool
+fit and port conflicts that a raw `docker start` does not check. Rule since 2026-07-29. The
+concrete cost: starting a Halo-class container by hand while DS4 holds ~100 GiB OOM-kills
+something, and it has.
+
+### Verifying
+
+```bash
+API_KEY=$(grep -E '^API_KEY=' .env | cut -d= -f2-)
+
+curl -s http://localhost:8200/api/v1/health
+curl -s -H "X-API-Key: $API_KEY" http://localhost:8200/api/v1/infrastructure/running
+curl -s -H "X-API-Key: $API_KEY" http://localhost:8200/api/v1/capabilities/retrieval
+```
+
+`/api/v1/health` currently reports `"status":"degraded"` with `"embeddings":"unreachable"`.
+That is expected: both retrieval capabilities were switched off by hand on 2026-08-15, so
+memory search runs in `fallback` mode (mongod-native scan, no BM25, no vectors) and 1,849
+memories are queued for re-embedding. **Check `/api/v1/capabilities/retrieval` before
+concluding recall is broken** — degraded recall is the current deliberate state. Runbook:
+`docs/ops/RETRIEVAL_CAPABILITIES.md`.
+
+### Configuration
+
+Everything is `.env` in this directory. Two traps in `.env.example`, which is a stale
+skeleton rather than a working template:
+
+- It sets `LLAMACPP_URL=http://localhost:8080/v1`. The live value must be
+  `http://localhost:8200/llm/v1` — ARIA's own OpenAI-compatible passthrough, which forwards
+  to whichever model server is currently resident. Pinning a model port here broke four
+  times running, because the big servers are mutually RAM-exclusive and the named one goes
+  down the moment another starts.
+- It has no `ADMIN_KEY`. The irreversible routes (killswitch/e-stop deactivate, `PUT /agents`,
+  `set_llm_route`, guard merge, policy accept) require it and **fail closed** if it is unset.
+  `API_KEY` cannot serve this purpose: anything running as `ben` can read it out of `.env`.
+
+## The steward layer
+
+Shipped 2026-08-15 (`api/aria/steward/`, `api/aria/guard/`). Every project ARIA looks after
+has a **charter** in the vault saying what it is for and how far ARIA may go; ARIA writes a
+plan; nothing outward-facing happens without Ben's approval on that specific plan. Coding
+sessions run in a bwrap sandbox with credentials scrubbed, in a per-session git worktree, and
+**ARIA — not the agent — makes the checkpoint commits**, because an agent that can skip its
+own checkpoint doesn't have one.
+
+Running right now: the steward tick (30 min), the vault reader (60 s), the meta supervisor
+(30 s, ladder cap L4), the outcome scorer (5 min), the paused-shell nudger (15 min) and the
+relay watchdog (2 min, 20 min timeout). Every steward worker is **off by default** in a fresh
+checkout — a phase is enabled only once its gate passes.
+
+Full design and live status: `vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md`.
+Plain-English version: `START_HERE.md`. Mechanics: `CLAUDE.md` → *Steward Layer*.
+
+## Operator surfaces
+
+**TUI** — the cockpit, a pure-HTTP Go client with no machine-local assumptions, so it doubles
+as a remote cockpit over the tailnet (`aria tui --host corsair`). Screens: `f` fleet,
+`j` projects, `h` health, `g` models (load one, and how it loads), `m` memories, `u` usage,
+`s` search, `y` shell history, `l` toggles the Ralph loop. Build and transfer recipe:
+`tui/README.md`.
+
+**Watched shells** — any tmux session named `claude-*` is adopted automatically and mined for
+memories, projects and idle alerts. Gated by `SHELLS_ENABLED`; disables cleanly if tmux is
+absent.
+
+```bash
+tmux source-file scripts/aria-tmux-hook.conf   # enable the hook once
+tmux new -s claude-myproject                   # any name prefixed claude-
+
+aria shells list
 aria shells info claude-myproject
 aria shells tail claude-myproject --lines 50
 aria shells send claude-myproject "yes"
@@ -116,295 +155,105 @@ aria shells search "compilation error"
 aria shells tags claude-myproject primary urgent
 ```
 
-**Dashboard tab:** `http://localhost:3000/dashboard/shells` — sidebar list, live scrollback via SSE, special-key palette (Enter/Esc/Ctrl-C/Ctrl-D/↑/↓/yes/no), and a send-input form.
+**Web UI** (`http://localhost:3000`) — `/cockpit`, `/operate` (launch configuration + local
+model route), `/inbox`, `/autonomy`, `/dashboard/shells` (sidebar list, live scrollback over
+SSE, special-key palette, send-input form). `/chat` is a dead page against the disabled agent.
 
-**From chat:** ARIA has a `send_shell_input` tool, so you can ask her to "tell my coding agent yes" or "send Ctrl-C to claude-myproject" in any conversation.
+**MCP bridge** — `mcp/server.py`, launched by Hermes from `~/.hermes/config.yaml`, wrapping
+`/api/v1`. After editing it, restart `hermes-gateway.service`; there is no per-tool whitelist
+on the Hermes side, so that restart alone publishes a new tool.
+⚠️ `~/.local/share/aria-mcp/server.py` must stay a **symlink** to this repo's file. It was a
+hand-made copy until 2026-08-15 and had drifted 19 tools behind, with the only symptom being
+a tool that "didn't exist" for no visible reason.
 
-All of this is gated by `SHELLS_ENABLED` in `.env` and disabled cleanly if tmux isn't available.
-
-## MCP Bridge (Hermes)
-
-ARIA exposes its `/api/v1` surface as an **MCP server** (`mcp/server.py`, FastMCP) so the remote **Hermes** agent can drive *all of ARIA* — ~31 tools: the fleet (`fleet_status`, `send_shell_input`, …), **chat with the ARIA orchestrator** + conversations + agents, **memory** (`search_memory`/`add_memory`), **coding sub-agents** (create/drive/stop), projects/tasks (`/todos` + `/projects/{id|slug}`), and alerts.
-
-### Self-healing alerts
-Because Hermes owns the single signal-cli daemon, ARIA no longer sends Signal/Telegram itself — it enqueues actionable, cooldown-gated alerts into the `alerts` collection (`selfcheck` alerts once per state-transition; job-lifecycle events are filtered out). Hermes owns the resolution loop (a cron job): on each alert it **spins up a diagnostic coding sub-agent** via the MCP, collects a root-cause + proposed fix, relays *that* to Signal ("reply APPLY…"), and acks. On `APPLY`, Hermes spawns a fixer agent to apply it — verified end-to-end. So ARIA's alerting is fully observable and self-remediating, not just forwarded.
-
-## Background Processes
-
-These are autonomous tasks where ARIA delegates work to a Claude Code CLI instance via the `ClaudeRunner`. They use your Claude subscription (not API tokens) and run without interactive permissions.
-
-| Process | Schedule | What It Does |
-|---------|----------|--------------|
-| **Dream Cycle** | Every 6h, quiet hours (1am-5am) | Reviews memories, finds patterns, writes journal entries, proposes identity evolution |
-| **Research** | On demand (`/research query`) | Recursive web research with branching queries, learning extraction, report synthesis |
-| **Heartbeat** | Every 30min, active hours (9am-10pm) | Reviews checklist, enqueues an alert (relayed by Hermes to Signal) if anything needs attention |
-| **OODA Loop** | Non-streaming responses (if enabled per-agent) | Scores ARIA's own response quality (0-1), retries if below threshold — only on the non-streaming path, not the default streaming chat |
-| **Autopilot** | On demand via API, or scheduled | Decomposes goals into steps, executes sequentially with optional approval gates. The scheduler's `autopilot` action can run an autonomous goal (e.g. "every morning, triage my repos") on a local-time cadence |
-| **Backups** | Daily @ 03:30 (systemd timer) | `scripts/aria-backup.sh` — mongodump of the `aria` DB plus SOUL/journals/skills, with rotation (`aria-backup.timer`) |
-| **Awareness** | Every 30min (if enabled) | Monitors git activity, system health, filesystem changes, produces situational summary |
-| **Summarization** | Auto when context grows | Rolling conversation compaction preserving goals, decisions, progress, open questions |
-| **Memory Extraction** | After conversations | Extracts facts, relationships, events, beliefs with categories and confidence scores |
-| **Session Digest** | After coding sessions | Analyzes completed sessions, extracts takeaways, decisions, open questions |
-
-## Safety & Reliability
-
-ARIA's long-running agents are supervised by a layer of safety subsystems inspired by Gas Town's agent-ops patterns:
-
-| Subsystem | Purpose |
-|-----------|---------|
-| **Context Budget Guard** | Watches coding sessions for context-window exhaustion via heuristic signals (provider limit messages, Claude Code compaction notices, latency spikes). WARN @ 75%, SOFT checkpoint @ 85%, HARD stop @ 92% — thresholds are heuristic labels derived from output signals, not exact token metering. |
-| **Session Checkpoints** | Persists task, modified files, branch, last commit, and notes to MongoDB so crashed agents can be resumed with full context. |
-| **Emergency Stop (Estop)** | MongoDB-backed global freeze that halts all agent activity on API rate limits or critical errors. Visible across processes, auto-thaws when clear. |
-| **Inter-Agent Mail** | Structured `TASK_DONE` / `HANDOFF` / `RESULT` / `ERROR` / `CHECKPOINT` message types in MongoDB. Currently carries sub-agent completion signals (`TASK_DONE`); full bidirectional polling by the orchestrator isn't wired yet. |
-| **Tmux Backend** | Visible-pane overlay used when a coding session is started with `visible=True` — each agent gets its own color-coded tmux pane inside an `aria-agents` session. (Not a selectable backend in the registry, which exposes `codex` + `claude_code`.) |
-| **Escalation Protocol** | Severity-routed notifications (CRITICAL/HIGH/MEDIUM/LOW) with auto-resolution attempts and auto-re-escalation of stale items (subsystem implemented; not yet wired into the live alert path). |
-
-## Interfaces
-
-| Interface | Technology | Description |
-|-----------|-----------|-------------|
-| **TUI** | Go (Bubble Tea) | 4-quadrant terminal dashboard with sidebar, session detail, tools, vitals. A thin pure-HTTP client, so it runs **remotely** as a cross-machine cockpit (`aria tui --host <name>` → `~/.config/aria/hosts`) |
-| **Web UI** | Next.js | Chat interface with mode switching and conversation management; **installable PWA** (manifest + service worker, network-first, bypasses `/api` + SSE) |
-| **Desktop Widget** | Tauri v2 | System tray app, `Ctrl+Space` hotkey, voice input/output |
-| **CLI** | Python | `aria chat`, `aria research`, `aria memories search`, `aria tools list` (honors `ARIA_API_URL`) |
-| **REST API** | FastAPI | Full API with SSE streaming at `localhost:8200` (the single always-on service) |
-| **MCP** | FastMCP (stdio) | `mcp/server.py` — ~31 tools (fleet, chat, memory, coding sub-agents, projects/tasks, alerts), consumed by the Hermes agent |
-
-Each interface maintains its own conversation with ARIA, but all share the same sub-agents, background processes, and long-term memory. Outbound notifications go through the MCP alert queue relayed by Hermes rather than ARIA sending Signal/Telegram directly.
-
-The **TUI** also has Fleet (`f`: all coding sessions + watched shells with **host**, backend/model, status, idle, tokens + $cost — `↑↓` select, `l` toggle the Ralph loop, `⏎` open), Health (`h`: per-service status from `/health/services`), and Search (`s`: runs the search agent) screens. On a session screen, `l` toggles the **Ralph loop** (keep the session going: the watchdog nudges it forward whenever it idles until it emits `RALPH_DONE` or hits a cap).
-
-**Cross-machine cockpit:** because the TUI only speaks `/api/v1` HTTP, you can run it on the MacBook and point it at corsair over the tailnet instead of SSHing in. Build with `cd tui && make build-darwin`, drop a `~/.config/aria/hosts` profile, and run `aria-tui --host corsair`. Full setup (Taildrop/scp transfer, ad-hoc `codesign`) is in [`tui/README.md`](tui/README.md); the plan to make the *fleet* span machines is [`MULTI_MACHINE_FLEET_DESIGN.md`](MULTI_MACHINE_FLEET_DESIGN.md).
-
-### Slash Commands
-
-In-chat commands handled before the LLM sees the message:
-
-| Command | Effect |
-|---------|--------|
-| `/model <backend> [<model-id>]` | Pin the conversation to a specific backend/model (strict — no fallback). `/model` shows the current pin; `/model auto` unpins |
-| `/route <task>` | Apply an advisory heuristic suggestion as a pin (overridable with `/model`) |
-| `/models` (`/backends`) | List available backends and the current selection |
-| `/search <query>` | Run the context-1 search agent inline and show ranked documents |
-| `/forget <query>` | Remove the single best-matching long-term memory (reviewable, one at a time) |
-
-The same search is available as `aria search <query>` from the CLI and the TUI Search screen.
-
-## Memory System
-
-Two-tier architecture with shared access across all interfaces:
-
-**Short-term**: Recent conversation messages per interface. Fast MongoDB queries, token-aware truncation.
-
-**Long-term**: Hybrid search combining:
-- `$vectorSearch` — 1024-dim voyage-4-nano embeddings, cosine similarity
-- `$search` — BM25 lexical search
-- RRF fusion (k=60) merges both result sets
-
-Memories have content types (fact/preference/experience/relationship), categories, confidence scores (with time decay), importance ratings, and access counts.
-
-**Either retrieval dependency can be switched off at runtime without stopping ARIA** — mongot (`search`) and the embeddings model (`embeddings`) are independent switches (`GET`/`PUT /api/v1/capabilities/retrieval`). Recall degrades rather than failing: embeddings off → BM25 only; mongot off → a mongod-native scan. Writes never block — a memory that can't be embedded is stored flagged `embedding_pending`, and that flag is a queue the backfill worker drains automatically when embeddings come back on. Health checks stop paging for a capability that is off on purpose.
-
-> ⚠️ **Both switches are currently OFF (2026-08-15)** — `retrieval_mode` is `fallback`, so search results come from the scan, not from mongot. See **`docs/ops/RETRIEVAL_CAPABILITIES.md`** for current state and how to restore.
-
-## LLM Backends
-
-| Backend | Type | Config / models |
-|---------|------|--------|
-| **Fireworks** | Cloud | `FIREWORKS_API_KEY` — **GLM 5.2** (`glm-5p2`); the default model for the ARIA orchestrator + Pi Coding Agent. Aliases: `fireworks`, `glm` |
-| **llama.cpp** (qwen-chat) | Local (ROCm) | Qwen3.6 **35B-A3B** `:8092` (`llamacpp_url`) — AMD Strix Halo GPU box. Aliases: `llamacpp`, `local`, `qwen-chat` |
-| **agentic** (qwen-agentic) | Local (ROCm) | Qwen3.6 **27B** `:8093` (`agentic_url`) — coresident tool-use/long-context server. Aliases: `agentic`, `qwen-agentic` |
-| **context-1** | Local (ROCm) | chromadb/context-1 20B `:8081` — the Search Agent's agentic backend |
-| **Anthropic** | Cloud | `ANTHROPIC_API_KEY` in `.env` |
-| **OpenAI** | Cloud | `OPENAI_API_KEY` in `.env` |
-| **OpenRouter** | Cloud (multi) | `OPENROUTER_API_KEY` in `.env` |
-
-All backends implement the same adapter interface; **backend + model are chosen per agent** (config rows in `db.agents`), and a conversation can be **pinned** to a specific backend/model with `/model` (an explicit pin is strict — no fallback). The three local models (qwen-chat `:8092`, qwen-agentic `:8093`, context-1 `:8081`) run coresident as Docker containers in `infrastructure/qwen-rocmfp4/`. The LLM manager handles selection and fallback chains. (The old single `llama.cpp` on `:8080` is retired.)
-
-**Cost & health:** usage records carry backend + session id and are priced via `llm/pricing.py` (local backends are $0); see `GET /usage/cost`, `/usage/by-session`, `/usage/by-conversation`, and `/usage/by-model`. A spend circuit-breaker (`spend_cap_usd_per_hour`) trips the global e-stop when hourly priced spend exceeds the cap. `GET /health/services` concurrently probes every backing service (mongod, mongot, the three local llama.cpp servers, embeddings, tts, stt, fireworks) for the TUI/web health page.
-
-## Tools
-
-Built-in tools ARIA can call during conversations:
-
-| Tool | Description |
-|------|-------------|
-| `shell` | Execute shell commands |
-| `filesystem` | Read, write, list, delete files |
-| `web_fetch` | HTTP requests |
-| `browse_page` | Fetch a URL and return readable text (title + main content), following allowlisted redirects |
-| `screenshot_analyze` | Capture and analyze screen |
-| `start_coding_session` | Spawn a coding session — backend `claude_code`, `codex`, or `pi-code` (ARIA's own loop, with a pinned LLM/model) |
-| `stop_coding_session` | Stop a running session |
-| `get_coding_output` | Read session output |
-| `send_to_coding_session` | Send input to running session |
-| `send_shell_input` | Send keystrokes to a watched tmux shell |
-| `claude_agent` | Delegate a one-shot task to Claude Code |
-| `pi_coding_agent` | Delegate to Pi Coding Agent (local LLM) |
-| `update_soul` | Read or modify SOUL.md |
-| `generate_document` | Generate documentation |
-
-Additionally, MCP servers provide dynamic tools via JSON-RPC 2.0, and the skill system allows installing packaged tool bundles.
-
-### Computer Use (Playwright)
-
-ARIA can drive a real headless browser via the [Playwright MCP](https://github.com/microsoft/playwright-mcp) server — navigate, read the accessibility snapshot, click/type by element ref, screenshot, evaluate JS, etc. (23 `browser_*` tools).
-
-One-time setup (already done on `corsair-ai`):
+**Computer use** — the Playwright MCP server is registered against the running API and
+persisted in Mongo, so it is restored on startup. To install or re-register it:
 
 ```bash
-# 1. Install the Playwright MCP server + its browser build
 npm install -g @playwright/mcp@latest
 node "$(npm root -g)/@playwright/mcp/cli.js" install-browser chrome-for-testing
-
-# 2. Register it with ARIA (persisted in Mongo, restored on startup)
 curl -X POST -H "X-API-Key: $API_KEY" -H 'Content-Type: application/json' \
   -d '{"server_id":"playwright","command":["node","'"$(npm root -g)"'/@playwright/mcp/cli.js","--headless","--isolated","--browser","chromium"]}' \
   http://localhost:8200/api/v1/mcp/servers
 ```
 
-The `browser_*` tools pass the allowlist via `tool_allowed_prefixes` (config), and agents enable the whole family with a single `"browser_*"` entry in `enabled_tools` (the ARIA and pi-code agents have it enabled). So in chat you can just ask ARIA to "open example.com and tell me what's on the page."
+## Background cadences
 
-## Voice Services
+| Job | Cadence | Notes |
+|---|---|---|
+| Dream cycle | every 6h, active hours 01:00–05:00 | `DREAM_ENABLED=true` |
+| Awareness | 120 s poll, 30 min analysis | git activity, system health, filesystem |
+| Embedding backfill | every 300 s, 100/batch | also wakes immediately when embeddings are switched back on |
+| Backups | daily 03:30, `aria-backup.timer` | `scripts/aria-backup.sh` — mongodump of `aria` plus SOUL/journals/skills, with rotation |
+| Hourly safety snapshot | hourly, `hourly-safety.timer` | work-in-progress push to a local mirror that refuses rewritten history |
 
-### Text-to-Speech (TTS)
+Heartbeat is **off** (`HEARTBEAT_ENABLED=false`) and its config defaults still name a dead
+OpenRouter account — do not turn it on without repointing it at a local backend first.
 
-Qwen3-TTS 0.6B CustomVoice on CPU. 9 speakers (Vivian, Serena, Dylan, Eric, Ryan, Aiden, etc.).
+## Things that will cost you an hour
 
-- **Service**: `http://localhost:8002`
+- **`localhost:8092` is connection-refused even though `ss` shows a listener.** It is
+  `ridge-llama-proxy`, bound on the tailnet IP only. This has been misdiagnosed repeatedly.
+- **DRM enumeration is inverted:** `card0` is the discrete R9700, `card1` is the Strix Halo
+  iGPU. Code that reads `card0` to check "GPU memory" reports the wrong pool.
+- **The tmux server must be owned by `aria-tmux.service`.** If `aria-api` spawns it first, the
+  server lands in aria-api's cgroup and the next `systemctl --user restart aria-api` kills
+  every watched session with it. This ate whole days of live sessions before it was found.
+- **`-c` is per sequence, not a total to divide.** Total KV = `-c` × `-np`.
 
-### Speech-to-Text (STT)
+`CLAUDE.md` → *Critical Gotchas* has the rest, with the failures that produced them.
 
-whisper-large-v3-turbo via faster-whisper, CPU with int8 quantization. Auto language detection.
-
-- **Service**: `http://localhost:8003`
-
-## Embedding Service
-
-Local sentence-transformers running `voyageai/voyage-4-nano` on CPU. OpenAI-compatible `/v1/embeddings` endpoint.
-
-- **Model**: voyage-4-nano (MRL truncated to 1024 dims)
-- **Service**: `http://localhost:8001`
-- **Fallback**: Voyage AI cloud API (if `VOYAGE_API_KEY` is set)
-- **Switchable**: the `embeddings` capability can be turned off (and the container stopped) without stopping ARIA — memories are still written, flagged `embedding_pending`, and re-embedded on re-enable. **Currently OFF and stopped (2026-08-15)**; see `docs/ops/RETRIEVAL_CAPABILITIES.md`.
-
-## Quick Start
-
-See **[GETTING_STARTED.md](GETTING_STARTED.md)** for the full setup guide.
-
-```bash
-# 1. Clone and configure
-git clone https://github.com/baf509/ProjectAria.git
-cd ProjectAria
-cp .env.example .env        # Edit with your API keys
-
-# 2. Start shared infrastructure (MongoDB + mongot + embeddings)
-cd ../infrastructure && docker compose up -d
-# Local LLMs (qwen-chat/agentic + context-1) run from infrastructure/qwen-rocmfp4/
-cd qwen-rocmfp4 && docker compose up -d && cd ..
-
-# 3. Start ARIA API (native service for filesystem/process access)
-systemctl --user start aria-api
-
-# 4. Start ARIA Docker services (TTS, STT, Web UI)
-cd ../ProjectAria && docker compose up -d
-
-# 5. Access ARIA
-open http://localhost:3000      # Web UI
-aria-tui                        # Terminal dashboard
-aria chat "Hello, ARIA!"        # CLI
-```
-
-## Directory Structure
+## Layout
 
 ```
-ProjectAria/
-├── api/                        # FastAPI backend
-│   └── aria/
-│       ├── core/               # Orchestrator, context builder, ClaudeRunner, OODA, steering
-│       ├── llm/                # LLM adapters (llamacpp, context1, anthropic, openai, openrouter, fireworks)
-│       ├── memory/             # Short-term + long-term memory, embeddings, extraction
-│       ├── tools/              # Built-in tools + MCP integration
-│       ├── agents/             # Coding session manager, watchdog, tmux backend, budget guard, checkpoint, estop, mail
-│       ├── dreams/             # Dream cycle service
-│       ├── research/           # Recursive web research
-│       ├── heartbeat/          # Periodic check-in service
-│       ├── autopilot/          # Goal decomposition and execution
-│       ├── awareness/          # Environmental sensors (git, filesystem, system, sessions)
-│       ├── shells/             # Watched tmux fleet: auto-adopt, capture, snapshot, extraction, prune, selfcheck, report, project harvest
-│       ├── planning/           # Projects (harvested + LLM-extracted) and to-do tasks
-│       ├── signal/             # Signal bot integration (inbound chat)
-│       ├── notifications/      # Alert queue (relayed by Hermes over MCP)
-│       ├── workflows/          # Multi-step workflow engine
-│       ├── tasks/              # Background task runner
-│       ├── skills/             # Skill registry and loader
-│       └── db/                 # MongoDB models, migrations, usage tracking
-├── mcp/                        # MCP server (FastMCP) exposed to the Hermes agent
-├── scripts/                    # tmux hook + aria-shell-capture/register shims
-├── tui/                        # Go TUI (Bubble Tea) — 4-quadrant dashboard
-├── ui/                         # Next.js web UI
-├── widget/                     # Tauri v2 desktop widget
-├── cli/                        # Python CLI client
-├── tts/                        # TTS microservice (Qwen3-TTS)
-├── stt/                        # STT microservice (whisper-large-v3-turbo)
-├── docker-compose.yml          # ARIA Docker services (tts, stt, ui)
-├── ARCHITECTURE.md             # Detailed architecture documentation
-├── GETTING_STARTED.md          # Setup guide
-├── SPECIFICATION.md            # Detailed requirements
-└── PROJECT_STATUS.md           # Current progress
+api/aria/          FastAPI service. Subsystems: agents, guard, steward, shells,
+                   memory, ontology, planning, workflows, notifications,
+                   infrastructure (the two registries), llm, tools, nodes, node.
+cli/               Python CLI (`aria`) — pip install -e .
+tui/               Go TUI cockpit (`aria tui`, or the raw `aria-tui` binary)
+ui/                Next.js web UI
+widget/            Tauri v2 tray widget
+mcp/               MCP server — Hermes's only path into ARIA
+guard/             guard runtime state
+scripts/           systemd units, tmux hook, backup, node agent, guard red-team drill
+docs/ops/          runbooks that stay in the repo
+docs/{design,specs}/  migration stubs pointing into the Obsidian vault
 ```
+
+Design, spec, analysis and planning docs live in the vault at
+`/home/ben/Obsidian/vault/ProjectAria/`, not here. Agent-operational docs (`CLAUDE.md`,
+`PROJECT_STATUS.md`, `BACKLOG.md`, `docs/ops/`) stay in the repo.
 
 ## Development
 
 ```bash
-# API (with hot-reload; stop the systemd service first or use a spare port — the
-# live service binds :8200)
+# tests
+cd api && python3 -m pytest tests/ -v
+cd api && python3 -m pytest tests/ -k "tool"
+
+# API with auto-reload — stop the systemd service first, it already binds :8200
+systemctl --user stop aria-api
 cd api && uvicorn aria.main:app --reload --host 0.0.0.0 --port 8200
 
-# TUI (local)
-cd tui && make install && aria-tui        # or: aria tui  (via the Python CLI)
-# TUI (remote cockpit, e.g. from a MacBook — see tui/README.md)
-cd tui && make build-darwin               # → aria-tui-darwin-arm64
-aria-tui --host corsair                    # profile in ~/.config/aria/hosts
-
-# Web UI (with hot-reload)
-cd ui && npm run dev
-
-# Desktop Widget
-cd widget && npm install && npm run tauri:dev
+# web UI
+cd ui && npm install && npm run dev
 
 # CLI
 cd cli && pip install -e .
-
-# Tests
-cd api && python3 -m pytest tests/ -v
 ```
 
-## Documentation map
+**Desktop widget (Tauri v2).** Tray app, opens with `Ctrl+Space`; set the API URL in its
+settings panel. On Linux you need the system dependencies first:
 
-Each doc owns one thing — check the owner rather than duplicating facts across docs.
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+cd widget && npm install
+npm run tauri:dev
+npm run tauri:build      # → widget/src-tauri/target/release/bundle/
+```
 
-| Doc | Source of truth for |
-|-----|---------------------|
-| **README.md** (this file) | Project overview + capability tour |
-| **[CLAUDE.md](CLAUDE.md)** | Agent/contributor guide: current ports, model topology, services, run commands, gotchas |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | How ARIA thinks: orchestrator loop + background-process catalog |
-| **[GETTING_STARTED.md](GETTING_STARTED.md)** | Operator setup + troubleshooting |
-| **[SPECIFICATION.md](SPECIFICATION.md)** | Deep reference: data models, memory internals, API surface |
-| **[CHANGELOG.md](CHANGELOG.md)** | What shipped, when (the single history) |
-| **[PROJECT_STATUS.md](PROJECT_STATUS.md)** | Thin living status: current focus + next actions |
-| **[BACKLOG.md](BACKLOG.md)** | Uncommitted product vision + open research questions |
-| **[MULTI_MACHINE_FLEET_DESIGN.md](MULTI_MACHINE_FLEET_DESIGN.md)** | Design: cross-machine cockpit + fleet (Layer A shipped, B2 planned) |
-| **[tui/README.md](tui/README.md)** · **[cli/README.md](cli/README.md)** · **[ui/README.md](ui/README.md)** | Each frontend component |
-| **[docs/archive/](docs/archive/)** | Historical, superseded docs (completed plans, v1 designs) — not current truth |
+On Windows: Node.js 18+, the Rust toolchain, and **Visual Studio C++ Build Tools with the
+"Desktop development with C++" workload**. `npm run tauri:build` produces installers under
+`src-tauri/target/release/bundle/msi/` and `.../nsis/`.
 
-## Key Design Decisions
-
-1. **No framework dependencies** — No LangChain, LlamaIndex, etc. Direct API integration only.
-2. **LLM agnostic** — Adapter pattern makes backends swappable with automatic fallback.
-3. **MongoDB 8.2 + mongot** — Community Server with vector search, no Atlas needed.
-4. **Local-first** — Local LLMs primary, cloud APIs as fallback.
-5. **Hybrid search** — BM25 + vector with RRF fusion for memory retrieval.
-6. **Sub-agents persist** — Coding sessions stay alive until explicitly stopped, no timeouts.
-7. **Background autonomy** — ClaudeRunner delegates to Claude Code CLI using subscription tokens, not API keys.
-8. **Identity evolution** — ARIA can propose changes to her own SOUL.md, but changes require user approval.
+Last updated: 2026-08-15T23:12:39-04:00

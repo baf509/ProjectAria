@@ -12,7 +12,7 @@ self-report is not a confirmation. If the save can't be verified within the
 timeout, the shell is left alone and an alert is raised — it is NEVER reaped
 on an unconfirmed save.
 
-Related: COHERENCE_DESIGN.md · C9
+Related: vault/ProjectAria/Design/ARCHITECTURE.md · C9
 """
 from __future__ import annotations
 

@@ -5,7 +5,7 @@ Phase: Ontology Memory Map · Phase 1
 Purpose: Entity/relation vocabulary, slug rules, and field-ownership sets.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §3 (data model), §10 (notes)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ Phase: Ontology Memory Map · Phase 3
 Purpose: Query and curate the knowledge graph of Ben's world.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §5 (HTTP API), §7 (memory<->graph cross-link)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
 
 Writes go through the global X-API-Key middleware (S4), same as every other
 mutating route. A write from here is CURATION — it may set the protected

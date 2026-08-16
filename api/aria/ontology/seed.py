@@ -6,7 +6,7 @@ Purpose: The ~14 entities that have no authoritative collection and change on
 a scale of months. Everything else is PROJECTED (see projection.py).
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §4b (hand-authored durable entities), §4 (the rule)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
 
 WHY THIS FILE IS SHORT
 ======================

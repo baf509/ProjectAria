@@ -5,9 +5,8 @@ Phase: Ontology Memory Map · Phase 0
 Purpose: Know what is *supposed* to be running on this box, and whether it is.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md §4c (why this is a sibling of the model-server
-  registry rather than rows inside it) and §4a (the ontology projects `service`
-  entities from here).
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map) — the ontology
+  projects `service` entities from this registry rather than holding rows itself.
 
 WHY THIS IS NOT `model_servers.REGISTRY`
 =======================================

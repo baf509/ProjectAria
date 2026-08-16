@@ -6,8 +6,8 @@ Purpose: A queryable knowledge graph of Ben's world (machines, services,
 projects, network, devices) cross-linked to the flat semantic memory store.
 
 Related Spec Sections:
-- ONTOLOGY_MEMORY_DESIGN.md (whole doc; §3 data model, §4 seed strategy,
-  §5 HTTP API, §7 memory<->graph cross-link)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Ontology Memory Map)
+  — data model, HTTP API, and the memory<->graph cross-link)
 
 Design rule that shapes every module here (§4): **project what churns,
 hand-author what doesn't.** Services and projects are derived from the

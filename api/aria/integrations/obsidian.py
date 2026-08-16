@@ -51,7 +51,7 @@ round-trip value-wise it refuses instead of guessing — including a flow list
 whose quoting it cannot resolve.
 
 Related Spec Sections:
-- COHERENCE_DESIGN.md C6 (Obsidian long-form surface)
+- vault/ProjectAria/Design/ARCHITECTURE.md (Coherence C6) (Obsidian long-form surface)
 - ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md §3.2, §4.1, §8 (the vault as a
   two-way surface; CHARTER.md / STEWARD_PLAN.md / Research `accepted:`)
 """

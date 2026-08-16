@@ -1,4 +1,4 @@
-"""Tests for the idle-session reaper (COHERENCE_DESIGN.md C9)."""
+"""Tests for the idle-session reaper (vault/ProjectAria/Design/ARCHITECTURE.md (Coherence C9))."""
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
