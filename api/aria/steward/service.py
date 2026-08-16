@@ -1487,6 +1487,13 @@ class StewardWorker:
         return {"action": "autonomy_applied", "slug": project.slug, "autonomy": value}
 
     async def _on_approval(self, event: dict) -> dict:
+        # Belt and braces for the single-approval rule: the reader already
+        # refuses `approval:` on a charter, and this refuses to record one that
+        # arrives from anywhere but the plan. Two layers because the failure is
+        # silent by nature — writing the mirror would make the activity log say
+        # a plan was approved while the gate reads the file and disagrees.
+        if event.get("doc") not in (None, "steward_plan"):
+            return {"action": "ignored", "reason": f"approval is not a {event.get('doc')} key"}
         project = await self._resolve_project(event)
         if project is None:
             return await self._unmatched(event, "approval")

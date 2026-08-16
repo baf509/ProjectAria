@@ -534,7 +534,25 @@ class VaultReader:
         if "approval" in fm:
             value = _norm_approval(fm.get("approval"))
             prior = _norm_approval(previous.get("approval"))
-            if value not in APPROVAL_VALUES:
+            if doc != DOC_STEWARD_PLAN:
+                # THERE IS EXACTLY ONE APPROVAL, AND IT LIVES ON THE PLAN.
+                #
+                # A charter says what a project is FOR and how far ARIA may go
+                # (`autonomy`); the plan says what ARIA proposes to do NEXT, and
+                # approving that specific plan is the consent that unlocks
+                # execution. Until 2026-08-15 an `approval:` on a charter was
+                # accepted, written to the plan's Mongo mirror, and logged as
+                # "steward plan marked 'approved'" — while the gate kept reading
+                # `pending` off the plan FILE, which is deliberately the only
+                # authority. A control that reports success and changes nothing
+                # is worse than no control, so this now says so out loud.
+                events.append(self._invalid(
+                    path, doc, "approval", fm.get("approval"),
+                    "approval belongs on STEWARD_PLAN.md, not here — a charter "
+                    "sets `autonomy` (how far ARIA may go); the plan's approval "
+                    "is what consents to a specific plan. This key does nothing.",
+                ))
+            elif value not in APPROVAL_VALUES:
                 events.append(self._invalid(path, doc, "approval", fm.get("approval"),
                                             f"expected one of {APPROVAL_VALUES}"))
             elif value != prior:

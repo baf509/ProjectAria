@@ -750,8 +750,11 @@ class TestVaultReader:
     async def test_first_sight_of_a_hand_written_doc_still_reports_the_edit(self, enabled):
         # The suppression is narrow: only a doc ARIA's own frontmatter claims.
         db = _FakeDB()
-        charter = enabled / "ProjectAria" / "Planning" / "CHARTER.md"
-        _write_raw(charter, dump_frontmatter({"approval": "approved"}) + "\n# Charter\n")
+        # STEWARD_PLAN.md, not CHARTER.md: approval is a PLAN key. A charter says
+        # what a project is for and how far ARIA may go; the plan is what gets
+        # approved. These tests are about persistence, not about that rule.
+        plan = enabled / "ProjectAria" / "Planning" / "STEWARD_PLAN.md"
+        _write_raw(plan, dump_frontmatter({"approval": "approved"}) + "\n# Plan\n")
         events = await _reader(enabled, db).poll_once()
         edits = [e for e in events if e["type"] == vr.EV_HUMAN_EDIT]
         assert len(edits) == 1 and edits[0]["first_sight"] is True
@@ -764,8 +767,11 @@ class TestVaultReader:
         worker's poll left `GET /vault/events` (a different instance) showing
         nothing at all — Ben's decision existed nowhere a human could look."""
         db = _FakeDB()
-        charter = enabled / "ProjectAria" / "Planning" / "CHARTER.md"
-        _write_raw(charter, dump_frontmatter({"approval": "approved"}) + "\n# Charter\n")
+        # STEWARD_PLAN.md, not CHARTER.md: approval is a PLAN key. A charter says
+        # what a project is for and how far ARIA may go; the plan is what gets
+        # approved. These tests are about persistence, not about that rule.
+        plan = enabled / "ProjectAria" / "Planning" / "STEWARD_PLAN.md"
+        _write_raw(plan, dump_frontmatter({"approval": "approved"}) + "\n# Plan\n")
 
         worker = _reader(enabled, db)
         assert await worker.poll_once()                  # the worker consumes them
@@ -998,8 +1004,10 @@ class TestWiring:
         from aria.main import app
 
         db = _FakeDB()
-        _write_raw(enabled / "ProjectAria" / "Planning" / "CHARTER.md",
-                   dump_frontmatter({"approval": "approved"}) + "\n# Charter\n")
+        # The plan carries the approval; the charter carries autonomy. This
+        # test only needs an EV_APPROVAL to exist so the route can return it.
+        _write_raw(enabled / "ProjectAria" / "Planning" / "STEWARD_PLAN.md",
+                   dump_frontmatter({"approval": "approved"}) + "\n# Plan\n")
         worker = vr.VaultReader(db=db, vault_path=str(enabled))
         assert await worker.poll_once()
         worker.recent_events = []                 # the ring is only a cache
@@ -1100,3 +1108,48 @@ class TestResearchAutoPublish:
 
         accepted = [e for e in await r.poll_once() if e["type"] == vr.EV_ACCEPTED]
         assert len(accepted) == 1 and accepted[0]["value"] is True
+
+
+class TestThereIsExactlyOneApproval:
+    """`approval:` is a PLAN key. Nothing else may act as a second gate.
+
+    The charter answers "what is this project for, and how far may ARIA go"
+    (`autonomy`); the plan answers "may ARIA do THIS". Before 2026-08-15 an
+    `approval:` on a charter was accepted, mirrored into the plan's Mongo
+    record, and logged as "steward plan marked 'approved'" — while the gate kept
+    reading the plan FILE and saw `pending`. Two surfaces, one of which lied.
+    """
+
+    @pytest.mark.asyncio
+    async def test_approval_on_a_charter_is_refused_and_explained(self, enabled):
+        db = _FakeDB()
+        _write_raw(enabled / "ProjectAria" / "Planning" / "CHARTER.md",
+                   dump_frontmatter({"approval": "approved", "autonomy": 2})
+                   + "\n# Charter\n")
+        reader = vr.VaultReader(db=db, vault_path=str(enabled))
+        events = await reader.poll_once()
+        kinds = [e["type"] for e in events]
+
+        # It must NOT read as an approval...
+        assert vr.EV_APPROVAL not in kinds
+        # ...and it must not be silently dropped either: Ben edited a key
+        # expecting it to mean something, so he is told it does not.
+        bad = [e for e in events if e["type"] == vr.EV_INVALID_VALUE
+               and e.get("key") == "approval"]
+        assert len(bad) == 1
+        assert "STEWARD_PLAN.md" in bad[0]["error"]
+
+        # autonomy on the charter is untouched — that IS a charter key.
+        assert vr.EV_AUTONOMY in kinds
+
+    @pytest.mark.asyncio
+    async def test_approval_on_the_plan_is_the_one_that_counts(self, enabled):
+        db = _FakeDB()
+        _write_raw(enabled / "ProjectAria" / "Planning" / "STEWARD_PLAN.md",
+                   dump_frontmatter({"approval": "approved"}) + "\n# Plan\n")
+        reader = vr.VaultReader(db=db, vault_path=str(enabled))
+        events = await reader.poll_once()
+        approvals = [e for e in events if e["type"] == vr.EV_APPROVAL]
+        assert len(approvals) == 1
+        assert approvals[0]["value"] == "approved"
+        assert approvals[0]["doc"] == vr.DOC_STEWARD_PLAN
