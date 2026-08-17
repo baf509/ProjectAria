@@ -2816,6 +2816,76 @@ async def _probe_vllm(spec, root: str, timeout: float) -> Optional[RuntimeStats]
     )
 
 
+_DS_PROMPT_RE = re.compile(r"chat ctx=\d+\.\.\d+:(\d+) prompt start")
+_DS_FINISH_RE = re.compile(r"gen=(\d+) .*finish=")
+_DS_CACHE_RE = re.compile(r"live kv cache (hit|miss)[^\n]*?common=(\d+)")
+
+
+async def _dwarfstar_usage(spec, timeout: float = 6.0) -> dict:
+    """Cumulative tokens in / out / cache-matched for DwarfStar, from its log.
+
+    DwarfStar exposes NO metrics endpoint (/metrics, /slots, /health all 404), so
+    unlike the other two backends there is nothing to poll. It does, however, log
+    every request with the numbers we want:
+
+        chat ctx=0..13:13 prompt start          -> 13 tokens ingested
+        chat ctx=0..13:13 gen=150 ... finish=    -> 150 tokens generated
+        live kv cache miss ... common=13         -> 13 tokens of matched prefix
+
+    Scoped to the CURRENT unit invocation, which deliberately matches the other
+    backends: vLLM's and llama.cpp's counters also reset when the process does,
+    so "since this server started" means the same thing everywhere and the three
+    are comparable without a footnote.
+
+    ⚠️ Only the `finish=` line is counted for generation. `gen=` also appears on
+    the per-chunk progress lines, and summing those would multiply the total by
+    the number of decode chunks.
+    """
+    unit = f"aria-model-{spec.slug}.service"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl", "--user", "-u", unit, "--no-pager", "-n", "50000",
+            "--since", "@" + str(int(await _unit_start_epoch(unit))),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except (OSError, asyncio.TimeoutError, ValueError, TypeError):
+        return {}
+    text = out.decode(errors="replace")
+    ingested = sum(int(m) for m in _DS_PROMPT_RE.findall(text))
+    generated = sum(int(m) for m in _DS_FINISH_RE.findall(text))
+    hits = misses = matched = 0
+    for kind, common in _DS_CACHE_RE.findall(text):
+        matched += int(common)
+        if kind == "hit":
+            hits += 1
+        else:
+            misses += 1
+    total = hits + misses
+    return {
+        "prompt_tokens_total": float(ingested) or None,
+        "tokens_predicted_total": float(generated) or None,
+        # Tokens of prompt that matched something already resident. Reported as
+        # the token count rather than a request-level hit/miss ratio, so it lines
+        # up with vLLM's prompt_tokens_cached_total.
+        "prompt_tokens_cached_total": float(matched) or None,
+        "prefix_cache_hit_rate": round(hits / total, 4) if total else None,
+    }
+
+
+async def _unit_start_epoch(unit: str) -> float:
+    """Unix time this unit last entered active, for scoping the log read."""
+    proc = await asyncio.create_subprocess_exec(
+        "systemctl", "--user", "show", unit, "-p",
+        "ActiveEnterTimestampMonotonic", "--value",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    mono_us = int((out.decode().strip() or "0"))
+    boot = time.time() - float(open("/proc/uptime").read().split()[0])
+    return boot + mono_us / 1_000_000
+
+
 async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeStats]:
     """DwarfStar (antirez/ds4) exposes `/v1/models` and NOTHING else.
 
@@ -2874,8 +2944,10 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
         except OSError:
             cache_used = None
 
+    usage = await _dwarfstar_usage(spec)
     return RuntimeStats(
         runtime_family="dwarfstar",
+        **usage,
         prompt_cache_kind=cache_kind,
         prompt_cache_capacity=cache_cap,
         prompt_cache_used=cache_used,
@@ -2888,10 +2960,13 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
         metrics_available=False,
         telemetry_hint=(
             "DwarfStar exposes /v1/models ONLY — no /metrics, /slots or /health "
-            "(all 404). Live occupancy, queue depth and throughput are therefore "
-            "UNAVAILABLE, not zero. Its per-response prompt_tokens_details "
-            "(cached_tokens / cache_write_tokens) is the real cache signal and "
-            "would have to be recorded at call sites to surface here."
+            "(all 404), so live OCCUPANCY and queue depth are UNAVAILABLE, not "
+            "zero. Token counts and cache matching ARE available: they are parsed "
+            "from the server's own per-request log lines, scoped to the current "
+            "unit invocation so they reset with the process exactly like vLLM's "
+            "and llama.cpp's counters do. ⚠️ Its disk cache has min=512, so "
+            "prompts shorter than that are never persisted and will always show "
+            "as uncached."
         ),
     )
 
