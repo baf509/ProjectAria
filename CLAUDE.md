@@ -477,8 +477,12 @@ attach (`claude()` in `~/.bashrc`); you choose the model. Since 2026-08-02,
 `codex` gets the same treatment: a `codex()` wrapper in `~/.bashrc` spawns a
 persisted watched session named `claude-codex-<dir>` via `POST /api/v1/shells`
 with `launch_command` → `scripts/aria-codex-launch` (resume-aware,
-`codex resume --last` is cwd-filtered, always `--yolo`). Routing lives **only on
-the automated spawn path** (`start_session()` — Hermes/MCP/TUI create), where one
+`codex resume --last` is cwd-filtered, always `--yolo`). Since 2026-08-17 `pi`
+does too: `pi()` → `claude-pi-<dir>` via `scripts/aria-pi-launch` (`pi --continue`,
+pi's own per-cwd resume; provider/model from pi's `settings.json`, not pinned). All
+three render in the tmux status bar as `aria ▸ <dir>` with the window named after
+the tool — the session names keep the `claude-` prefix because that is the fleet's
+adoption namespace. Routing lives **only on the automated spawn path** (`start_session()` — Hermes/MCP/TUI create), where one
 task genuinely is one session.
 
 The desk-path scripts (`scripts/aria-claude.sh`, `scripts/aria-route-task`,

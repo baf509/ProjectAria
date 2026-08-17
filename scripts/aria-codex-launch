@@ -17,6 +17,12 @@ set -uo pipefail
 # Long form of --yolo; spelled out so the intent survives grep.
 CODEX_ARGS=(--dangerously-bypass-approvals-and-sandbox)
 
+# Name the tmux window after the tool (`0:codex`, not `0:bash`); see
+# aria-claude-launch for why automatic-rename shows the wrong thing.
+if [ -n "${TMUX:-}" ]; then
+    tmux rename-window -t "${TMUX_PANE:-}" codex 2>/dev/null || true
+fi
+
 started=$SECONDS
 codex resume --last "${CODEX_ARGS[@]}"
 rc=$?

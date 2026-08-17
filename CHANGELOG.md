@@ -2,6 +2,42 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-17] - `pi` desk-path parity, and the green bar says `aria`
+
+### Added
+
+- **`pi()` wrapper in `~/.bashrc`** — a bare `pi` (or `pi -c`) now gets the same ARIA
+  Shells experience as `claude` and `codex`: one persisted, watched, per-directory tmux
+  session (`claude-pi-<dir>` — the `claude-` prefix keeps it in the fleet's single
+  adoption namespace), spawned via `POST /api/v1/shells` with `launch_command`, the same
+  never-freeze / never-bail-early attach contract, and `--no-aria` / `command pi` escape
+  hatches. Anything with other args (subcommands, `-p`, an initial prompt, `--model …`)
+  cannot be applied to an already-running session, so it goes straight to the real
+  binary.
+- **`scripts/aria-pi-launch`** (symlinked into `~/.local/bin`) — the launch shim: `exec pi
+  --continue`, which is pi's own resume (most recent session for the cwd under
+  `~/.pi/agent/sessions/`, or a fresh one when there is none — no probe/fallback dance
+  needed, unlike the claude and codex shims). Provider/model are deliberately not pinned
+  here; pi's `~/.pi/agent/settings.json` is where the desk model is chosen.
+- **`~/.local/bin/pi` symlink** — the reason the first spawn died: `~/.bashrc` returns
+  early for non-interactive shells, so the `bash -lc` that tmux runs never sees
+  `~/.npm-global/bin`. `codex` only worked because it already had a `~/.local/bin` link;
+  pi now has the same.
+
+### Changed
+
+- **The tmux status bar identifies the shell as ARIA's, and names the tool.** tmux's
+  default `status-left "[#{session_name}]"` at `status-left-length 10` rendered
+  `claude-ProjectAria`, `claude-codex-ProjectAria` and `claude-pi-ProjectAria` all as
+  `[claude-Pr` — so every ARIA shell looked like a Claude one. `scripts/aria-tmux-hook.conf`
+  now renders `claude-*` sessions as **`aria ▸ <name without the prefix>`** (non-ARIA
+  sessions keep the plain `[name]`), and each `aria-*-launch` shim renames its tmux window
+  after the tool (`0:claude` / `0:codex` / `0:pi`) instead of automatic-rename's `0:bash`
+  (the shim is the pane's foreground process-group leader on the resume path). Session
+  *names* are unchanged — the `claude-` prefix is what the adoption hooks match on.
+- **`extended-keys on`** in the same conf — pi warned on every launch that modified Enter
+  keys may not work; only apps that request extended-key reporting are affected.
+
 ## [2026-08-17] - DwarfStar selected as the DS4 stack; utilization telemetry is backend-aware
 
 ### Added

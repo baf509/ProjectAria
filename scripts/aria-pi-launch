@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ARIA - resume-aware pi launch for watched shells
+#
+# pi counterpart to aria-claude-launch / aria-codex-launch: the launch command
+# the `pi()` desk wrapper passes to POST /api/v1/shells as `launch_command`, so
+# a bare `pi` gets the same experience as `claude` and `codex` — one persisted,
+# watched, per-directory tmux session (`claude-pi-<dir>`) that survives SSH /
+# iOS disconnects and can be driven from the fleet.
+#
+# Resume is pi's own: `--continue` opens the most recent session stored under
+# ~/.pi/agent/sessions/<cwd> and, when there is none, simply starts a fresh
+# one (SessionManager.continueRecent falls through to a new session). So there
+# is no probe-then-fallback dance here, unlike the claude and codex shims.
+#
+# Provider/model are deliberately NOT pinned here — pi reads its own
+# ~/.pi/agent/settings.json (defaultProvider / defaultModel), which is where
+# the desk model is chosen. ARIA-spawned pi coding *sessions* are a different
+# path (agents/session.py passes an explicit provider/model launch command).
+set -uo pipefail
+
+# Name the tmux window after the tool so the status bar reads `0:pi` instead
+# of `0:bash` (the login shell that exec'd us). rename-window also switches
+# the window's automatic-rename off, so it sticks.
+if [ -n "${TMUX:-}" ]; then
+    tmux rename-window -t "${TMUX_PANE:-}" pi 2>/dev/null || true
+fi
+
+exec pi --continue "$@"

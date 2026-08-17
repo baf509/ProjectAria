@@ -143,8 +143,9 @@ memories, projects and idle alerts. Gated by `SHELLS_ENABLED`; disables cleanly 
 absent.
 
 ```bash
-tmux source-file scripts/aria-tmux-hook.conf   # enable the hook once
+tmux source-file scripts/aria-tmux-hook.conf   # enable the hook once (also brands the status bar `aria ▸ …`)
 tmux new -s claude-myproject                   # any name prefixed claude-
+claude / codex / pi                            # ~/.bashrc wrappers: one persisted ARIA shell per directory
 
 aria shells list
 aria shells info claude-myproject

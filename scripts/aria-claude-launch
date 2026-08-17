@@ -17,6 +17,14 @@ set -uo pipefail
 
 CLAUDE_ARGS=(--dangerously-skip-permissions)
 
+# Name the tmux window after the tool so the status bar reads `0:claude`
+# rather than `0:bash` (this script is the pane's foreground process group
+# leader on the --continue path, so automatic-rename would show bash).
+# rename-window also switches automatic-rename off for the window.
+if [ -n "${TMUX:-}" ]; then
+    tmux rename-window -t "${TMUX_PANE:-}" claude 2>/dev/null || true
+fi
+
 history_dir="$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-/g')"
 
 if compgen -G "$history_dir/*.jsonl" >/dev/null 2>&1; then
