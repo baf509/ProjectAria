@@ -356,9 +356,22 @@ async def model_server_utilization(
     )
 
     out = []
-    for server, stats in zip([s for s, sp in zip(running, specs) if sp is not None], probes):
+    _pairs = [(s, sp) for s, sp in zip(running, specs) if sp is not None]
+    for (server, _sp), stats in zip(_pairs, probes):
         if isinstance(stats, BaseException) or stats is None:
-            out.append({"slug": server["slug"], "reachable": False})
+            # ⚠️ A probe that RAISED and a server that is DOWN both land here and
+            # are indistinguishable to a reader. `probe_error` separates them —
+            # an AttributeError in the probe read as "radiance is unreachable"
+            # on 2026-08-17 and sent the diagnosis in the wrong direction.
+            out.append({
+                "slug": server["slug"],
+                "reachable": False,
+                "probe_error": (f"{type(stats).__name__}: {stats}"[:200]
+                                if isinstance(stats, BaseException) else None),
+                "bench_decode_tok_s": _sp.bench_decode_tok_s if _sp else None,
+                "bench_prefill_tok_s": _sp.bench_prefill_tok_s if _sp else None,
+                "benchmarked_at": _sp.bench_at if _sp else None,
+            })
             continue
         out.append({
             "slug": server["slug"],
@@ -402,6 +415,14 @@ async def model_server_utilization(
             # than this many leading tokens get NO reuse at all.
             "cache_block_size": stats.cache_block_size,
             "mean_ttft_seconds": stats.mean_ttft_seconds,
+            # ── Last BENCHMARKED throughput, with the date it was taken ──────
+            # Not live: no backend here reports a stable tok/s at rest. These are
+            # recorded runs, and `benchmarked_at` is what tells you whether to
+            # trust them — re-measure after any quant/runtime/context change.
+            "bench_decode_tok_s": _sp.bench_decode_tok_s if _sp else None,
+            "bench_prefill_tok_s": _sp.bench_prefill_tok_s if _sp else None,
+            "benchmarked_at": _sp.bench_at if _sp else None,
+            "bench_note": _sp.bench_note if _sp else None,
             "resident_gib_measured": server.get("resident_gib_measured"),
         })
     return {"servers": out, "slot_budget_warning": check_pi_slot_budget()}

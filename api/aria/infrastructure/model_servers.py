@@ -230,6 +230,18 @@ class ModelServerSpec:
     # report a field must say so via telemetry_hint rather than let a null be
     # read as a healthy zero.
     runtime_family: str = "llamacpp"
+    # ── Last measured throughput, and WHEN ──────────────────────────────────
+    # No backend here exposes a stable tok/s at rest: llama.cpp's rate gauges
+    # read 0 while idle, vLLM gives a latency histogram, DwarfStar gives nothing
+    # at all. So throughput is a BENCHMARK RESULT, recorded by hand, and the
+    # date is the point — it is the staleness signal `resident_gib` never had
+    # (that field sat 7.6 GiB wrong for weeks with nothing to flag it).
+    # ⚠️ Re-measure and re-date after ANY change to quant, runtime, context, KV
+    # type or speculation. A number with no date is a rumour.
+    bench_decode_tok_s: Optional[float] = None
+    bench_prefill_tok_s: Optional[float] = None
+    bench_at: Optional[str] = None          # ISO date the run was taken
+    bench_note: Optional[str] = None        # conditions the number is valid under
     # Which machine this server actually runs on, as an ontology entity slug.
     # Required for off-box servers: the ontology projection used to hardcode
     # `machine:ridge` for everything with onbox=False, so RED's server claimed
@@ -732,6 +744,13 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="DS4-0731-Q8Protected-Halo-DwarfStar",
         runtime_family="dwarfstar",
+        bench_decode_tok_s=15.0,
+        bench_prefill_tok_s=210.0,
+        bench_at="2026-08-17",
+        bench_note="ds4-bench sweep, ctx 2048-16384, single session. Decode is flat "
+        "across context (15.59 at 2k -> 14.47 at 16k); prefill 191-216 tok/s. "
+        "--prefill-chunk 8192 changed nothing, so this is the real ceiling, not a "
+        "tuning artefact. Ember measured 21.9 tok/s decode on the same box.",
         description="DeepSeek V4 Flash 0731 on the Strix Halo iGPU via DwarfStar "
         "(antirez/ds4), a native ROCm engine written specifically for DS4 rather than a "
         "general GGUF runner. SELECTED 2026-08-17 as the APU resident after a six-way "
@@ -904,6 +923,13 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="Qwen3.8-27B-R9700-Radiance",
         runtime_family="vllm",
+        bench_decode_tok_s=54.4,
+        bench_prefill_tok_s=1850.0,
+        bench_at="2026-08-16",
+        bench_note="Measured at the radiance cutover (wikitext-2, 100 chunks, c=512), "
+        "WITH MTP speculation on. ⚠️ NOT re-measured on 2026-08-17 despite a reboot "
+        "and restart that day — carried forward, so treat as indicative, not current. "
+        "The GGUF path it replaced did ~890 prefill / 27.2 decode.",
         description="Qwen3.8-27B int4 W4A16 (AutoRound) on the DISCRETE Radeon AI PRO "
         "R9700 via vllm-radiance — `qwen3.8-radiance.service`, the LIVE Qwen3.8 since "
         "2026-08-16. Replaced the llama.cpp/ROCmFPX GGUF path on :8080 after a "
@@ -2482,11 +2508,11 @@ def _parse_prometheus_labels(text: str, metric: str) -> dict:
         if not line.startswith(metric + "{"):
             continue
         inner = line[len(metric) + 1: line.rfind("}")]
-        out = {}
-        for part in inner.split('","'):
-            k, _, v = part.partition("=")
-            out[k.strip().strip('"')] = v.strip().strip('"')
-        return out
+        # ⚠️ Label KEYS are unquoted, so the separator is `",` and NOT `","`.
+        # Splitting on `","` matches nothing and silently yields one giant
+        # "key" — which read as "prefix caching disabled" rather than as a
+        # parse failure. Regex over key="value" pairs is unambiguous.
+        return {m.group(1): m.group(2) for m in re.finditer(r'([A-Za-z_][\w]*)="([^"]*)"', inner)}
     return {}
 
 
@@ -2952,7 +2978,39 @@ async def measure_resident_gib(spec: "ModelServerSpec") -> Optional[float]:
         # Declared GPU-resident but holds no GPU memory — fall back to RSS
         # rather than reporting nothing, and let the caller see the mismatch.
         raw = _rss_bytes_for_pid(pid)
-    return None if raw is None else raw / 1024**3
+    measured = None if raw is None else raw / 1024**3
+
+    # ── Containerised servers: fall back to the POOL reading ────────────────
+    # Per-process DRM accounting cannot work for a container whose engine runs
+    # as root: /proc/<pid>/fdinfo is unreadable as `ben`, so process_gpu_bytes
+    # returns {} and the unit's MainPID is the `docker` CLIENT, which holds no
+    # GPU fds at all. Measured 2026-08-17: vllm-radiance reported 0.02 GiB while
+    # actually holding 29 GiB of R9700 VRAM — i.e. ARIA under-reported an entire
+    # GPU, and `/model-servers/utilization` showed a dGPU model as using nothing.
+    #
+    # The pool read is reliable and the registry already guarantees the thing
+    # that makes attribution sound: the big servers in a pool are MUTUALLY
+    # EXCLUSIVE, so if exactly one is running, the pool's usage IS its
+    # footprint. With more than one, attribution would be a guess — so this
+    # deliberately refuses rather than dividing it up.
+    if (measured is None or measured < 1.0) and spec.memory_pool != POOL_HOST:
+        try:
+            from aria.infrastructure.gpu_devices import read_pool
+            live = read_pool(spec.memory_pool)
+        except Exception:
+            live = None
+        if live is not None and live.used_gib and live.used_gib > (measured or 0.0):
+            same_pool = [
+                s for s in REGISTRY
+                if s.memory_pool == spec.memory_pool and s.slug != spec.slug and s.startable
+            ]
+            others_running = 0
+            for other in same_pool:
+                if await _server_pid(other) is not None:
+                    others_running += 1
+            if others_running == 0:
+                return live.used_gib
+    return measured
 
 
 def _read_gtt_gib(pool: str = POOL_HALO) -> Optional[tuple[float, float]]:
