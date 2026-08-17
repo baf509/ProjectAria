@@ -383,8 +383,22 @@ async def test_start_refuses_when_the_port_is_already_held():
             return (1, "", "Error: No such object: " + name)
         return (0, "", "")
 
-    spec = ms._BY_SLUG["Qwen3.8-27B-ROCmFP4-R9700-Vulkan"]
-    other = ms._BY_SLUG["Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP"]
+    # ⚠️ SYNTHETIC, not borrowed from the live registry. This test used the two
+    # real R9700 Qwen3.8 variants until 2026-08-17, when their GGUFs were deleted
+    # in the radiance cutover and both entries became `startable=False` — after
+    # which `start()` refused on startability BEFORE reaching the port check, so
+    # the test failed for a reason unrelated to what it asserts. Retiring a
+    # deployment is routine; it must not break a safety test.
+    def _fixture(slug, container):
+        return ms.ModelServerSpec(
+            slug=slug, description="Synthetic fixture — port-conflict test only.",
+            runtime_repo="n/a", runtime_ref="n/a", backend_device="test",
+            container_name=container, compose_file="docker-compose.yml",
+            service_name=container, port=8110,
+            memory_pool=ms.POOL_R9700, resident_gib=20.0,
+        )
+    spec = _fixture("test-port-a", "qwen3.8-27b-rocmfp4")
+    other = _fixture("test-port-b", "qwen3.8-27b")
     assert spec.port == other.port  # the precondition this test exists for
 
     # Force past the (real) exclusivity pair so the PORT check is what refuses.
@@ -392,7 +406,8 @@ async def test_start_refuses_when_the_port_is_already_held():
         **{f.name: getattr(spec, f.name) for f in spec.__dataclass_fields__.values()},
         "exclusive_with": (),
     })
-    with patch.dict(ms._BY_SLUG, {spec.slug: trimmed}), \
+    with patch.object(ms, "REGISTRY", ms.REGISTRY + (trimmed, other)), \
+         patch.dict(ms._BY_SLUG, {spec.slug: trimmed, other.slug: other}), \
          patch.object(ms, "_run", fake_run), \
          patch.object(ms, "_read_gtt_gib", return_value=(1.0, 32.0)):
         with pytest.raises(ModelServerSafetyError, match="Port 8110"):

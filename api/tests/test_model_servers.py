@@ -253,12 +253,67 @@ async def test_status_raises_when_daemon_down(manager):
 
 # ────────────────────────────────────────────────────────────── start() ──
 
-# The two R9700 Qwen3.8 variants are the canonical startable exclusive pair:
-# one discrete card, one 32 GiB pool, and they share port 8110. (Laguna and
-# chadrock filled this role until 2026-08-14, when both GGUFs were removed from
-# the box and their entries became unstartable.)
-_EXCL_A = "Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP"      # container qwen3.8-27b
-_EXCL_B = "Qwen3.8-27B-ROCmFP4-R9700-Vulkan"       # container qwen3.8-27b-rocmfp4
+# ─────────────────────────────────────────── synthetic exclusive pair ──
+#
+# ⚠️ THESE ARE FIXTURES, NOT REAL DEPLOYMENTS — deliberately, after this broke
+# for the THIRD time. The exclusivity tests need "two startable, mutually
+# exclusive, container-backed servers sharing a pool", and every attempt to
+# borrow a real registry pair has rotted when that pair was retired:
+#   - laguna + chadrock  -> unstartable 2026-08-14 (GGUFs removed from the box)
+#   - the two R9700 Qwen3.8 variants -> unstartable 2026-08-17 (GGUFs deleted in
+#     the radiance cutover; `start()` then refuses on `startable=False` BEFORE
+#     reaching the exclusivity check, so six tests failed for a reason that had
+#     nothing to do with what they test)
+# Retiring a deployment is routine and must never break the safety tests. These
+# specs are injected into the registry for the duration of a test, so the only
+# thing under test is the exclusivity/RAM/compose logic itself.
+_EXCL_A = "test-excl-a"
+_EXCL_B = "test-excl-b"
+
+_FIXTURE_SPECS = [
+    ms.ModelServerSpec(
+        slug=_EXCL_A,
+        description="Synthetic fixture — exclusivity/RAM/compose tests only.",
+        runtime_repo="n/a", runtime_ref="n/a", backend_device="test",
+        container_name="qwen3.8-27b", compose_file="docker-compose.yml",
+        service_name="qwen3.8-27b", port=18110,
+        memory_pool=ms.POOL_R9700, resident_gib=20.0,
+        exclusive_with=(_EXCL_B,),
+    ),
+    ms.ModelServerSpec(
+        slug=_EXCL_B,
+        description="Synthetic fixture — exclusivity/RAM/compose tests only.",
+        runtime_repo="n/a", runtime_ref="n/a", backend_device="test",
+        container_name="qwen3.8-27b-rocmfp4", compose_file="docker-compose.yml",
+        service_name="qwen3.8-27b-rocmfp4", port=18110,
+        # Profile-gated on purpose: test_start_uses_compose_up_when_container_missing
+        # asserts `docker compose up` carries --profile for a gated service.
+        profile="rocmfp4",
+        memory_pool=ms.POOL_R9700, resident_gib=20.0,
+        exclusive_with=(_EXCL_A,),
+    ),
+]
+
+
+@pytest.fixture(autouse=True)
+def _register_fixture_specs():
+    """Make the synthetic pair resolvable for every test, then remove them.
+
+    autouse so no test can forget it; the registry is restored afterwards so a
+    fixture slug can never leak into a real `status()` listing.
+    """
+    # REGISTRY is a tuple (immutable by design), so rebind rather than mutate.
+    orig_registry = ms.REGISTRY
+    orig_by_slug = dict(ms._BY_SLUG)
+    ms.REGISTRY = orig_registry + tuple(_FIXTURE_SPECS)
+    for spec in _FIXTURE_SPECS:
+        ms._BY_SLUG[spec.slug] = spec
+    try:
+        yield
+    finally:
+        ms.REGISTRY = orig_registry
+        ms._BY_SLUG.clear()
+        ms._BY_SLUG.update(orig_by_slug)
 
 
 @pytest.mark.asyncio

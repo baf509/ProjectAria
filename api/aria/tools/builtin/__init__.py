@@ -25,6 +25,7 @@ from .screenshot import ScreenshotTool
 from .docgen import DocumentGenerationTool
 from .shells import SendShellInputTool
 from .soul import SoulTool
+from .runtime_updates import RuntimeUpdateCheckTool
 
 __all__ = [
     "ClaudeAgentTool",
@@ -40,6 +41,7 @@ __all__ = [
     "SendShellInputTool",
     "SendToCodingSessionTool",
     "ShellTool",
+    "RuntimeUpdateCheckTool",
     "SoulTool",
     "StartCodingSessionTool",
     "StopCodingSessionTool",

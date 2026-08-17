@@ -384,6 +384,13 @@ class Settings(BaseSettings):
         "pi_coding_agent",
         "deep_think",
         "search_agent",
+        # 2026-08-17: the scheduled runtime-update check. Read-only by
+        # construction — it queries GitHub/Docker Hub and reads local git HEADs,
+        # and never pulls, builds, or restarts anything. Allowlisted so ARIA's
+        # scheduler can invoke it unattended; without this the scheduled run
+        # fails with "not in the tool allowlist" and would look like a working
+        # job that silently reports nothing.
+        "check_runtime_updates",
     ]
     # Tools whose name starts with one of these prefixes are allowed under the
     # allowlist policy — e.g. the Playwright MCP computer-use tools (browser_*).
@@ -925,6 +932,32 @@ class Settings(BaseSettings):
     triage_interval_seconds: int = 300
     triage_max_alerts_per_tick: int = 3
     triage_max_diagnoses_per_hour: int = 4
+    # --- Triage CLASSIFIER (2026-08-17: moved off steward_model to gemma) ---
+    # Deliberately its own setting rather than reusing steward_model, which also
+    # drives the Steward service (charters, plans — currently ENABLED) and
+    # agents/review.py. Repointing steward_model would have moved those onto a
+    # 4B model too, which is not what was asked for and not what they need.
+    #
+    # Only the INFORMATIONAL-vs-FAILURE call runs here. The DIAGNOSE session is
+    # separate and untouched (triage_diagnose_backend = "claude_code").
+    # Classification is a bounded binary judgement over a short alert message —
+    # well within a 4B model — and moving it off :8080 keeps triage from
+    # competing with Hermes's interactive model.
+    #
+    # ⚠️ Yes, a 4B model on gemma :8104 is what this loop used to run on before
+    # 2026-08-10. It failed because gemma was ABSENT (its systemd unit gated on a
+    # retired :18211 endpoint and exited 1 every boot — repaired 2026-08-17), not
+    # because a 4B classified badly. The failure mode is also safe by design: an
+    # unusable classification returns None and LEAVES THE ALERT ALONE, so Ben
+    # still receives it. A dead classifier costs a downgrade, never a delivery.
+    #
+    # One thing that genuinely improves here: gemma runs with `--reasoning off
+    # --reasoning-budget 0`, so the empty-content reasoning-model trap described
+    # under steward_max_tokens does not apply to it at all.
+    triage_classify_backend: str = "llamacpp"
+    triage_classify_model: str = "gemma-4-e4b-it"
+    triage_classify_endpoint: str = "http://127.0.0.1:8104/v1"
+    triage_classify_max_tokens: int = 512
     shells_nudge_worker_enabled: bool = False
     shells_nudge_worker_interval_minutes: int = 15
 

@@ -44,7 +44,7 @@ Model servers, two resident on two separate memory pools:
 | Model server | Port | Device | Role |
 |---|---|---|---|
 | `DS4-0731-IQ3_XXS-Halo-Vulkan` | 8108 | Strix Halo iGPU (`gfx1151`), ~100 GiB | the pi coding agent's single 131K slot |
-| `Qwen3.8-27B-R9700-HIP` | 8080 | Radeon AI PRO R9700 (`gfx1201`), ~24 GiB | Hermes's default + ARIA's background LLM work |
+| `Qwen3.8-27B-R9700-Radiance` | 8080 | Radeon AI PRO R9700 (`gfx1201`), ~29 GiB | Hermes's default + ARIA's background LLM work. vllm-radiance / int4 AutoRound since 2026-08-16 (replaced the llama.cpp GGUF path); 196608 ctx × 1 slot |
 
 **Don't trust the tables above — ask the machine.** `GET /api/v1/infrastructure/running` is a
 union read over ARIA's two registries and cannot go stale the way a doc can. The API docs are

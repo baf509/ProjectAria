@@ -50,6 +50,7 @@ on that path.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import logging
 import os
 import re
@@ -219,6 +220,16 @@ class ModelServerSpec:
     # remote start. Without this a remote start could only report "command
     # sent", which is the kind of unverified success this codebase avoids.
     remote_health_url: Optional[str] = None
+    # Which telemetry surface this server exposes. Added 2026-08-17, when the
+    # utilization endpoint was found reporting `null` for TWO of the three live
+    # models because it only ever spoke llama.cpp's `/slots` + `/metrics`.
+    #   "llamacpp"  — /slots + /metrics (the historical assumption; still default)
+    #   "vllm"      — Prometheus /metrics with vllm:* names; NO /slots
+    #   "dwarfstar" — /v1/models ONLY. No /metrics, no /slots, not even /health.
+    # ⚠️ `null` in this API means UNKNOWN, never "fine". A family that cannot
+    # report a field must say so via telemetry_hint rather than let a null be
+    # read as a healthy zero.
+    runtime_family: str = "llamacpp"
     # Which machine this server actually runs on, as an ontology entity slug.
     # Required for off-box servers: the ontology projection used to hardcode
     # `machine:ridge` for everything with onbox=False, so RED's server claimed
@@ -383,6 +394,8 @@ def _pairs_between(
 # One Halo-resident big model at a time — each of these takes 86-100 GiB of a
 # 124 GiB pool, so any two of them overflow it.
 _HALO_BIG = (
+    "DS4-0731-Q8Protected-Halo-DwarfStar",
+    "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_XXS-Halo-Vulkan",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -403,6 +416,7 @@ _HALO_BIG = (
 # separate cards, separate memory, and running one from each group at once is
 # the whole point of the dual-serving deployment.
 _R9700_RESIDENT = (
+    "Qwen3.8-27B-R9700-Radiance",
     "Qwen3.8-27B-R9700-HIP",
     "Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
     "Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
@@ -716,7 +730,279 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         ),
     ),
     ModelServerSpec(
+        slug="DS4-0731-Q8Protected-Halo-DwarfStar",
+        runtime_family="dwarfstar",
+        description="DeepSeek V4 Flash 0731 on the Strix Halo iGPU via DwarfStar "
+        "(antirez/ds4), a native ROCm engine written specifically for DS4 rather than a "
+        "general GGUF runner. SELECTED 2026-08-17 as the APU resident after a six-way "
+        "measurement — see vault/infrastructure/Analysis/DS4_STACK_BAKEOFF_20260817.md.\n"
+        "Why it won: quality TIED at the top (13/15 LiveCodeBench medium with truncated "
+        "runs re-resolved at 16k tokens, level with Ember) and with the FEWEST genuine "
+        "wrong answers of any stack (1, vs Ember's 2); it is the only top-scoring stack "
+        "whose weights are neither ABLITERATED (Ember's are) nor EXPERT-PRUNED with "
+        "stale saliency maps (REAP's are); upstream is maintained and ships its own "
+        "validation tooling (ds4-eval, official-continuation NLL fixtures, logprob test "
+        "vectors); and it loads 80.76 GiB in ~40 SECONDS against ~15 min for llama.cpp's "
+        "97 GB IQ3_XXS.\n"
+        "⚠️ It is NOT the fastest. Ember decodes ~22 tok/s to this stack's ~15 and "
+        "finishes a 15-problem workload 26% sooner. That was traded away deliberately "
+        "for weights provenance and operability. The tok/s gap overstates it: this stack "
+        "writes ~36% fewer tokens per answer, so its MEDIAN problem is actually faster "
+        "(300s vs 320s); Ember wins on the hard tail, not the typical case.\n"
+        "⚠️ 'Not pruned' does not mean lossless — it avoids pruning by quantizing "
+        "harder (IQ2XXS/Q2K bulk, with Q8 protection on attention projections, shared "
+        "experts and output). The trade bought is damage you can reason about over "
+        "damage nobody has characterized.\n"
+        "Serves OpenAI /v1/chat/completions + /v1/completions, Anthropic /v1/messages, "
+        "and /v1/responses, with tool calls, streaming, seed, reasoning_effort, and real "
+        "prompt-cache telemetry (cached_tokens / cache_write_tokens) that llama.cpp does "
+        "not report.",
+        runtime_repo="https://github.com/antirez/ds4 (DwarfStar)",
+        runtime_ref="/home/ben/Development/dwarfstar — own git checkout, NOT vendored "
+        "into infrastructure. Built with `make strix-halo -j4` (ROCM_ARCH defaults "
+        "gfx1151); built clean first try. Prereqs from its STRIXHALO.md were ALREADY "
+        "satisfied on this box: kernel cmdline carries amd_iommu=off "
+        "amdgpu.gttsize=126976 ttm.pages_limit=32505856, and hipcc, /opt/rocm and the "
+        "rocWMMA internal headers are present.",
+        backend_device="Native ROCm on the Strix Halo iGPU (gfx1151), via HIP_VISIBLE_DEVICES=1",
+        devices=("Strix Halo iGPU (HIP device 1)",),
+        memory_pool=POOL_HALO,
+        deployment="dwarfstar-ds4",
+        model_file="models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/"
+        "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+        port=8112,
+        launch_script="dwarfstar-ds4/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="CTX", label="Context", kind="int", default="131072",
+                description="⚠️ NOT free — the cheap-scaling claim below was measured "
+                            "from ds4-server's own under-reported figures. REAL measured "
+                            "context buffers: 65536 -> ~1.70 GiB, 131072 -> ~2.93 GiB, "
+                            "262144 -> ~5.72 GiB PER RESIDENT SESSION, and it multiplies "
+                            "with batched_sessions. At 262144 the stack left 9 GiB free "
+                            "with nothing else running; radiance + gemma need ~4.2 more. "
+                            "131072 keeps ~7.6 GiB of headroom. Old note follows: "
+                            "measured 81.46 GiB at 16641, "
+                            "81.79 at 32768, 82.46 at 65536 — quadrupling context costs "
+                            "~1 GiB, because most of the KV is compressed rows (16386 "
+                            "compressed vs 4352 raw at 64k). 131k is reachable; --ctx "
+                            "takes an arbitrary integer and the README's 100000 is an "
+                            "example, not a ceiling.",
+            ),
+            LaunchParam(
+                name="kv_disk_mb", env="KV_DISK_MB", label="Disk KV budget (MB)",
+                kind="int", default="15360",
+                description="On-disk KV checkpoints. DwarfStar also does exact "
+                            "token-prefix reuse in front of this.",
+            ),
+            LaunchParam(
+                name="batched_sessions", env="BATCHED_SESSIONS",
+                label="Resident batched sessions", kind="int", default="1",
+                description="⚠️ MULTIPLIES WITH ctx — context buffers are PER RESIDENT "
+                            "SESSION. 6 @ ctx 262144 requested 34.31 GiB of buffers and "
+                            "CRASHED THE BOX on 2026-08-17 (hard power-cycle). Measured: "
+                            "~1.70 GiB/session at ctx 65536, ~5.72 GiB at ctx 262144, "
+                            "against a total buffer budget of roughly 5 GiB once weights "
+                            "(~98), radiance (~9), gemma (~4) and services (~8) are paid. "
+                            "Raise ONE of ctx/batched_sessions at a time and measure.",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        # ⚠️ 100 GiB, MEASURED — do not trust DwarfStar's own accounting here. It logs
+        # "KV 1.20 + buffers 0.50 + resident model 80.76 = 82.46 GiB planned", but actual
+        # card1 GTT sits at 100 GiB in steady state (verified 2026-08-17: RSS is only
+        # 0.4 GiB because the weights live in GTT, not process memory). The self-report
+        # understates by ~17.5 GiB.
+        # CONSEQUENCE: this is a WASH with the 97 GiB IQ3_XXS it replaces, NOT the ~15 GiB
+        # saving an earlier version of this entry claimed. Measured co-residency:
+        # IQ3_XXS + radiance left 12 GiB available; DwarfStar + radiance + gemma leaves
+        # 8.8 GiB (gemma is 3.4 of that). It still co-exists with the dGPU model, but with
+        # ~8 GiB of headroom, not ~40 — treat it as tight, not comfortable.
+        # There is NO MemAvailable circuit breaker on this stack the way there is on the
+        # Nathan/llama.cpp units; ds4-server instead sets its own oom_score_adj=1000, so
+        # under pressure the kernel takes THIS down first (before radiance at 900 and
+        # gemma at 500). That is a deliberate volunteer, not an accident.
+        resident_gib=100,
+        weights_gib=80.76,
+        exclusive_with=_exclusive_with("DS4-0731-Q8Protected-Halo-DwarfStar"),
+        consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
+        "not cut over: Hermes, pi-coding and ARIA still point at :8108 "
+        "(DS4-0731-IQ3_XXS-Halo-Vulkan). Cutover is a separate, deliberate step.",
+    ),
+    ModelServerSpec(
+        slug="DS4-0731-REAP150B-MXFP4",
+        description="DeepSeek V4 Flash 0731 REAP-pruned to 150B total params, experts "
+        "at NATIVE MXFP4, on the Strix Halo iGPU via Nathan's Vulkan fork. Added "
+        "2026-08-16 as a CHALLENGER to the resident DS4, not a replacement. The thesis: "
+        "0731's experts ship natively at 4-bit, so quantizing below that stacks a second "
+        "and more expensive form of damage — REAP hits the size target the cheaper way, "
+        "by pruning experts, and this artifact keeps the survivors at native precision "
+        "instead of dropping to Q3/Q2. 79 GB vs the resident IQ3_XXS's 97 GB, which is "
+        "what lets it coexist with the dGPU model (see resident_gib note).\n"
+        "⚠️ UNVALIDATED PRUNE: every published 0731 REAP is pruned with saliency maps "
+        "transferred from a PRIOR observation run rather than a fresh observation of the "
+        "0731 weights — and 0731's value is post-training that moved Terminal Bench "
+        "61.8 -> 82.7, which shifts which experts fire on agentic traces. None have been "
+        "benchmarked against the unpruned model. Measure before trusting.",
+        runtime_repo="Nathan's Strix Halo llama.cpp Vulkan fork (shared with ds4-halo-xxs)",
+        runtime_ref="runtime/nathan-v0.6.1/vulkan, build 10350 (3be50ccc2) — verified to "
+        "know mxfp4. ⚠️ VULKAN ONLY: HIP segfaults on gfx1151 in the ROCmFPX tree "
+        "(rms_norm_mul_f32_cuda, architecture-level, reproduces with a plain Qwen3-1.7B).",
+        backend_device="Vulkan1 (Strix Halo iGPU, gfx1151)",
+        devices=("Strix Halo iGPU (Vulkan1)",),
+        memory_pool=POOL_HALO,
+        deployment="ds4-reap150b",
+        model_file="models/llm/DS4-0731-REAP150B-MXFP4/"
+        "DeepSeek-V4-Flash-0731-reap-150b-MXFP4_MOE.gguf",
+        port=8109,
+        launch_script="ds4-reap150b/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="CTX", label="Context per slot", kind="int",
+                default="65536",
+                description="KV is allocated lazily, so what costs memory is a FILLED "
+                            "slot, not -c. Kept modest so the ~18 GB this artifact saves "
+                            "over the 97 GB resident stays available as headroom.",
+            ),
+            LaunchParam(
+                name="slots", env="NP", label="Slots (-np)", kind="int", default="1",
+            ),
+            LaunchParam(
+                name="kv", env="KV", label="KV cache type", kind="enum", default="q8_0",
+                choices=(("q8_0", "the qualified DSV4 setting"),
+                         ("f16", "~2x the memory"),
+                         ("q4_0", "smallest; never KL-gated on DSV4")),
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        # ~79 GB weights + KV + buffers. THE POINT of this entry: at ~18 GB less than
+        # DS4-0731-IQ3_XXS-Halo-Vulkan it leaves ~28 GiB of host headroom with the dGPU
+        # model resident, where the 97 GB one left ~0.4 GiB and tripped its OOM guard
+        # three times on 2026-08-16 under benchmark load.
+        resident_gib=84,
+        weights_gib=79.2,
+        startable=False,
+        not_startable_reason="WEIGHTS DELETED 2026-08-17 (79.2 GiB reclaimed) after "
+        "DS4-0731-Q8Protected-Halo-DwarfStar was selected as the APU resident. Kept as a "
+        "record because the prune question it answered is worth not re-litigating.\n"
+        "WHAT IT ESTABLISHED: the stale-saliency worry in this entry's description was "
+        "tested directly and paired against the unpruned IQ3_XXS on 15 LiveCodeBench "
+        "medium problems — REAP 10/15 vs unpruned 9/15, ONE discordant pair. No evidence "
+        "of prune damage. (An accidental duplicate leg also showed run-to-run noise is "
+        "+-1 question, i.e. the same size as that gap.)\n"
+        "⚠️ It lost on grounds OTHER than measured quality, and its re-resolve at 16k "
+        "tokens was STOPPED PART-WAY — so its corrected score is unknown and could well "
+        "have matched the finalists' 13/15. It was retired because DwarfStar's weights "
+        "are neither pruned nor abliterated, not because REAP was shown to be worse. "
+        "Re-download from the published REAP GGUF if that question is ever reopened.",
+        exclusive_with=_exclusive_with("DS4-0731-REAP150B-MXFP4"),
+        consumers_note="Benchmark challenger only — no consumer ever routed to :8109.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-27B-R9700-Radiance",
+        runtime_family="vllm",
+        description="Qwen3.8-27B int4 W4A16 (AutoRound) on the DISCRETE Radeon AI PRO "
+        "R9700 via vllm-radiance — `qwen3.8-radiance.service`, the LIVE Qwen3.8 since "
+        "2026-08-16. Replaced the llama.cpp/ROCmFPX GGUF path on :8080 after a "
+        "measured head-to-head (same card, wikitext-2 test, 100 chunks @ c=512): "
+        "quality is a WASH — perplexity 6.6094 here vs 6.6029 for the ROCmFP4 GGUF it "
+        "replaced, inside the +-0.10 error bars — while prefill roughly doubles "
+        "(~890 -> ~1850 tok/s) and decode doubles (27.2 -> 54.4 tok/s with MTP). "
+        "MTP speculation is ON and VERIFIED distribution-preserving here (greedy "
+        "output token-identical to unspeculated decoding on 8/8 prompts); the same "
+        "test FAILED on the llama.cpp ROCmFPX build (6/8 diverged mid-content), which "
+        "is why speculation must stay OFF on any llama.cpp path. Serves BOTH aliases "
+        "`qwen3.8-27b-r9700` (Hermes main provider) and `qwen3.8-27b-rocmfp4-r9700` "
+        "(Hermes auxiliary roles + ARIA config.steward_model) — the second is a "
+        "historical misnomer kept so the cutover broke nothing. Multimodal (vision "
+        "tower kept, LMONLY=0).",
+        runtime_repo="https://codeberg.org/StillDeadcode/vllm-radiance",
+        runtime_ref="docker.io/stilldeadcode/vllm-radiance:0.5.8 (image built "
+        "2026-07-31; ships ROCm 7.14.0 internally vs the host's 7.2.4). NOTE: the "
+        "Aug-14 upstream commit `[ADD] add qwen3.8 chat template` is NOT in this tag "
+        "and no newer tag exists — the checkpoint's own chat_template.jinja is what "
+        "vLLM picks up. A source build at main is the way to get the curated one.",
+        backend_device="ROCm0 (R9700, gfx1201), vLLM/HIP",
+        devices=("R9700 dGPU (ROCm0)",),
+        memory_pool=POOL_R9700,
+        deployment="qwen3.8-radiance",
+        model_file="models/llm/Qwen3.8-27B-int4-AutoRound",
+        port=8080,
+        systemd_unit="qwen3.8-radiance.service",
+        launch_script="qwen3.8-radiance/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="MAXLEN", label="Context (max_model_len)", kind="int",
+                default="196608",
+                description="⚠️ Unlike llama.cpp this is bounded by a PREALLOCATED KV "
+                            "pool, not lazy allocation: the measured pool is ~236,790 "
+                            "tokens (fp8 KV; the model is GDN-hybrid so only 16 of 64 "
+                            "layers carry full attention KV). 196608 leaves 1.20x "
+                            "concurrency. The retired GGUF path's 327680 does NOT fit "
+                            "at any setting alongside 17.9 GiB of weights on 32 GiB. "
+                            "Hermes derives compaction as 0.5 x declared context, so "
+                            "this lands it at 135,168. ⚠️ 0.5 is NOT the effective value: models under 512K are floored at 0.75 by _effective_threshold_percent(). Keep declared ctx UNDER the server's max_model_len — 180224 vs 196608 reserves output headroom.",
+            ),
+            LaunchParam(
+                name="slots", env="MAXSEQS", label="Slots (max_num_seqs)", kind="int",
+                default="1",
+                description="1 is what buys the large KV pool; a second concurrent "
+                            "conversation queues rather than evicting. Per-sequence GDN "
+                            "state makes this expensive to raise.",
+            ),
+            LaunchParam(
+                name="spec", env="SPEC", label="Speculative decoding", kind="enum",
+                default="mtp",
+                choices=(
+                    ("mtp", "MTP self-speculation — 34.25 -> 54.42 tok/s decode, "
+                            "verified lossless on radiance"),
+                    ("off", "no speculation — 34.25 tok/s, frees ~42k tokens of KV"),
+                ),
+            ),
+            LaunchParam(
+                name="lmonly", env="LMONLY", label="Drop vision tower", kind="enum",
+                default="0",
+                choices=(
+                    ("0", "keep vision (multimodal) — the standing default"),
+                    ("1", "--language-model-only, returns ~0.8 GiB to the KV pool"),
+                ),
+            ),
+            LaunchParam(
+                name="gpuutil", env="GPUUTIL", label="GPU memory utilization",
+                kind="float", default="0.94",
+                description="vLLM sizes the KV pool from what is left after weights, "
+                            "activation and graphs, so this is the KV dial.",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        # Measured 2026-08-16: 29 GiB VRAM at 196608 x 1 slot with vision + MTP
+        # (17.93 weights + 2.21 peak activation + 1.09 non-torch + 0.16 graphs + KV).
+        resident_gib=29,
+        weights_gib=17.93,
+        exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-Radiance"),
+        consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 (declared "
+        "180224 since 2026-08-16, compaction at 135,168); Hermes auxiliary roles "
+        "(compression, skills_hub, ...) -> the same port via the "
+        "'qwen3.8-27b-rocmfp4-r9700' alias; ARIA config.steward_model uses that alias "
+        "too. DS4 on :8108 remains the coding-agent (pi) model.",
+    ),
+    ModelServerSpec(
         slug="Qwen3.8-27B-R9700-HIP",
+        startable=False,
+        not_startable_reason="RETIRED 2026-08-16, superseded by "
+        "`Qwen3.8-27B-R9700-Radiance` on the same port. Its unit is disabled, its "
+        "ROCmFP4/Q6_K GGUFs and the `rocmfpx-src/build-rdna4-rocwmma` runtime were "
+        "deleted (Ben: radiance is the only way Qwen3.8 gets deployed), so this cannot "
+        "start even if re-enabled. Kept as the record of what the numbers were "
+        "measured against: perplexity 6.6029, prefill ~890 tok/s, decode 27.2 tok/s, "
+        "and 327,680 x 2 slots of lazily-allocated q4_0 KV — a context geometry the "
+        "vLLM replacement cannot reach, which is why Hermes's declaration dropped "
+        "250000 -> 196608.",
         description="Qwen3.8-27B (dense, GDN hybrid) on the DISCRETE Radeon AI PRO "
         "R9700 — `qwen-r9700.service`. Since 2026-08-15 the unit's ExecStart is "
         "`serve-rocmfp4.sh` (drop-in `rocmfp4.conf`): the ROCmFPX HIP gfx1201 build "
@@ -809,6 +1095,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
+        startable=False,
+        not_startable_reason="WEIGHTS DELETED 2026-08-16 in the radiance cutover — models/llm/Qwen3.8-27B-GGUF/Qwen3.8-27B-Q6_K.gguf no longer exists. Marked unstartable 2026-08-17 after a sweep found it still advertised as startable, i.e. ARIA would have offered a start that could never succeed. Was: 39 tok/s with Vulkan MTP vs 22.9 without. Re-download the Q6_K GGUF to revive it.",
         description="Qwen3.8-27B Q6_K on the R9700 through the Ciru ROCmFPX Vulkan "
         "build, with MTP self-speculative decode ON — the head ships inside the GGUF "
         "as blk.64, there is no separate draft file. MTP is +70% decode here: 39.02 "
@@ -840,6 +1128,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
+        startable=False,
+        not_startable_reason="WEIGHTS DELETED 2026-08-16 in the radiance cutover — models/llm/Qwen3.8-27B-ROCmFPX-GGUF/Qwen3.8-27B-ROCmFP4.gguf no longer exists (same file the already-retired Qwen3.8-27B-R9700-HIP entry points at). Marked unstartable 2026-08-17 by the same sweep. vllm-radiance replaced this path: ~2x prefill and decode for a wash on perplexity (6.6094 vs 6.6029).",
         description="Qwen3.8-27B in ROCmFPX Q4_0_ROCMFP4 format (17.7 GB) on the "
         "R9700, same Ciru ROCmFPX Vulkan runtime as the Q6_K variant. The AMD-native "
         "weight format Ben asked for on the 9700: ~4.6 GiB smaller than Q6_K, which "
@@ -2149,6 +2439,70 @@ def base_url_for_spec(spec: "ModelServerSpec") -> Optional[str]:
     return None
 
 
+# vLLM's Prometheus names. Mapped onto the SAME RuntimeStats fields as
+# llama.cpp's where they mean the same thing, so a consumer does not need to
+# know which engine served it:
+#   num_requests_running -> requests_processing
+#   num_requests_waiting -> requests_deferred  (drives `saturated` identically)
+# The two vllm-only gauges land in their own fields.
+# ⚠️ NAMES VERIFIED against the live server 2026-08-17, not taken from docs —
+# two educated guesses were wrong: it is `kv_cache_usage_perc` (NOT
+# `gpu_cache_usage_perc`), and there is NO hit-rate gauge at all; vLLM exposes a
+# hits/queries COUNTER PAIR that has to be divided (see _vllm_derived below).
+_VLLM_METRIC_FIELDS = {
+    "vllm:num_requests_running": "requests_processing",
+    "vllm:num_requests_waiting": "requests_deferred",
+    "vllm:prompt_tokens_total": "prompt_tokens_total",
+    "vllm:generation_tokens_total": "tokens_predicted_total",
+    # Fraction 0..1 of the PREALLOCATED KV pool in use. Meaningful here in a way
+    # it is not on llama.cpp, which allocates lazily.
+    "vllm:kv_cache_usage_perc": "kv_cache_usage_pct",
+}
+
+# Counters we divide rather than map straight through.
+_VLLM_RATIO_FIELDS = {
+    "vllm:prefix_cache_hits_total": "_prefix_hits",
+    "vllm:prefix_cache_queries_total": "_prefix_queries",
+    # Cumulative prompt tokens served from cache — the absolute saving, next to
+    # the ratio. `prompt_tokens_cached_total` is the vLLM-side twin of the
+    # `prompt_tokens_details.cached_tokens` DwarfStar reports per response.
+    "vllm:prompt_tokens_cached_total": "prompt_tokens_cached_total",
+}
+
+
+def _parse_prometheus_labels(text: str, metric: str) -> dict:
+    """Labels of a single Prometheus series — where vLLM hides its config.
+
+    `vllm:cache_config_info` reports a constant 1.0 and carries every fact worth
+    knowing in its LABELS: kv_cache_size_tokens, block_size, enable_prefix_caching.
+    A value-only parser sees "1.0" and learns nothing.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith(metric + "{"):
+            continue
+        inner = line[len(metric) + 1: line.rfind("}")]
+        out = {}
+        for part in inner.split('","'):
+            k, _, v = part.partition("=")
+            out[k.strip().strip('"')] = v.strip().strip('"')
+        return out
+    return {}
+
+
+def _vllm_derived(raw: dict) -> dict:
+    """Turn vLLM's counter pairs into the ratios the API reports.
+
+    ⚠️ These are CUMULATIVE counters since process start, so the ratio is a
+    lifetime average, not a current rate. A freshly restarted server reports
+    0 queries — which yields None (unknown), never 0.0 (a perfect miss rate).
+    """
+    out = {k: v for k, v in raw.items() if not k.startswith("_")}
+    hits, queries = raw.get("_prefix_hits"), raw.get("_prefix_queries")
+    if queries:  # non-zero and not None
+        out["prefix_cache_hit_rate"] = round(hits / queries, 4) if hits is not None else None
+    return out
+
 _METRIC_FIELDS = {
     "llamacpp:requests_processing": "requests_processing",
     "llamacpp:requests_deferred": "requests_deferred",
@@ -2178,6 +2532,42 @@ class RuntimeStats:
     predicted_tokens_per_second: Optional[float] = None
     avg_busy_slots_per_decode: Optional[float] = None
     decode_calls_total: Optional[float] = None
+    # --- cross-family additions (2026-08-17) -------------------------------
+    runtime_family: str = "llamacpp"
+    # Why a server cannot report something, when it cannot. Distinguishes
+    # "this backend has no such endpoint" from "the probe failed".
+    telemetry_hint: Optional[str] = None
+    # vLLM-only, and genuinely useful: it PREALLOCATES its KV pool, so usage is
+    # a real occupancy fraction rather than a guess. llama.cpp allocates lazily
+    # and has no equivalent.
+    kv_cache_usage_pct: Optional[float] = None
+    # vLLM-only. The number that says whether prompt caching is actually paying
+    # off; llama.cpp exposes no equivalent and DwarfStar reports its own per
+    # response (prompt_tokens_details.cached_tokens) rather than as a gauge.
+    prefix_cache_hit_rate: Optional[float] = None
+    # vLLM-only: cumulative prompt tokens served FROM cache. The absolute saving
+    # alongside the ratio — and the direct analogue of the per-response
+    # prompt_tokens_details.cached_tokens that DwarfStar reports.
+    prompt_tokens_cached_total: Optional[float] = None
+    # --- prompt-cache capacity (2026-08-17) --------------------------------
+    # "Where does the prompt cache live and how big can it get" had no answer in
+    # this API: only current usage was exposed, and only for one backend. Each
+    # engine stores it somewhere different — VRAM pool / on-disk / plain RAM —
+    # so the kind is reported alongside the number rather than assumed.
+    prompt_cache_kind: Optional[str] = None      # "vram-pool" | "disk" | "ram"
+    prompt_cache_capacity: Optional[str] = None  # human-readable ceiling
+    prompt_cache_used: Optional[str] = None      # human-readable current
+    # ⚠️ vLLM only, and load-bearing: prefix caching is BLOCK-granular, so a
+    # prompt sharing fewer than this many leading tokens gets ZERO reuse. On
+    # Qwen3.8 it is 1664 (raised so the attention page >= the Mamba page),
+    # which is why short auxiliary prompts see a 0% hit rate.
+    cache_block_size: Optional[int] = None
+    # Mean time-to-first-token — the closest thing to a live prefill latency.
+    mean_ttft_seconds: Optional[float] = None
+    # Served context, when the backend will tell us (DwarfStar reports it on
+    # /v1/models). Lets the declared-vs-observed drift check work for backends
+    # with no /slots to read n_ctx from.
+    served_ctx: Optional[int] = None
 
     @property
     def free_slots(self) -> Optional[int]:
@@ -2204,16 +2594,22 @@ class RuntimeStats:
         return self.requests_deferred > 0
 
 
-def _parse_prometheus(text: str) -> dict:
+def _parse_prometheus(text: str, fields: Optional[dict] = None) -> dict:
     """Minimal Prometheus text-format reader for the handful of gauges we want.
-    Ignores HELP/TYPE lines and any metric not in _METRIC_FIELDS."""
+
+    `fields` selects the name->attribute map, so llama.cpp and vLLM can share
+    one parser. Ignores HELP/TYPE lines and any metric not in the map. Labelled
+    series (`name{label="x"} v`) are matched on the bare name."""
     out: dict = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         name, _, value = line.partition(" ")
-        field = _METRIC_FIELDS.get(name)
+        # vLLM labels its series (e.g. vllm:num_requests_running{model_name=...}),
+        # so match on the portion before the label block.
+        bare = name.split("{", 1)[0]
+        field = (fields if fields is not None else _METRIC_FIELDS).get(bare)
         if field is None:
             continue
         try:
@@ -2224,17 +2620,31 @@ def _parse_prometheus(text: str) -> dict:
 
 
 async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Optional[RuntimeStats]:
-    """Live slot occupancy + throughput for a running server, or None.
+    """Live occupancy + throughput for a running server, or None if unreachable.
 
-    Returns None when the server is unreachable — a stopped server is not an
-    error here, it simply has no runtime to report. Degrades to slots-only when
-    `/metrics` is unavailable rather than failing the whole probe.
+    Dispatches on `spec.runtime_family`. Until 2026-08-17 this spoke ONLY
+    llama.cpp's `/slots` + `/metrics`, so the two newest deployments — Qwen3.8
+    on vllm-radiance and DS4 on DwarfStar — reported `null` for every field. In
+    an API where `null` means UNKNOWN rather than "fine", that made two of the
+    three live models invisible to the endpoint whose whole job is showing load.
+
+    A stopped server is not an error here; it simply has no runtime to report.
     """
     base = base_url_for_spec(spec)
     if not base:
         return None
     root = base[: -len("/v1")] if base.endswith("/v1") else base
+    family = (spec.runtime_family or "llamacpp").lower()
 
+    if family == "vllm":
+        return await _probe_vllm(spec, root, timeout)
+    if family == "dwarfstar":
+        return await _probe_dwarfstar(spec, base, timeout)
+    return await _probe_llamacpp(spec, root, timeout)
+
+
+async def _probe_llamacpp(spec, root: str, timeout: float) -> Optional[RuntimeStats]:
+    """`/slots` (always on) + `/metrics` (needs --metrics, 501s otherwise)."""
     slots_data = None
     metrics: dict = {}
     metrics_available = False
@@ -2253,18 +2663,16 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
                     slots_data = None
             if isinstance(metrics_resp, httpx.Response):
                 if metrics_resp.status_code == 200:
-                    metrics = _parse_prometheus(metrics_resp.text)
+                    metrics = _parse_prometheus(metrics_resp.text, _METRIC_FIELDS)
                     metrics_available = True
                 elif metrics_resp.status_code == 501:
-                    # Explicit, actionable: the server simply wasn't started
-                    # with the flag. Not a fault, and not something to retry.
                     metrics_hint = (
                         "server started without --metrics; add it to the "
                         "launch file and restart to get throughput, queue "
                         "depth and busy-slot averages"
                     )
     except (httpx.HTTPError, OSError) as exc:
-        logger.debug("model_servers: runtime probe failed for %s: %s", spec.slug, exc)
+        logger.debug("model_servers: llamacpp probe failed for %s: %s", spec.slug, exc)
         return None
 
     if slots_data is None and not metrics_available:
@@ -2277,13 +2685,188 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
         ctxs = [s.get("n_ctx") for s in slots_data if isinstance(s, dict) and s.get("n_ctx")]
         ctx_per_slot = ctxs[0] if ctxs else None
 
+    # llama.cpp keeps its prompt cache in HOST RAM, bounded by --cache-ram (MB).
+    # Unlike the other two it is neither persistent nor introspectable: the server
+    # exposes no "how full is it" number, so capacity is reported and usage is
+    # honestly left unknown rather than guessed at.
+    cache_cap = None
+    cache_ram = _effective_param_value(spec, "cache_ram")
+    if cache_ram:
+        cache_cap = f"{cache_ram} MB in host RAM (--cache-ram)"
+
     return RuntimeStats(
+        runtime_family="llamacpp",
+        prompt_cache_kind="ram" if cache_cap else None,
+        prompt_cache_capacity=cache_cap,
+        prompt_cache_used=None,  # llama.cpp exposes no occupancy for this
         total_slots=total_slots,
         busy_slots=busy,
         ctx_per_slot=ctx_per_slot,
+        served_ctx=ctx_per_slot,
         metrics_available=metrics_available,
         metrics_hint=metrics_hint,
         **metrics,
+    )
+
+
+async def _probe_vllm(spec, root: str, timeout: float) -> Optional[RuntimeStats]:
+    """vLLM exposes Prometheus `/metrics` and NO `/slots`.
+
+    Slot counts therefore come from the launch geometry rather than the server:
+    vLLM's concurrency is `--max-num-seqs`, which is a launch parameter, and
+    there is no per-slot introspection endpoint to read occupancy from. Busy
+    slots are taken from `num_requests_running`, which is the same quantity
+    llama.cpp reports as `requests_processing`.
+
+    ⚠️ vLLM PREALLOCATES its KV pool, so `kv_cache_usage_pct` is a true
+    occupancy fraction — unlike llama.cpp, where KV grows lazily and no
+    equivalent number exists.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.get(f"{root}/metrics")
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("model_servers: vllm probe failed for %s: %s", spec.slug, exc)
+        return None
+    if resp.status_code != 200:
+        return RuntimeStats(
+            runtime_family="vllm",
+            metrics_available=False,
+            telemetry_hint=f"vLLM /metrics returned {resp.status_code}",
+        )
+
+    fields = {**_VLLM_METRIC_FIELDS, **_VLLM_RATIO_FIELDS}
+    metrics = _vllm_derived(_parse_prometheus(resp.text, fields))
+    geom = read_launch_geometry(spec)
+
+    # Capacity comes from cache_config_info's LABELS, self-reported by the engine
+    # rather than copied from a doc that can drift.
+    cfg = _parse_prometheus_labels(resp.text, "vllm:cache_config_info")
+    pool_tokens = cfg.get("kv_cache_size_tokens")
+    block_size = cfg.get("block_size")
+    apc_on = (cfg.get("enable_prefix_caching") or "").lower() == "true"
+    used_pct = metrics.get("kv_cache_usage_pct")
+    capacity = None
+    if pool_tokens:
+        capacity = f"{int(pool_tokens):,} tokens"
+        conc = cfg.get("kv_cache_max_concurrency")
+        if conc:
+            try:
+                capacity += f" ({float(conc):.2f}x concurrency at full context)"
+            except ValueError:
+                pass
+    if not apc_on:
+        capacity = (capacity or "") + " — PREFIX CACHING DISABLED"
+
+    # Mean TTFT from the histogram's sum/count. A latency, not a rate — but it is
+    # the only prefill-side number vLLM exposes without running a benchmark.
+    ttft = None
+    tt = _parse_prometheus(resp.text, {
+        "vllm:time_to_first_token_seconds_sum": "_sum",
+        "vllm:time_to_first_token_seconds_count": "_count",
+    })
+    if tt.get("_count"):
+        ttft = round(tt["_sum"] / tt["_count"], 4)
+    busy = metrics.get("requests_processing")
+    return RuntimeStats(
+        runtime_family="vllm",
+        # From the launch file, not the server — see the docstring.
+        total_slots=geom.slots,
+        busy_slots=int(busy) if busy is not None else None,
+        ctx_per_slot=geom.ctx_per_slot,
+        served_ctx=geom.n_ctx,
+        metrics_available=True,
+        prompt_cache_kind="vram-pool",
+        prompt_cache_capacity=capacity,
+        prompt_cache_used=(f"{used_pct * 100:.1f}% of pool" if used_pct is not None else None),
+        cache_block_size=int(block_size) if block_size and block_size.isdigit() else None,
+        mean_ttft_seconds=ttft,
+        telemetry_hint=(
+            "slot count is the launch --max-num-seqs (vLLM has no /slots "
+            "endpoint); kv_cache_usage_pct and prefix_cache_hit_rate are "
+            "vLLM-only and come from its preallocated KV pool"
+        ),
+        **metrics,
+    )
+
+
+async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeStats]:
+    """DwarfStar (antirez/ds4) exposes `/v1/models` and NOTHING else.
+
+    Verified 2026-08-17 against the running server: `/metrics`, `/slots`,
+    `/health`, `/stats` and `/status` all return 404. So there is no live
+    occupancy or throughput to report, and this returns a row that says exactly
+    that rather than a bag of nulls a reader could mistake for "idle and fine".
+
+    What IS available: reachability, and the served context from /v1/models —
+    which is what makes the declared-vs-observed drift check work for a backend
+    with no /slots to read n_ctx from.
+
+    Per-request cache telemetry (`prompt_tokens_details.cached_tokens` /
+    `cache_write_tokens`) IS reported by DwarfStar, and is richer than anything
+    llama.cpp gives — but it arrives per completion, not as a gauge, so it
+    cannot be polled here. Capturing it would mean recording it at call sites.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.get(f"{base}/models")
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("model_servers: dwarfstar probe failed for %s: %s", spec.slug, exc)
+        return None
+    if resp.status_code != 200:
+        return None
+
+    served_ctx = None
+    try:
+        for m in (resp.json().get("data") or []):
+            if isinstance(m, dict) and m.get("context_length"):
+                served_ctx = int(m["context_length"])
+                break
+    except (ValueError, TypeError):
+        pass
+
+    geom = read_launch_geometry(spec)
+
+    # DwarfStar's prompt cache is ON DISK, not in GPU memory — the only backend
+    # here where it survives a restart, and the only one whose ceiling is a byte
+    # budget rather than a token pool. Both numbers come from the deployment
+    # itself (the effective launch parameters), never a hardcoded path.
+    cache_kind = cache_cap = cache_used = None
+    kv_dir = _effective_param_value(spec, "kv_disk_dir") or "/home/ben/.ds4/server-kv"
+    kv_mb = _effective_param_value(spec, "kv_disk_mb")
+    if kv_mb:
+        cache_kind = "disk"
+        try:
+            cache_cap = f"{int(kv_mb):,} MB on disk ({kv_dir})"
+        except ValueError:
+            cache_cap = f"{kv_mb} MB on disk ({kv_dir})"
+        try:
+            total = sum(
+                f.stat().st_size for f in pathlib.Path(kv_dir).glob("*.kv") if f.is_file()
+            )
+            cache_used = f"{total / (1024 ** 3):.2f} GB"
+        except OSError:
+            cache_used = None
+
+    return RuntimeStats(
+        runtime_family="dwarfstar",
+        prompt_cache_kind=cache_kind,
+        prompt_cache_capacity=cache_cap,
+        prompt_cache_used=cache_used,
+        # Resident sessions are a launch parameter (--batched-session); the
+        # server does not expose how many are occupied.
+        total_slots=geom.slots,
+        busy_slots=None,
+        ctx_per_slot=served_ctx or geom.ctx_per_slot,
+        served_ctx=served_ctx,
+        metrics_available=False,
+        telemetry_hint=(
+            "DwarfStar exposes /v1/models ONLY — no /metrics, /slots or /health "
+            "(all 404). Live occupancy, queue depth and throughput are therefore "
+            "UNAVAILABLE, not zero. Its per-response prompt_tokens_details "
+            "(cached_tokens / cache_write_tokens) is the real cache signal and "
+            "would have to be recorded at call sites to surface here."
+        ),
     )
 
 

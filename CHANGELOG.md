@@ -2,6 +2,101 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-17] - DwarfStar selected as the DS4 stack; utilization telemetry is backend-aware
+
+### Added
+
+- **`DS4-0731-Q8Protected-Halo-DwarfStar`** (`:8112`, `infrastructure/dwarfstar-ds4/serve.sh`,
+  ARIA-generated unit) — DeepSeek V4 Flash on the Strix Halo via antirez's
+  [DwarfStar](https://github.com/antirez/ds4), a native-ROCm engine written for DS4.
+  **Selected as the APU resident after a six-way bakeoff**
+  (`vault/infrastructure/Analysis/DS4_STACK_BAKEOFF_20260817.md`): tied top quality (13/15
+  LCB-medium at 16k) with the fewest genuine wrong answers, and the only top scorer whose
+  weights are neither abliterated (Ember) nor expert-pruned on stale saliency (REAP);
+  loads in ~40 s vs ~15 min. ⚠️ **NOT CUT OVER** — every consumer still points at `:8108`;
+  flipping is a separate, deliberate step. ⚠️ **~100 GiB measured GTT** — DwarfStar
+  self-reports 82.46 and understates by ~17.5 GiB, so this is a *wash* with IQ3_XXS, not a
+  saving; co-resident with radiance + gemma on ~8 GiB of headroom. `batched_sessions ×
+  ctx` multiplies context buffers per resident session — 6 × 262144 hard-crashed the box
+  once today; raise one at a time and measure.
+- **`DS4-0731-REAP150B-MXFP4`** (`:8109`) — the REAP-pruned challenger, now
+  `startable=False`: weights deleted 2026-08-17 after DwarfStar was selected. Kept as the
+  record that the stale-saliency worry was tested (REAP 10/15 vs unpruned 9/15, one
+  discordant pair — no evidence of prune damage) and that it lost on provenance, not
+  measured quality.
+- **`ModelServerSpec.runtime_family`** (`llamacpp` | `vllm` | `dwarfstar`) and
+  per-family runtime probes. `GET /infrastructure/model-servers/utilization` used to speak
+  only llama.cpp's `/slots` + `/metrics`, so it returned `null` for two of the three live
+  models with no way to tell "unknown" from "idle". Now vLLM is read from Prometheus
+  `/metrics` (`kv_cache_usage_pct`, `prefix_cache_hit_rate`, `prompt_tokens_cached_total`)
+  and DwarfStar from `/v1/models` (its only endpoint); every row carries `runtime_family`
+  and a `telemetry_hint` saying *why* a field is missing. ⚠️ `null` still means UNKNOWN,
+  never "not busy".
+- **`check_runtime_updates` tool** (`tools/builtin/runtime_updates.py`) — a **read-only**
+  check of whether the pinned inference runtimes (DwarfStar, Nathan's Vulkan fork,
+  vllm-radiance 0.5.8, mainline llama.cpp on the unmerged bailingmoe3 PR branch, Ember)
+  have moved upstream. Reports only; never pulls, builds or restarts. Allowlisted so
+  ARIA's scheduler can run it unattended — a loop that runs while Ben is not talking
+  belongs in ARIA, not a Hermes cron prompt.
+
+### Changed
+
+- **Triage classification moved to gemma** (`triage_classify_backend/model/endpoint`,
+  `:8104`) instead of riding `steward_model` on `:8080`. Only the informational-vs-failure
+  call moved; the DIAGNOSE session is unchanged. `steward_model` also drives the Steward
+  service and `agents/review.py`, so repointing it would have moved three consumers onto a
+  4B model. A failed classification returns `None` and leaves the alert alone — a dead
+  classifier costs a downgrade, never a delivery. (gemma's unit had been exiting on every
+  boot because it gated on the retired `:18211` endpoint — repaired 2026-08-17.)
+- **`Qwen3.8-27B-R9700-Radiance`** now declares `runtime_family="vllm"`.
+
+## [2026-08-16] - The R9700 moved off llama.cpp: Qwen3.8 now serves through vllm-radiance
+
+### Changed
+
+- **`:8080` is vLLM now, not llama.cpp.** New registry entry
+  `Qwen3.8-27B-R9700-Radiance` (`qwen3.8-radiance.service`,
+  `infrastructure/qwen3.8-radiance/serve.sh`) serving **int4 W4A16 (AutoRound)** weights
+  through **vllm-radiance 0.5.8**, multimodal, **196608 ctx × 1 slot**, 29 GiB VRAM.
+  `Qwen3.8-27B-R9700-HIP` is `startable=False` with the reason (kept, not deleted).
+- **Why: ~2× on both axes for no measurable quality cost.** Measured same card, wikitext-2
+  test, 100 chunks @ c=512 — perplexity **6.6094** vs the retired GGUF's **6.6029** (inside
+  ±0.10), prefill **~890 → ~1850 tok/s**, decode **27.2 → 54.4 tok/s**.
+- **Hermes: declared context 250000 → 196608**, so its compaction trigger moved 187,500 →
+  **135,168**. This is a *server ceiling*, not a preference: vLLM preallocates its KV pool
+  (measured ~236,790 tokens) where llama.cpp allocated lazily at q4_0, and the old
+  327680 × 2 does not fit alongside 17.9 GiB of weights on a 32 GiB card. Raising
+  `compression.threshold` was rejected — it is global and would have moved DS4 from 60K
+  to 96K of its 120K declaration.
+- **Two aliases on one endpoint**, deliberately: `qwen3.8-27b-r9700` (Hermes main provider)
+  and `qwen3.8-27b-rocmfp4-r9700` (Hermes auxiliary roles + ARIA `config.steward_model`).
+  The launcher gained a `SERVED_NAMES` env knob for this; its default is unchanged.
+
+### Removed
+
+- **~135 GB of retired Qwen3.8 artifacts**: the ROCmFP4 GGUF (17G), the Q6_K GGUF (23G),
+  the bf16 safetensors quantization source (52G), the three `rocmfpx-src` HIP builds
+  (~2.6G) and benchmark scratch. **Radiance is now the only way Qwen3.8 is deployed**, so
+  there is no rollback to the GGUF path without re-downloading.
+
+### Fixed / learned
+
+- ⚠️ **llama.cpp's MTP speculative decoding is NOT distribution-preserving here.** Greedy
+  output (temp 0 / top_k 1) diverged mid-content on **6 of 8** prompts versus unspeculated
+  decoding, while a baseline-vs-baseline control was 8/8 identical. **radiance's MTP passed
+  the same test 8/8.** Never enable `--spec-type draft-mtp` on a llama.cpp path on this box.
+  Acceptance rate is a throughput number and is not evidence either way.
+- ⚠️ **An OpenAI-style `echo` + `logprobs` request crashes the llama.cpp server**
+  (`ggml_abort` in `common_context_seq_rm` ← `update_slots`, exit 6/ABRT). Hit accidentally
+  against the live `:8080` before the cutover.
+- ⚠️ **The AutoRound checkpoint ships three fields that make vLLM load it wrong, silently**
+  (`quant_method: auto-round`, missing `desc_act`, missing `modules_in_block_to_quantize`).
+  `CONFIG_FIX=1` patches them. The proof it worked is the startup line
+  `Using RDNAHybridW4A16LinearKernel`.
+- **`shared-embeddings` is exited**, so memories written during this work are stored
+  `embedding_pending` and are not semantically recallable until it is started and the
+  backfill drains.
+
 ## [2026-08-15] - ARIA↔infrastructure is now stated as one system, not two unrelated repos
 
 ### Added

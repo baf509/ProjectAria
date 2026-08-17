@@ -62,6 +62,7 @@ from aria.tools.builtin import (
     ShellTool,
     SoulTool,
     BrowsePageTool,
+    RuntimeUpdateCheckTool,
     StartCodingSessionTool,
     StopCodingSessionTool,
     WebTool,
@@ -191,6 +192,7 @@ async def lifespan(app: FastAPI):
     tool_router.register_tool(StopCodingSessionTool(coding_manager))
     tool_router.register_tool(WebTool())
     tool_router.register_tool(BrowsePageTool())
+    tool_router.register_tool(RuntimeUpdateCheckTool())
     tool_router.register_tool(ScreenshotTool())
     tool_router.register_tool(DocumentGenerationTool())
     tool_router.register_tool(SoulTool())

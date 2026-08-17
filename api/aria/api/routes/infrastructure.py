@@ -332,6 +332,12 @@ async def model_server_utilization(
     this reports how many are busy. Declared here (before `/{slug}`) so the
     literal path is not captured as a slug.
 
+    Backend-aware since 2026-08-17: llama.cpp (`/slots` + `/metrics`), vLLM
+    (Prometheus `/metrics`, no `/slots`) and DwarfStar (`/v1/models` only, no
+    telemetry at all) each report what they actually have. `runtime_family`
+    says which answered and `telemetry_hint` says why a field is missing —
+    ⚠️ a null here has always meant UNKNOWN, never "not busy".
+
     `saturated` is the field to watch. It means requests are QUEUING because
     every slot was taken — and a queued request lands in whichever slot frees
     first, not necessarily the one holding its prefix, so sustained saturation
@@ -376,6 +382,26 @@ async def model_server_utilization(
             "tokens_predicted_total": stats.tokens_predicted_total,
             "metrics_available": stats.metrics_available,
             "metrics_hint": stats.metrics_hint,
+            # --- cross-backend (2026-08-17) ---------------------------------
+            # Which telemetry surface answered. Before this, every field below
+            # came back null for vLLM and DwarfStar and there was no way to tell
+            # "unknown" from "idle".
+            "runtime_family": stats.runtime_family,
+            "telemetry_hint": stats.telemetry_hint,
+            "served_ctx": stats.served_ctx,
+            # vLLM-only: it preallocates its KV pool, so this is true occupancy.
+            "kv_cache_usage_pct": stats.kv_cache_usage_pct,
+            # vLLM-only: whether prompt caching is actually paying off.
+            "prefix_cache_hit_rate": stats.prefix_cache_hit_rate,
+            "prompt_tokens_cached_total": stats.prompt_tokens_cached_total,
+            # --- prompt-cache capacity: where it lives, how big it can get ---
+            "prompt_cache_kind": stats.prompt_cache_kind,
+            "prompt_cache_capacity": stats.prompt_cache_capacity,
+            "prompt_cache_used": stats.prompt_cache_used,
+            # ⚠️ vLLM: prefix caching is BLOCK-granular. Prompts sharing fewer
+            # than this many leading tokens get NO reuse at all.
+            "cache_block_size": stats.cache_block_size,
+            "mean_ttft_seconds": stats.mean_ttft_seconds,
             "resident_gib_measured": server.get("resident_gib_measured"),
         })
     return {"servers": out, "slot_budget_warning": check_pi_slot_budget()}

@@ -550,7 +550,7 @@ class TriageWorker:
             f"severity: {alert.get('severity')}\n"
             f"occurrences: {alert.get('occurrences')}\n\n{text}"
         )
-        model = getattr(settings, "steward_model", None)
+        model = getattr(settings, "triage_classify_model", None) or getattr(settings, "steward_model", None)
         try:
             from aria.llm.base import Message
 
@@ -564,7 +564,7 @@ class TriageWorker:
                     # Generous on purpose: a reasoning model spends most of a
                     # tight budget in reasoning_content and then returns an
                     # empty `content` with finish_reason="length".
-                    max_tokens=int(getattr(settings, "steward_max_tokens", 2048)),
+                    max_tokens=int(getattr(settings, "triage_classify_max_tokens", 512)),
                 ),
                 timeout=float(getattr(settings, "triage_classify_timeout_seconds", 120)),
             )
@@ -588,10 +588,17 @@ class TriageWorker:
         try:
             from aria.llm.manager import LLMManager
 
+            # 2026-08-17: classification runs on its OWN model (gemma :8104),
+            # not steward_model — see config.triage_classify_*. steward_model
+            # also drives the Steward service and agents/review.py, so reusing
+            # it here would have coupled three unrelated consumers.
             self._adapter = LLMManager().get_adapter(
-                getattr(settings, "steward_backend", "llamacpp"),
-                getattr(settings, "steward_model", "default"),
-                base_url=getattr(settings, "steward_endpoint", None) or None,
+                getattr(settings, "triage_classify_backend", None)
+                or getattr(settings, "steward_backend", "llamacpp"),
+                getattr(settings, "triage_classify_model", None)
+                or getattr(settings, "steward_model", "default"),
+                base_url=(getattr(settings, "triage_classify_endpoint", None)
+                          or getattr(settings, "steward_endpoint", None) or None),
             )
         except Exception as exc:
             logger.warning("triage: no classifier adapter available: %s", exc)
