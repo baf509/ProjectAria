@@ -92,6 +92,17 @@ was the one open defect in 142 KB of retired planning material.
   since 2026-08-15T16:35 and is live at `:8080` (`-c 327680 -np 2`). Worth watching for a day
   before trusting it with anything that matters. *(The other topology follow-ups live in the
   vault plan's §P.4; this one is carried nowhere else.)*
+- **Retrieval is still in `fallback` mode** (since 2026-08-15T17:19-04:00). Turning
+  `embeddings` back on drains the 826 queued re-embeddings in one action; turning `search`
+  back on needs `shared-mongot`, which is **shared with AgentBenchPlatform** — a cross-project
+  call. Until then every memory search is the mongod-native scan, now bounded to the last 180
+  days (`memory_fallback_recency_days`). This is D16's operational half from
+  `vault/ProjectAria/Planning/PERFORMANCE_REVIEW_FIXES_20260817.md` (§E.3); the code half
+  landed 2026-08-18.
+- **Three Phase 4 retention defaults were assumed, not chosen** (2026-08-18):
+  `conversation_message_cap=200`, `usage_retention_days=365`,
+  `memory_fallback_recency_days=180`. Each is a setting. ⚠️ Lowering `usage_retention_days`
+  deletes rows on the next TTL sweep — there is no undo.
 - **The service registry's docker timeout is too short.**
   `api/aria/infrastructure/services.py:383` — `async def _run(*args, timeout: float = 10.0)`.
   Every slow container stop reports a false failure. The capabilities route re-checks real

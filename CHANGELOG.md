@@ -2,6 +2,81 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-18] - API performance review: all four phases (D1–D18)
+
+Executed `vault/ProjectAria/Planning/PERFORMANCE_REVIEW_FIXES_20260817.md` end to end.
+Phase 1 was landed by the pi coding session that wrote the plan, which was interrupted
+mid-Phase 2; Phases 2–4 completed here. **1989 tests pass** (+26 new); the 11
+`coding_session`/`complexity_routing` failures are pre-existing.
+
+### Changed — the hot path (Phase 1, `3e1373b`, `d129bf7`)
+- `ModelServerManager.status()` — ~70–80 subprocess spawns, 8.57 s cold — is TTL-cached
+  (10 s) and invalidated by every mutation. `/llm/v1` routing no longer pays it at all:
+  `running_summary()` answers "who is running" in at most two subprocesses.
+- `process_message` reads the conversation with a projection instead of loading the whole
+  unbounded `messages` array every turn. Token counting includes `tool_calls` (the budget
+  was wrong exactly for tool-heavy conversations) and truncation counts each message once.
+  The proxy keeps one process-lifetime `httpx.AsyncClient`.
+
+### Fixed — correctness (Phase 2, `cbe6333`, `fc784d8`)
+- **OODA retries corrupted the transcript.** A retry re-entered `process_message`, re-pushing
+  the user message and persisting the rejected reply, so the next turn inherited
+  `user → assistant(rejected) → user(duplicate) → assistant`. The user message is now
+  persisted once, before the retries; only the winning attempt is stored.
+- **The watchdog's auto-review never reached new sessions.** It selected terminal sessions
+  with no sort, so `to_list(length=100)` meant the *oldest* 100. Now newest-first, one batched
+  report lookup instead of N, a three-strike cap so an unreviewable session stops being
+  re-probed with subprocesses every 5 s, and at most two fresh reviews per tick.
+- **Single-entity reads paid full-fleet cost.** `GET /model-servers/{slug}` and
+  `ServiceManager.get()` probe only the requested spec now, via a shared row builder.
+- **`harvest()` stalled the event loop** every 30 minutes — os.walk, two `git` subprocesses per
+  repo on 10 s timeouts, jsonl reads, all on the loop. Discovery *and* aggregation now run in a
+  thread; only the DB work stays on the loop.
+- **The memory search cache was unbounded under burst** (it swept only past 100 entries and
+  stopped). Now capped at 256 with oldest-first eviction.
+- **Fire-and-forget tasks could be garbage-collected mid-flight.** Added `aria/core/bg.py`
+  (`spawn_bg`) and fixed five discarded `create_task` sites — memory access tracking, the
+  ontology cross-link, the node agent's command handler, the benchmark reaper, and the
+  remote-probe warm-up. A grep-gate test refuses new ones.
+
+### Changed — N+1 in workers and pollers (Phase 3, `ca29361`)
+- The project cockpit priced sessions with up to 25 sequential aggregations; one `$in`
+  aggregation now does it — measured 19.5 ms → 2.5 ms, identical totals.
+- The extraction tick swept the whole fleet (664 shells, mostly caught up) at two queries each.
+  Selection moved into the query via a cursor mirrored onto the shell doc:
+  **664 → 132 shells, ~1064 fewer queries per tick**, no migration needed.
+- The prune worker takes shell names from the `shells` registry instead of `distinct()` on
+  `shell_events`, and skips the per-shell windowed aggregation (4–9 s on the big shells) for
+  shells that have not grown since the last pass.
+
+### Changed — data growth (Phase 4, `c996c68`)
+- The mongod-native fallback scan — which serves **every** memory search while search is off —
+  is bounded to `memory_fallback_recency_days` (180). It excludes 2 memories today.
+- `conversations.messages` is capped at `conversation_message_cap` (200); overflow moves to
+  `conversation_archives` rather than being dropped, archive-written *before* the inline trim,
+  and pulled by exact message id so a concurrent push cannot be silently lost. Reads page
+  across the seam.
+- A TTL index on `usage.timestamp` (`usage_retention_days`, 365), applied by `collMod` —
+  `create_index` would have hit `IndexOptionsConflict (85)` and been silently swallowed.
+
+### Rejected on measurement (this is the point of measuring)
+- **D12 — one aggregation for `fleet_overview`'s tails: 136 SECONDS** against the live 18.5M-row
+  collection, versus **2.0 ms** for the N per-shell `tail()` calls it was meant to replace.
+  N indexed seeks with a small limit beat one aggregation that cannot use the limit. Reverted.
+- **D15's `allowDiskUse` drop and `$project`** — the working set is a shell's entire retained
+  history (5.6M events), not the budget window, and projecting first measured 2.4× *slower*.
+
+### Fixed — unrelated, surfaced by this work
+- The DwarfStar `dspark_confidence` knob declared `default=""` to mean "unset", but `""` fails
+  `LaunchParam.validate()`, so that default could never be applied. Introduced by a concurrent
+  session in `9d7fe11`, fixed in `fc784d8`. ⚠️ `fc784d8`'s message misattributes the cause to
+  test-collection order; the correction is in the plan's §E.4.
+
+### Still open for Ben
+- **Retrieval is still in `fallback` mode.** Turning `embeddings`/`search` back on drains the
+  826 queued re-embeddings, but it means starting `shared-mongot`, which is shared with
+  AgentBenchPlatform — a cross-project call, deliberately not taken here.
+
 ## [2026-08-17] - Project retirement; the "focused project" pointer removed
 
 ### Added
