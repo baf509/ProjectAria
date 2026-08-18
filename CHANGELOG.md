@@ -2,6 +2,55 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-18] - Steward A1 and proactive research: the loops start running
+
+Two of the three clauses of the 2026-08-15 steward ask that had never executed are now live.
+`aria` and `war-audio-game` moved to **A1 propose**; research is wired and pinned but stays
+dormant until Ben approves each plan. **2013 tests pass** (+6 new); the one
+`test_model_launch_config` failure is pre-existing (a DS4 quant A/B enum whose `''` default
+its own validator rejects).
+
+### Fixed — proactive research could never have run
+- **The planner had no ResearchService.** `main.py` constructed
+  `ResearchPlanner(db, notifier=...)`, so the first real run would have raised
+  `RuntimeError("no ResearchService wired into the planner")` — *after* spending the model
+  call that generated the questions. Wired in via `get_research_service(db, task_runner)`.
+- **`start_research()` did not accept an endpoint**, so the planner's own safety gate
+  (`_launch_allowed`) refused to launch (`endpoint_unpinned`) or fell through to the **cloud**
+  Claude CLI — the opposite of the "local models" the loop exists to use. `ResearchConfig` now
+  carries `endpoint`/`force_local`/`project_id`/`topic_hash`; all three `get_adapter` call
+  sites pass `base_url=config.endpoint`; `_complete` skips `ClaudeRunner` when `force_local`.
+  Verified live: `launchable: True (endpoint_pinned)`, pinned to Qwen `:8080`, never DS4.
+- **A recovered task would have silently un-pinned itself.** The endpoint is persisted on the
+  run doc and rebuilt by `_recover_research_task`, so a restart mid-run cannot land the
+  continuation on DS4 — pi's single coding slot — which is the eviction the pin exists to stop.
+- Regression tests bind the contract to the shipping code: the planner's launch gate is a
+  *signature check* against the real `ResearchService` (every prior test used a fake that had
+  always accepted the arguments, which is why the gap survived), plus a source-level assert
+  that `main.py` passes `research=`.
+
+### Changed — the switches
+- `RESEARCH_PLANNER_ENABLED=true`. Two gates remain above it, by design: charter
+  `autonomy >= 1` **and** `approval: approved` in that project's `STEWARD_PLAN.md`. With
+  approval pending the planner ticks and reports `plan_not_approved` while spending nothing.
+- `STEWARD_MAX_TOKENS` 2048 → **6144**. At A1 the steward actually reasons, and Qwen emits
+  `reasoning_content` before `content`: war-audio-game's first A1 tick returned
+  `finish_reason=length` with empty content. The worker correctly treats empty as a failure
+  (`model-failed`) rather than writing "no gap" — the symptom was a failed tick, never a
+  silently wrong plan.
+- `aria` and `war-audio-game` charters set to `autonomy: 1` in the vault. The two-way vault
+  loop ran end to end for the first time: `human_edit` → `charter` → `autonomy` applied to
+  Mongo within the poll interval, and the next tick returned `status: proposing` with a real
+  task proposal instead of `observing`.
+
+### Known
+- A plan written by a tick that fires *before* VaultReader applies a charter edit carries the
+  stale `autonomy:` in its frontmatter (body header is correct). Self-corrects on the next tick.
+- Project hygiene is re-accumulating: 22 rows are `status=active kind=project`, only 5 have a
+  charter purpose, and 10 rows have no `kind` at all. Contained (no charter = not stewarded).
+- `session_outcomes` holds 17 rows, **all `label: null`**, none since 2026-08-15 — so the
+  improver's "≥20 labelled outcomes" gate currently stands at zero, not 17.
+
 ## [2026-08-18] - API performance review: all four phases (D1–D18)
 
 Executed `vault/ProjectAria/Planning/PERFORMANCE_REVIEW_FIXES_20260817.md` end to end.

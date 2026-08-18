@@ -1056,3 +1056,38 @@ class TestResearchWaitsForBensApproval:
                               return_value={"status": "completed"}) as run:
                 out = await planner.tick()
         assert run.await_count == 1 and out["ran"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The launch gate against the REAL ResearchService (2026-08-18)
+#
+# Everything above uses FakeResearchService, which has always accepted the
+# planner's arguments. That is precisely why nobody noticed that the real
+# service did not -- and that main.py wired no service in at all. These two
+# tests bind the planner's contract to the shipping code.
+# ---------------------------------------------------------------------------
+
+class TestLaunchGateAgainstRealService:
+    def test_real_research_service_satisfies_the_pin(self):
+        from aria.research.service import ResearchService
+
+        planner = make_planner(FakeDB(), research=ResearchService.__new__(ResearchService))
+        allowed, why = planner._launch_allowed(make_project())
+        assert allowed is True
+        assert why == "endpoint_pinned", (
+            "the real ResearchService no longer accepts `endpoint`, so unattended "
+            "research falls back to the cloud runner or refuses to launch"
+        )
+
+    def test_main_wires_a_research_service_into_the_planner(self):
+        """A planner built without a ResearchService raises
+        'no ResearchService wired into the planner' on its first run -- after
+        it has already spent the model call that generated the questions."""
+        from pathlib import Path
+
+        main_py = Path(__file__).resolve().parents[1] / "aria" / "main.py"
+        text = main_py.read_text()
+        start = text.index("research_planner_enabled")
+        block = text[start:start + 900]
+        assert "ResearchPlanner(" in block
+        assert "research=research_service" in block, "ResearchPlanner constructed without a research service"

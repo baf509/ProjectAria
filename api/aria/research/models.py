@@ -20,6 +20,18 @@ class ResearchConfig:
     llm_backend: str = "llamacpp"
     llm_model: str = "default"
     conversation_id: Optional[str] = None
+    # Where the completion actually goes. None = llm_manager's default, which
+    # for `llamacpp` is ARIA's /llm/v1 auto-route -> the LARGEST resident model
+    # -> DS4, pi's single coding slot. The steward's research planner pins this
+    # to Qwen on :8080 so a research prefill cannot evict a coding agent's warm
+    # prefix (4.2 s warm vs 39.5 s cold).
+    endpoint: Optional[str] = None
+    # Skip ClaudeRunner and keep every completion on the pinned local endpoint.
+    # Without this a "local" research run silently spends the cloud subscription.
+    force_local: bool = False
+    # Provenance for the steward's dedup/budget queries.
+    project_id: Optional[str] = None
+    topic_hash: Optional[str] = None
 
 
 @dataclass

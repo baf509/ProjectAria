@@ -58,8 +58,18 @@ class ResearchService:
         model: Optional[str] = None,
         backend: Optional[str] = None,
         conversation_id: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        force_local: bool = False,
+        project_id: Optional[str] = None,
+        topic_hash: Optional[str] = None,
     ) -> dict:
-        """Create a research record and enqueue background execution."""
+        """Create a research record and enqueue background execution.
+
+        `endpoint`/`force_local` are what make an unattended run safe to launch:
+        the steward's ResearchPlanner refuses to start at all unless this
+        signature accepts `endpoint` (`_launch_allowed`), because an unpinned
+        run resolves through /llm/v1 to DS4 -- pi's single coding slot.
+        """
         config = await self._build_config(
             query=query,
             depth=depth,
@@ -67,6 +77,10 @@ class ResearchService:
             model=model,
             backend=backend,
             conversation_id=conversation_id,
+            endpoint=endpoint,
+            force_local=force_local,
+            project_id=project_id,
+            topic_hash=topic_hash,
         )
         research_id = str(uuid4())
         now = datetime.now(timezone.utc)
@@ -77,6 +91,13 @@ class ResearchService:
             "task_id": "pending",
             "backend": config.llm_backend,
             "model": config.llm_model,
+            # Persisted so a task recovered after a restart is re-pinned to the
+            # same endpoint. A recovered run that silently falls back to the
+            # auto-route is exactly the DS4 eviction this pin exists to prevent.
+            "endpoint": config.endpoint,
+            "force_local": config.force_local,
+            "project_id": config.project_id,
+            "topic_hash": config.topic_hash,
             "depth": config.depth,
             "breadth": config.breadth,
             "conversation_id": ObjectId(config.conversation_id) if config.conversation_id else None,
@@ -120,6 +141,10 @@ class ResearchService:
             llm_backend=run.get("backend", settings.research_default_backend),
             llm_model=run.get("model", settings.research_default_model),
             conversation_id=str(run["conversation_id"]) if run.get("conversation_id") else None,
+            endpoint=run.get("endpoint"),
+            force_local=bool(run.get("force_local", False)),
+            project_id=run.get("project_id"),
+            topic_hash=run.get("topic_hash"),
         )
         return await self._run_research(research_id, config)
 
@@ -150,6 +175,10 @@ class ResearchService:
         model: Optional[str],
         backend: Optional[str],
         conversation_id: Optional[str],
+        endpoint: Optional[str] = None,
+        force_local: bool = False,
+        project_id: Optional[str] = None,
+        topic_hash: Optional[str] = None,
     ) -> ResearchConfig:
         if model and not backend:
             backend = settings.research_default_backend
@@ -169,6 +198,10 @@ class ResearchService:
             llm_backend=backend or settings.research_default_backend,
             llm_model=model or settings.research_default_model,
             conversation_id=conversation_id,
+            endpoint=endpoint,
+            force_local=force_local,
+            project_id=project_id,
+            topic_hash=topic_hash,
         )
 
     async def _run_research(self, research_id: str, config: ResearchConfig) -> dict:
@@ -366,7 +399,7 @@ class ResearchService:
         breadth: int,
         run_state: dict,
     ) -> list[str]:
-        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model)
+        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model, base_url=config.endpoint)
         prompt = load_prompt("research_query",
             query=config.query,
             branch_query=branch_query,
@@ -382,6 +415,7 @@ class ResearchService:
             conversation_id=config.conversation_id,
             model=config.llm_model,
             backend=config.llm_backend,
+            force_local=config.force_local,
         )
         run_state["total_tokens"] += usage.get("total_tokens", 0)
         parsed = self._parse_json(response)
@@ -396,7 +430,7 @@ class ResearchService:
         sources: list[dict],
         run_state: dict,
     ) -> list[Learning]:
-        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model)
+        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model, base_url=config.endpoint)
         source_text = "\n\n".join(
             f"URL: {source['url']}\nTITLE: {source['title']}\nSNIPPET: {source['snippet']}\nCONTENT: {source['content'][:4000]}"
             for source in sources
@@ -416,6 +450,7 @@ class ResearchService:
             conversation_id=config.conversation_id,
             model=config.llm_model,
             backend=config.llm_backend,
+            force_local=config.force_local,
         )
         run_state["total_tokens"] += usage.get("total_tokens", 0)
         parsed = self._parse_json(response)
@@ -440,7 +475,7 @@ class ResearchService:
         learnings: list[Learning],
         run_state: dict,
     ) -> str:
-        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model)
+        adapter = llm_manager.get_adapter(config.llm_backend, config.llm_model, base_url=config.endpoint)
         learnings_text = "\n".join(
             f"- {learning.content} (confidence={learning.confidence:.2f}, source={learning.source_url or 'n/a'})"
             for learning in learnings[:60]
@@ -455,6 +490,7 @@ class ResearchService:
             conversation_id=config.conversation_id,
             model=config.llm_model,
             backend=config.llm_backend,
+            force_local=config.force_local,
         )
         run_state["total_tokens"] += usage.get("total_tokens", 0)
         return response.strip()
@@ -549,9 +585,13 @@ class ResearchService:
         conversation_id: Optional[str],
         model: str,
         backend: str,
+        force_local: bool = False,
     ) -> tuple[str, dict]:
-        # Use ClaudeRunner for subscription tokens when available
-        if settings.use_claude_runner and ClaudeRunner.is_available():
+        # Use ClaudeRunner for subscription tokens when available -- unless the
+        # caller pinned this run local. `force_local` is the steward's research
+        # path: the whole point of that loop is that it runs on local models, so
+        # quietly spending the cloud subscription would defeat it.
+        if not force_local and settings.use_claude_runner and ClaudeRunner.is_available():
             # Combine messages into a single prompt for the CLI
             prompt_parts = []
             for msg in messages:

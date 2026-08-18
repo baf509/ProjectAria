@@ -522,8 +522,18 @@ async def lifespan(app: FastAPI):
         app.state.outcome_worker = outcome_worker
 
     if getattr(settings, "research_planner_enabled", False):
+        from aria.api.deps import get_research_service
         from aria.steward.research import ResearchPlanner
-        research_planner = ResearchPlanner(db, notifier=get_notification_service())
+        # The planner CANNOT run without a ResearchService: `_start_run` raises
+        # "no ResearchService wired into the planner". It was constructed
+        # without one from 2026-08-15 until 2026-08-18, so every research run
+        # would have failed at launch had the flag ever been turned on.
+        research_service = await get_research_service(db, task_runner)
+        research_planner = ResearchPlanner(
+            db,
+            research=research_service,
+            notifier=get_notification_service(),
+        )
         await research_planner.start()
         app.state.research_planner = research_planner
 
