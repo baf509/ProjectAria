@@ -748,7 +748,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         bench_decode_tok_s=15.0,
         bench_prefill_tok_s=210.0,
         bench_at="2026-08-17",
-        bench_note="ds4-bench sweep, ctx 2048-16384, single session. Decode is flat "
+        bench_note="Decode re-measured 2026-08-18 on local-eval/qwen38-quant-ab/decode_probe.py: 15.8 tok/s median at both ctx 65536 and 131072 (flat, confirming the sweep below). ⚠️ --batched-session is worth ~40% and is load-bearing: 15.66 tok/s at 1 vs 11.18 at 0. DSpark speculative decoding was evaluated 2026-08-18 and REJECTED (inert on the server path, -27% on the engine path; see the dspark param). Original: ds4-bench sweep, ctx 2048-16384, single session. Decode is flat "
         "across context (15.59 at 2k -> 14.47 at 16k); prefill 191-216 tok/s. "
         "--prefill-chunk 8192 changed nothing, so this is the real ceiling, not a "
         "tuning artefact. Ember measured 21.9 tok/s decode on the same box.",
@@ -814,6 +814,58 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 kind="int", default="15360",
                 description="On-disk KV checkpoints. DwarfStar also does exact "
                             "token-prefix reuse in front of this.",
+            ),
+            LaunchParam(
+                name="dspark", env="DSPARK", label="DSpark speculative decoding",
+                kind="enum", default="0",
+                choices=(
+                    ("0", "off — ordinary target decode, ~15.8 tok/s measured"),
+                    ("1", "on — MEASURED AND REJECTED 2026-08-18, do not enable"),
+                ),
+                description="⚠️ EVALUATED AND REJECTED 2026-08-18 — leave at 0. On "
+                            "the SERVER path DSpark is INERT (15.66 tok/s with it, "
+                            "15.69 with --dspark-strict, 15.83 without; flat to 0.5% "
+                            "across repeat/code/math/json/prose), so it costs 5.6 GiB "
+                            "for nothing and reports no error. On the ENGINE path "
+                            "(ds4 -p) it engages and LOSES 27%: 12.09 vs 16.60 tok/s "
+                            "on `repeat`. Monotonic in confidence — 0.4 -> 11.55, "
+                            "0.7 -> 12.09, 0.9 -> 15.17, off -> 16.60 — i.e. pure "
+                            "overhead, the limit as speculation goes to zero is the "
+                            "baseline. The knobs stay only so a future DwarfStar "
+                            "release can be re-tested cheaply (40 s loads). Details: "
+                            "vault DS4_DSPARK_SPECULATION_EVAL_20260818. "
+                            "DeepSeek's auxiliary draft model for V4 Flash, verified "
+                            "by the target. ⚠️ MEMORY is the constraint, not "
+                            "compatibility: +5.6 GiB on a box whose steady state "
+                            "leaves ~5-8 GiB, with NO circuit breaker on this stack "
+                            "and ds4-server volunteering itself as first OOM victim "
+                            "(oom_score_adj=1000). Free room first — stopping "
+                            "gemma-4-e4b-Q4 is the cheapest lever. ⚠️ Output can "
+                            "DIVERGE from non-DSpark decode (batched verifier groups "
+                            "float ops differently); this is the coding-agent model, "
+                            "so weigh that. There is NO draft-depth knob — DwarfStar "
+                            "drafts up to five internally and dspark_confidence is "
+                            "the only dial.",
+            ),
+            LaunchParam(
+                name="dspark_confidence", env="DSPARK_CONFIDENCE",
+                label="DSpark confidence threshold", kind="float", default="",
+                description="Pruning threshold 0..1. Empty = ds4's own default, "
+                            "which is 0.7 on ROCm (0.6 on Metal). Higher prunes more "
+                            "aggressively. This is the analogue of llama.cpp's "
+                            "--spec-draft-n-max, which DwarfStar does not have.",
+            ),
+            LaunchParam(
+                name="dspark_strict", env="DSPARK_STRICT",
+                label="DSpark strict (control arm)", kind="enum", default="0",
+                choices=(
+                    ("0", "normal — speculate"),
+                    ("1", "load the support model but keep target-only decode"),
+                ),
+                description="The measurement control: pays the full 5.6 GiB memory "
+                            "cost without speculating, so a DSpark-on vs "
+                            "DSpark-strict pair isolates the speculation effect from "
+                            "the memory pressure it introduces.",
             ),
             LaunchParam(
                 name="batched_sessions", env="BATCHED_SESSIONS",
