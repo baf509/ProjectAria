@@ -238,3 +238,27 @@ def make_mock_db() -> MagicMock:
 def mock_db():
     """Provide a mock MongoDB database."""
     return make_mock_db()
+
+
+# ─────────────────────────────────────── deterministic guard memory ──
+#
+# ⚠️ The guard's spawn floor reads LIVE /proc/meminfo. Without this, 11 coding
+# session and routing tests pass or fail depending on how loaded the machine
+# is: they passed at 11 GiB free and failed at 6 GiB with
+#   "MemAvailable 7.5 GiB is below the 9.0 GiB spawn floor"
+# — an intermittent failure whose message points at the guard rather than at
+# the test, which is how it cost half an hour to diagnose on 2026-08-17.
+#
+# Same class of problem as the registry-coupled fixtures fixed the same day: a
+# test asserting against live infrastructure. Reporting a real value keeps the
+# guard's own code path exercised (it still computes and compares) while making
+# the outcome independent of what else is running on the box.
+#
+# A test that WANTS to exercise the floor overrides this — see
+# test_guard_spawn_floor.py, which is where that behaviour is asserted on
+# purpose rather than by accident.
+@pytest.fixture(autouse=True)
+def _deterministic_guard_memory(monkeypatch):
+    monkeypatch.setattr(
+        "aria.guard.sandbox.mem_available_gib", lambda: 64.0, raising=False
+    )
