@@ -61,9 +61,11 @@ def _make_context_builder(db=None):
 
 
 # Shared patches applied to every build_messages test
+# (count_tokens is patched at the tokenizer module — the namespace
+# count_message_tokens actually calls it from — so every string counts as 10)
 _common_patches = [
     patch("aria.core.context.truncate_to_budget", side_effect=lambda msgs, *a, **kw: msgs),
-    patch("aria.core.context.count_tokens", return_value=10),
+    patch("aria.core.tokenizer.count_tokens", return_value=10),
     patch("aria.core.context.soul_manager"),
     patch("aria.core.context.settings"),
 ]

@@ -1,5 +1,7 @@
 """Tests for aria.core.tokenizer — token counting and budget truncation."""
 
+from unittest.mock import patch
+
 import pytest
 
 from aria.core.tokenizer import (
@@ -99,6 +101,29 @@ class TestCountMessageTokens:
         single = count_message_tokens([msgs[0]], "gpt-4")
         assert tokens > single
 
+    def test_tool_calls_are_counted(self):
+        """An assistant message carrying tool calls is still tokens the model
+        receives — the budget must include name + serialized arguments, for
+        both the ToolCall dataclass and the raw dict shape stored docs carry."""
+        from aria.llm.base import ToolCall
+
+        plain = [Message(role="assistant", content="I'll check that.")]
+        with_calls = [Message(
+            role="assistant", content="I'll check that.",
+            tool_calls=[ToolCall(id="call_1", name="read_file",
+                                 arguments={"path": "a/b/c", "limit": 500})],
+        )]
+        assert count_message_tokens(with_calls, "gpt-4") > count_message_tokens(plain, "gpt-4")
+
+        # The raw dict shape (what Mongo conversation docs carry) counts the
+        # same — a shape the counter has not seen must never be silently free.
+        with_dicts = [Message(
+            role="assistant", content="I'll check that.",
+            tool_calls=[{"id": "call_1", "name": "read_file",
+                         "arguments": {"path": "a/b/c", "limit": 500}}],
+        )]
+        assert count_message_tokens(with_dicts, "gpt-4") == count_message_tokens(with_calls, "gpt-4")
+
 
 # ---------------------------------------------------------------------------
 # truncate_to_budget
@@ -141,3 +166,48 @@ class TestTruncateToBudget:
         ]
         result = truncate_to_budget(msgs, 0, "gpt-4")
         assert len(result) >= 1
+
+    def test_over_budget_counts_each_message_once(self):
+        """The old code counted the whole list, then re-encoded every message
+        in the keep-loop — 2x the tiktoken CPU, synchronous on the event
+        loop. An over-budget context must cost exactly one counting pass."""
+        import aria.core.tokenizer as tok
+
+        msgs = [
+            Message(role="system", content="System prompt " * 20),
+            Message(role="user", content="Old message " * 40),
+            Message(role="assistant", content="Old reply " * 40),
+            Message(role="user", content="New message " * 40),
+        ]
+        budget = count_message_tokens([msgs[-1]], "gpt-4") + 5  # forces the cut
+
+        calls = {"n": 0}
+        real = tok.count_message_tokens
+        def counting(messages, model):
+            calls["n"] += 1
+            return real(messages, model)
+        with patch.object(tok, "count_message_tokens", counting):
+            truncate_to_budget(msgs, budget, "gpt-4")
+        # One count per message (4) — the total check reuses those numbers.
+        assert calls["n"] == len(msgs)
+
+    def test_truncation_includes_tool_call_tokens(self):
+        """A tool-heavy assistant message must cost its tool calls in the
+        budget, or the cut lands inside a conversation that actually fits."""
+        from aria.llm.base import ToolCall
+
+        big_args = {"data": "x" * 4000}
+        tool_msg = Message(
+            role="assistant", content="",
+            tool_calls=[ToolCall(id="c1", name="write_file", arguments=big_args)],
+        )
+        msgs = [
+            Message(role="system", content="sys"),
+            tool_msg,
+            Message(role="user", content="tail"),
+        ]
+        tool_cost = count_message_tokens([tool_msg], "gpt-4")
+        budget = count_message_tokens([msgs[0], msgs[-1]], "gpt-4") + 5
+        assert tool_cost > budget  # the tool call alone blows the budget
+        result = truncate_to_budget(msgs, budget, "gpt-4")
+        assert tool_msg not in result

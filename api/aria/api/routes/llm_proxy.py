@@ -89,6 +89,28 @@ identified_router = APIRouter(prefix="/llm/v1-identified", tags=["llm-proxy"])
 # ~11 tok/s at 32K, so a 2k-token answer is minutes. Connect fast, read slow.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=1800.0, write=60.0, pool=5.0)
 
+# One client for the process lifetime. Every request used to open a fresh
+# httpx.AsyncClient — a new TCP handshake to the local model server on every
+# LLM call, no keep-alive. httpx pools connections per host, so a shared
+# client keeps the sockets warm across requests; a restarted backend is
+# reconnected transparently (the connect timeout bounds the wait).
+_shared_client: Optional[httpx.AsyncClient] = None
+
+
+def _client() -> httpx.AsyncClient:
+    global _shared_client
+    if _shared_client is None or _shared_client.is_closed:
+        _shared_client = httpx.AsyncClient(timeout=_TIMEOUT)
+    return _shared_client
+
+
+async def close_client() -> None:
+    """Close the shared client (called from the app lifespan shutdown)."""
+    global _shared_client
+    if _shared_client is not None and not _shared_client.is_closed:
+        await _shared_client.aclose()
+    _shared_client = None
+
 # Hop-by-hop headers must not be forwarded (RFC 7230 6.1), plus the ones that
 # would misdescribe the proxied body.
 _STRIP = {
@@ -166,8 +188,7 @@ async def _context_length(base: str) -> Optional[int]:
     guess here is how a caller ends up overflowing a smaller resident model.
     """
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-            resp = await client.get(f"{base}/models")
+        resp = await _client().get(f"{base}/models", timeout=5.0)
         for entry in (resp.json() or {}).get("data") or []:
             n_ctx = (entry.get("meta") or {}).get("n_ctx")
             if isinstance(n_ctx, int) and n_ctx > 0:
@@ -362,17 +383,17 @@ async def _await_ready(base: str, slug: str) -> bool:
         return True  # nothing to poll; let the request try
     deadline = settings.llm_proxy_autostart_timeout
     waited = 0.0
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        while waited < deadline:
-            try:
-                resp = await client.get(f"{base}/models")
-                if resp.status_code == 200:
-                    logger.warning("llm-proxy: %s ready after %.0fs", slug, waited)
-                    return True
-            except httpx.HTTPError:
-                pass
-            await asyncio.sleep(2.0)
-            waited += 2.0
+    client = _client()
+    while waited < deadline:
+        try:
+            resp = await client.get(f"{base}/models", timeout=5.0)
+            if resp.status_code == 200:
+                logger.warning("llm-proxy: %s ready after %.0fs", slug, waited)
+                return True
+        except httpx.HTTPError:
+            pass
+        await asyncio.sleep(2.0)
+        waited += 2.0
     logger.error("llm-proxy: %s did not become ready within %.0fs", slug, deadline)
     return True  # started but slow — let the request through and surface the backend's own error
 
@@ -478,8 +499,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
 
     if not stream:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                resp = await client.post(url, content=payload, headers=headers)
+            resp = await _client().post(url, content=payload, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: %s failed against %s: %s", path, slug, exc)
             raise HTTPException(
@@ -492,13 +512,14 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             status_code=resp.status_code,
         )
 
-    # Streaming: hold the client open for the life of the upstream response.
+    # Streaming: the shared client is held open for the life of the upstream
+    # response; the connection returns to the pool when the stream ends.
     async def relay():
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                async with client.stream("POST", url, content=payload, headers=headers) as resp:
-                    async for chunk in resp.aiter_raw():
-                        yield chunk
+            client = _client()
+            async with client.stream("POST", url, content=payload, headers=headers) as resp:
+                async for chunk in resp.aiter_raw():
+                    yield chunk
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: stream to %s failed: %s", slug, exc)
             yield b'data: {"error":"backend stream failed"}\n\n'

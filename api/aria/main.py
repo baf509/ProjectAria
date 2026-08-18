@@ -641,6 +641,10 @@ async def lifespan(app: FastAPI):
     from aria.memory.embeddings import embedding_service
     await embedding_service.close()
 
+    # 7a. Close the LLM-proxy's shared httpx client
+    from aria.api.routes.llm_proxy import close_client as _close_proxy_client
+    await _close_proxy_client()
+
     # 8. Close database connection last
     await close_db()
     shutdown_logger.info("Shutdown complete")

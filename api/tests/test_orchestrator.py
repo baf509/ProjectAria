@@ -270,6 +270,28 @@ class TestProcessMessage:
         assert any(c.type == "error" and "agent" in c.error.lower() for c in chunks)
 
     @pytest.mark.asyncio
+    async def test_step1_conversation_read_is_projected(self):
+        """The step-1 read must not load the unbounded messages array: the doc
+        is only used for agent resolution and the private/override flags, and
+        a full read here is pure per-turn overhead that grows with conversation
+        age. If a new consumer needs another field, the projection grows —
+        this test is the gate that keeps it from silently becoming a
+        full-doc read again."""
+        db = make_mock_db()
+        db.conversations.find_one = AsyncMock(return_value=DEFAULT_CONVERSATION)
+        db.agents.find_one = AsyncMock(return_value=None)
+        orch = _make_orchestrator(db=db)
+
+        await _collect_chunks(orch.process_message(CONV_ID, "hello"))
+
+        assert db.conversations.find_one.await_count >= 1
+        first = db.conversations.find_one.call_args_list[0]
+        projection = first.args[1] if len(first.args) > 1 else first.kwargs.get("projection")
+        assert projection is not None, "step-1 conversation read must carry a projection"
+        for field in ("active_agent_id", "agent_id", "private", "llm_config_override"):
+            assert projection.get(field) == 1, f"projection missing {field}"
+
+    @pytest.mark.asyncio
     @patch("aria.core.orchestrator.hook_registry")
     @patch("aria.core.orchestrator.llm_manager")
     async def test_basic_response(self, mock_llm_mgr, mock_hooks):

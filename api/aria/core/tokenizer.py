@@ -6,6 +6,7 @@ Purpose: Token counting and budget-aware truncation.
 
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 
 from aria.llm.base import Message
@@ -111,8 +112,36 @@ def count_message_tokens(messages: list[Message], model: str) -> int:
             total += count_tokens(msg.name, model)
         if msg.tool_call_id:
             total += count_tokens(msg.tool_call_id, model)
+        # Tool calls are the part that used to be silently free: an assistant
+        # message carrying JSON arguments is still tokens the model receives,
+        # and undercounting them made the truncation budget wrong exactly for
+        # tool-heavy conversations.
+        for tc in (msg.tool_calls or []):
+            total += count_tokens(_tool_call_text(tc), model)
 
     return total + 2
+
+
+def _tool_call_text(tc) -> str:
+    """Serialized form of one tool call for token counting.
+
+    Accepts both the ToolCall dataclass and the raw dict shape that stored
+    conversation docs carry, so a counting path can never silently skip a
+    shape it has not seen."""
+    if isinstance(tc, dict):
+        name = tc.get("name") or ""
+        args = tc.get("arguments")
+    else:
+        name = getattr(tc, "name", "") or ""
+        args = getattr(tc, "arguments", None)
+    if isinstance(args, str):
+        return name + args
+    if args is None:
+        return name
+    try:
+        return name + json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return name + str(args)
 
 
 def truncate_to_budget(messages: list[Message], budget: int, model: str) -> list[Message]:
@@ -128,21 +157,25 @@ def truncate_to_budget(messages: list[Message], budget: int, model: str) -> list
     if budget <= 0:
         return messages[:1] if messages[0].role == "system" else messages[-1:]
 
-    if count_message_tokens(messages, model) <= budget:
+    # Count each message exactly once: the total check and the keep-loop both
+    # run over these numbers, so an over-budget context costs one encoding
+    # pass, not two (the old code re-encoded every message in the loop after
+    # counting the whole list).
+    per_message = [count_message_tokens([m], model) for m in messages]
+    if sum(per_message) <= budget:
         return messages
 
     preserved_prefix: list[Message] = []
-    remaining_messages = messages
-
     if messages[0].role == "system":
         preserved_prefix = [messages[0]]
-        remaining_messages = messages[1:]
+        remaining = list(zip(messages[1:], per_message[1:]))
+        running_total = per_message[0]
+    else:
+        remaining = list(zip(messages, per_message))
+        running_total = 0
 
     trimmed_reversed: list[Message] = []
-    running_total = count_message_tokens(preserved_prefix, model) if preserved_prefix else 0
-
-    for msg in reversed(remaining_messages):
-        msg_tokens = count_message_tokens([msg], model)
+    for msg, msg_tokens in reversed(remaining):
         if trimmed_reversed and running_total + msg_tokens > budget:
             break
         if not trimmed_reversed and preserved_prefix and running_total + msg_tokens > budget:

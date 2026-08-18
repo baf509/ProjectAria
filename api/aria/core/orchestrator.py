@@ -156,9 +156,17 @@ class Orchestrator:
         })
         user_message = hook_ctx.get("user_message", user_message)
 
-        # 1. Load conversation
+        # 1. Load conversation — projected, not whole. This read exists only
+        # to resolve the active agent and the private/override flags; the
+        # unbounded messages array is read separately by the context builder,
+        # and loading it here on every turn is pure overhead that grows with
+        # conversation age. (A projection is a load-bearing contract: if a
+        # new consumer of this doc needs another field, add it here, not in
+        # a silent full-doc read.)
         conversation = await self.db.conversations.find_one(
-            {"_id": ObjectId(conversation_id)}
+            {"_id": ObjectId(conversation_id)},
+            {"active_agent_id": 1, "agent_id": 1, "private": 1,
+             "llm_config_override": 1},
         )
         if not conversation:
             yield StreamChunk(type="error", error="Conversation not found")
@@ -210,9 +218,15 @@ class Orchestrator:
                 conversation_id, contextual_result.assistant_content
             )
             if contextual_result.continues_to_llm:
-                # Auto-mode detection: emit text and continue to LLM streaming
+                # Auto-mode detection: emit text and continue to LLM streaming.
+                # Re-read projected — the command may have changed the agent
+                # binding, which is all this doc is used for here.
                 yield StreamChunk(type="text", content=contextual_result.assistant_content + "\n\n")
-                conversation = await self.db.conversations.find_one({"_id": ObjectId(conversation_id)})
+                conversation = await self.db.conversations.find_one(
+                    {"_id": ObjectId(conversation_id)},
+                    {"active_agent_id": 1, "agent_id": 1, "private": 1,
+                     "llm_config_override": 1},
+                )
                 agent = await self._resolve_active_agent(conversation)
                 if not agent:
                     yield StreamChunk(type="error", error="Agent not found")

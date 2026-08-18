@@ -18,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.config import settings
 from aria.llm.base import Message
 from aria.core.soul import soul_manager
-from aria.core.tokenizer import count_tokens, get_default_max_context_tokens, truncate_to_budget
+from aria.core.tokenizer import count_message_tokens, get_default_max_context_tokens, truncate_to_budget
 from aria.memory.short_term import ShortTermMemory
 from aria.memory.long_term import LongTermMemory
 
@@ -334,8 +334,10 @@ Follow these coordination principles:
         # 4. Add current user message
         messages.append(Message(role="user", content=user_message))
 
-        # Estimate token count before truncation for observability
-        estimated_tokens = sum(count_tokens(m.content, model_name) + 4 for m in messages)
+        # Estimate token count before truncation for observability. Uses the
+        # same per-message math as the truncation itself (including
+        # tool_calls), so the warning and the cut agree.
+        estimated_tokens = count_message_tokens(messages, model_name)
         if estimated_tokens > input_budget:
             logger.warning(
                 "Context exceeds budget: %d tokens estimated vs %d budget — truncating",
