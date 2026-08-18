@@ -76,10 +76,34 @@ class ShellExtractionWorker:
         # line-number cursor, so including stopped shells here just means a
         # shell keeps getting swept until its cursor catches up, same as any
         # other status.
-        shells = await self.shell_service.list_shells(status=["active", "idle", "stopped"])
+        # Only shells with unextracted work. The sweep used to be the whole
+        # fleet -- ~215 shells, mostly stopped and long since caught up --
+        # each costing a state find_one AND a list_events that returned
+        # nothing: ~430 queries per tick to do, usually, no work at all.
+        shells = await self.shell_service.list_shells(
+            status=["active", "idle", "stopped"],
+            pending_min=int(settings.shells_extraction_min_events or 20),
+        )
 
         for shell in shells:
             await self._process_shell(shell, state_coll)
+
+    async def _mirror_cursor(self, shell_name: str, line: int) -> None:
+        """Mirror the extraction cursor onto the shell doc.
+
+        shell_extraction_state stays authoritative; this copy exists so
+        _tick can ask Mongo "which shells have work?" instead of asking every
+        shell in turn. Written on every outcome -- including "already caught
+        up" -- so a fleet that predates the mirror self-corrects on its first
+        sweep rather than needing a migration.
+        """
+        try:
+            await self.shell_service.shells.update_one(
+                {"name": shell_name},
+                {"$set": {"last_extracted_line": int(line)}},
+            )
+        except Exception as exc:  # never let bookkeeping break extraction
+            logger.debug("cursor mirror failed for %s: %s", shell_name, exc)
 
     async def _process_shell(self, shell, state_coll, *, force_local: bool = False, claude_model: Optional[str] = None) -> int:
         """Extract one chunk (<=1000 events) from a single shell's unextracted
@@ -110,6 +134,7 @@ class ShellExtractionWorker:
                 shell.name, since_line, shell.line_count,
             )
             since_line = shell.line_count
+            await self._mirror_cursor(shell.name, since_line)
 
         events = await self.shell_service.list_events(
             shell.name,
@@ -118,6 +143,9 @@ class ShellExtractionWorker:
             kinds=["output", "input"],
         )
         if len(events) < min_events:
+            # Caught up (or not enough new lines yet): record where we are so
+            # this shell drops out of the next tick's query.
+            await self._mirror_cursor(shell.name, since_line)
             return 0
 
         lines = []
@@ -191,6 +219,7 @@ class ShellExtractionWorker:
             },
             upsert=True,
         )
+        await self._mirror_cursor(shell.name, events[-1].line_number)
         return len(events)
 
     async def backfill(self, *, force_local: bool = False, claude_model: Optional[str] = None) -> dict:

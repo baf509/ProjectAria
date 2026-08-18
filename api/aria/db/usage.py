@@ -121,6 +121,51 @@ class UsageRepo:
         rows = self._price_rows(await self.db.usage.aggregate(pipeline).to_list(length=500))
         return round(sum(r["cost"] for r in rows), 6)
 
+    async def cost_for_conversations(
+        self, conversation_ids: list[str], days: int = 30
+    ) -> dict[str, dict]:
+        """Token + cost totals for MANY conversations in one aggregation.
+
+        The project cockpit priced up to 25 sessions with 25 sequential
+        cost_for_conversation() calls. Same math, same `usage_timestamp`
+        index, one round-trip. Conversations with no usage rows are absent
+        from the result -- callers treat that as "nothing priced", which is
+        what the per-conversation version returned as zeros.
+        """
+        out: dict[str, dict] = {}
+        ids = [c for c in dict.fromkeys(conversation_ids) if c]
+        if not ids:
+            return out
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        pipeline = [
+            {"$match": {"conversation_id": {"$in": ids}, "timestamp": {"$gte": cutoff}}},
+            {"$group": {
+                "_id": {"c": "$conversation_id", "model": "$model", "backend": "$backend"},
+                "input_tokens": {"$sum": "$input_tokens"},
+                "output_tokens": {"$sum": "$output_tokens"},
+                "total_tokens": {"$sum": "$total_tokens"},
+                "requests": {"$sum": 1},
+            }},
+        ]
+        rows = self._price_rows(
+            await self.db.usage.aggregate(pipeline).to_list(length=2000)
+        )
+        for r in rows:
+            conv = (r.get("_id") or {}).get("c")
+            if not conv:
+                continue
+            agg = out.setdefault(conv, {
+                "conversation_id": conv,
+                "input_tokens": 0, "output_tokens": 0,
+                "total_tokens": 0, "requests": 0, "cost": 0.0,
+            })
+            agg["input_tokens"] += r.get("input_tokens", 0)
+            agg["output_tokens"] += r.get("output_tokens", 0)
+            agg["total_tokens"] += r.get("total_tokens", 0)
+            agg["requests"] += r.get("requests", 0)
+            agg["cost"] = round(agg["cost"] + r["cost"], 6)
+        return out
+
     async def cost_for_conversation(self, conversation_id: str, days: int = 30) -> dict:
         """Token + cost totals for one conversation (used for per-session cost)."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)

@@ -28,6 +28,11 @@ class Shell(BaseModel):
     last_output_at: Optional[datetime] = None
     last_input_at: Optional[datetime] = None
     line_count: int = 0
+    #: Mirror of this shell's extraction cursor (shell_extraction_state
+    #: is authoritative). Kept here so "has unextracted work" is a query
+    #: the extraction worker can push into Mongo instead of sweeping the
+    #: whole fleet. Missing/0 means "never extracted", which is correct.
+    last_extracted_line: int = 0
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

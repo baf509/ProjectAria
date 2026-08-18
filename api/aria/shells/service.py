@@ -147,10 +147,31 @@ class ShellService:
     async def list_shells(
         self,
         status: Optional[Iterable[str]] = None,
+        pending_min: Optional[int] = None,
     ) -> list[Shell]:
+        """List shells, optionally only those with unextracted work.
+
+        `pending_min` selects shells whose line_count exceeds their mirrored
+        extraction cursor by at least that many lines. The extraction worker
+        used to sweep the whole fleet (~215 shells, mostly caught up) and pay
+        a state find_one plus a list_events for each; this pushes the "has
+        work" test into the query. It is an $expr comparison of two fields so
+        it cannot use an index -- irrelevant here, where `shells` holds
+        hundreds of small documents, not millions.
+        """
         query: dict = {}
         if status:
             query["status"] = {"$in": list(status)}
+        if pending_min is not None:
+            query["$expr"] = {
+                "$gte": [
+                    {"$subtract": [
+                        {"$ifNull": ["$line_count", 0]},
+                        {"$ifNull": ["$last_extracted_line", 0]},
+                    ]},
+                    int(pending_min),
+                ]
+            }
         cursor = self.shells.find(query).sort("last_activity_at", -1)
         out: list[Shell] = []
         async for doc in cursor:

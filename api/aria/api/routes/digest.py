@@ -361,17 +361,31 @@ async def project_cockpit(
     # Budget: priced spend attributed via each session's conversation.
     usage = UsageRepo(db)
     budget = {"cost": 0.0, "total_tokens": 0, "sessions_priced": 0}
-    for s in sessions:
-        conv = s.get("agent_conversation_id") or s.get("conversation_id")
-        if not conv:
-            continue
-        try:
-            row = await usage.cost_for_conversation(conv)
-        except Exception:
-            continue
-        budget["cost"] = round(budget["cost"] + row.get("cost", 0.0), 6)
-        budget["total_tokens"] += row.get("total_tokens", 0)
-        budget["sessions_priced"] += 1
+    # One aggregation for every session's conversation, not one per session:
+    # this loop used to issue up to 25 sequential aggregations.
+    conv_ids = [
+        c for c in (
+            (s.get("agent_conversation_id") or s.get("conversation_id")) for s in sessions
+        ) if c
+    ]
+    try:
+        priced = await usage.cost_for_conversations(conv_ids)
+    except Exception:
+        # The pricing query failed -- report nothing priced rather than
+        # claiming sessions were priced at zero (matches the old per-session
+        # behaviour, where a failed call skipped the session entirely).
+        priced = None
+    if priced is not None:
+        for conv in conv_ids:
+            # sessions_priced counts sessions that HAVE a conversation to
+            # price, including ones with no usage rows -- unchanged from the
+            # per-session version, where a zero-cost conversation still counted.
+            budget["sessions_priced"] += 1
+            row = priced.get(conv)
+            if not row:
+                continue
+            budget["cost"] = round(budget["cost"] + row.get("cost", 0.0), 6)
+            budget["total_tokens"] += row.get("total_tokens", 0)
 
     att = _project_attention(project, ctx, open_tasks, now, index)
     stale_cutoff = now - timedelta(days=_STALE_TASK_DAYS)
