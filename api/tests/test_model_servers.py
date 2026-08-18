@@ -1286,3 +1286,168 @@ def test_system_memory_snapshot_survives_disagreeing_samples():
         sysmem = gd.system_memory_snapshot()
 
     assert sysmem["other_gib"] == 0.0
+
+
+# ───────────────────────────────────────────────────────── status cache ──
+# The full status() is ~70-80 subprocess spawns (8.57 s cold / 0.6 s warm
+# measured) and used to sit on the critical path of every /llm/v1 request.
+# These tests pin the caching contract: compute once, serve from cache within
+# the TTL, recompute on force or after any state mutation (start/stop/sleep/
+# bind/unbind). The seam is _status_uncached — the cache wraps it.
+
+class _CountingStatus:
+    """Replaces _status_uncached: counts calls, returns a fixed row."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def __call__(self, db=None):
+        self.calls += 1
+        return [{"slug": "fake", "state": "running"}]
+
+
+@pytest.mark.asyncio
+async def test_status_is_cached_within_ttl(manager):
+    inner = _CountingStatus()
+    with patch.object(ModelServerManager, "_status_uncached", inner):
+        first = await manager.status()
+        second = await manager.status()
+    assert first is second  # same object — served from the cache
+    assert inner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_status_force_bypasses_cache(manager):
+    inner = _CountingStatus()
+    with patch.object(ModelServerManager, "_status_uncached", inner):
+        await manager.status()
+        await manager.status(force=True)
+    assert inner.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_status_cache_expires_after_ttl(manager):
+    inner = _CountingStatus()
+    with patch.object(ModelServerManager, "_status_uncached", inner), \
+         patch.object(ModelServerManager, "STATUS_CACHE_TTL", 0.0):
+        await manager.status()
+        await asyncio.sleep(0.01)
+        await manager.status()
+    assert inner.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_start_invalidates_status_cache(manager, tmp_path):
+    inner = _CountingStatus()
+    docker = FakeDocker({})
+    with patch.object(ModelServerManager, "_status_uncached", inner), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_read_gtt_gib", return_value=None), \
+         patch.object(ms, "_SYSTEMD_USER_DIR", str(tmp_path)):
+        await manager.status()
+        assert inner.calls == 1
+        await manager.start(_EXCL_A)
+        assert manager._status_cache is None  # start dropped the cache
+        await manager.status()
+        assert inner.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_invalidates_status_cache(manager, tmp_path):
+    inner = _CountingStatus()
+    docker = FakeDocker({_EXCL_A: ("running", "")})
+    with patch.object(ModelServerManager, "_status_uncached", inner), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_SYSTEMD_USER_DIR", str(tmp_path)):
+        await manager.status()
+        await manager.stop(_EXCL_A)
+        assert manager._status_cache is None
+
+
+@pytest.mark.asyncio
+async def test_bind_and_unbind_invalidate_status_cache(manager):
+    inner = _CountingStatus()
+    db = FakeDB()
+    db.agents.docs.append(_agent("test-agent"))
+    with patch.object(ModelServerManager, "_status_uncached", inner):
+        await manager.status(db)
+        assert inner.calls == 1
+        await manager.bind(db, _EXCL_A, "test-agent")
+        assert manager._status_cache is None
+        await manager.unbind(db, "test-agent")
+        assert manager._status_cache is None
+
+
+# ───────────────────────────────────────────────────── running_summary ──
+# The light routing answer: at most two subprocesses (one systemctl, one
+# docker ps) no matter how many specs there are.
+
+class _FleetProbe:
+    """Counts subprocess calls; answers the two fleet-wide queries."""
+
+    def __init__(self, active_units: set[str], running_containers: set[str]):
+        self.active_units = active_units
+        self.running_containers = running_containers
+        self.calls: list[tuple] = []
+
+    async def __call__(self, *args: str):
+        self.calls.append(args)
+        if args[:2] == ("systemctl", "--user") and "list-units" in args:
+            return 0, "\n".join(sorted(self.active_units)) + "\n", ""
+        if args[:2] == ("docker", "ps"):
+            return 0, "\n".join(sorted(self.running_containers)) + "\n", ""
+        return 1, "", f"unhandled: {args}"
+
+
+@pytest.fixture
+def _seeded_remote_state():
+    """Pre-seed the module-level remote-state cache so running_summary never
+    fires a real ssh/httpx probe at Ridge/RED from a unit test."""
+    import time as _time
+    orig = dict(ms._remote_state_cache)
+    for spec in ms.REGISTRY:
+        if not spec.onbox and spec.remotely_operable:
+            ms._remote_state_cache[spec.slug] = (_time.monotonic(), "asleep")
+    yield
+    ms._remote_state_cache.clear()
+    ms._remote_state_cache.update(orig)
+
+
+@pytest.mark.asyncio
+async def test_running_summary_uses_at_most_two_subprocesses(manager, tmp_path, _seeded_remote_state):
+    probe = _FleetProbe(active_units=set(), running_containers={"qwen3.8-27b"})
+    with patch.object(ms, "_run", probe), \
+         patch.object(ms, "_SYSTEMD_USER_DIR", str(tmp_path)):
+        rows = await manager.running_summary()
+    fleet_calls = [c for c in probe.calls if c[:2] in (("systemctl", "--user"), ("docker", "ps"))]
+    assert len(fleet_calls) <= 2, probe.calls
+    by_slug = {r["slug"]: r for r in rows}
+    # EXCL_A's container is in the running set; EXCL_B's is not. (The real
+    # registry shares those container names — that is fine: the state answer
+    # is per-container, and every row reports what its container is doing.)
+    assert by_slug[_EXCL_A]["state"] == "running"
+    assert by_slug[_EXCL_B]["state"] == "exited"
+    # routing fields are present and shaped for llm_route.select()
+    for row in rows:
+        assert row["slug"] and row["state"] and "endpoints" in row
+        assert "resident_gib_estimate" in row and "startable" in row
+
+
+@pytest.mark.asyncio
+async def test_running_summary_routes_like_full_status(manager, tmp_path, _seeded_remote_state):
+    """A server that is running in the summary is servable by llm_route."""
+    from aria.infrastructure.llm_route import is_servable, select
+
+    probe = _FleetProbe(active_units=set(), running_containers={"qwen3.8-27b"})
+    with patch.object(ms, "_run", probe), \
+         patch.object(ms, "_SYSTEMD_USER_DIR", str(tmp_path)):
+        rows = await manager.running_summary()
+    chosen, reason, unavailable = select(rows, requested=None, pin=None)
+    assert chosen is not None and not unavailable
+    assert is_servable(chosen)
+    # The running container is shared by the fixture and a real (retired)
+    # registry entry — either may win the largest-resident pick.
+    assert chosen["slug"] in {_EXCL_A, "Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP"}
+    # naming a stopped server by slug is a known-but-stopped error, not auto
+    chosen2, reason2, unavailable2 = select(rows, requested=_EXCL_B, pin=None)
+    assert chosen2 is None and unavailable2

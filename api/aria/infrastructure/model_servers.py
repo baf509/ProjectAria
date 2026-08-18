@@ -3353,6 +3353,21 @@ async def resolve_endpoint(slug: str, db: Optional[AsyncIOMotorDatabase] = None)
     return f"http://localhost:{spec.port}/v1" if spec.port else None
 
 
+def _endpoints_for(spec: "ModelServerSpec") -> dict:
+    """What a consumer (e.g. Hermes's config.yaml) should dial for this spec.
+
+    Shared by the full status() rows and the light running_summary() rows so
+    the two views cannot disagree about where a server listens."""
+    if spec.endpoint_override:
+        return {"tailnet": spec.endpoint_override}
+    if not spec.port:
+        return {}
+    return {
+        "local": f"http://localhost:{spec.port}/v1",
+        "tailnet": f"http://{_TAILNET_IP}:{spec.port}/v1",
+    }
+
+
 class ModelServerManager:
     """Start/stop/bind the local model servers. The single control plane —
     see the module docstring for why manual docker commands are retired."""
@@ -3368,6 +3383,13 @@ class ModelServerManager:
         # both pass the exclusivity/RAM checks and launch two ~90 GiB servers
         # together — the exact failure this module exists to prevent.
         self._lock = asyncio.Lock()
+        # TTL cache for status(): the full computation is ~70-80 subprocess
+        # spawns (one per spec, measured 8.57 s cold / 0.6 s warm) and every
+        # /llm/v1 request used to pay it. start/stop/sleep invalidate it, so
+        # a registry-driven change is visible immediately; anything started
+        # out-of-band is visible within STATUS_CACHE_TTL.
+        self._status_cache: tuple[float, list[dict]] | None = None
+        self._status_lock = asyncio.Lock()
 
     def specs(self) -> tuple[ModelServerSpec, ...]:
         return REGISTRY
@@ -3444,7 +3466,40 @@ class ModelServerManager:
             return "not_created", False
         return info
 
-    async def status(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
+    STATUS_CACHE_TTL = 10.0  # seconds
+
+    def invalidate_status(self) -> None:
+        """Drop the cached status(). Called by start/stop/sleep — the only
+        things that change what the answer would be."""
+        self._status_cache = None
+
+    async def status(self, db: Optional[AsyncIOMotorDatabase] = None, *, force: bool = False) -> list[dict]:
+        """Fleet status with a short TTL cache.
+
+        The uncached computation spawns one or two subprocesses per spec
+        (28 specs ≈ 70-80 spawns; 8.57 s cold / 0.6 s warm measured), and it
+        sits on the critical path of every /llm/v1 request, every
+        /health/services tick and every TUI/web poll. A 10 s TTL bounds the
+        staleness; start()/stop()/sleep() invalidate immediately, so a
+        registry-driven change is never stale for more than a tick. Pass
+        force=True where a live answer is required (start's preflight, the
+        utilization probes).
+        """
+        now = time.monotonic()
+        if not force and self._status_cache is not None:
+            ts, rows = self._status_cache
+            if now - ts < self.STATUS_CACHE_TTL:
+                return rows
+        async with self._status_lock:
+            if not force and self._status_cache is not None:
+                ts, rows = self._status_cache
+                if time.monotonic() - ts < self.STATUS_CACHE_TTL:
+                    return rows
+            rows = await self._status_uncached(db)
+            self._status_cache = (time.monotonic(), rows)
+            return rows
+
+    async def _status_uncached(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
         # One read per pool, shared by every row, through the same seam the
         # start-time gate uses. The Halo figure is also kept under the
         # historical gtt_* keys so existing consumers keep working.
@@ -3562,21 +3617,86 @@ class ModelServerManager:
                 "remotely_operable": spec.remotely_operable,
                 "bound_agents": bindings.get(spec.slug, []),
                 # What a consumer (e.g. Hermes's config.yaml) should dial.
-                "endpoints": (
-                    {"tailnet": spec.endpoint_override}
-                    if spec.endpoint_override
-                    else {
-                        "local": f"http://localhost:{spec.port}/v1",
-                        "tailnet": f"http://{_TAILNET_IP}:{spec.port}/v1",
-                    }
-                    if spec.port
-                    else {}
-                ),
+                "endpoints": _endpoints_for(spec),
             }
             if gtt is not None:
                 entry["gtt_used_gib"] = round(gtt[0], 1)
                 entry["gtt_total_gib"] = round(gtt[1], 1)
             results.append(entry)
+        return results
+
+    async def running_summary(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
+        """Cheap answer to "which servers are running" — for routing.
+
+        `status()` is the full view (geometry, pools, parameters, measured
+        footprint) and it is expensive: one or two subprocesses per spec. But
+        routing (llm_route.select) only needs slug, model_file, state, onbox,
+        port, endpoints and a footprint to compare magnitudes by — so this
+        answers with at most TWO subprocesses: one
+        `systemctl --user list-units --state=active --type=service` answers
+        every unit-based spec at once, one `docker ps --filter status=running`
+        answers every container spec. Off-box specs reuse the cached remote
+        state (refreshed in the background by status()).
+
+        Footprint: the last OS measurement (kept fresh by status() and
+        start()) when available, else the declared estimate. A stale footprint
+        degrades gracefully to the declaration — routing only ranks magnitudes.
+        """
+        specs = list(REGISTRY)
+        if db is not None:
+            async for doc in db.model_servers.find({}):
+                if doc["slug"] not in _BY_SLUG:
+                    specs.append(self._spec_from_doc(doc))
+
+        unit_active: set[str] = set()
+        if any(s.onbox and unit_name(s) for s in specs):
+            rc, out, _ = await _run(
+                "systemctl", "--user", "list-units",
+                "--state=active", "--type=service", "--no-legend",
+            )
+            if rc == 0:
+                unit_active = {
+                    line.split()[0] for line in out.splitlines() if line.strip()
+                }
+        container_running: set[str] = set()
+        if any(s.onbox and not unit_name(s) and s.container_name for s in specs):
+            rc, out, _ = await _run(
+                "docker", "ps", "--filter", "status=running", "--format", "{{.Names}}"
+            )
+            if rc == 0:
+                container_running = {line.strip() for line in out.splitlines() if line.strip()}
+
+        results = []
+        for spec in specs:
+            if spec.onbox:
+                unit = unit_name(spec)
+                if unit:
+                    state = "running" if unit in unit_active else "exited"
+                elif spec.container_name:
+                    # `status=running` excludes paused containers — a paused
+                    # container cannot serve, and ARIA has no unpause path.
+                    state = "running" if spec.container_name in container_running else "exited"
+                else:
+                    state = "unwired"
+            elif spec.remotely_operable:
+                state = await _remote_state(spec)
+            else:
+                state = "external"
+            measured = self._last_measured.get(spec.slug)
+            results.append({
+                "slug": spec.slug,
+                "model_file": spec.model_file,
+                "state": state,
+                "onbox": spec.onbox,
+                "port": spec.port,
+                "endpoints": _endpoints_for(spec),
+                "resident_gib_estimate": (
+                    measured if measured is not None else effective_resident_gib(spec)
+                ),
+                # The 503 hint lists what a caller could start instead —
+                # routing needs the flag even though it never acts on it.
+                "startable": spec.startable,
+            })
         return results
 
     def _apply_launch_config(
@@ -3633,6 +3753,7 @@ class ModelServerManager:
         removable outside ARIA. Passing none clears any override ARIA set
         earlier, so a plain start always means the deployment's own defaults.
         """
+        self.invalidate_status()  # a start changes what status() would answer
         spec = await self.resolve_spec(slug, db)
         if not spec.onbox:
             if not spec.remotely_operable:
@@ -3882,6 +4003,7 @@ class ModelServerManager:
                     "detail": detail or f"stopped (exit {rc})"}
 
     async def stop(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
+        self.invalidate_status()  # a stop changes what status() would answer
         spec = await self.resolve_spec(slug, db)
         if not spec.onbox:
             if not spec.remotely_operable:
@@ -3923,6 +4045,7 @@ class ModelServerManager:
         """Suspend an off-box machine (e.g. Ridge). Its wake path is separate
         and automatic — the wake proxy WoLs it on the next inference request —
         so ARIA only ever needs the sleep direction."""
+        self.invalidate_status()  # a sleep changes what status() would answer
         spec = await self.resolve_spec(slug, db)
         if spec.sleep_command is None:
             raise ModelServerSafetyError(
@@ -3977,6 +4100,7 @@ class ModelServerManager:
         self, db: AsyncIOMotorDatabase, slug: str, agent_id_or_slug: str, force: bool = False
     ) -> dict:
         await self.resolve_spec(slug, db)  # validates slug (static or pulled), raises ModelServerNotFound
+        self.invalidate_status()  # bind changes the bound_agents field of every row
         agent = await _find_agent_doc(db, agent_id_or_slug)
         if agent is None:
             raise ModelServerNotFound(f"Unknown agent: {agent_id_or_slug}")
@@ -4002,6 +4126,7 @@ class ModelServerManager:
         }
 
     async def unbind(self, db: AsyncIOMotorDatabase, agent_id_or_slug: str) -> dict:
+        self.invalidate_status()  # unbind changes the bound_agents field of every row
         agent = await _find_agent_doc(db, agent_id_or_slug)
         if agent is None:
             raise ModelServerNotFound(f"Unknown agent: {agent_id_or_slug}")

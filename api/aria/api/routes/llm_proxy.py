@@ -116,8 +116,14 @@ async def _pick_backend(
     db: AsyncIOMotorDatabase,
     requested: Optional[str] = None,
 ) -> _Route:
-    """Resolve request-model > operator pin > largest resident. See module docstring."""
-    servers = await manager.status(db)
+    """Resolve request-model > operator pin > largest resident. See module docstring.
+
+    Uses the light `running_summary()` — two subprocesses, not the full
+    status()'s ~70-80 — because routing only needs which servers are running
+    and their relative footprint. The full view is still available to the
+    display endpoints, which poll rather than sit on the request path.
+    """
+    servers = await manager.running_summary(db)
     pin = await read_pin(db)
     chosen, reason, unavailable = select(servers, requested=requested, pin=pin)
     if chosen is None:
@@ -302,7 +308,9 @@ async def _autostart(
     """
     from aria.infrastructure.model_servers import _BY_SLUG  # local: avoids a cycle
 
-    servers = await manager.status(db)
+    # Acting, not routing: the exclusive-stop decision needs a live answer,
+    # so this is the one proxy path that forces a full, uncached status().
+    servers = await manager.status(db, force=True)
     target = None
     for server in servers:
         if _norm_slug(server.get("slug")) == _norm_slug(requested) or _norm_slug(
