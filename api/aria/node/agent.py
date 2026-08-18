@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 import httpx
 
+from aria.core.bg import spawn_bg
 from aria.shells.ansi import strip_ansi
 from aria.shells.tmux import TmuxClient, TmuxError, TmuxSessionNotFoundError
 
@@ -206,7 +207,9 @@ class NodeAgent:
                 await asyncio.sleep(2)
                 continue
             for cmd in cmds:
-                asyncio.create_task(self._handle(cmd))
+                # spawn_bg: a bare task is weakly referenced by the loop and can
+                # be collected mid-command, dropping the work with no error.
+                spawn_bg(self._handle(cmd), name=f"node:handle:{cmd.get('kind')}")
 
     async def _handle(self, cmd: dict) -> None:
         cid, kind, args = cmd["id"], cmd["kind"], (cmd.get("args") or {})

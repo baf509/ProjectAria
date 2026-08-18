@@ -319,22 +319,31 @@ async def _gather_shells(db) -> dict[str, dict]:
     return out
 
 
-async def harvest(db, roots: Optional[list[str]] = None) -> dict:
-    """Discover + upsert projects. Returns a summary dict."""
-    roots = roots or DEFAULT_ROOTS
-    repos = _find_git_repos(roots + EXTRA_REPO_ROOTS)
-    claude = _gather_claude()
-    pi = _gather_pi()
-    shells = await _gather_shells(db)
+def _discover(roots: list[str]) -> tuple[list[str], dict[str, dict], dict[str, dict]]:
+    """The filesystem half of a harvest: os.walk over the roots, a `git
+    rev-parse` per repo, and the Claude/pi session-file reads.
 
-    # Union of all canonical paths seen.
-    canon_paths: set[str] = set(repos) | set(claude) | set(pi) | set(shells)
+    Sync on purpose and called via `asyncio.to_thread` -- see `harvest`.
+    """
+    return (
+        _find_git_repos(roots + EXTRA_REPO_ROOTS),
+        _gather_claude(),
+        _gather_pi(),
+    )
 
-    now = _utcnow()
-    active_cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
 
-    # Aggregate per slug so moved/duplicated repos (same basename, different
-    # path) collapse into one project with all paths recorded.
+def _aggregate(
+    canon_paths: set[str],
+    claude: dict[str, dict],
+    pi: dict[str, dict],
+    shells: dict[str, dict],
+) -> dict[str, dict]:
+    """Collapse discovered paths into one record per slug.
+
+    Sync on purpose: it runs two `git` subprocesses per repo with a 10 s
+    timeout each, which is the bulk of a harvest's wall-clock. Called via
+    `asyncio.to_thread` so that cost never lands on the event loop.
+    """
     agg: dict[str, dict] = {}
     for path in sorted(canon_paths):
         if path in ("/home/ben", "/", "/home"):  # skip non-projects
@@ -381,6 +390,29 @@ async def harvest(db, roots: Optional[list[str]] = None) -> dict:
                 rec["git_commit_at"] = commit_at
             if commit_at:
                 rec["activity"].append(commit_at)
+    return agg
+
+
+async def harvest(db, roots: Optional[list[str]] = None) -> dict:
+    """Discover + upsert projects. Returns a summary dict."""
+    roots = roots or DEFAULT_ROOTS
+    # Discovery and aggregation are sync (os.walk, git subprocesses, jsonl
+    # reads) and used to run directly on the event loop, stalling every HTTP
+    # request, SSE stream and watchdog tick for the duration of a harvest --
+    # seconds across ~40 repos, every 30 minutes. Both halves now run in a
+    # thread; only the DB work below stays on the loop.
+    repos, claude, pi = await asyncio.to_thread(_discover, roots)
+    shells = await _gather_shells(db)
+
+    # Union of all canonical paths seen.
+    canon_paths: set[str] = set(repos) | set(claude) | set(pi) | set(shells)
+
+    now = _utcnow()
+    active_cutoff = now - timedelta(days=ACTIVE_WINDOW_DAYS)
+
+    # Aggregate per slug so moved/duplicated repos (same basename, different
+    # path) collapse into one project with all paths recorded.
+    agg = await asyncio.to_thread(_aggregate, canon_paths, claude, pi, shells)
 
     upserts = 0
     merged = 0

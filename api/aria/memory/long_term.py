@@ -21,6 +21,7 @@ from bson import Binary, ObjectId
 from bson.binary import BinaryVectorDtype, VECTOR_SUBTYPE
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from aria.core.bg import spawn_bg
 from aria.config import settings
 from aria.memory.capabilities import retrieval_capabilities
 from aria.memory.embeddings import embedding_service
@@ -152,6 +153,10 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 class _SearchCache:
     """Simple TTL cache for memory search results."""
 
+    #: Hard ceiling on live entries. Each entry holds a full copy of a result
+    #: list, so an unbounded cache is a memory leak with a TTL-shaped delay.
+    MAX_ENTRIES = 256
+
     def __init__(self, ttl_seconds: int = 10):
         self._cache: dict[str, tuple[float, list]] = {}
         self._ttl = ttl_seconds
@@ -178,12 +183,20 @@ class _SearchCache:
         # Store a shallow copy so a later caller mutation of the returned list
         # can't reach back into the cache entry.
         self._cache[key] = (time.monotonic(), list(results))
-        # Evict stale entries periodically
-        if len(self._cache) > 100:
+        # Sweep past the cap, then enforce it. The old code only swept when
+        # already over 100 entries and stopped there, so a burst of >100
+        # distinct queries inside one TTL window grew the cache without bound
+        # for the length of the burst -- every entry a full result copy.
+        if len(self._cache) > self.MAX_ENTRIES:
             now = time.monotonic()
             stale = [k for k, (ts, _) in self._cache.items() if now - ts > self._ttl]
             for k in stale:
                 del self._cache[k]
+        # Still over after the sweep: every entry is fresh, so evict oldest
+        # first until the cap holds.
+        while len(self._cache) > self.MAX_ENTRIES:
+            oldest = min(self._cache, key=lambda k: self._cache[k][0])
+            del self._cache[oldest]
 
     def invalidate(self):
         """Clear all cached entries (call after memory mutation)."""
@@ -722,10 +735,11 @@ class LongTermMemory:
             try:
                 from aria.ontology.crosslink import link_new_memory
 
-                asyncio.create_task(
+                spawn_bg(
                     link_new_memory(
                         self.db, str(result.inserted_id), memory_doc["categories"]
-                    )
+                    ),
+                    name="ontology:link_new_memory",
                 )
             except Exception as e:  # noqa: BLE001 — never block memory creation
                 logger.debug("ontology cross-link scheduling failed: %s", e)

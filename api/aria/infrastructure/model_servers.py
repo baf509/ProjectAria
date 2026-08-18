@@ -849,7 +849,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             ),
             LaunchParam(
                 name="dspark_confidence", env="DSPARK_CONFIDENCE",
-                label="DSpark confidence threshold", kind="float", default="",
+                # default=None (not "") is how this registry says "unset": an
+                # empty string fails validate(), so a declared "" could never
+                # actually be applied as an override.
+                label="DSpark confidence threshold", kind="float", default=None,
                 description="Pruning threshold 0..1. Empty = ds4's own default, "
                             "which is 0.7 on ROCm (0.6 on Metal). Higher prunes more "
                             "aggressively. This is the analogue of llama.cpp's "

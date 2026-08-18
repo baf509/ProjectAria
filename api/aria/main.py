@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from aria.config import settings
+from aria.core.bg import spawn_bg
 from aria.core.logging import setup_logging
 
 # Initialize structured logging with secret scrubbing before anything else
@@ -244,7 +245,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # never let a warm-up break startup
             startup_logger.debug("remote probe warm-up skipped: %s", exc)
 
-    asyncio.create_task(_warm_remote_probes(), name="infra.warm_remote_probes")
+    spawn_bg(_warm_remote_probes(), name="infra.warm_remote_probes")
 
     watchdog = await resolve_coding_watchdog(db, coding_manager)
     await watchdog.start()

@@ -42,6 +42,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from aria.core.bg import spawn_bg
+
 DEFAULT_ROOT = Path.home() / "Development/benchmark-tooling/evalstack"
 
 
@@ -222,7 +224,9 @@ class BenchmarkService:
             reg["runs"][run_id] = rec
             self._write_registry(reg)
 
-        asyncio.create_task(self._reap(run_id, proc, logf))
+        # spawn_bg: if this reaper is collected the run never leaves `running`
+        # and its log file is never closed.
+        spawn_bg(self._reap(run_id, proc, logf), name=f"bench:reap:{run_id}")
         return rec
 
     async def _reap(self, run_id: str, proc, logf) -> None:

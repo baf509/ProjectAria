@@ -15,6 +15,7 @@ from typing import Optional
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from aria.core.bg import spawn_bg
 from aria.config import settings
 from aria.llm.base import Message
 from aria.core.soul import soul_manager
@@ -157,7 +158,9 @@ Use these memories to provide personalized and contextual responses.
                     import logging
                     logging.getLogger(__name__).warning("Failed to track memory access: %s", e)
 
-            asyncio.create_task(_track_access())
+            # spawn_bg, not create_task: the loop holds only a weak ref, so a
+            # bare task can be collected mid-flight and the tracking silently lost.
+            spawn_bg(_track_access(), name="context:track_access")
 
         # Inject skill catalog (progressive disclosure: names + descriptions only)
         skill_context = ""
