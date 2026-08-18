@@ -522,6 +522,23 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # OCuLink (measured 1.65 t/s).
         parameters=(
             LaunchParam(
+                name="model", env="MODEL", label="GGUF served", kind="enum", default="",
+                choices=(
+                    ("", "model/UD-IQ3_XXS/…-00001-of-00004.gguf — unsloth UD-IQ3_XXS, 97.05 GiB"),
+                    ("/home/ben/Development/infrastructure/models/llm/DS4-0731-UD-IQ3_XXS-q6kattn/"
+                     "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-q6kattn.gguf",
+                     "Kevletesteur StrixHalo-Verified q6kattn, 96.07 GiB — same unsloth weights "
+                     "with 3 attention tensor families requantized Q8_0 -> Q6_K"),
+                ),
+                description="Both are UD-IQ3_XXS derivatives on the same Nathan/Vulkan "
+                            "runtime and the same device, so swapping this is a ONE-VARIABLE "
+                            "comparison. The q6kattn variant targets memory BANDWIDTH — the "
+                            "requantized tensors are ~51.9% of bytes read per token, which is "
+                            "the right lever on a bandwidth-starved APU. Its model card "
+                            "reports no comparison against the unsloth base it derives from, "
+                            "so that comparison has to be made here.",
+            ),
+            LaunchParam(
                 name="kv", env="KV", label="KV cache type", kind="enum",
                 default="f16",
                 choices=(
@@ -639,6 +656,47 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         port=18211,
         launch_script="ds4-hybrid/serve.sh",
         parameters=(
+            LaunchParam(
+                name="min_start_kib", env="DS4_MIN_START_KIB",
+                label="Start-time MemAvailable floor (KiB)", kind="int", default="",
+                description="deepseek-v4-safe-launch.sh refuses to start below this. Its "
+                            "default is 113246208 KiB = 108 GiB, which is a conservative "
+                            "START gate, NOT the anti-OOM guard — DS4_MIN_RUN_KIB (12 GiB) "
+                            "is that, and it is unaffected by this knob. The split "
+                            "placement puts ~80% of a 109 GB model on the Halo, i.e. ~87 GB, "
+                            "so 108 GiB carries ~20 GiB of slack. Lower it only for a "
+                            "measured benchmark run and say so; DUAL-SERVING.md sets the "
+                            "precedent for adjusting these floors deliberately rather than "
+                            "silently. Empty = launcher default.",
+            ),
+            LaunchParam(
+                name="min_run_kib", env="DS4_MIN_RUN_KIB",
+                label="Run-time MemAvailable floor (KiB)", kind="int", default="",
+                description="THE anti-OOM guard: the launcher kills the server if "
+                            "MemAvailable falls below this while running (exit 42). Default "
+                            "12582912 KiB = 12 GiB. DUAL-SERVING.md already lowers it to "
+                            "7340032 (7 GiB) for co-residency and calls that a deliberate, "
+                            "measured trade — the same precedent applies to a solo benchmark "
+                            "run, where this model alone steadies at ~11.2 GiB free and "
+                            "would otherwise be killed at load. ⚠️ Only safe because "
+                            "serve.sh caps --cache-ram at 1024 MiB; llama.cpp's 8192 MiB "
+                            "default drains headroom at ~0.37 GiB/min and WILL trip any "
+                            "floor you set. Empty = launcher default.",
+            ),
+            LaunchParam(
+                name="runtime", env="RUNTIME_DIR", label="llama.cpp build", kind="enum",
+                default="",
+                choices=(
+                    ("", "runtime/mainline-hip-dualarch — build 10423, commit a94d563ed"),
+                    ("/home/ben/Development/infrastructure/llamacpp-src/build-hip-cub/bin",
+                     "build-hip-cub — build 10432, commit 9ce67ae55 = a94d563ed + PR #26592 "
+                     "(hipCUB argsort/top_k), the arm for the ~16K prefill hang"),
+                ),
+                description="Both builds are dual-arch gfx1151;gfx1201 — a single-arch build "
+                            "cannot place layers on the R9700 at all. ⚠️ Verify with "
+                            "`llama-server --version`, not runtime/UPSTREAM_COMMIT.txt, which "
+                            "recorded the wrong commit until 2026-08-18.",
+            ),
             LaunchParam(
                 name="placement", env="PLACEMENT", label="Device placement", kind="enum",
                 default="split",
