@@ -429,6 +429,7 @@ _HALO_BIG = (
 # the whole point of the dual-serving deployment.
 _R9700_RESIDENT = (
     "Qwen3.8-27B-R9700-Radiance",
+    "Qwen3.8-27B-R9700-Radiance-G64",
     "Qwen3.8-27B-R9700-HIP",
     "Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
     "Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
@@ -926,10 +927,17 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         bench_decode_tok_s=54.4,
         bench_prefill_tok_s=1850.0,
         bench_at="2026-08-16",
-        bench_note="Measured at the radiance cutover (wikitext-2, 100 chunks, c=512), "
-        "WITH MTP speculation on. ⚠️ NOT re-measured on 2026-08-17 despite a reboot "
-        "and restart that day — carried forward, so treat as indicative, not current. "
-        "The GGUF path it replaced did ~890 prefill / 27.2 decode.",
+        bench_note="Prefill from the 2026-08-16 radiance cutover. Decode RE-MEASURED "
+        "2026-08-18 on local-eval/qwen38-quant-ab/decode_probe.py (400 tok greedy, 5 "
+        "reps, unique nonce so prefix caching cannot serve it): median 44.4 tok/s, "
+        "range 43.5-47.8 — lower than the 54.4 recorded at the cutover, which used a "
+        "different harness, so treat 44.4 as the current same-instrument number and "
+        "do not read a regression into the difference. Perplexity re-measured the same "
+        "day on the same corpus/geometry as the g64 challenger: 8.2109 (wikitext-2, "
+        "100 chunks, c=512, 51,100 scored tokens). ⚠️ That 8.2109 is NOT comparable to "
+        "the cutover's 6.6094 — different instrument; only compare it to the g64 arm. "
+        "Run-to-run noise on this probe is 0.013%. The GGUF path it replaced did ~890 "
+        "prefill / 27.2 decode.",
         description="Qwen3.8-27B int4 W4A16 (AutoRound) on the DISCRETE Radeon AI PRO "
         "R9700 via vllm-radiance — `qwen3.8-radiance.service`, the LIVE Qwen3.8 since "
         "2026-08-16. Replaced the llama.cpp/ROCmFPX GGUF path on :8080 after a "
@@ -962,13 +970,15 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         parameters=(
             LaunchParam(
                 name="ctx", env="MAXLEN", label="Context (max_model_len)", kind="int",
-                default="196608",
+                default="262144",
                 description="⚠️ Unlike llama.cpp this is bounded by a PREALLOCATED KV "
                             "pool, not lazy allocation: the measured pool is ~236,790 "
                             "tokens (fp8 KV; the model is GDN-hybrid so only 16 of 64 "
-                            "layers carry full attention KV). 196608 leaves 1.20x "
-                            "concurrency. The retired GGUF path's 327680 does NOT fit "
-                            "at any setting alongside 17.9 GiB of weights on 32 GiB. "
+                            "layers carry full attention KV). RAISED 196608 -> 262144 on "
+                            "2026-08-18: that is max_position_embeddings, the model's own "
+                            "ceiling, and at gpuutil 0.975 the measured pool is 277,038 "
+                            "tokens = 1.06x concurrency at the full length. The retired "
+                            "GGUF path's 327680 exceeds the model's position limit. "
                             "Hermes derives compaction as 0.5 x declared context, so "
                             "this lands it at 135,168. ⚠️ 0.5 is NOT the effective value: models under 512K are floored at 0.75 by _effective_threshold_percent(). Keep declared ctx UNDER the server's max_model_len — 180224 vs 196608 reserves output headroom.",
             ),
@@ -998,17 +1008,21 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             ),
             LaunchParam(
                 name="gpuutil", env="GPUUTIL", label="GPU memory utilization",
-                kind="float", default="0.94",
+                kind="float", default="0.975",
                 description="vLLM sizes the KV pool from what is left after weights, "
-                            "activation and graphs, so this is the KV dial.",
+                            "activation and graphs, so this is the KV dial. RAISED "
+                            "0.94 -> 0.975 on 2026-08-18 to reach the native 262144; "
+                            "needs _POOL_SAFETY_MARGIN[POOL_R9700]=0.97, since the "
+                            "global 0.92 gate refuses anything above ~29.4 GiB.",
             ),
             _PARAM_PORT,
         ),
         ctx_param="ctx",
         slots_param="slots",
-        # Measured 2026-08-16: 29 GiB VRAM at 196608 x 1 slot with vision + MTP
-        # (17.93 weights + 2.21 peak activation + 1.09 non-torch + 0.16 graphs + KV).
-        resident_gib=29,
+        # Measured 2026-08-18 at 262144 x 1 slot, gpuutil 0.975, vision + MTP:
+        # 17.93 weights + 2.10 peak activation + 0.83 non-torch + 0.16 graphs
+        # + 10.06 KV = 31.08 GiB. (Was 29 GiB at the old 196608 x 0.94 geometry.)
+        resident_gib=31.1,
         weights_gib=17.93,
         exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-Radiance"),
         consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 (declared "
@@ -1016,6 +1030,99 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "(compression, skills_hub, ...) -> the same port via the "
         "'qwen3.8-27b-rocmfp4-r9700' alias; ARIA config.steward_model uses that alias "
         "too. DS4 on :8108 remains the coding-agent (pi) model.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-27B-R9700-Radiance-G64",
+        runtime_family="vllm",
+        bench_decode_tok_s=41.1,
+        bench_at="2026-08-18",
+        bench_note="MEASURED AND REJECTED 2026-08-18. Same probes as the incumbent, same corpus, same geometry-independent perplexity instrument:\n  quality  ppl 8.2164 vs incumbent 8.2109 -- the challenger is 0.066% WORSE, against a measured run-to-run noise floor of 0.013%, so the difference is real and in the wrong direction.\n  speed    decode 41.1 tok/s median vs 44.4 -- 8% SLOWER, despite its bf16 draft head (the incumbent quantizes the MTP head to int4).\n  context  231,296 max vs 262,144 -- 31k SHORTER, because the bf16 MTP head costs more (18.92 GiB of weights) than the finer group size saves.\nLoses on all three axes; the incumbent stays. ⚠️ The interesting negative result: near-identical perplexity does NOT mean a near-identical model -- top-1 token agreement between the two is only 91.17% with KL 0.0259 nats (for scale, ROCmFP4-FAST was rejected at 87.97% / 0.0636). Two AutoRound runs of the same model at different group sizes land ~9% of their argmaxes apart while scoring the same. CONCLUSION: group size is NOT the explanation for the incumbent being 0.89% behind unsloth UD-Q4_K_XL; the calibration run itself dominates. Reopening that question means a different quantizer or a self-run calibration, not another group size.",
+        startable=False,
+        not_startable_reason="Measured and rejected 2026-08-18 -- worse quality, slower decode, less context than the incumbent (see bench_note). Weights kept at models/llm/Qwen3.8-27B-int4-AutoRound-g64 for now; delete them to reclaim 17.9 GiB if the question is not reopened.",
+        description="BENCHMARK CHALLENGER to Qwen3.8-27B-R9700-Radiance, added "
+        "2026-08-17. Identical model, stack, launcher and kernel; the ONLY variable is "
+        "the AutoRound checkpoint's quantization group size — 64 instead of 128 "
+        "(Vishva007/Qwen3.8-27B-W4A16-AutoRound-GPTQ, AutoRound 0.15.0, 17.87 GiB vs "
+        "the incumbent's 17.69). Reason to test it: the 2026-08-16 cutover left the "
+        "incumbent 0.89% worse on perplexity than the unsloth UD-Q4_K_XL GGUF it beat "
+        "on speed, and group size is the obvious suspect — scale+zero overhead is "
+        "0.156 bits/weight at g128 and 0.3125 at g64. The RDNA hybrid kernel already "
+        "declares SUPPORTED_GROUP_SIZES = [32, 64, 128], so no new kernel is needed, "
+        "and at only +0.18 GiB of weights this should still reach the model's native "
+        "262,144 ceiling — unlike the g32 attempt below, it does not trade context for "
+        "quality. "
+        "⚠️ WHY NOT g32: the first attempt used "
+        "Pilcothink/Qwen3.8-27B-MixedInt4-AutoRound (g32 + 17 modules at int8) and it "
+        "CANNOT RUN ON THIS CARD. vLLM enumerated every kernel for the int8 modules "
+        "and all refused — RDNAHybrid/Triton are uint4-only, Exllama supports float16 "
+        "activations only (this runs bf16), Conch supports group sizes [-1, 128] only, "
+        "RDNA3 needs gfx1100, Marlin/Machete/AllSpark are CUDA. There is no uint8b128 "
+        "path on gfx1201 at group_size 32 with bf16. Reaching one via --dtype float16 "
+        "would change the numerics under measurement and was rejected. Before "
+        "downloading any future mixed-bit checkpoint, check that a kernel accepts its "
+        "SECOND bit width. "
+        "⚠️ The tuned prefill tile table is keyed on (group_size, K, N, M-bucket) and "
+        "has rows for gs=32 and gs=128 only, so at gs=64 every lookup misses and the "
+        "kernel uses its stock heuristic. A prefill regression here is a tile-table "
+        "artifact, not a property of g64.",
+        runtime_repo="https://codeberg.org/StillDeadcode/vllm-radiance",
+        runtime_ref="docker.io/stilldeadcode/vllm-radiance:0.5.8 — the SAME image and "
+        "tuned-tile patch as the incumbent (see the gs=64 caveat above).",
+        backend_device="ROCm0 (R9700, gfx1201), vLLM/HIP",
+        devices=("R9700 dGPU (ROCm0)",),
+        memory_pool=POOL_R9700,
+        deployment="qwen3.8-radiance-g64",
+        model_file="models/llm/Qwen3.8-27B-int4-AutoRound-g64",
+        port=8110,
+        # Hand-written, NOT ARIA-generated. _render_unit() emits no MemoryHigh, and this
+        # deployment needs the same 24G page-cache guard the incumbent carries: streaming
+        # an 18 GiB checkpoint counts against MemAvailable host-wide and twice on
+        # 2026-08-16 that OOM-killed DS4 on the other GPU.
+        systemd_unit="qwen3.8-radiance-g64.service",
+        launch_script="qwen3.8-radiance-g64/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="MAXLEN", label="Context (max_model_len)", kind="int",
+                default="196608",
+                description="Bounded by a PREALLOCATED KV pool, as on the incumbent. "
+                            "At +0.18 GiB of weights this should still clear the "
+                            "native 262,144 ceiling.",
+            ),
+            LaunchParam(
+                name="slots", env="MAXSEQS", label="Slots (max_num_seqs)", kind="int",
+                default="1",
+            ),
+            LaunchParam(
+                name="spec", env="SPEC", label="Speculative decoding", kind="enum",
+                default="mtp",
+                choices=(
+                    ("mtp", "MTP self-speculation — the MTP head is quantized inline"),
+                    ("off", "no speculation — frees KV"),
+                ),
+            ),
+            LaunchParam(
+                name="lmonly", env="LMONLY", label="Drop vision tower", kind="enum",
+                default="0",
+                choices=(
+                    ("0", "keep vision (multimodal) — matches the incumbent's default"),
+                    ("1", "--language-model-only, returns ~0.8 GiB to the KV pool"),
+                ),
+            ),
+            LaunchParam(
+                name="gpuutil", env="GPUUTIL", label="GPU memory utilization",
+                kind="float", default="0.94",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        weights_gib=18.11,
+        resident_gib=29,
+        exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-Radiance-G64"),
+        consumers_note="Benchmark challenger only — nothing routes to :8110, and the "
+        "served name is 'qwen3.8-27b-r9700-g64' precisely so a stray request for the "
+        "production alias cannot land here. Promote by pointing the qwen3.8-radiance "
+        "deployment's MODEL_DIR at this checkpoint, not by repointing consumers.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-R9700-HIP",
@@ -1799,6 +1906,41 @@ _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
 # refuse start() if projected usage would exceed this fraction of the pool
 _RAM_SAFETY_MARGIN = 0.92
+
+# Per-pool override of that margin. 0.92 is a HALO number and was always a Halo
+# number: that pool is 124 GiB of SHARED host memory, several models can be
+# resident at once, llama.cpp allocates KV LAZILY (so a server grows into its
+# neighbours long after it started), and the page cache competes for the same
+# bytes. Eight percent of headroom is cheap insurance there, and it has been
+# earned — DS4 has been OOM-killed on that pool, once by 18 MB.
+#
+# The R9700 is none of those things. It is a DEDICATED 32 GiB card that holds
+# exactly one model at a time (see _R9700_RESIDENT), and everything on it is
+# vLLM, which PREALLOCATES its KV pool during startup profiling. Once the server
+# is up its VRAM usage is static — there is no lazy growth path for the margin
+# to protect against, and a bad size fails cleanly at startup rather than
+# strangling a neighbour at runtime. Holding back 8% of that card costs ~2.5 GiB
+# of KV, which is ~66k tokens of context — the difference between reaching
+# Qwen3.8-27B's native 262,144 ceiling and stopping short of it.
+#
+# Raised on 2026-08-17 (Ben's call) to reach that ceiling, and set to 0.98 rather
+# than the 0.97 first tried: the MEASURED footprint of the 262144 geometry is
+# 31.08 GiB of the 32 GiB pool = 97.1%, so a 0.97 gate refuses the exact
+# configuration the raise was for. 0.98 is 31.36 GiB, which clears the measured
+# 31.08 with ~0.28 GiB to spare. vLLM's own profiling is the real backstop here —
+# it sizes the KV pool to fit and errors at startup if max_model_len will not.
+#
+# Note this ALSO un-breaks restarting the live :8080 server through ARIA at all:
+# its footprint already exceeded 0.92 x 32 = 29.4 GiB, so every start was failing
+# the gate and only ever succeeded because systemd brings it up at boot without
+# consulting this check.
+_POOL_SAFETY_MARGIN: dict[str, float] = {
+    POOL_R9700: 0.98,
+}
+
+
+def _safety_margin(pool: str) -> float:
+    return _POOL_SAFETY_MARGIN.get(pool, _RAM_SAFETY_MARGIN)
 
 # Container states that hold their memory allocations. A paused container's
 # process is frozen with all GTT allocations intact; a restarting one is
@@ -3864,11 +4006,12 @@ class ModelServerManager:
                     if seen is not None and seen > claim:
                         claim, basis = seen, "measured"
                     projected = used + claim
-                    if projected > total * _RAM_SAFETY_MARGIN:
+                    margin = _safety_margin(spec.memory_pool)
+                    if projected > total * margin:
                         raise ModelServerSafetyError(
                             f"Starting {slug} (~{claim:.0f} GiB {basis}) would push "
                             f"{spec.memory_pool} usage to ~{projected:.0f}/{total:.0f} "
-                            f"GiB, over the {_RAM_SAFETY_MARGIN:.0%} safety margin. "
+                            f"GiB, over the {margin:.0%} safety margin. "
                             f"Stop something first, or pass force=True."
                         )
 
