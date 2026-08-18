@@ -3,6 +3,8 @@ control plane. Docker calls and the GTT sysfs read are mocked; agent binding
 uses a tiny in-memory fake Mongo collection."""
 from __future__ import annotations
 
+import asyncio
+
 from typing import Any, Optional
 from unittest.mock import AsyncMock, patch
 
@@ -1117,3 +1119,170 @@ async def test_sleep_that_does_not_suspend_reports_failure(manager):
     assert res["action"] == "sleep_failed"
     assert res["verified"] is False
     assert "WakeOnPattern" in res["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Remote state: stale-while-revalidate
+#
+# Why these exist: the web UI measured GET /infrastructure/model-servers at
+# 8.8s once every 20 seconds — a 3s health timeout plus a 4s reachability
+# timeout per asleep remote, paid on the read's own critical path each time the
+# TTL lapsed, while the page polled every 10s. The read now serves the
+# remembered state and refreshes behind it; only an unknown remote blocks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expired_remote_state_is_served_stale_and_refreshed(manager):
+    """An expired entry must NOT put a probe on the read's critical path."""
+    spec = ms._BY_SLUG["Ridge-Qwen3.8-27B"]
+    ms._remote_state_cache.clear()
+    ms._remote_state_inflight.clear()
+    # Remembered 60s ago: past the 20s TTL, well inside the 300s max age.
+    ms._remote_state_cache[spec.slug] = (ms.time.monotonic() - 60.0, "running")
+
+    probes = 0
+
+    async def slow_probe(s, timeout=3.0):
+        nonlocal probes
+        probes += 1
+        await asyncio.sleep(0.05)
+        return False
+
+    with patch.object(ms, "_remote_health_ok", AsyncMock(side_effect=slow_probe)), \
+         patch.object(ms, "_remote_box_reachable", AsyncMock(return_value=False)):
+        state = await ms._remote_state(spec)
+        assert state == "running", "stale value should be served immediately"
+        # ...and the refresh should be running behind it.
+        task = ms._remote_state_inflight[spec.slug]
+        await task
+
+    assert probes == 1
+    assert ms._remote_state_cache[spec.slug][1] == "asleep"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_reads_share_one_probe(manager):
+    """Single-flight: N rows for the same remote must not each pay the timeout."""
+    spec = ms._BY_SLUG["Ridge-Qwen3.8-27B"]
+    ms._remote_state_cache.clear()
+    ms._remote_state_inflight.clear()
+
+    probes = 0
+
+    async def counted(s, timeout=3.0):
+        nonlocal probes
+        probes += 1
+        await asyncio.sleep(0.05)
+        return True
+
+    with patch.object(ms, "_remote_health_ok", AsyncMock(side_effect=counted)):
+        states = await asyncio.gather(*(ms._remote_state(spec) for _ in range(5)))
+
+    assert states == ["running"] * 5
+    assert probes == 1, "five concurrent reads should share one probe"
+
+
+@pytest.mark.asyncio
+async def test_operations_always_probe_fresh(manager):
+    """A start/stop decision must never be made against a remembered state."""
+    spec = ms._BY_SLUG["Ridge-Qwen3.8-27B"]
+    ms._remote_state_cache.clear()
+    ms._remote_state_inflight.clear()
+    ms._remote_state_cache[spec.slug] = (ms.time.monotonic(), "asleep")
+
+    with patch.object(ms, "_remote_health_ok", AsyncMock(return_value=True)):
+        assert await ms._remote_state(spec) == "asleep"          # cached read
+        assert await ms._remote_state(spec, fresh=True) == "running"  # operation
+
+
+@pytest.mark.asyncio
+async def test_state_older_than_max_age_blocks(manager):
+    """Past the max age the read waits again, so the UI cannot show minutes-old state."""
+    spec = ms._BY_SLUG["Ridge-Qwen3.8-27B"]
+    ms._remote_state_cache.clear()
+    ms._remote_state_inflight.clear()
+    ms._remote_state_cache[spec.slug] = (ms.time.monotonic() - (ms._REMOTE_STATE_MAX_AGE + 1), "running")
+
+    with patch.object(ms, "_remote_health_ok", AsyncMock(return_value=False)), \
+         patch.object(ms, "_remote_box_reachable", AsyncMock(return_value=False)):
+        assert await ms._remote_state(spec) == "asleep"
+
+
+# ---------------------------------------------------------------------------
+# Memory pools: halo-gtt and host-ram are the SAME physical memory
+#
+# Raised by Ben 2026-08-17 while reviewing the rebuilt UI: the memory panel
+# drew one bar per pool, so a 124 GiB machine appeared to have ~248 GiB and the
+# ~102 GiB the iGPU holds was counted twice — once as halo-gtt, once inside
+# host-ram. The discrete card's 32 GiB, meanwhile, was not drawn at all.
+# ---------------------------------------------------------------------------
+
+
+def _fake_devices():
+    from aria.infrastructure.gpu_devices import GpuDevice
+
+    return [
+        # card0: discrete R9700 — its own VRAM, genuinely separate.
+        GpuDevice(card="card0", pci_address="0000:c6:00.0", discrete=True,
+                  vram_total_gib=31.85, vram_used_gib=29.75,
+                  gtt_total_gib=124.0, gtt_used_gib=0.03),
+        # card1: Strix Halo — no memory of its own, GTT out of system RAM.
+        GpuDevice(card="card1", pci_address="0000:c8:00.0", discrete=False,
+                  vram_total_gib=1.0, vram_used_gib=0.14,
+                  gtt_total_gib=124.0, gtt_used_gib=102.11),
+    ]
+
+
+def test_pool_snapshot_marks_shared_backing():
+    """A consumer must be able to tell which pools are the same DIMMs."""
+    from aria.infrastructure import gpu_devices as gd
+
+    with patch.object(gd, "discover_devices", return_value=_fake_devices()):
+        pools = {p["pool"]: p for p in gd.pool_snapshot()}
+
+    assert pools["halo-gtt"]["backing"] == "system"
+    assert pools["host-ram"]["backing"] == "system"
+    assert pools["r9700-vram"]["backing"] == "device"
+    # Each system pool names the other, so a UI can group them into one bar.
+    assert pools["halo-gtt"]["overlaps"] == ["host-ram"]
+    assert pools["host-ram"]["overlaps"] == ["halo-gtt"]
+    assert pools["r9700-vram"]["overlaps"] == []
+
+
+def test_system_memory_snapshot_does_not_double_count_the_igpu():
+    """total == igpu + other + available, with the iGPU counted exactly once."""
+    from aria.infrastructure import gpu_devices as gd
+
+    host = gd.MemoryPool(
+        pool=gd.POOL_HOST, label="host RAM",
+        used_gib=118.4, total_gib=124.4, source="/proc/meminfo",
+    )
+    with patch.object(gd, "discover_devices", return_value=_fake_devices()), \
+         patch.object(gd, "_host_pool", return_value=host):
+        sysmem = gd.system_memory_snapshot()
+
+    assert sysmem["total_gib"] == 124.4
+    assert sysmem["igpu_gib"] == 102.1          # what the Halo holds via GTT
+    assert sysmem["other_gib"] == 16.3          # 118.4 - 102.1, NOT 118.4
+    assert sysmem["available_gib"] == 6.0
+    parts = sysmem["igpu_gib"] + sysmem["other_gib"] + sysmem["available_gib"]
+    assert abs(parts - sysmem["total_gib"]) < 0.2, (
+        f"segments {parts} must add up to the machine's memory {sysmem['total_gib']}"
+    )
+
+
+def test_system_memory_snapshot_survives_disagreeing_samples():
+    """GTT and MemAvailable are sampled separately and can disagree slightly."""
+    from aria.infrastructure import gpu_devices as gd
+
+    # GTT reports MORE than total host usage — a sampling skew, not negative RAM.
+    host = gd.MemoryPool(
+        pool=gd.POOL_HOST, label="host RAM",
+        used_gib=100.0, total_gib=124.4, source="/proc/meminfo",
+    )
+    with patch.object(gd, "discover_devices", return_value=_fake_devices()), \
+         patch.object(gd, "_host_pool", return_value=host):
+        sysmem = gd.system_memory_snapshot()
+
+    assert sysmem["other_gib"] == 0.0

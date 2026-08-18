@@ -32,7 +32,11 @@ from aria.infrastructure.llm_route import (
     select,
     write_pin,
 )
-from aria.infrastructure.gpu_devices import device_snapshot, pool_snapshot
+from aria.infrastructure.gpu_devices import (
+    device_snapshot,
+    pool_snapshot,
+    system_memory_snapshot,
+)
 from aria.infrastructure.model_pull import RUNTIME_TEMPLATES, ModelPullService
 from aria.infrastructure.model_servers import (
     _BY_SLUG,
@@ -308,16 +312,44 @@ async def stop_service(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# What a fleet LIST needs, as opposed to a server detail. The full row is 78 KB
+# across 27 servers and ~84% of that is static registry prose — `parameters`,
+# `description`, `exclusive_with`, `not_startable_reason` — which never changes
+# between polls but was being re-sent on every one, to a phone, over the
+# tailnet. The same fields for a list view come to 12.6 KB.
+_LIST_VIEW_FIELDS = frozenset({
+    "slug", "state", "port", "onbox", "startable", "weights_present",
+    "backend_device", "memory_pool", "also_uses",
+    "resident_gib_estimate", "resident_gib_measured",
+    "pool_used_gib", "pool_total_gib", "pool_spilling",
+    "gtt_used_gib", "gtt_total_gib", "gtt_resident",
+    "served_ctx", "slots", "ctx_per_slot",
+    "bound_agents", "remotely_operable", "can_sleep", "serving",
+})
+
+
 @router.get("/model-servers")
 async def list_model_servers(
+    view: str = "full",
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+    """The fleet.
+
+    `view=list` returns only the fields a list can render. It exists because
+    this is the most-polled heavy endpoint in the app and most of its weight is
+    registry text that a list never displays; the detail view fetches the full
+    row for one server from `/model-servers/{slug}`. Default stays `full` so no
+    existing consumer changes behaviour.
+    """
     try:
-        return {"servers": await manager.status(db)}
+        servers = await manager.status(db)
     except ModelServerError as exc:
         # e.g. docker daemon unreachable — surfaced, not masked as not_created
         raise HTTPException(status_code=503, detail=str(exc))
+    if view == "list":
+        servers = [{k: v for k, v in s.items() if k in _LIST_VIEW_FIELDS} for s in servers]
+    return {"servers": servers}
 
 
 @router.get("/model-servers/utilization")
@@ -443,7 +475,14 @@ async def list_devices():
     RAM — at which point the pools are no longer independent and a co-resident
     Halo model is at risk.
     """
-    return {"devices": device_snapshot(), "pools": pool_snapshot()}
+    # `system` is the composite that `pools` cannot express: halo-gtt and
+    # host-ram are the same DIMMs, so a client drawing one bar per pool
+    # double-counts ~102 GiB on this box.
+    return {
+        "devices": device_snapshot(),
+        "pools": pool_snapshot(),
+        "system": system_memory_snapshot(),
+    }
 
 
 @router.get("/model-servers/runtimes")

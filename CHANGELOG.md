@@ -2,6 +2,86 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-17] - Project retirement; the "focused project" pointer removed
+
+### Added
+- **Retire a project** (`POST /api/v1/projects/{ident}/retire`,
+  `planning/retirement.py`, MCP `retire_project`, and a panel on the project
+  cockpit). Ending a project is normally avoided because deleting the row feels
+  like discarding the record of it — so this is a **transfer, not a delete**: a
+  bounded slice of the project's shell scrollback and coding sessions is
+  distilled into `aria.memories` (`source.type = "project_retirement"`), and
+  only then is the project row removed.
+  - **Order is the feature.** Memories are written AND verified before anything
+    is deleted; if nothing could be stored the project is kept and the caller is
+    told why. A deterministic record (what it was, its path, unfinished work,
+    open tasks, what was kept) is written LLM-free first, so a dead extraction
+    model degrades the result rather than silently producing nothing.
+  - **Refuses while work is live** — a running session or an active shell aborts
+    with 409 rather than stranding an agent whose project vanished.
+  - **Bounded**: `shell_events` holds 17.4M rows and one shell can carry 7M
+    lines, so retirement reads the most recent 1200 events per
+    shell up to a 60k-char budget, and reports what it scanned.
+  - **Kept, not deleted**: scrollback, coding sessions and previously-extracted
+    memories. Only the project row and its tasks go — those other lifecycles
+    have their own retention.
+  - Attribution uses most-specific-root-wins, the same rule `PathIndex`
+    enforces, so retiring `~/Development` cannot swallow a child project's
+    transcripts. Covered by 7 tests including that case and the ordering
+    guarantee.
+  - `dry_run` (the UI's "Preview retirement") runs the identical server path
+    without writing or deleting.
+
+### Removed
+- **The "focused project" pointer.** The Focus control wrote
+  `app_state.active_project_slug`, which the web card ring, the TUI star and MCP
+  read back — and which **nothing acted on**: no worker, router, session spawn
+  or alert scoping keyed off it. (Not to be confused with
+  `PlanningService.active_projects()`, the steward's active *set*, which is
+  load-bearing and untouched — the name collision is most of why the pointer
+  looked meaningful.) Removed from the web UI, `GET`/`PUT /projects/active`, the
+  `active_project` field on `/projects/overview`, MCP `set_active_project`, the
+  TUI (`f` key, star marker, title suffix) and the stored value, which had been
+  pointing at a project last touched 2026-07-24. A test pins the removal so the
+  routes cannot return without a consumer.
+
+### Fixed
+- `/projects/overview` now returns `kind` and `charter_purpose`. They were set in
+  the database but never projected, so the switcher rendered all 64 rows as equal
+  cards — 32 real projects, 18 ignored and 14 scratch dirs, indistinguishable.
+- `text-ink-mute` used as a text colour on the fleet list (2.75:1). It is a
+  decoration token; `scripts/ui-lint-classes.mjs` now rejects it as text so the
+  failure arrives at lint time rather than from an axe run on whichever route
+  happened to render it.
+
+## [2026-08-17] - Web UI responsive rebuild: measured audit + plan (docs only, no UI code)
+
+### Added
+- **`vault/ProjectAria/Planning/WEB_UI_RESPONSIVE_REBUILD_20260817.md`** — the plan for
+  rebuilding how the web UI is built so it fits a phone: measured baseline (Playwright/Chromium,
+  10 routes × 4 viewports × light/dark), root causes, target architecture, page-by-page refit,
+  11 phases with gate-enforced exits, risks, open questions. Produced from a live audit + an
+  8-scope code audit (175 findings) + a four-lens architecture panel with two judges and a critic.
+- **`ui/e2e/audit-2026-08-17/`** (untracked) — the measurement harness (`measure.mjs`, `probe.mjs`)
+  and the baseline (`audit.json`, `audit-summary.md`); above-the-fold screenshots in
+  `vault/ProjectAria/Planning/attachments/webui-audit-20260817/`.
+- `BACKLOG.md` §6 — pointer + the API-side companion items (serial `/model-servers` inspect =
+  8.84 s; untyped 200 schemas; `APPLY` has no executor; CORS list to shrink after the proxy).
+
+### Found (not yet fixed)
+- `/cockpit` overflows a 390 px viewport by 92–107 px (`grid gap-4 md:grid-cols-2 lg:grid-cols-3`
+  with no base column → implicit `auto` track sized to the widest card's min-content);
+  `/operate` by 40–55 px (unbreakable path in `server.description`, `operate/page.tsx:470`);
+  `body{overflow-x:hidden}` + `minimumScale:1` mask both — the "blank strip beside the header".
+- ~80 alpha-modified token utilities (`bg-live/40`, `bg-gone/10`, `bg-accent/60`, `ring-live/25`)
+  compile to **nothing** — `tailwind.config.js` tokens are bare `var()` with no `<alpha-value>`;
+  verified against the deployed CSS. Shells page light-mode buttons (`text-fuchsia-200` on
+  `bg-fuchsia-500/20`) have invisible labels.
+- Every tap target on `/inbox`, `/cockpit`, `/operate` is < 44 px; most text is 10–11 px in
+  `ink-faint` (2.7–3.2:1). `/dashboard/shells`: 6,046 DOM nodes, SSE opened with no `since_line`.
+- `NEXT_PUBLIC_API_KEY` is in 8 JS chunks of the running `aria-ui` image, which was built
+  2026-08-09 against source last changed 2026-08-15.
+
 ## [2026-08-17] - `pi` desk-path parity, and the green bar says `aria`
 
 ### Added

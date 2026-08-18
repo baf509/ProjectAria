@@ -813,11 +813,6 @@ func (m *Model) handleSubScreenKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 				return m.openProjectCockpit(p.Slug), true
 			}
 			return nil, true
-		case "f":
-			if p := m.projectsView.SelectedProject(); p != nil {
-				return setActiveProject(m.client, p.Slug), true
-			}
-			return nil, true
 		case "r":
 			return loadProjects(m.client), true
 		case "up", "k":
@@ -1273,8 +1268,7 @@ func (m Model) renderFooter() string {
 	} else if m.screen == screenMemory {
 		hints = hk("⏎", "search") + " " + hk("esc", "back")
 	} else if m.screen == screenProjects {
-		hints = hk("⏎", "cockpit") + " " + hk("f", "focus") + " " +
-			hk("r", "refresh") + " " + hk("esc", "back")
+		hints = hk("⏎", "cockpit") + " " + hk("r", "refresh") + " " + hk("esc", "back")
 	} else if m.screen == screenDB {
 		hints = hk("↑↓", "nav") + " " + hk("⏎", "select") + " " +
 			hk("⌫", "back") + " " + hk("/", "filter") + " " +
@@ -1691,21 +1685,6 @@ func loadProjectCockpit(client *api.Client, slug string) tea.Cmd {
 			return errMsg{err}
 		}
 		return projectCockpitLoaded{cockpit: *cockpit}
-	}
-}
-
-// setActiveProject persists the server-side focus, then reloads the overview
-// so the ★ marker reflects the new state.
-func setActiveProject(client *api.Client, slug string) tea.Cmd {
-	return func() tea.Msg {
-		if err := client.SetActiveProject(slug); err != nil {
-			return errMsg{err}
-		}
-		overview, err := client.GetProjectsOverview()
-		if err != nil {
-			return errMsg{err}
-		}
-		return projectsLoaded{overview: *overview}
 	}
 }
 

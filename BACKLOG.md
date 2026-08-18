@@ -3,7 +3,7 @@
 Open work and unanswered questions. Shipped items live in `CHANGELOG.md`; the current
 architecture is in `CLAUDE.md` and `vault/ProjectAria/START_HERE.md`.
 
-**Last updated:** 2026-08-15T23:12:49-04:00 — rewritten from ~515 lines after a full docs
+**Last updated:** 2026-08-17T15:54:02-04:00 — added §6 (web UI rebuild). Previous: 2026-08-15T23:12:49-04:00 — rewritten from ~515 lines after a full docs
 audit. The previous backlog was written for **an ARIA a human chats with**: its centrepiece
 items (Mood Model, Curiosity Engine, Anticipatory Preparation, Ritual Engine) all keyed off
 conversation signals, and `db.conversations` holds two documents, both from 2026-07-31, with
@@ -112,3 +112,57 @@ These are built and deliberately switched off. They are not backlog items in the
 | Local models at autonomy A3 | 20 clean A2 merges + tool-call reliability ≥98% over ≥200 calls |
 
 See `vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md` §E.
+
+---
+
+## 6. Web UI: responsive rebuild (planned 2026-08-17; **implementation in progress** as of 2026-08-17T16:38:48-04:00)
+
+Ben's report: the web UI "does not auto-fit a phone screen, you see blank white sections and
+need to zoom." A measured Playwright audit of the live UI (2026-08-17) confirmed it and found the
+mechanisms: `/cockpit` overflows a 390 px viewport by 92–107 px (grid with no base column), `/operate`
+by 40–55 px (unbreakable path in registry prose), the shell masks overflow with
+`body{overflow-x:hidden}` + `minimumScale:1`, virtually every tap target is < 44 px, most text is
+10–11 px `ink-faint` at 2.7–3.2:1 contrast, ~80 `bg-live/40`-style utilities compile to **nothing**
+(bare `var()` tokens have no alpha — the shells page's light-mode buttons have invisible labels),
+`/dashboard/shells` renders 6,046 DOM nodes and opens its SSE stream with no `since_line`,
+`/dashboard` fires 15 requests gated on the 8.8 s `/infrastructure/model-servers` call, and the API
+key is baked into eight JS chunks of an image six days behind source.
+
+**Plan (the deliverable):** `vault/ProjectAria/Planning/WEB_UI_RESPONSIVE_REBUILD_20260817.md` —
+decisions, measured baseline, root causes, target architecture (layout engine + tokens + shell,
+same-origin BFF proxy + runtime config + HTTPS, SWR data layer, route-segment master/detail,
+Playwright ratchet gate), page-by-page refit, 11 phases with exits, risks, and open questions for
+Ben. Harness + baseline: `ui/e2e/audit-2026-08-17/` (untracked seed for Phase 0).
+
+**API-side companions — status:**
+
+- ✅ **`GET /infrastructure/model-servers` no longer stalls.** The plan blamed a
+  serial `_inspect` loop and prescribed `asyncio.gather`. **That was wrong, and
+  measuring it first is what caught it:** gathering made it *worse* (8.07 s vs
+  0.25 s serial), because 27 concurrent rows each start their own probe before
+  any cache write. The real cost is the two off-box specs (Ridge asleep = a 3 s
+  health timeout + a 4 s reachability timeout) against a 20 s TTL cache — so the
+  endpoint stalled ~8.8 s **once every 20 seconds**, while the page polled every
+  10 s. Fixed in `model_servers.py` with stale-while-revalidate + single-flight:
+  an expired entry is served immediately and refreshed behind the read, only an
+  unknown remote blocks, and `fresh=True` (start/stop) still probes
+  synchronously. Measured after: cold 8.4 s (once), every subsequent read
+  0.30 s. Covered by four tests in `tests/test_model_servers.py`.
+- ⬜ `response_model` on `/alerts`, `/infrastructure/model-servers`,
+  `/projects/overview`, `/infrastructure/services` (all `{}` 200 schemas today)
+  so UI types can be generated instead of hand-authored.
+- ⬜ `content_hash`/ETag on `GET /shells/{name}/screen` so the terminal can skip
+  a re-render when the pane is unchanged.
+- ⬜ Record the model-server slug on benchmark runs (they are matched by port
+  substring today, which attributes a run to a retired sibling on the same port).
+- ⬜ `kind` / `charter.purpose` on `/projects/overview` so Supervise can filter
+  inventory server-side instead of client-side.
+- ⬜ **Who executes `APPLY`?** `POST /alerts/{id}/decide` records the decision and
+  clears `needs_human`; nothing consumes `decision.value=='APPLY'` (only
+  `outcomes.py:912` reads IGNORE/REJECT). The Inbox therefore says the decision
+  is *recorded* and does not imply the fix ran.
+- ⬜ Shrink `cors_origins`/`allow_origin_regex` to the Tauri widget origins now
+  that the UI is same-origin — the regex is otherwise a second, unauthenticated
+  door.
+
+

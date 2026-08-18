@@ -152,6 +152,26 @@ async def get_run(run_id: str, tail: int = 80, svc: BenchmarkService = Depends(_
         raise HTTPException(status_code=404, detail=str(ex))
 
 
+@router.delete("/runs/{run_id}")
+async def dismiss_run(run_id: str, svc: BenchmarkService = Depends(_svc)):
+    """Remove a finished run from the list. Results on disk are untouched."""
+    try:
+        return await svc.dismiss(run_id)
+    except BenchmarkError as exc:
+        # "still running" is a conflict, not a bad request or a missing record.
+        status = 409 if "still running" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc))
+
+
+@router.post("/runs/dismiss-finished")
+async def dismiss_finished_runs(keep: int = 0, svc: BenchmarkService = Depends(_svc)):
+    """Clear finished runs in bulk, optionally keeping the N most recent."""
+    try:
+        return await svc.dismiss_finished(keep=keep)
+    except BenchmarkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, svc: BenchmarkService = Depends(_svc)):
     try:

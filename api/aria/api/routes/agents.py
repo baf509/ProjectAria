@@ -38,11 +38,25 @@ async def _find_agent(db: AsyncIOMotorDatabase, agent_id_or_slug: str) -> dict |
 
 
 @router.get("/agents", response_model=list[AgentResponse])
-async def list_agents(db: AsyncIOMotorDatabase = Depends(get_db)):
-    """List all agents."""
-    cursor = db.agents.find().sort("created_at", -1)
+async def list_agents(
+    view: str = "full",
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """List all agents.
+
+    `view=list` omits `system_prompt`, which is ~62% of this payload (5.3 of
+    8.6 KB) and is not rendered by any list surface — the Converse agent picker
+    and the read-only Know/agents table both show name, model and binding. The
+    default stays `full` so nothing existing changes.
+    """
+    projection = {"system_prompt": 0} if view == "list" else None
+    cursor = db.agents.find({}, projection).sort("created_at", -1)
     agents = []
     async for doc in cursor:
+        if view == "list":
+            # AgentResponse requires the field; an empty string keeps the shape
+            # honest (it is absent, not empty in the database).
+            doc.setdefault("system_prompt", "")
         agents.append(AgentResponse(**serialize_agent(doc)))
     return agents
 

@@ -1,15 +1,26 @@
+/**
+ * ARIA - root layout
+ *
+ * Two deletions matter more than anything added here:
+ *  - `overflow-x-hidden` on <body>: it MASKED overflow rather than preventing
+ *    it (the layout was still 482px wide in a 390px viewport, the chrome
+ *    stopped at 390, and the difference read as a blank strip beside the
+ *    header). Containment is now structural — see globals.css's base layer and
+ *    the Grid/Row primitives — and any regression fails the Playwright gate.
+ *  - `minimumScale: 1`: it removed the user's only recovery (pinch out) from a
+ *    page that was too wide. The real cause of the "page is zoomed" symptom was
+ *    iOS auto-zooming into sub-16px form controls, which is fixed in the base
+ *    layer instead, so user zoom stays unrestricted (WCAG 1.4.4).
+ */
 import type { Metadata, Viewport } from 'next'
-import { Inter } from 'next/font/google'
 import './globals.css'
 import ServiceWorkerRegister from './sw-register'
-
-const inter = Inter({ subsets: ['latin'] })
+import { themeColor } from '@/design/tokens'
 
 export const metadata: Metadata = {
-  title: 'ARIA - Local AI Agent Platform',
-  description: 'Personal AI agent with long-term memory, tool use, and computer control',
+  title: { default: 'ARIA', template: '%s · ARIA' },
+  description: 'Local-first agent substrate: memory, fleet, models and coding sessions',
   applicationName: 'ARIA',
-  // manifest is auto-linked from app/manifest.ts, but set explicitly for clarity.
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
@@ -23,33 +34,29 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#0f172a',
   width: 'device-width',
   initialScale: 1,
-  // Without a floor, pinch-zooming out past 1x shrinks the rendered content
-  // but the visual viewport keeps growing — the browser fills the gap with
-  // blank canvas beyond the page, which reads as "half the screen is white
-  // space". Zooming IN is left uncapped (no maximumScale) so this doesn't
-  // regress accessibility (WCAG 1.4.4 requires zoom up to 200% to stay
-  // available) — only the useless zoom-out direction is floored.
-  minimumScale: 1,
   viewportFit: 'cover',
+  colorScheme: 'dark light',
+  // Chromium honours this for the on-screen keyboard; iOS ignores it, which is
+  // why the shell also tracks visualViewport into --vvh.
+  interactiveWidget: 'resizes-content',
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: themeColor.light },
+    { media: '(prefers-color-scheme: dark)', color: themeColor.dark },
+  ],
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+/** Applies the persisted theme/density before first paint (no flash). */
+const THEME_SCRIPT = `(function(){try{var t=localStorage.getItem('aria-theme');var d=localStorage.getItem('aria-density');var r=document.documentElement;if(t&&t!=='system')r.setAttribute('data-theme',t);if(d&&d!=='auto')r.setAttribute('data-density',d);}catch(e){}})()`
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      {/*
-        Global horizontal-overflow guard: `overflow-x-hidden` on <body> clips any
-        page that would otherwise scroll sideways on a phone (body overflow does
-        not propagate to the viewport, so vertical page scrolling is unaffected).
-        `max-w-full` keeps the body itself from being widened by a stray child.
-      */}
-      <body className={`${inter.className} max-w-full overflow-x-hidden`}>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
+      </head>
+      <body>
         {children}
         <ServiceWorkerRegister />
       </body>

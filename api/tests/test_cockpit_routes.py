@@ -195,7 +195,6 @@ async def test_overview_empty(cockpit_client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["projects"] == []
-    assert body["active_project"] is None
 
 
 @pytest.mark.asyncio
@@ -293,31 +292,6 @@ async def test_cockpit_alert_list_excludes_the_info_lane(cockpit_client):
     # high — while "session completed" is not.
     assert [a["id"] for a in body["alerts"]] == ["f1"]
 
-
-# ------------------------------------------------------------- active focus
-
-@pytest.mark.asyncio
-async def test_set_and_get_active_project(cockpit_client):
-    _seed_project(cockpit_client, slug="demo")
-    resp = await cockpit_client.put("/api/v1/projects/active", json={"slug": "demo"})
-    assert resp.status_code == 200
-    assert resp.json()["active_project"] == "demo"
-
-    resp = await cockpit_client.get("/api/v1/projects/active")
-    assert resp.json()["active_project"] == "demo"
-
-    resp = await cockpit_client.put("/api/v1/projects/active", json={"slug": None})
-    assert resp.json()["active_project"] is None
-
-
-@pytest.mark.asyncio
-async def test_set_active_project_unknown_slug_404(cockpit_client):
-    resp = await cockpit_client.put("/api/v1/projects/active", json={"slug": "nope"})
-    assert resp.status_code == 404
-
-
-# ----------------------------------------------------------------- cockpit
-
 @pytest.mark.asyncio
 async def test_cockpit_unknown_project_404(cockpit_client):
     resp = await cockpit_client.get("/api/v1/projects/nope/cockpit")
@@ -367,3 +341,24 @@ async def test_cockpit_aggregates_scoped_data(cockpit_client):
     assert body["tasks"][0]["stale"] is True
     assert body["attention"]["blocked_shells"] == 1
     assert body["budget"]["sessions_priced"] == 0
+
+
+@pytest.mark.asyncio
+async def test_project_focus_is_gone(cockpit_client):
+    """The shared "focused project" pointer was removed 2026-08-17.
+
+    It wrote a slug into app_state that the web UI and TUI rendered as a ring,
+    and that nothing else read — no worker, router, session spawn or alert
+    scoping keyed off it. (Not to be confused with PlanningService.active_projects(),
+    the steward's active SET, which is load-bearing and untouched.) Pinned here
+    so the routes do not come back without a consumer.
+    """
+    # 404 for GET; the PUT path is now claimed by nothing, so FastAPI answers
+    # 405 (the path exists as a prefix of /projects/{id} but not for PUT).
+    assert (await cockpit_client.get("/api/v1/projects/active")).status_code == 404
+    assert (
+        await cockpit_client.put("/api/v1/projects/active", json={"slug": "demo"})
+    ).status_code in (404, 405)
+
+    body = (await cockpit_client.get("/api/v1/projects/overview")).json()
+    assert "active_project" not in body

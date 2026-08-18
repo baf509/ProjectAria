@@ -279,6 +279,52 @@ class BenchmarkService:
         rec["metrics"] = _read_metrics(Path(rec.get("results_dir", "")))
         return rec
 
+    # A run record outlives the run by design (the log tail and results dir are
+    # the point). Nothing removed them, though, so the panel accumulated every
+    # terminated attempt forever — ten SIGTERMed runs from 2026-08-07/08 were
+    # still the entire contents of the Benchmarks screen ten days later, with no
+    # way to clear them from any surface. Dismissal is registry-only: the
+    # results directory and logs on disk are left alone, because those are the
+    # measurement and this is just the index.
+    TERMINAL = ("succeeded", "failed", "cancelled", "interrupted", "unknown")
+
+    async def dismiss(self, run_id: str) -> dict:
+        """Drop one finished run from the registry. Refuses while it is alive."""
+        async with self._lock:
+            reg = self._read_registry()
+            rec = reg["runs"].get(run_id)
+            if not rec:
+                raise BenchmarkError(f"unknown run '{run_id}'")
+            if rec.get("status") == "running" and self._alive(rec.get("pid")):
+                raise BenchmarkError(
+                    f"run '{run_id}' is still running — cancel it before dismissing"
+                )
+            reg["runs"].pop(run_id, None)
+            self._write_registry(reg)
+        return {"run_id": run_id, "dismissed": True,
+                "results_dir": rec.get("results_dir"),
+                "detail": "removed from the run list; results and logs on disk are untouched"}
+
+    async def dismiss_finished(self, keep: int = 0) -> dict:
+        """Drop every finished run, optionally keeping the `keep` most recent.
+
+        The bulk form exists because the failure mode is bulk: a model server
+        goes away mid-sweep and every target in that sweep lands as `failed` at
+        once.
+        """
+        async with self._lock:
+            reg = self._read_registry()
+            finished = [
+                (rid, rec) for rid, rec in reg["runs"].items()
+                if not (rec.get("status") == "running" and self._alive(rec.get("pid")))
+            ]
+            finished.sort(key=lambda kv: kv[1].get("started_at") or 0, reverse=True)
+            drop = finished[keep:] if keep > 0 else finished
+            for rid, _ in drop:
+                reg["runs"].pop(rid, None)
+            self._write_registry(reg)
+        return {"dismissed": [rid for rid, _ in drop], "count": len(drop), "kept": keep}
+
     async def cancel(self, run_id: str) -> dict:
         async with self._lock:
             reg = self._read_registry()

@@ -51,15 +51,25 @@ services:
       context: ./ui
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-aria-local-admin-key}
+        # Only a build stamp is baked now — the API URL and key are read at
+        # request time by the UI's server-side proxy, so changing either is
+        # `docker compose up -d ui` rather than a rebuild, and neither reaches
+        # the browser bundle.
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+        BUILD_BRANCH: ${BUILD_BRANCH:-}
     container_name: aria-ui
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      # Bound to loopback: the browser reaches this through `tailscale serve`
+      # over https, and the container's /api/v1 proxy is an authenticated path
+      # to the whole API, so it must not listen on 0.0.0.0.
+      - "127.0.0.1:3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      - NEXT_PUBLIC_API_KEY=${NEXT_PUBLIC_API_KEY:-aria-local-admin-key}
+      - ARIA_API_URL=${ARIA_API_URL:-http://host.docker.internal:8200}
+      - ARIA_API_KEY=${API_KEY:?API_KEY must be set in .env}
+    extra_hosts:
+      # aria-api is a host systemd service, not a container.
+      - "host.docker.internal:host-gateway"
     networks:
       - shared-infra
 

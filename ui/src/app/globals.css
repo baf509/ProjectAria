@@ -1,104 +1,142 @@
+@import './tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* ---------------------------------------------------------------------------
-   Design tokens (added 2026-08-05 with the Operate redesign).
+   BASE LAYER — the rules that delete whole classes of responsive bugs.
 
-   Every colour is a token so both themes are defined once and components never
-   branch on theme. The viewer's OS preference arrives via prefers-color-scheme;
-   an explicit choice stamps data-theme on <html> and must win in BOTH
-   directions, which is why the two data-theme blocks below redefine the full
-   set rather than only the dark one.
+   Before the 2026-08-17 rebuild, width was *masked* (`body{overflow-x:hidden}`
+   + `minimumScale:1`) rather than contained, so /cockpit laid out 450px cards
+   in a 390px viewport and the browser clipped the difference — the "blank white
+   section beside the header". These four declarations make that impossible:
 
-   Accent (amber) is reserved for interaction and selection ONLY. State colours
-   deliberately avoid amber — a warning hue that doubles as the brand hue can't
-   signal anything. Hence emerald/slate/rose for running/stopped/absent.
+   1. `min-width: 0` inside the shell's content column: flex/grid items default
+      to `min-width:auto` and refuse to shrink below their content. Scoped to
+      [data-shell-main] so the tab bar, top bar and form controls keep their
+      intrinsic minimums; written with :where() so any utility still wins.
+   2. `overflow-wrap: anywhere` on body: unlike `break-word` it IS counted in
+      min-content sizing, so a 389-char runtime string or a 122-char path can no
+      longer widen a grid track.
+   3. `pre { white-space: pre-wrap }` with a `.pre` opt-out for the terminal,
+      which is the one surface that legitimately scrolls sideways (inside
+      ScrollX).
+   4. Safe-area variables, consumed by the shell only.
 --------------------------------------------------------------------------- */
-:root {
-  --ground: #0e1014;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --line: #262b35;
-  --ink: #e6e9ef;
-  --ink-dim: #8c94a3;
-  --ink-faint: #5c6472;
-  --accent: #f2a93b;
-  --accent-ink: #0e1014;
-  --live: #3dd68c;
-  --idle: #5a6478;
-  --gone: #e0576b;
-  --track: #20252f;
+@layer base {
+  :where([data-shell-main] *) {
+    min-width: 0;
+  }
 
-  --foreground-rgb: 230, 233, 239;
-  --background-start-rgb: 14, 16, 20;
-}
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
 
-@media (prefers-color-scheme: light) {
+  body {
+    overflow-wrap: anywhere;
+    background: rgb(var(--ground-rgb));
+    color: rgb(var(--ink-rgb));
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  pre {
+    white-space: pre-wrap;
+  }
+  pre.pre {
+    white-space: pre;
+  }
+
+  img,
+  svg,
+  video,
+  canvas {
+    max-width: 100%;
+    height: auto;
+  }
+
   :root {
-    --ground: #f4f6f9;
-    --panel: #ffffff;
-    --panel-2: #edf0f5;
-    --line: #d8dee7;
-    --ink: #14171d;
-    --ink-dim: #5a6474;
-    --ink-faint: #8892a2;
-    --accent: #b87411;
-    --accent-ink: #ffffff;
-    --live: #12885a;
-    --idle: #78828f;
-    --gone: #c0334a;
-    --track: #dde3eb;
+    --sat: env(safe-area-inset-top, 0px);
+    --sar: env(safe-area-inset-right, 0px);
+    --sab: env(safe-area-inset-bottom, 0px);
+    --sal: env(safe-area-inset-left, 0px);
+  }
 
-    --foreground-rgb: 20, 23, 29;
-    --background-start-rgb: 244, 246, 249;
+  /* Density: the tokens flip together on touch, so 44px targets and a 12px
+     type floor on the phone cost the laptop nothing. Keyed on the POINTER, not
+     the viewport — a 768px window on a laptop is still a mouse. An iPad with a
+     Magic Keyboard reports pointer:fine and therefore gets compact, which is
+     the intended default; [data-density] overrides either way. */
+  :root {
+    --fs-micro: 0.6875rem;
+    --fs-label: 0.75rem;
+    --fs-body: 0.8125rem;
+    --fs-prose: 0.875rem;
+    --fs-title: 1rem;
+    --fs-num: 1.125rem;
+    --control-h: 2rem;
+    --row-h: 2.25rem;
+    --gutter: clamp(0.75rem, 0.5rem + 1.5vw, 1.5rem);
+    --gap: 0.875rem;
+    --tabbar-h: 3.5rem;
+    --topbar-h: 2.75rem;
+  }
+
+  @media (pointer: coarse) {
+    :root:not([data-density='compact']) {
+      --fs-micro: 0.75rem;
+      --fs-label: 0.8125rem;
+      --fs-body: 0.875rem;
+      --fs-prose: 0.9375rem;
+      --control-h: 2.75rem;
+      --row-h: 2.75rem;
+    }
+  }
+
+  :root[data-density='comfortable'] {
+    --fs-micro: 0.75rem;
+    --fs-label: 0.8125rem;
+    --fs-body: 0.875rem;
+    --fs-prose: 0.9375rem;
+    --control-h: 2.75rem;
+    --row-h: 2.75rem;
+  }
+
+  /* iOS zooms the page into any focused control under 16px and does not zoom
+     back out. Raising the control instead of capping user zoom keeps WCAG
+     1.4.4 intact — this is why `minimumScale: 1` could be deleted. */
+  @media (pointer: coarse) {
+    input,
+    select,
+    textarea {
+      font-size: max(1rem, var(--fs-body));
+    }
+  }
+
+  /* Numbers that stack in columns must not jitter as they update. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
   }
 }
 
-:root[data-theme='dark'] {
-  --ground: #0e1014;
-  --panel: #171a21;
-  --panel-2: #1e222b;
-  --line: #262b35;
-  --ink: #e6e9ef;
-  --ink-dim: #8c94a3;
-  --ink-faint: #5c6472;
-  --accent: #f2a93b;
-  --accent-ink: #0e1014;
-  --live: #3dd68c;
-  --idle: #5a6478;
-  --gone: #e0576b;
-  --track: #20252f;
-  --foreground-rgb: 230, 233, 239;
-  --background-start-rgb: 14, 16, 20;
-}
-
-:root[data-theme='light'] {
-  --ground: #f4f6f9;
-  --panel: #ffffff;
-  --panel-2: #edf0f5;
-  --line: #d8dee7;
-  --ink: #14171d;
-  --ink-dim: #5a6474;
-  --ink-faint: #8892a2;
-  --accent: #b87411;
-  --accent-ink: #ffffff;
-  --live: #12885a;
-  --idle: #78828f;
-  --gone: #c0334a;
-  --track: #dde3eb;
-  --foreground-rgb: 20, 23, 29;
-  --background-start-rgb: 244, 246, 249;
-}
-
-body {
-  color: rgb(var(--foreground-rgb));
-  background: rgb(var(--background-start-rgb));
-}
-
-/* Numbers that stack in columns must not jitter as they update. */
-.tnum {
-  font-variant-numeric: tabular-nums;
+@layer utilities {
+  .wrap-anywhere {
+    overflow-wrap: anywhere;
+  }
+  .pt-sat {
+    padding-top: var(--sat);
+  }
+  .pb-sab {
+    padding-bottom: var(--sab);
+  }
+  .px-safe {
+    padding-left: max(var(--gutter), var(--sal));
+    padding-right: max(var(--gutter), var(--sar));
+  }
+  /* Long lists opt into cheap virtualisation without a windowing library. */
+  .cv-auto {
+    content-visibility: auto;
+  }
 }
 
 ::-webkit-scrollbar {
@@ -106,17 +144,20 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--ground);
+  background: rgb(var(--ground-rgb));
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--line);
+  background: rgb(var(--line-rgb));
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--ink-faint);
+  background: rgb(var(--ink-mute-rgb));
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
   *,
   *::before,
   *::after {

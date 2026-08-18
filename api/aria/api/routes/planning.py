@@ -13,6 +13,7 @@ from typing import Annotated, Optional
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pydantic import BaseModel
 
 from aria.api.deps import get_db, get_planning_service, get_task_runner
 from aria.config import settings
@@ -217,8 +218,20 @@ async def extract_todos_from_conversation(
 async def list_projects(
     service: Annotated[PlanningService, Depends(get_planning_service)],
     status: Optional[ProjectStatus] = Query(default=None),
+    view: str = Query(default="full"),
 ):
+    """Every project.
+
+    `view=list` drops `sources` — the harvester's provenance records, which are
+    57% of this payload (47.5 of 83.4 KB across 64 projects) and are not
+    rendered anywhere. The Know/tasks page needs project names for attribution
+    and was paying 97 KB a load for them.
+    """
     projects = await service.list_projects(status=status)
+    if view == "list":
+        for p in projects:
+            if hasattr(p, "sources"):
+                p.sources = []
     return ProjectListResponse(projects=projects)
 
 
@@ -278,6 +291,36 @@ async def update_project(
     if not proj:
         raise HTTPException(status_code=404, detail=f"Project not found: {project_id}")
     return proj
+
+
+class RetireRequest(BaseModel):
+    """`dry_run` previews exactly what would move to memory and what would go."""
+
+    dry_run: bool = False
+
+
+@router.post("/projects/{ident}/retire")
+async def retire_project(
+    ident: str,
+    body: RetireRequest,
+    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
+    service: Annotated[PlanningService, Depends(get_planning_service)],
+):
+    """Retire a project: distil its transcripts into long-term memory, then
+    remove it.
+
+    Deliberately NOT a variant of DELETE. The memories are written and verified
+    first, and a failure to write anything aborts before the project is touched
+    — the whole point is that the record survives the row.
+    """
+    from aria.planning.retirement import ProjectRetirementService, RetirementRefused
+
+    retirer = ProjectRetirementService(db, service)
+    try:
+        return await retirer.retire(ident, dry_run=body.dry_run)
+    except RetirementRefused as exc:
+        # 409: the request is well-formed, the project's state forbids it.
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.delete("/projects/{project_id}", status_code=204)

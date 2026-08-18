@@ -35,7 +35,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _STALE_TASK_DAYS = 14
-_ACTIVE_PROJECT_DOC = "global"
 
 
 # ------------------------------------------------------------------ helpers
@@ -203,17 +202,42 @@ def _project_attention(
     }
 
 
-async def _get_active_project_slug(db) -> Optional[str]:
-    doc = await db.app_state.find_one({"_id": _ACTIVE_PROJECT_DOC})
-    return (doc or {}).get("active_project_slug")
-
-
 # ------------------------------------------------------------------- routes
 
-class ActiveProjectRequest(BaseModel):
-    slug: Optional[str] = Field(
-        default=None, description="Project slug to focus, or null to clear"
-    )
+def _serialize_cockpit_session(s: dict) -> dict:
+    return {
+        "id": str(s.get("_id")),
+        "backend": s.get("backend"),
+        "model": s.get("model"),
+        "status": s.get("status"),
+        "host": s.get("host"),
+        "shell_name": s.get("shell_name"),
+        "workspace": s.get("workspace"),
+        "looping": bool(s.get("loop_config")),
+        "result_summary": s.get("result_summary"),
+        "gate_runs": (s.get("gate_runs") or [])[-3:],
+        "created_at": s.get("created_at"),
+        "updated_at": s.get("updated_at"),
+    }
+async def _live_git_status(path: Optional[str]) -> Optional[dict]:
+    """Branch + dirty-file count from a live `git status` (read-only, fast,
+    timeout-bounded). None when the path isn't a local git repo."""
+    if not path:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", path, "status", "--porcelain=v1", "-b",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            return None
+        lines = stdout.decode("utf-8", errors="replace").splitlines()
+        branch = lines[0].removeprefix("## ").split("...")[0] if lines else None
+        return {"branch": branch, "dirty_files": max(len(lines) - 1, 0)}
+    except Exception:
+        return None
 
 
 @router.get("/projects/overview")
@@ -245,6 +269,13 @@ async def projects_overview(
                 "slug": p.slug,
                 "summary": p.summary,
                 "status": p.status,
+                # `kind` distinguishes a real project from the scratch dirs,
+                # worktrees and /tmp paths the harvester also registers. Without
+                # it a client cannot separate the two, so the switcher rendered
+                # all 64 rows as equal cards — 63 of them noise — and the
+                # attention ranking read as broken rather than as unfiltered.
+                "kind": getattr(p, "kind", None),
+                "charter_purpose": (p.charter or {}).get("purpose") if isinstance(getattr(p, "charter", None), dict) else getattr(getattr(p, "charter", None), "purpose", None),
                 "activity_status": p.activity_status,
                 "last_activity_at": p.last_activity_at,
                 "path": p.path,
@@ -262,80 +293,10 @@ async def projects_overview(
     )
     return {
         "projects": rows,
-        "active_project": await _get_active_project_slug(db),
         # Key kept (the TUI and web cockpit read it): unacked alerts that need
         # attention, i.e. excluding the info lifecycle lane.
         "unacked_alerts_total": len(ctx["alerts"]),
         "generated_at": ctx["now"],
-    }
-
-
-@router.get("/projects/active")
-async def get_active_project(
-    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
-):
-    return {"active_project": await _get_active_project_slug(db)}
-
-
-@router.put("/projects/active")
-async def set_active_project(
-    request: ActiveProjectRequest,
-    db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
-    planning: Annotated[PlanningService, Depends(get_planning_service)],
-):
-    """Persist the server-side focus (shared by web/TUI/CLI/Hermes)."""
-    if request.slug is not None:
-        project = await planning.get_project_by_slug(request.slug)
-        if not project:
-            raise HTTPException(status_code=404, detail=f"No project '{request.slug}'")
-    await db.app_state.update_one(
-        {"_id": _ACTIVE_PROJECT_DOC},
-        {
-            "$set": {
-                "active_project_slug": request.slug,
-                "updated_at": datetime.now(timezone.utc),
-            }
-        },
-        upsert=True,
-    )
-    return {"active_project": request.slug}
-
-
-async def _live_git_status(path: Optional[str]) -> Optional[dict]:
-    """Branch + dirty-file count from a live `git status` (read-only, fast,
-    timeout-bounded). None when the path isn't a local git repo."""
-    if not path:
-        return None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", path, "status", "--porcelain=v1", "-b",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-        if proc.returncode != 0:
-            return None
-        lines = stdout.decode("utf-8", errors="replace").splitlines()
-        branch = lines[0].removeprefix("## ").split("...")[0] if lines else None
-        return {"branch": branch, "dirty_files": max(len(lines) - 1, 0)}
-    except Exception:
-        return None
-
-
-def _serialize_cockpit_session(s: dict) -> dict:
-    return {
-        "id": str(s.get("_id")),
-        "backend": s.get("backend"),
-        "model": s.get("model"),
-        "status": s.get("status"),
-        "host": s.get("host"),
-        "shell_name": s.get("shell_name"),
-        "workspace": s.get("workspace"),
-        "looping": bool(s.get("loop_config")),
-        "result_summary": s.get("result_summary"),
-        "gate_runs": (s.get("gate_runs") or [])[-3:],
-        "created_at": s.get("created_at"),
-        "updated_at": s.get("updated_at"),
     }
 
 

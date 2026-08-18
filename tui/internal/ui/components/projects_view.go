@@ -12,8 +12,7 @@ import (
 )
 
 // ProjectsView is the Coherence C4 Project Switcher: every project as one row,
-// ranked by attention (server-side sort -- most-needs-attention first), with
-// the shared "focused" project marked.
+// ranked by attention (server-side sort -- most-needs-attention first).
 type ProjectsView struct {
 	Viewport viewport.Model
 	Width    int
@@ -21,7 +20,6 @@ type ProjectsView struct {
 	Focused  bool
 
 	Projects      []api.ProjectOverviewRow
-	ActiveProject string
 	UnackedTotal  int
 
 	Cursor int
@@ -46,7 +44,6 @@ func (pv *ProjectsView) Blur()  { pv.Focused = false }
 
 func (pv *ProjectsView) SetData(overview api.ProjectsOverview) {
 	pv.Projects = overview.Projects
-	pv.ActiveProject = overview.ActiveProject
 	pv.UnackedTotal = overview.UnackedAlertsTotal
 	pv.clampCursor()
 	pv.refreshContent()
@@ -116,18 +113,8 @@ func (pv *ProjectsView) refreshContent() {
 		if name == "" {
 			name = p.Slug
 		}
-		// Mark the shared server-side focus. The star is prepended after
-		// truncation so a long name can't push it out of the column.
-		marker := "  "
-		if p.Slug != "" && p.Slug == pv.ActiveProject {
-			marker = "★ "
-		}
-		nameCell := fmt.Sprintf("%-26s", marker+truncate(name, 24))
-		if p.Slug != "" && p.Slug == pv.ActiveProject {
-			nameCell = lipgloss.NewStyle().Foreground(styles.Accent).Bold(true).Render(nameCell)
-		} else {
-			nameCell = lipgloss.NewStyle().Foreground(styles.Text).Render(nameCell)
-		}
+		nameCell := fmt.Sprintf("%-26s", truncate(name, 26))
+		nameCell = lipgloss.NewStyle().Foreground(styles.Text).Render(nameCell)
 
 		act := p.ActivityStatus
 		actCell := fmt.Sprintf("%-8s", truncate(act, 8))
@@ -165,9 +152,6 @@ func (pv *ProjectsView) View() string {
 	}
 
 	title := fmt.Sprintf("Projects (%d)", len(pv.Projects))
-	if pv.ActiveProject != "" {
-		title += " — focus: " + pv.ActiveProject
-	}
 	if pv.UnackedTotal > 0 {
 		title += fmt.Sprintf(" — %d unacked alerts", pv.UnackedTotal)
 	}

@@ -37,7 +37,21 @@ async def _check_http(
         return (False, type(exc).__name__)
 
 
-_GTT_ALERT_PCT = 90
+# NOTE: there is deliberately no "pool is N% full" threshold any more.
+#
+# It fired permanently. `Qwen3.8-27B-R9700-Radiance` occupies 29 of the R9700's
+# 31.9 GiB — the card's entire purpose — so the pool sits at ~93% for as long as
+# the intended configuration is running, and the check paged every time with
+# nothing for a human to do. An alert that fires on the designed state is how a
+# person is trained to stop reading the queue (the same argument the alerts-v2
+# needs_human lane is built on).
+#
+# A model sized to fill its card is FIT, not pressure. What is actually
+# actionable is a dGPU model that no longer fits and starts consuming system RAM
+# — `spilling`, the one documented coupling between the two pools. Raw headroom
+# is enforced where it belongs: the start-time gate refuses a launch that will
+# not fit, and that refusal arrives when you are trying to do something about
+# it.
 
 
 def _check_gtt() -> tuple[bool, str]:
@@ -63,17 +77,26 @@ def _check_gtt() -> tuple[bool, str]:
         ]
         if not pools:
             return (False, "unreadable: no GPU memory pools found")
-        parts, ok = [], True
+
+        parts, problems = [], []
         for pool in pools:
             pct = pool["used_gib"] / pool["total_gib"] * 100
-            if pct >= _GTT_ALERT_PCT:
-                ok = False
-            note = " SPILLING to system RAM" if pool.get("spilling") else ""
+            spilling = bool(pool.get("spilling"))
+            if spilling:
+                problems.append(
+                    f"{pool['label']} is SPILLING into system RAM — it no longer "
+                    "fits its own card, so it is now competing with the Halo's pool"
+                )
             parts.append(
                 f"{pool['label']}: {pct:.0f}% "
-                f"({pool['used_gib']:.0f}/{pool['total_gib']:.0f} GiB){note}"
+                f"({pool['used_gib']:.0f}/{pool['total_gib']:.0f} GiB)"
+                f"{' SPILLING' if spilling else ''}"
             )
-        return ok, "; ".join(parts)
+
+        detail = "; ".join(parts)
+        if problems:
+            return (False, "; ".join(problems) + f" [{detail}]")
+        return (True, detail)
     except Exception as exc:
         return (False, f"unreadable: {str(exc)[:100]}")
 

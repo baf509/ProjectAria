@@ -32,3 +32,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated at build time (npm prebuild / postbuild)
+/src/build-info.json
+
+# playwright
+/test-results
+/playwright-report
+/e2e/**/shots

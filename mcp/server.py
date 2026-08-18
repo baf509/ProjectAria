@@ -377,10 +377,22 @@ async def publish_to_obsidian(
 
 
 @mcp.tool()
-async def set_active_project(slug: Optional[str] = None) -> dict:
-    """Set (or clear, with no slug) the server-side active project — the
-    shared focus the cockpit, TUI, CLI and Hermes all agree on."""
-    return await _request("PUT", "/api/v1/projects/active", json={"slug": slug})
+async def retire_project(project: str, dry_run: bool = True) -> dict:
+    """Retire a project: distil its transcripts into long-term memory, then
+    remove it from the board.
+
+    Memories are written and verified BEFORE anything is deleted, so a failed
+    extraction leaves the project intact. Scrollback, coding sessions and
+    previously-extracted memories are kept — only the project row and its tasks
+    go. Refuses while the project still has a running session or an active
+    shell.
+
+    Defaults to dry_run=True: call once to see what would move and what would
+    go, then again with dry_run=False.
+    """
+    proj = await _resolve_project(project)
+    slug = proj.get("slug") if isinstance(proj, dict) else project
+    return await _request("POST", f"/api/v1/projects/{slug}/retire", json={"dry_run": dry_run})
 
 
 @mcp.tool()

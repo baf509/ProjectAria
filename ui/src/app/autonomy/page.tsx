@@ -1,303 +1,351 @@
-/**
- * Autonomy — what ARIA did without being asked.
- *
- * dreams, awareness and heartbeat had ~17 endpoints between them and no UI at
- * all, so the only evidence any of it ran was in Mongo. Reviewing unprompted
- * activity is its own posture — slow, retrospective, occasionally requiring a
- * decision — which is why it is an area rather than another dashboard section.
- *
- * Soul proposals are shown here with full context, but their approve/reject
- * also appears in the Inbox: this is where you read them, that is where you
- * clear them.
- */
 'use client'
 
+/**
+ * ARIA - Autonomy: what ARIA did without being asked.
+ *
+ * dreams, awareness and heartbeat have ~17 endpoints between them; reviewing
+ * unprompted activity is its own posture — slow, retrospective, occasionally
+ * requiring a decision — which is why this is an area, not a dashboard tab.
+ *
+ * Rebuilt on the responsive foundation (2026-08-17 audit: 162 of 232 text
+ * nodes under 12px, hand-rolled 30s setInterval that never paused when
+ * hidden, observations truncated behind hover `title=` which reveals nothing
+ * on touch):
+ *  - data comes from useResource (statuses at 'slow', history at 'lazy' —
+ *    journal entries arrive every 6h, nothing here needs a 5s cadence);
+ *  - status cards are KeyValue, journal entries and observations are
+ *    Disclosure rows (observations grouped by sensor — 30 rows were mostly
+ *    the same two sensors repeating);
+ *  - soul proposals render through SoulProposalCard (wrapped prose + honest
+ *    force-approve for stale ones) instead of raw JSON in a nested scroller.
+ *
+ * Soul proposals also surface in the Inbox: this is where you read them with
+ * full context, that is where you clear them.
+ */
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useCallback, useEffect, useState } from 'react'
-import { AppShell, StatusStat } from '@/components/AppShell'
-import { Button, Card, EmptyState, ScrollX, StatusDot } from '@/components/ui'
+import { AppShell, StatusStat } from '@/components/shell/AppShell'
+import { Card, Chip, EmptyState, KeyValue } from '@/components/ui/primitives'
+import { Button, Disclosure, Toasts, type Toast } from '@/components/ui/controls'
+import { Async } from '@/components/ui/Async'
+import { Stack, Cluster, Columns } from '@/components/layout'
+import { useResource, useAction } from '@/lib/swr'
 import {
-  autonomyApi,
-  type AwarenessStatus,
-  type DreamStatus,
-  type JournalEntry,
-  type Observation,
-  type SoulProposal,
-} from '@/lib/api-client-autonomy'
+  K,
+  triggerDream,
+  pollAwareness,
+  analyzeAwareness,
+  triggerHeartbeat,
+} from '@/lib/api/endpoints'
+import type {
+  AwarenessStatus,
+  DreamStatus,
+  HeartbeatStatus,
+  JournalEntry,
+  Observation,
+  SoulProposalDetail,
+} from '@/lib/api/types'
+import { SoulProposalCard } from '@/features/autonomy/SoulProposalCard'
+import { relativeTime } from '@/lib/time'
 
-const SEVERITY: Record<string, string> = {
-  critical: 'text-gone',
-  error: 'text-gone',
-  warning: 'text-accent',
-  warn: 'text-accent',
-  info: 'text-ink-dim',
-  debug: 'text-ink-faint',
+const SEVERITY_TONE: Record<string, 'warn' | 'accent' | 'neutral'> = {
+  critical: 'warn',
+  error: 'warn',
+  warning: 'accent',
+  warn: 'accent',
+  info: 'neutral',
+  debug: 'neutral',
 }
 
-function ago(v?: string | null) {
-  if (!v) return '—'
-  const d = new Date(v)
-  if (Number.isNaN(d.getTime())) return String(v)
-  const mins = Math.round((Date.now() - d.getTime()) / 60000)
-  if (mins < 1) return 'just now'
-  if (mins < 60) return `${mins}m ago`
-  if (mins < 1440) return `${Math.round(mins / 60)}h ago`
-  return `${Math.round(mins / 1440)}d ago`
-}
-
-export default function AutonomyPage() {
-  const [dream, setDream] = useState<DreamStatus | null>(null)
-  const [aware, setAware] = useState<AwarenessStatus | null>(null)
-  const [beat, setBeat] = useState<any>(null)
-  const [journal, setJournal] = useState<JournalEntry[]>([])
-  const [obs, setObs] = useState<Observation[]>([])
-  const [proposals, setProposals] = useState<SoulProposal[]>([])
-  const [busy, setBusy] = useState<string | null>(null)
-  const [errors, setErrors] = useState<string[]>([])
-
-  const load = useCallback(async () => {
-    const r = await Promise.allSettled([
-      autonomyApi.dreamStatus(),
-      autonomyApi.awarenessStatus(),
-      autonomyApi.heartbeatStatus(),
-      autonomyApi.journal(10),
-      autonomyApi.observations(30),
-      autonomyApi.soulProposals(),
-    ])
-    const errs: string[] = []
-    if (r[0].status === 'fulfilled') setDream(r[0].value)
-    else errs.push('dreams')
-    if (r[1].status === 'fulfilled') setAware(r[1].value)
-    else errs.push('awareness')
-    if (r[2].status === 'fulfilled') setBeat(r[2].value)
-    else errs.push('heartbeat')
-    if (r[3].status === 'fulfilled') setJournal(r[3].value ?? [])
-    if (r[4].status === 'fulfilled') setObs(r[4].value ?? [])
-    if (r[5].status === 'fulfilled') setProposals((r[5].value ?? []).filter((p) => p.status === 'pending'))
-    setErrors(errs)
-  }, [])
-
-  useEffect(() => {
-    load()
-    const t = setInterval(load, 30000)
-    return () => clearInterval(t)
-  }, [load])
-
-  async function act(key: string, fn: () => Promise<unknown>) {
-    setBusy(key)
-    try {
-      await fn()
-      await load()
-    } catch (e: any) {
-      setErrors((p) => [...p, e?.message || 'Action failed'])
-    } finally {
-      setBusy(null)
-    }
+function useToasts() {
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const push = (tone: Toast['tone'], text: string) => {
+    const id = Date.now() + Math.random()
+    setToasts((t) => [...t, { id, tone, text }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 6000)
   }
+  return { toasts, push, dismiss: (id: number) => setToasts((t) => t.filter((x) => x.id !== id)) }
+}
 
+const onoff = (v?: boolean) => (v === undefined ? '—' : v ? 'yes' : 'no')
+
+/* ---------------------------------------------------------------- journal */
+
+function JournalRows({ entries }: { entries: JournalEntry[] }) {
+  if (entries.length === 0) return <EmptyState>No journal entries yet.</EmptyState>
   return (
-    <AppShell
-      area="Autonomy"
-      status={
-        <>
-          <StatusStat label="DREAMS">{dream ? (dream.running ? 'running' : dream.enabled ? 'idle' : 'off') : '…'}</StatusStat>
-          <StatusStat label="AWARENESS">{aware ? (aware.running ? 'running' : aware.enabled ? 'idle' : 'off') : '…'}</StatusStat>
-          <StatusStat label="PENDING">{proposals.length}</StatusStat>
-        </>
-      }
-    >
-      {errors.length > 0 && (
-        <div className="mb-3.5 rounded border border-gone bg-gone/10 px-3.5 py-2.5 font-sans text-xs">
-          Unavailable: {Array.from(new Set(errors)).join(', ')}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-[1.3fr_1fr]">
-        <div className="min-w-0">
-          {proposals.length > 0 && (
-            <Card
-              title="Soul proposals"
-              hint="· changes ARIA wants to make to itself"
-              className="mb-3.5"
-              bodyClassName=""
-            >
-              <ul className="m-0 list-none p-0">
-                {proposals.map((p) => (
-                  <li key={p.id} className="border-b border-line px-3.5 py-3 last:border-b-0">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-xs">
-                        {p.proposals?.length ?? 0} proposed change
-                        {(p.proposals?.length ?? 0) === 1 ? '' : 's'}
-                      </span>
-                      <span className="tnum text-[11px] text-ink-faint">{ago(p.created_at)}</span>
-                    </div>
-                    <ScrollX>
-                      <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-sm bg-panel-2 p-2.5 text-[11px] leading-relaxed text-ink-dim">
-                        {JSON.stringify(p.proposals, null, 2)}
-                      </pre>
-                    </ScrollX>
-                    <div className="mt-2.5 flex gap-2">
-                      <Button
-                        variant="primary"
-                        busy={busy === 'ap' + p.id}
-                        onClick={() => act('ap' + p.id, () => autonomyApi.approveProposal(p.id))}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        variant="danger"
-                        busy={busy === 'rp' + p.id}
-                        onClick={() => act('rp' + p.id, () => autonomyApi.rejectProposal(p.id))}
-                      >
-                        Reject
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}
-
-          <Card title="Dream journal" hint="· unprompted reflection" bodyClassName="">
-            {journal.length === 0 ? (
-              <div className="p-3.5">
-                <EmptyState>No journal entries yet.</EmptyState>
-              </div>
-            ) : (
-              <ul className="m-0 list-none p-0">
-                {journal.map((e) => (
-                  <li key={e.id} className="border-b border-line px-3.5 py-3 last:border-b-0">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="text-[11px] text-ink-faint">
-                        {e.connections.length} connections · {e.knowledge_gaps.length} gaps ·{' '}
-                        {e.memory_consolidations_proposed} consolidations
-                      </span>
-                      <span className="tnum text-[11px] text-ink-faint">{ago(e.created_at)}</span>
-                    </div>
-                    <p className="mt-1.5 line-clamp-4 whitespace-pre-wrap font-sans text-xs leading-relaxed text-ink-dim">
-                      {e.journal_entry}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
-
-        <div className="min-w-0">
-          <Card title="Dreams">
-            {!dream ? (
-              <EmptyState>Status unavailable.</EmptyState>
-            ) : (
-              <>
-                <ul className="m-0 list-none p-0 text-xs">
-                  <Row k="Enabled" v={String(dream.enabled)} />
-                  <Row k="In active hours" v={String(dream.is_active_hours)} />
-                  <Row k="Interval" v={`${dream.interval_hours}h`} />
-                  <Row k="Model" v={dream.claude_model} />
-                  <Row k="Last run" v={ago(dream.last_run)} />
-                  <Row k="Last status" v={dream.last_status ?? '—'} />
-                </ul>
-                <div className="mt-3">
-                  <Button busy={busy === 'dream'} onClick={() => act('dream', autonomyApi.triggerDream)}>
-                    Trigger dream
-                  </Button>
-                </div>
-              </>
-            )}
-          </Card>
-
-          <Card title="Awareness" className="mt-3.5">
-            {!aware ? (
-              <EmptyState>Status unavailable.</EmptyState>
-            ) : (
-              <>
-                <ul className="m-0 list-none p-0 text-xs">
-                  <Row k="Enabled" v={String(aware.enabled)} />
-                  <Row k="Sensors" v={aware.sensors.join(', ') || '—'} />
-                  <Row k="Poll every" v={`${aware.poll_interval_seconds}s`} />
-                  <Row k="Analyse every" v={`${aware.analysis_interval_minutes}m`} />
-                  <Row k="Last poll" v={ago(aware.last_poll)} />
-                  <Row k="Last analysis" v={ago(aware.last_analysis)} />
-                </ul>
-                <div className="mt-3 flex gap-2">
-                  <Button busy={busy === 'poll'} onClick={() => act('poll', autonomyApi.poll)}>
-                    Poll now
-                  </Button>
-                  <Button busy={busy === 'analyze'} onClick={() => act('analyze', autonomyApi.analyze)}>
-                    Analyse
-                  </Button>
-                </div>
-              </>
-            )}
-          </Card>
-
-          <Card title="Heartbeat" className="mt-3.5">
-            {!beat ? (
-              <EmptyState>Status unavailable.</EmptyState>
-            ) : (
-              <>
-                <ul className="m-0 list-none p-0 text-xs">
-                  {Object.entries(beat)
-                    .filter(([, v]) => typeof v !== 'object')
-                    .slice(0, 6)
-                    .map(([k, v]) => (
-                      <Row key={k} k={k.replace(/_/g, ' ')} v={String(v)} />
-                    ))}
-                </ul>
-                <div className="mt-3">
-                  <Button busy={busy === 'beat'} onClick={() => act('beat', autonomyApi.heartbeatTrigger)}>
-                    Trigger heartbeat
-                  </Button>
-                </div>
-              </>
-            )}
-          </Card>
-        </div>
-      </div>
-
-      <Card title="Observations" hint="· what the sensors noticed" className="mt-3.5" bodyClassName="">
-        {obs.length === 0 ? (
-          <div className="p-3.5">
-            <EmptyState>
-              No observations recorded. Awareness polls on an interval — use “Poll now” to force one.
-            </EmptyState>
-          </div>
-        ) : (
-          <ul className="m-0 list-none p-0">
-            {obs.map((o, i) => (
-              <li key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-line px-3.5 py-2 last:border-b-0">
-                <StatusDot state={o.severity === 'critical' || o.severity === 'error' ? 'absent' : 'exited'} />
-                <span className="text-[11px] text-ink-faint">{o.sensor}</span>
-                <span className={`text-[11px] ${SEVERITY[o.severity] ?? 'text-ink-dim'}`}>{o.severity}</span>
-                <span className="min-w-0 flex-1 truncate text-xs" title={o.detail ?? o.summary}>
-                  {o.summary}
+    <ul className="m-0 list-none p-0">
+      {entries.map((e) => (
+        <li key={e.id} className="border-b border-line py-1 last:border-b-0">
+          <Disclosure
+            summary={
+              <span className="flex min-w-0 flex-col gap-0.5">
+                <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="text-micro text-ink-faint">
+                    {e.connection_count ?? e.connections?.length ?? 0} connections ·{' '}
+                    {e.knowledge_gap_count ?? e.knowledge_gaps?.length ?? 0} gaps ·{' '}
+                    {e.memory_consolidations_proposed ?? 0} consolidations
+                  </span>
+                  <span className="ml-auto shrink-0 text-micro text-ink-faint">{relativeTime(e.created_at)}</span>
                 </span>
-                <span className="tnum shrink-0 text-[11px] text-ink-faint">{ago(o.created_at)}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <p className="mt-3.5 font-sans text-[11px] text-ink-faint">
-        Decisions raised here also appear in{' '}
-        <Link href="/inbox" className="text-accent underline underline-offset-2">
-          Inbox
-        </Link>
-        .
-      </p>
-    </AppShell>
+                <span className="line-clamp-2 min-w-0 wrap-anywhere font-sans text-prose text-ink-dim">
+                  {e.journal_entry}
+                </span>
+              </span>
+            }
+          >
+            {/* The full entry, wrapped — the page scrolls, nothing nested does. */}
+            <p className="m-0 max-w-prose whitespace-pre-wrap wrap-anywhere font-sans text-prose leading-relaxed text-ink-dim">
+              {e.journal_entry}
+            </p>
+          </Disclosure>
+        </li>
+      ))}
+    </ul>
   )
 }
 
-function Row({ k, v }: { k: string; v: string }) {
+/* ------------------------------------------------------------ observations */
+
+function ObservationGroups({ observations }: { observations: Observation[] }) {
+  // Grouped by sensor: a flat list of 30 was mostly `git` and `system`
+  // repeating, burying the one filesystem event that mattered.
+  const groups = useMemo(() => {
+    const map = new Map<string, Observation[]>()
+    for (const o of observations) {
+      const key = o.sensor ?? 'unknown'
+      const list = map.get(key) ?? []
+      list.push(o)
+      map.set(key, list)
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length)
+  }, [observations])
+
+  if (observations.length === 0) {
+    return (
+      <EmptyState>
+        No observations recorded. Awareness polls on an interval — use “Poll now” to force one.
+      </EmptyState>
+    )
+  }
+
   return (
-    <li className="flex items-center justify-between gap-3 border-b border-line py-1.5 last:border-b-0">
-      <span className="text-[10px] uppercase tracking-[0.06em] text-ink-faint">{k}</span>
-      <span className="tnum min-w-0 truncate text-right text-xs" title={v}>
-        {v}
-      </span>
-    </li>
+    <Stack gap="sm">
+      {groups.map(([sensor, group]) => {
+        const worst = group.find((o) => SEVERITY_TONE[o.severity ?? ''] === 'warn')
+          ? 'warn'
+          : group.find((o) => SEVERITY_TONE[o.severity ?? ''] === 'accent')
+            ? 'accent'
+            : 'neutral'
+        return (
+          <Disclosure
+            key={sensor}
+            summary={
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <Chip tone={worst as 'warn' | 'accent' | 'neutral'}>{sensor}</Chip>
+                <span className="tnum text-micro text-ink-dim">{group.length}</span>
+                <span className="ml-auto shrink-0 text-micro text-ink-faint">{relativeTime(group[0]?.created_at)}</span>
+              </span>
+            }
+          >
+            <ul className="m-0 list-none p-0">
+              {group.map((o, i) => (
+                <li key={i} className="border-b border-line py-1.5 last:border-b-0">
+                  <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <span
+                      className={`text-micro ${
+                        SEVERITY_TONE[o.severity ?? ''] === 'warn'
+                          ? 'text-gone'
+                          : SEVERITY_TONE[o.severity ?? ''] === 'accent'
+                            ? 'text-accent'
+                            : 'text-ink-faint'
+                      }`}
+                    >
+                      {o.severity ?? 'info'}
+                    </span>
+                    <span className="text-micro text-ink-faint">{o.event_type}</span>
+                    <span className="ml-auto shrink-0 text-micro text-ink-faint">{relativeTime(o.created_at)}</span>
+                  </span>
+                  <p className="m-0 mt-0.5 max-w-prose wrap-anywhere font-sans text-prose text-ink-dim">{o.summary}</p>
+                  {o.detail && (
+                    <pre className="m-0 mt-1 whitespace-pre-wrap break-words font-mono text-micro leading-relaxed text-ink-faint">
+                      {o.detail}
+                    </pre>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        )
+      })}
+    </Stack>
+  )
+}
+
+/* -------------------------------------------------------------------- page */
+
+export default function AutonomyPage() {
+  const { toasts, push, dismiss } = useToasts()
+  const onDone = (t: string) => push('ok', t)
+  const onError = (t: string) => push('warn', t)
+
+  const dreams = useResource<DreamStatus>(K.dreamsStatus, { tier: 'slow' })
+  const aware = useResource<AwarenessStatus>(K.awarenessStatus, { tier: 'slow' })
+  const beat = useResource<HeartbeatStatus>(K.heartbeatStatus, { tier: 'slow' })
+  const journal = useResource<JournalEntry[]>(K.dreamsJournal(10), { tier: 'lazy' })
+  const observations = useResource<Observation[]>(K.observations(), { tier: 'lazy' })
+  const proposals = useResource<SoulProposalDetail[]>(K.soulProposals, { tier: 'lazy' })
+
+  const run = useAction()
+  const [busy, setBusy] = useState<string | null>(null)
+
+  const pending = (proposals.data ?? []).filter((p) => p.status === 'pending')
+
+  async function act(key: string, fn: () => Promise<unknown>, done: string, invalidate: string[]) {
+    setBusy(key)
+    const ok = await run(fn, { invalidate, onError: (e) => onError(e.message) })
+    setBusy(null)
+    if (ok !== undefined) onDone(done)
+  }
+
+  const worker = (s?: { running?: boolean; enabled?: boolean }) =>
+    !s ? '…' : s.running ? 'running' : s.enabled ? 'idle' : 'off'
+
+  return (
+    <AppShell
+      status={
+        <>
+          <StatusStat label="DREAMS" tone={dreams.data?.running ? 'ok' : 'default'}>
+            {worker(dreams.data)}
+          </StatusStat>
+          <StatusStat label="AWARENESS" tone={aware.data?.running ? 'ok' : 'default'}>
+            {worker(aware.data)}
+          </StatusStat>
+          <StatusStat label="PENDING" tone={pending.length > 0 ? 'warn' : 'default'}>
+            {pending.length}
+          </StatusStat>
+        </>
+      }
+    >
+      <Stack>
+        {pending.length > 0 && (
+          <Card title={`Soul proposals · ${pending.length}`} hint="changes ARIA wants to make to itself">
+            <Stack gap="sm">
+              {pending.map((p) => (
+                <SoulProposalCard key={p.id} proposal={p} onDone={onDone} onError={onError} />
+              ))}
+            </Stack>
+          </Card>
+        )}
+
+        <Columns lg={3}>
+          <Card title="Dreams">
+            <Async r={dreams} skeletonRows={4}>
+              {(d) => (
+                <Stack gap="sm">
+                  <KeyValue
+                    items={[
+                      { k: 'Enabled', v: onoff(d.enabled) },
+                      { k: 'In active hours', v: onoff(d.is_active_hours) },
+                      { k: 'Interval', v: `${d.interval_hours ?? '—'}h`, kind: 'num' },
+                      { k: 'Model', v: d.claude_model ?? '—', kind: 'ident' },
+                      { k: 'Last run', v: relativeTime(d.last_run) || 'never' },
+                      { k: 'Last status', v: d.last_status ?? '—' },
+                    ]}
+                  />
+                  <Button
+                    busy={busy === 'dream'}
+                    onClick={() => act('dream', triggerDream, 'Dream cycle triggered', ['/dreams'])}
+                    className="self-start"
+                  >
+                    Trigger dream
+                  </Button>
+                </Stack>
+              )}
+            </Async>
+          </Card>
+
+          <Card title="Awareness">
+            <Async r={aware} skeletonRows={4}>
+              {(a) => (
+                <Stack gap="sm">
+                  <KeyValue
+                    items={[
+                      { k: 'Enabled', v: onoff(a.enabled) },
+                      { k: 'Sensors', v: a.sensors?.join(', ') || '—', kind: 'prose' },
+                      { k: 'Poll every', v: `${a.poll_interval_seconds ?? '—'}s`, kind: 'num' },
+                      { k: 'Analyse every', v: `${a.analysis_interval_minutes ?? '—'}m`, kind: 'num' },
+                      { k: 'Last poll', v: relativeTime(a.last_poll) || 'never' },
+                      { k: 'Last analysis', v: relativeTime(a.last_analysis) || 'never' },
+                    ]}
+                  />
+                  <Cluster>
+                    <Button
+                      busy={busy === 'poll'}
+                      onClick={() => act('poll', pollAwareness, 'Poll requested', ['/awareness'])}
+                    >
+                      Poll now
+                    </Button>
+                    <Button
+                      busy={busy === 'analyze'}
+                      onClick={() => act('analyze', analyzeAwareness, 'Analysis requested', ['/awareness'])}
+                    >
+                      Analyse
+                    </Button>
+                  </Cluster>
+                </Stack>
+              )}
+            </Async>
+          </Card>
+
+          <Card title="Heartbeat">
+            <Async r={beat} skeletonRows={4}>
+              {(h) => (
+                <Stack gap="sm">
+                  <KeyValue
+                    items={[
+                      { k: 'Enabled', v: onoff(h.enabled) },
+                      { k: 'Running', v: onoff(h.running) },
+                      { k: 'Interval', v: `${h.interval_minutes ?? '—'}m`, kind: 'num' },
+                      { k: 'Backend', v: h.backend ?? '—', kind: 'ident' },
+                      { k: 'Model', v: h.model ?? '—', kind: 'ident' },
+                      { k: 'Last run', v: relativeTime(h.last_run) || 'never' },
+                    ]}
+                  />
+                  <Button
+                    busy={busy === 'beat'}
+                    onClick={() => act('beat', triggerHeartbeat, 'Heartbeat triggered', ['/heartbeat'])}
+                    className="self-start"
+                  >
+                    Trigger heartbeat
+                  </Button>
+                </Stack>
+              )}
+            </Async>
+          </Card>
+        </Columns>
+
+        <Card title="Dream journal" hint="unprompted reflection">
+          <Async r={journal} skeletonRows={3} isEmpty={(d) => d.length === 0} empty="No journal entries yet.">
+            {(d) => <JournalRows entries={d} />}
+          </Async>
+        </Card>
+
+        <Card title="Observations" hint="what the sensors noticed, grouped by sensor">
+          <Async r={observations} skeletonRows={3}>
+            {(d) => <ObservationGroups observations={d} />}
+          </Async>
+        </Card>
+
+        <p className="m-0 font-sans text-micro text-ink-faint">
+          Decisions raised here also appear in{' '}
+          <Link href="/inbox" data-inline className="text-accent underline underline-offset-2">
+            Inbox
+          </Link>
+          .
+        </p>
+      </Stack>
+      <Toasts toasts={toasts} onDismiss={dismiss} />
+    </AppShell>
   )
 }

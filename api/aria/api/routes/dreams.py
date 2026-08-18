@@ -26,6 +26,11 @@ class JournalEntry(BaseModel):
     connections: list = []
     knowledge_gaps: list = []
     soul_proposals: list = []
+    # Counts are always populated, so a list view can render "N connections"
+    # without shipping the connections themselves.
+    connection_count: int = 0
+    knowledge_gap_count: int = 0
+    soul_proposal_count: int = 0
     memory_consolidations_proposed: int = 0
     created_at: datetime
 
@@ -61,20 +66,32 @@ class DreamStatusResponse(BaseModel):
 async def list_journal_entries(
     limit: int = Query(20, ge=1, le=100),
     skip: int = Query(0, ge=0),
+    view: str = Query("full"),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """List dream journal entries, newest first."""
+    """List dream journal entries, newest first.
+
+    `view=list` returns the three list fields as COUNTS rather than contents.
+    They are 45 of the 77 KB this endpoint sends for ten entries, and the only
+    consumer renders `.length` — so the full arrays were being shipped to a
+    phone to be counted and thrown away. `/dreams/journal/{id}` still has
+    everything.
+    """
     entries = await db.dream_journal.find(
         {},
     ).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
 
+    slim = view == "list"
     return [
         JournalEntry(
             id=str(e["_id"]),
             journal_entry=e.get("journal_entry", ""),
-            connections=e.get("connections", []),
-            knowledge_gaps=e.get("knowledge_gaps", []),
-            soul_proposals=e.get("soul_proposals", []),
+            connections=[] if slim else e.get("connections", []),
+            knowledge_gaps=[] if slim else e.get("knowledge_gaps", []),
+            soul_proposals=[] if slim else e.get("soul_proposals", []),
+            connection_count=len(e.get("connections", []) or []),
+            knowledge_gap_count=len(e.get("knowledge_gaps", []) or []),
+            soul_proposal_count=len(e.get("soul_proposals", []) or []),
             memory_consolidations_proposed=e.get("memory_consolidations_proposed", 0),
             created_at=e["created_at"],
         )

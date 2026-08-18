@@ -1030,7 +1030,6 @@ type ProjectOverviewRow struct {
 
 type ProjectsOverview struct {
 	Projects           []ProjectOverviewRow `json:"projects"`
-	ActiveProject      string               `json:"active_project"`
 	UnackedAlertsTotal int                  `json:"unacked_alerts_total"`
 }
 
@@ -1162,49 +1161,6 @@ func (c *Client) GetProjectCockpit(ident string) (*ProjectCockpit, error) {
 	}
 	var out ProjectCockpit
 	return &out, json.NewDecoder(resp.Body).Decode(&out)
-}
-
-// SetActiveProject persists the server-side project focus (shared by
-// web/TUI/CLI/Hermes). An empty slug clears the focus.
-func (c *Client) SetActiveProject(slug string) error {
-	var payload struct {
-		Slug *string `json:"slug"`
-	}
-	if slug != "" {
-		payload.Slug = &slug
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest("PUT", c.Base+"/api/v1/projects/active", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, respBody)
-	}
-	return nil
-}
-
-// ---------- Dashboard Snapshot ----------
-// Batch fetch for efficiency (like ABP's DashboardSnapshot pattern)
-
-type DashboardSnapshot struct {
-	Health         *HealthStatus
-	Agents         []Agent
-	Conversations  []Conversation
-	CodingSessions []CodingSession
-	Shells         []Shell
-	Usage          *UsageSummary
-	Observations   []Observation
 }
 
 func (c *Client) FetchDashboardSnapshot() *DashboardSnapshot {

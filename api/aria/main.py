@@ -9,6 +9,7 @@ Related Spec Sections:
 - Section 7: Project Structure
 """
 
+import asyncio
 import hmac
 from contextlib import asynccontextmanager
 
@@ -220,6 +221,30 @@ async def lifespan(app: FastAPI):
                 tool_router.register_tool(tool)
             except ValueError:
                 pass
+
+    # Warm the off-box probe cache in the background.
+    #
+    # An asleep remote costs a 3s health timeout plus a 4s reachability timeout,
+    # and the FIRST caller after a restart pays it on their own request:
+    # GET /infrastructure/model-servers measured 8.2s cold against 0.6s warm, on
+    # the endpoint the Operate screen loads first. The read path already serves
+    # a remembered state and refreshes behind it — this just makes sure there IS
+    # one before a human asks. Fire-and-forget: nothing waits on it, and a
+    # failure only means the first request pays what it used to.
+    async def _warm_remote_probes() -> None:
+        try:
+            from aria.infrastructure.model_servers import (
+                REGISTRY,
+                _remote_state_refresh,
+            )
+
+            for spec in REGISTRY:
+                if not spec.onbox and spec.remotely_operable:
+                    _remote_state_refresh(spec)
+        except Exception as exc:  # never let a warm-up break startup
+            startup_logger.debug("remote probe warm-up skipped: %s", exc)
+
+    asyncio.create_task(_warm_remote_probes(), name="infra.warm_remote_probes")
 
     watchdog = await resolve_coding_watchdog(db, coding_manager)
     await watchdog.start()
@@ -540,7 +565,6 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — graceful drain of in-flight work
-    import asyncio
     import logging
 
     shutdown_logger = logging.getLogger("aria.shutdown")

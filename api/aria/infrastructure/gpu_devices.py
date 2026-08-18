@@ -40,6 +40,23 @@ The one coupling: a dGPU model that does NOT fit its VRAM spills into GTT,
 which is system RAM — i.e. it starts eating the Halo's pool. `spilling` on the
 R9700 pool reports exactly that, and it is why every dGPU launch here passes
 `-fit off`.
+
+...BUT `halo-gtt` AND `host-ram` ARE NOT SEPARATE FROM EACH OTHER
+----------------------------------------------------------------
+Only TWO physical pools exist on this box, not three. The Strix Halo iGPU has
+no memory of its own: its GTT allocation is carved out of system RAM, so
+`halo-gtt` and `host-ram` are two measurements of the same DIMMs, and
+`host-ram`'s used figure already CONTAINS `halo-gtt`'s (measured 2026-08-17:
+MemTotal 124.45, MemAvailable 6.09 -> host used 118.4, of which the Halo held
+102.11 through GTT). Anything rendering one bar per pool therefore claims
+~248 GiB of capacity on a 124 GiB machine and double-counts ~102 GiB of it —
+which is exactly what the web UI did until Ben pointed it out.
+
+`pool_snapshot()` now carries `backing` ("system" | "device") and `overlaps` so
+a consumer can see the relationship, and `system_memory_snapshot()` returns the
+one honest composite (total / igpu / other / available). The per-pool numbers
+themselves are unchanged, because the start-time gate and selfcheck project
+against them and their semantics are load-bearing.
 """
 
 from __future__ import annotations
@@ -320,13 +337,72 @@ def process_uses_gpu(pid: int) -> bool:
     return any(v > 0 for v in process_gpu_bytes(pid).values())
 
 
+# Which physical memory each pool actually consumes. This is the fact that a
+# flat list of pools cannot express and that a UI drawing one bar per pool gets
+# WRONG: `halo-gtt` and `host-ram` are the SAME DIMMs. The iGPU has no memory of
+# its own — its GTT allocation comes out of system RAM — so `host-ram`'s
+# used figure already CONTAINS `halo-gtt`'s. Rendered as two independent bars
+# they claim ~248 GiB on a 124 GiB machine and double-count ~102 GiB of it.
+POOL_BACKING = {
+    POOL_HALO: "system",
+    POOL_HOST: "system",
+    POOL_R9700: "device",
+}
+
+
+def system_memory_snapshot() -> Optional[dict]:
+    """The one honest view of system RAM, broken down by who is holding it.
+
+    `halo-gtt` and `host-ram` are two measurements of one pool, so the display
+    surface needs a composite rather than two bars:
+
+        total      MemTotal
+        igpu       what the Strix Halo has pinned through GTT
+        other      everything else in use (MemTotal - MemAvailable - igpu)
+        available  MemAvailable
+
+    `other` is what the start-time gate's MemAvailable floor actually protects,
+    and it is why a dGPU model can break an iGPU model's preflight despite
+    sharing no VRAM: vllm-radiance holds ~8-10 GiB of host RAM permanently.
+    """
+    host = _host_pool()
+    if host is None:
+        return None
+    halo = read_pool(POOL_HALO)
+    igpu = halo.used_gib if halo else 0.0
+    total = host.total_gib
+    available = max(0.0, total - host.used_gib)
+    # Clamped: GTT accounting and MemAvailable are sampled from different
+    # places and can disagree by a few hundred MiB.
+    other = max(0.0, host.used_gib - igpu)
+    return {
+        "total_gib": round(total, 1),
+        "igpu_gib": round(igpu, 1),
+        "other_gib": round(other, 1),
+        "available_gib": round(available, 1),
+        "igpu_source": halo.source if halo else None,
+        "source": host.source,
+        "note": (
+            "The Strix Halo iGPU has no memory of its own: its GTT allocation "
+            "is system RAM. halo-gtt and host-ram measure the same DIMMs."
+        ),
+    }
+
+
 def pool_snapshot() -> list[dict]:
-    """Every pool, for the API/UI device panel."""
+    """Every pool, for the API/UI device panel.
+
+    `backing` and `overlaps` say which pools share physical memory — without
+    them a consumer cannot tell that two of these three bars are the same RAM.
+    The numbers themselves are unchanged: the start-time gate and selfcheck read
+    them, and their semantics are load-bearing.
+    """
     out = []
     for pool in (POOL_HALO, POOL_R9700, POOL_HOST):
         live = read_pool(pool)
         if live is None:
             continue
+        backing = POOL_BACKING.get(live.pool, "unknown")
         out.append({
             "pool": live.pool,
             "label": live.label,
@@ -335,6 +411,12 @@ def pool_snapshot() -> list[dict]:
             "free_gib": round(live.free_gib, 1),
             "spilling": live.spilling,
             "source": live.source,
+            "backing": backing,
+            # Pools drawing on the same physical memory as this one.
+            "overlaps": [
+                other for other, kind in POOL_BACKING.items()
+                if kind == backing and other != live.pool
+            ],
         })
     return out
 

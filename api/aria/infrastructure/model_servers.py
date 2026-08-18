@@ -1682,8 +1682,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="Ridge-Qwen3.8-27B",
         description="Qwen3.8-27B on Ridge's RTX 3090 (NInfer 0.6.0), reached through "
-        "corsair's ridge-llama-proxy (Wake-on-LAN, ~90s cold first byte). Off-box: "
-        "ARIA has no start/stop control, only a descriptive binding.",
+        "corsair's ridge-llama-proxy (Wake-on-LAN, ~90s cold first byte). Off-box but "
+        "fully operable by ARIA since 2026-08-15: wake, start, stop, sleep. Serves ONE "
+        "request at a time. Wire id is `qwen3.8-27b` at 114688 ctx — NInfer VALIDATES "
+        "the request model against its --model-id, so callers still sending the "
+        "pre-2026-08-15 `qwen3.6-35b-a3b` get a 400, not a fallback.",
         runtime_repo="NInfer 0.6.0-rtx3090 (Don-Chad/ninfer-3090); D:\\ninfer\\bin-0.6.0",
         runtime_ref="remote",
         backend_device="remote CUDA",
@@ -3188,10 +3191,52 @@ async def _wake_remote(spec: "ModelServerSpec") -> dict:
 
 # status() is a dashboard read and is called often. Probing a sleeping box costs
 # a full ssh connect timeout, so an uncached remote probe would make every
-# status() call hang for seconds per asleep host. This TTL cache bounds that:
-# reads are cheap and slightly stale; operations (start/stop) always probe fresh.
+# status() call hang for seconds per asleep host.
+#
+# A plain TTL cache is not enough, and the web UI measured why: with two asleep
+# remotes and a 20s TTL, GET /infrastructure/model-servers took 8.8s once every
+# 20 seconds (3s health timeout + 4s reachability timeout, per remote, on the
+# request's own critical path) while the page polled it every 10s — so a slow
+# tick overlapped the next one and an older payload could land after a newer.
+#
+# So reads are now STALE-WHILE-REVALIDATE: an expired entry is returned
+# immediately and refreshed in the background, and only a completely unknown
+# remote blocks. `fresh=True` (operations) still probes synchronously — a
+# start/stop decision must never be made against a remembered state.
 _REMOTE_STATE_TTL = 20.0
+# How long a remembered state may still be served while a refresh runs. Past
+# this the read blocks again, so a genuinely stuck probe cannot pin the UI to a
+# state that is minutes old.
+_REMOTE_STATE_MAX_AGE = 300.0
 _remote_state_cache: dict[str, tuple[float, str]] = {}
+# Single-flight: without it, N concurrent status() rows for the same remote each
+# start their own probe and every one of them pays the full timeout.
+_remote_state_inflight: dict[str, asyncio.Task] = {}
+
+
+async def _probe_remote_state(spec: "ModelServerSpec") -> str:
+    """The actual probe. Always writes the cache."""
+    if await _remote_health_ok(spec, timeout=3.0):
+        state = "running"
+    elif await _remote_box_reachable(spec, timeout=4.0):
+        state = "stopped"
+    else:
+        state = "asleep"
+    _remote_state_cache[spec.slug] = (time.monotonic(), state)
+    return state
+
+
+def _remote_state_refresh(spec: "ModelServerSpec") -> asyncio.Task:
+    """Start (or join) the one in-flight probe for this spec."""
+    task = _remote_state_inflight.get(spec.slug)
+    if task is not None and not task.done():
+        return task
+    task = asyncio.create_task(_probe_remote_state(spec))
+    _remote_state_inflight[spec.slug] = task
+    # Don't let a failed background probe surface as "task exception was never
+    # retrieved"; the next read simply blocks and tries again.
+    task.add_done_callback(lambda t: t.exception() if t.done() and not t.cancelled() else None)
+    return task
 
 
 async def _remote_state(spec: "ModelServerSpec", fresh: bool = False) -> str:
@@ -3200,19 +3245,22 @@ async def _remote_state(spec: "ModelServerSpec", fresh: bool = False) -> str:
     'stopped' (box up, model not serving) is the state that motivated all of
     this — it is actionable and was previously indistinguishable from 'asleep'.
     """
-    now = time.monotonic()
-    if not fresh:
-        hit = _remote_state_cache.get(spec.slug)
-        if hit and now - hit[0] < _REMOTE_STATE_TTL:
+    if fresh:
+        return await _remote_state_refresh(spec)
+
+    hit = _remote_state_cache.get(spec.slug)
+    if hit is not None:
+        age = time.monotonic() - hit[0]
+        if age < _REMOTE_STATE_TTL:
             return hit[1]
-    if await _remote_health_ok(spec, timeout=3.0):
-        state = "running"
-    elif await _remote_box_reachable(spec, timeout=4.0):
-        state = "stopped"
-    else:
-        state = "asleep"
-    _remote_state_cache[spec.slug] = (now, state)
-    return state
+        if age < _REMOTE_STATE_MAX_AGE:
+            # Serve what we know, refresh behind the read.
+            _remote_state_refresh(spec)
+            return hit[1]
+
+    # Nothing usable remembered: this read has to wait, but it joins the
+    # in-flight probe rather than starting a second one.
+    return await _remote_state_refresh(spec)
 
 
 async def _await_remote_ready(spec: "ModelServerSpec") -> bool:
@@ -3423,6 +3471,15 @@ class ModelServerManager:
                     dynamic_specs.append(self._spec_from_doc(doc))
 
         all_specs = list(REGISTRY) + dynamic_specs
+
+        # Off-box probes are the only expensive part of this read (a sleeping
+        # host costs a 3s health timeout plus a 4s reachability timeout). The
+        # per-spec loop below is sequential, so without this the two remotes
+        # would serialise their timeouts on the very first call. Kick them off
+        # together and let the loop join whatever is already in flight.
+        for spec in all_specs:
+            if not spec.onbox and spec.remotely_operable:
+                _remote_state_refresh(spec)
         # Measure every running server once, concurrently — this is cheap
         # (sysfs + one systemctl/docker call each) and turns the whole view
         # from declared SWAGs into observed numbers.
@@ -3497,6 +3554,12 @@ class ModelServerManager:
                 "not_startable_reason": spec.not_startable_reason,
                 "consumers_note": spec.consumers_note,
                 "can_sleep": spec.sleep_command is not None,
+                # Whether ARIA can wake/start/stop this remote's model service.
+                # Without it a client cannot distinguish "off-box, nothing I can
+                # do" from "off-box, but I can wake it" — which is why the web
+                # UI greyed out Start for BOTH Ridge and RED and left no way to
+                # wake either.
+                "remotely_operable": spec.remotely_operable,
                 "bound_agents": bindings.get(spec.slug, []),
                 # What a consumer (e.g. Hermes's config.yaml) should dial.
                 "endpoints": (
