@@ -133,8 +133,39 @@ class Orchestrator:
             },
         )
 
+    async def _persist_user_message(self, conversation_id: str, user_message: str) -> None:
+        """Persist a user message to the conversation.
+
+        Split out of process_message so the OODA loop can persist the user
+        message exactly once and retry only the generation — a retry that
+        re-entered process_message re-pushed the message, leaving
+        user → assistant(rejected) → user(duplicate) → assistant in the
+        history the next turn's context inherits.
+        """
+        user_msg_doc = {
+            "id": str(uuid.uuid4()),
+            "role": "user",
+            "content": user_message,
+            "created_at": datetime.now(timezone.utc),
+            "memory_processed": False,
+        }
+        await self.db.conversations.update_one(
+            {"_id": ObjectId(conversation_id)},
+            {
+                "$push": {"messages": user_msg_doc},
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+                "$inc": {"stats.message_count": 1},
+            },
+        )
+
     async def process_message(
-        self, conversation_id: str, user_message: str, stream: bool = True, background_tasks: Optional[BackgroundTasks] = None
+        self,
+        conversation_id: str,
+        user_message: str,
+        stream: bool = True,
+        background_tasks: Optional[BackgroundTasks] = None,
+        persist_user_message: bool = True,
+        persist_assistant: bool = True,
     ) -> AsyncIterator[StreamChunk]:
         """
         Process a user message and stream the response.
@@ -144,6 +175,12 @@ class Orchestrator:
             conversation_id: ID of the conversation
             user_message: User’s message content
             stream: Whether to use streaming mode (can be overridden by agent config)
+            persist_user_message: Set False when the caller persists the user
+                message itself (the OODA loop persists it once, before the
+                retry loop, and retries only the generation).
+            persist_assistant: Set False to run the generation without storing
+                the reply (the OODA loop suppresses non-best attempts and
+                persists only the best one).
 
         Yields:
             StreamChunk objects for streaming response
@@ -172,22 +209,10 @@ class Orchestrator:
             yield StreamChunk(type="error", error="Conversation not found")
             return
 
-        # 2. Save user message to conversation
-        user_msg_doc = {
-            "id": str(uuid.uuid4()),
-            "role": "user",
-            "content": user_message,
-            "created_at": datetime.now(timezone.utc),
-            "memory_processed": False,
-        }
-        await self.db.conversations.update_one(
-            {"_id": ObjectId(conversation_id)},
-            {
-                "$push": {"messages": user_msg_doc},
-                "$set": {"updated_at": datetime.now(timezone.utc)},
-                "$inc": {"stats.message_count": 1},
-            },
-        )
+        # 2. Save user message to conversation (see persist_user_message —
+        # the OODA loop persists it once, before its retry loop)
+        if persist_user_message:
+            await self._persist_user_message(conversation_id, user_message)
 
         # 3. Try command handling (mode, research, memory, coding)
         command_result = await self.command_router.try_handle(conversation_id, user_message)
@@ -518,19 +543,23 @@ class Orchestrator:
                     for tc in tool_calls
                 ]
 
-            await self.db.conversations.update_one(
-                {"_id": ObjectId(conversation_id)},
-                {
-                    "$push": {"messages": assistant_msg_doc},
-                    "$set": {"updated_at": datetime.now(timezone.utc)},
-                    "$inc": {
-                        "stats.message_count": 1,
-                        "stats.total_tokens": usage.get("input_tokens", 0)
-                        + usage.get("output_tokens", 0),
-                        "stats.tool_calls": len(tool_calls),
+            # Save assistant response. The OODA loop suppresses this for
+            # rejected attempts (persist_assistant=False) and persists only
+            # the accepted reply itself — see process_message_with_ooda.
+            if persist_assistant:
+                await self.db.conversations.update_one(
+                    {"_id": ObjectId(conversation_id)},
+                    {
+                        "$push": {"messages": assistant_msg_doc},
+                        "$set": {"updated_at": datetime.now(timezone.utc)},
+                        "$inc": {
+                            "stats.message_count": 1,
+                            "stats.total_tokens": usage.get("input_tokens", 0)
+                            + usage.get("output_tokens", 0),
+                            "stats.tool_calls": len(tool_calls),
+                        },
                     },
-                },
-            )
+                )
 
             # Capture loop variables by value for the background task
             _cfg = llm_config
@@ -814,6 +843,22 @@ class Orchestrator:
 
         Buffers the first response, evaluates quality, retries if below threshold.
         Only the final accepted response is yielded to the client.
+
+        Persistence contract (the bug this exists to fix):
+        - The user message is persisted exactly ONCE, before the loop. The old
+          code re-entered process_message per attempt, which re-pushed the
+          user message every time — one retry left
+          user → assistant(rejected) → user(duplicate) → assistant in the
+          history the next turn's context inherits, and double-incremented
+          stats.message_count.
+        - Only the BEST attempt is persisted — whether or not it cleared the
+          threshold. Decision 2026-08-17: the non-best rejected attempts are
+          logged, not stored — a reply the client never saw must not enter
+          the next turn's context, render as an extra bubble in the UI, or
+          become a source for memory extraction. The best attempt is stored
+          even when sub-threshold because it IS what the client received —
+          the transcript must match what the user saw. An empty result
+          persists nothing.
         """
         threshold = ooda_config.get("threshold", 0.7)
         max_retries = ooda_config.get("max_retries", 2)
@@ -822,15 +867,26 @@ class Orchestrator:
 
         ooda = OODALoop(threshold=threshold, max_retries=max_retries)
 
+        # Persist the user message once, before the loop — see the docstring.
+        await self._persist_user_message(conversation_id, user_message)
+
         async def generate_response() -> str:
-            """Buffer a full response from the orchestrator."""
+            """Buffer a full response from the orchestrator.
+
+            Neither the user message nor the reply is persisted here: the
+            user message was persisted before the loop, and a reply that
+            fails the quality gate is logged, not stored.
+            """
             parts = []
             async for chunk in self.process_message(
-                conversation_id, user_message, stream=False, background_tasks=background_tasks
+                conversation_id, user_message, stream=False,
+                background_tasks=background_tasks,
+                persist_user_message=False, persist_assistant=False,
             ):
                 if chunk.type == "text":
                     parts.append(chunk.content)
                 elif chunk.type == "error":
+                    logger.warning("OODA attempt failed: %s", chunk.error)
                     return f"[Error: {chunk.error}]"
             return "".join(parts)
 
@@ -840,6 +896,13 @@ class Orchestrator:
             backend=backend,
             model=model,
         )
+
+        # Persist the best attempt (the non-best rejected attempts above were
+        # suppressed). It is stored even when sub-threshold — it is what the
+        # client received. An empty result persists nothing: an empty
+        # assistant message would poison the next turn's context.
+        if result.content.strip():
+            await self._persist_assistant_message(conversation_id, result.content)
 
         # Yield the accepted response
         yield StreamChunk(type="text", content=result.content)

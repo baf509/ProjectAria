@@ -3562,6 +3562,90 @@ def _endpoints_for(spec: "ModelServerSpec") -> dict:
     }
 
 
+def _server_row(
+    spec: "ModelServerSpec",
+    state: str,
+    geometry: "LaunchGeometry",
+    pools: dict,
+    gtt,
+    spilling: dict,
+    bindings: dict,
+    measured: dict,
+) -> dict:
+    """One server's full status row. Shared by the fleet-wide _status_uncached
+    and the single-spec one() so the two views cannot drift."""
+    entry = {
+        "slug": spec.slug,
+        "description": spec.description,
+        "state": state,
+        "port": spec.port,
+        "model_file": spec.model_file,
+        "runtime_repo": spec.runtime_repo,
+        "runtime_ref": spec.runtime_ref,
+        "backend_device": spec.backend_device,
+        # Computed from the launch file's -c where the spec allows it,
+        # else the declared SWAG. Either way it tracks the unit.
+        "resident_gib_estimate": effective_resident_gib(spec, geometry),
+        # MEASURED from the OS (kfd tree for GPU-resident servers, RSS
+        # for CPU-only), None when not running. The estimate above is a
+        # projection — prefer this whenever it is present.
+        "resident_gib_measured": measured.get(spec.slug),
+        # Read from the unit/compose, never declared here. `ctx_per_slot`
+        # is what one agent may actually send: llama.cpp divides the KV
+        # budget across slots, so a consumer that configures `served_ctx`
+        # will overflow by exactly the slot count.
+        "served_ctx": geometry.n_ctx,
+        "slots": geometry.slots,
+        "ctx_per_slot": geometry.ctx_per_slot,
+        "geometry_source": geometry.source,
+        # Whether this server's memory lands in the GTT pool at all.
+        # CPU-only servers must NOT be summed into a GPU total.
+        "gtt_resident": spec.gtt_resident,
+        # WHERE it runs and WHOSE memory it spends. Two servers in
+        # different pools can be resident at once — that is the point
+        # of the two-GPU topology, not an oversight.
+        "memory_pool": spec.memory_pool,
+        "also_uses": list(spec.also_uses),
+        "devices": list(spec.devices),
+        "deployment": spec.deployment,
+        "pool_used_gib": (
+            round(pools[spec.memory_pool][0], 1)
+            if pools.get(spec.memory_pool) else None
+        ),
+        "pool_total_gib": (
+            round(pools[spec.memory_pool][1], 1)
+            if pools.get(spec.memory_pool) else None
+        ),
+        "pool_spilling": spilling.get(spec.memory_pool, False),
+        # HOW it loads. `parameters` carries each knob's effective
+        # value plus where that value came from, so an override ARIA
+        # set is distinguishable from a drop-in Ben wrote by hand.
+        "parameters": resolve_parameters(spec),
+        "aria_overrides": read_aria_overrides(spec),
+        "launch_script": spec.launch_script,
+        "systemd_unit": unit_name(spec),
+        "exclusive_with": list(spec.exclusive_with),
+        "onbox": spec.onbox,
+        "startable": spec.startable,
+        "not_startable_reason": spec.not_startable_reason,
+        "consumers_note": spec.consumers_note,
+        "can_sleep": spec.sleep_command is not None,
+        # Whether ARIA can wake/start/stop this remote's model service.
+        # Without it a client cannot distinguish "off-box, nothing I can
+        # do" from "off-box, but I can wake it" — which is why the web
+        # UI greyed out Start for BOTH Ridge and RED and left no way to
+        # wake either.
+        "remotely_operable": spec.remotely_operable,
+        "bound_agents": bindings.get(spec.slug, []),
+        # What a consumer (e.g. Hermes's config.yaml) should dial.
+        "endpoints": _endpoints_for(spec),
+    }
+    if gtt is not None:
+        entry["gtt_used_gib"] = round(gtt[0], 1)
+        entry["gtt_total_gib"] = round(gtt[1], 1)
+    return entry
+
+
 class ModelServerManager:
     """Start/stop/bind the local model servers. The single control plane —
     see the module docstring for why manual docker commands are retired."""
@@ -3746,78 +3830,47 @@ class ModelServerManager:
         results = []
         for spec in all_specs:
             state, _ = await self._inspect(spec)
-            geometry = read_launch_geometry(spec)
-            entry = {
-                "slug": spec.slug,
-                "description": spec.description,
-                "state": state,
-                "port": spec.port,
-                "model_file": spec.model_file,
-                "runtime_repo": spec.runtime_repo,
-                "runtime_ref": spec.runtime_ref,
-                "backend_device": spec.backend_device,
-                # Computed from the launch file's -c where the spec allows it,
-                # else the declared SWAG. Either way it tracks the unit.
-                "resident_gib_estimate": effective_resident_gib(spec, geometry),
-                # MEASURED from the OS (kfd tree for GPU-resident servers, RSS
-                # for CPU-only), None when not running. The estimate above is a
-                # projection — prefer this whenever it is present.
-                "resident_gib_measured": measured.get(spec.slug),
-                # Read from the unit/compose, never declared here. `ctx_per_slot`
-                # is what one agent may actually send: llama.cpp divides the KV
-                # budget across slots, so a consumer that configures `served_ctx`
-                # will overflow by exactly the slot count.
-                "served_ctx": geometry.n_ctx,
-                "slots": geometry.slots,
-                "ctx_per_slot": geometry.ctx_per_slot,
-                "geometry_source": geometry.source,
-                # Whether this server's memory lands in the GTT pool at all.
-                # CPU-only servers must NOT be summed into a GPU total.
-                "gtt_resident": spec.gtt_resident,
-                # WHERE it runs and WHOSE memory it spends. Two servers in
-                # different pools can be resident at once — that is the point
-                # of the two-GPU topology, not an oversight.
-                "memory_pool": spec.memory_pool,
-                "also_uses": list(spec.also_uses),
-                "devices": list(spec.devices),
-                "deployment": spec.deployment,
-                "pool_used_gib": (
-                    round(pools[spec.memory_pool][0], 1)
-                    if pools.get(spec.memory_pool) else None
-                ),
-                "pool_total_gib": (
-                    round(pools[spec.memory_pool][1], 1)
-                    if pools.get(spec.memory_pool) else None
-                ),
-                "pool_spilling": spilling.get(spec.memory_pool, False),
-                # HOW it loads. `parameters` carries each knob's effective
-                # value plus where that value came from, so an override ARIA
-                # set is distinguishable from a drop-in Ben wrote by hand.
-                "parameters": resolve_parameters(spec),
-                "aria_overrides": read_aria_overrides(spec),
-                "launch_script": spec.launch_script,
-                "systemd_unit": unit_name(spec),
-                "exclusive_with": list(spec.exclusive_with),
-                "onbox": spec.onbox,
-                "startable": spec.startable,
-                "not_startable_reason": spec.not_startable_reason,
-                "consumers_note": spec.consumers_note,
-                "can_sleep": spec.sleep_command is not None,
-                # Whether ARIA can wake/start/stop this remote's model service.
-                # Without it a client cannot distinguish "off-box, nothing I can
-                # do" from "off-box, but I can wake it" — which is why the web
-                # UI greyed out Start for BOTH Ridge and RED and left no way to
-                # wake either.
-                "remotely_operable": spec.remotely_operable,
-                "bound_agents": bindings.get(spec.slug, []),
-                # What a consumer (e.g. Hermes's config.yaml) should dial.
-                "endpoints": _endpoints_for(spec),
-            }
-            if gtt is not None:
-                entry["gtt_used_gib"] = round(gtt[0], 1)
-                entry["gtt_total_gib"] = round(gtt[1], 1)
-            results.append(entry)
+            results.append(
+                _server_row(
+                    spec, state, read_launch_geometry(spec),
+                    pools, gtt, spilling, bindings, measured,
+                )
+            )
         return results
+
+    async def one(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
+        """One server's full status row — probing ONLY that spec.
+
+        The old route called the full status() (every spec probed, ~70-80
+        subprocesses) to answer a question about one. This probes only the
+        requested spec: one _inspect, the pool reads (three sysfs reads —
+        cheap), and the same row shape as status() (shared builder).
+        """
+        spec = await self.resolve_spec(slug, db)
+        state, _ = await self._inspect(spec)
+        pools = {
+            name: _read_gtt_gib(name)
+            for name in (POOL_HALO, POOL_R9700, POOL_HOST)
+        }
+        gtt = pools.get(POOL_HALO)
+        spilling = {
+            name: bool(live and live.spilling)
+            for name, live in ((n, read_pool(n)) for n in (POOL_HALO, POOL_R9700))
+        }
+        bindings: dict[str, list[str]] = {}
+        if db is not None:
+            async for doc in db.agents.find({"model_server": {"$exists": True, "$ne": None}}):
+                if doc["model_server"] == spec.slug:
+                    bindings.setdefault(spec.slug, []).append(doc.get("slug") or str(doc["_id"]))
+        measured: dict[str, Optional[float]] = {}
+        val = await measure_resident_gib(spec)
+        measured[spec.slug] = val if isinstance(val, float) else None
+        if isinstance(val, float):
+            self._last_measured[spec.slug] = val
+        return _server_row(
+            spec, state, read_launch_geometry(spec),
+            pools, gtt, spilling, bindings, measured,
+        )
 
     async def running_summary(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
         """Cheap answer to "which servers are running" — for routing.

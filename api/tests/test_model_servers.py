@@ -4,6 +4,7 @@ uses a tiny in-memory fake Mongo collection."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from typing import Any, Optional
 from unittest.mock import AsyncMock, patch
@@ -1451,3 +1452,49 @@ async def test_running_summary_routes_like_full_status(manager, tmp_path, _seede
     # naming a stopped server by slug is a known-but-stopped error, not auto
     chosen2, reason2, unavailable2 = select(rows, requested=_EXCL_B, pin=None)
     assert chosen2 is None and unavailable2
+
+
+# ─────────────────────────────────────────────────────── one() (D8) ───────
+# A single-entity read must not pay the full-fleet cost: the old
+# GET /model-servers/{slug} ran the whole status() sweep (~70-80
+# subprocesses) to return one row. one() probes only the requested spec
+# and shares the row builder with status() so the two views cannot drift.
+
+@pytest.mark.asyncio
+async def test_one_probes_only_the_requested_spec(manager, unwired_registry):
+    inspected: list[str] = []
+
+    async def fake_inspect(_self, spec):
+        inspected.append(spec.slug)
+        return "stopped", False
+
+    def _patches():
+        return (
+            patch.object(ms, "_run", FakeDocker()),
+            patch.object(ms, "_read_gtt_gib", return_value=None),
+            patch.object(ms, "read_pool", return_value=None),
+            patch.object(ms, "measure_resident_gib", AsyncMock(return_value=None)),
+            patch.object(ModelServerManager, "_inspect", fake_inspect),
+        )
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches():
+            stack.enter_context(p)
+        row = await manager.one("synthetic-unwired")
+    assert inspected == ["synthetic-unwired"], \
+        f"one() inspected {inspected}, expected only the requested spec"
+    assert row["slug"] == "synthetic-unwired"
+    assert row["state"] == "stopped"
+
+    with contextlib.ExitStack() as stack:
+        for p in _patches():
+            stack.enter_context(p)
+        full = await manager.status()
+    full_row = next(r for r in full if r["slug"] == "synthetic-unwired")
+    assert row.keys() == full_row.keys(), "one() and status() rows drifted"
+
+
+@pytest.mark.asyncio
+async def test_one_unknown_slug_raises_not_found(manager):
+    with pytest.raises(ModelServerNotFound):
+        await manager.one("does-not-exist")

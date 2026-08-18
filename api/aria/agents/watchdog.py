@@ -469,18 +469,51 @@ class CodingWatchdog:
             self._session_state.pop(stale_id, None)
 
         if self.review_service:
+            # Newest first: the old code had no sort, so `to_list(length=100)`
+            # returned the OLDEST 100 terminal sessions — once the collection
+            # passed 100, new sessions were never reviewed at all.
             completed_sessions = await self.db.coding_sessions.find(
-                {"status": {"$in": ["completed", "failed"]}}
-            ).to_list(length=100)
+                {"status": {"$in": ["completed", "failed"]}},
+                {"_id": 1, "review_failures": 1},
+            ).sort("created_at", -1).to_list(length=100)
+
+            # One query for every existing report — the old code did one
+            # find_one per session (up to 100 round-trips every 5 s).
+            ids = [str(s["_id"]) for s in completed_sessions]
+            reported: set[str] = set()
+            async for r in self.db.session_reports.find(
+                {"session_id": {"$in": ids}}, {"session_id": 1}
+            ):
+                reported.add(str(r["session_id"]))
+
+            reviewed = 0
             for session in completed_sessions:
                 session_id = str(session["_id"])
-                existing_report = await self.review_service.get_report(session_id)
-                if existing_report:
+                if session_id in reported:
+                    continue
+                # Three failures and we stop trying: a session whose review
+                # can never succeed (deleted workspace, broken repo) must not
+                # be re-probed with subprocesses every 5 s forever.
+                if int(session.get("review_failures") or 0) >= 3:
                     continue
                 try:
                     await self.review_service.review_session(session_id)
+                    await self.db.coding_sessions.update_one(
+                        {"_id": session["_id"]},
+                        {"$set": {"review_failures": 0}},
+                    )
                 except Exception as e:
+                    await self.db.coding_sessions.update_one(
+                        {"_id": session["_id"]},
+                        {"$inc": {"review_failures": 1}},
+                    )
                     logger.debug("Auto-review failed for %s: %s", session_id, e)
+                reviewed += 1
+                if reviewed >= 2:
+                    # At most two fresh reviews per tick: each runs
+                    # git/pytest/ruff/npm/eslint subprocesses, and a backlog
+                    # of 100 unreviewed sessions must not starve the loop.
+                    break
 
     async def _record_quota_cooldown(self, session_id: str, output: str) -> None:
         """Mark the Claude subscription as cooling down so the complexity router

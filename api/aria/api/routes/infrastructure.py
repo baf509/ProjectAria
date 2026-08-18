@@ -528,14 +528,14 @@ async def get_model_server(
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+    # One-spec probe, not the full fleet: a single-entity read must not pay
+    # the full status() cost (~70-80 subprocesses) to answer about one row.
     try:
-        await manager.resolve_spec(slug, db)
-        servers = await manager.status(db)
+        return await manager.one(slug, db)
     except ModelServerNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ModelServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
-    return next(s for s in servers if s["slug"] == slug)
 
 
 @router.post("/model-servers/{slug}/start")

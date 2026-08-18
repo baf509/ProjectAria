@@ -471,6 +471,28 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _row_for(spec: ServiceSpec, state: str) -> dict:
+    """One service's status row. Shared by the full status() sweep and the
+    single-spec get() so the two views cannot drift."""
+    return {
+        "slug": spec.slug,
+        "description": spec.description,
+        "kind": spec.kind,
+        "state": state,
+        "expected_state": spec.expected_state,
+        "healthy": is_healthy(state, spec.expected_state),
+        "port": spec.port,
+        "manageable": spec.manageable,
+        "needs_review": spec.needs_review,
+        "notes": spec.notes,
+        "depends_on": list(spec.depends_on),
+        "unit": spec.user_unit or spec.system_unit,
+        "container": spec.container_name,
+        "compose_file": spec.compose_file,
+        "service_name": spec.service_name,
+    }
+
+
 class ServiceManager:
     """Status/start/stop for the non-LLM services.
 
@@ -486,27 +508,7 @@ class ServiceManager:
     async def status(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
         """Every registered service with its live state and health verdict."""
         states = await asyncio.gather(*(_state_of(spec) for spec in REGISTRY))
-        results = []
-        for spec, state in zip(REGISTRY, states):
-            results.append(
-                {
-                    "slug": spec.slug,
-                    "description": spec.description,
-                    "kind": spec.kind,
-                    "state": state,
-                    "expected_state": spec.expected_state,
-                    "healthy": is_healthy(state, spec.expected_state),
-                    "port": spec.port,
-                    "manageable": spec.manageable,
-                    "needs_review": spec.needs_review,
-                    "notes": spec.notes,
-                    "depends_on": list(spec.depends_on),
-                    "unit": spec.user_unit or spec.system_unit,
-                    "container": spec.container_name,
-                    "compose_file": spec.compose_file,
-                    "service_name": spec.service_name,
-                }
-            )
+        results = [_row_for(spec, state) for spec, state in zip(REGISTRY, states)]
         if db is not None:
             await self._record(db, results)
         return results
@@ -532,11 +534,18 @@ class ServiceManager:
                 logger.debug("service state persist failed for %s: %s", entry["slug"], exc)
 
     async def get(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
-        get_spec(slug)  # raises ServiceNotFound
-        for entry in await self.status(db):
-            if entry["slug"] == slug:
-                return entry
-        raise ServiceNotFound(f"Unknown service: {slug}")
+        """One service's live state — probing ONLY that spec.
+
+        The old implementation ran the full status() sweep (every service
+        probed, every row upserted) to answer a question about one; a
+        single-entity read must not pay the full-fleet cost.
+        """
+        spec = get_spec(slug)  # raises ServiceNotFound
+        state = await _state_of(spec)
+        entry = _row_for(spec, state)
+        if db is not None:
+            await self._record(db, [entry])
+        return entry
 
     async def start(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
         return await self._transition(slug, "start", db)

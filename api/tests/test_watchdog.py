@@ -126,3 +126,133 @@ class TestSessionStatePruning:
         await wd._check_sessions()
         await wd._check_sessions()
         assert "s1" in wd._session_state
+
+
+# ---------------------------------------------------------------------------
+# Auto-review window: newest-first, batched report check, capped retries
+# ---------------------------------------------------------------------------
+
+class _AsyncCursor:
+    """A motor-shaped cursor: sortable, to_list-able, and async-iterable.
+    Records sort() calls so tests can assert on them."""
+
+    def __init__(self, docs: list[dict]):
+        self._docs = docs
+        self.sort_calls: list[tuple] = []
+
+    def sort(self, *a, **k):
+        self.sort_calls.append((a, k))
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    async def to_list(self, length=None):
+        return self._docs
+
+    def __aiter__(self):
+        self._it = iter(self._docs)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._it)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+def _make_review_watchdog(terminal_sessions, reports):
+    """Watchdog with a review service and scripted terminal-session/report
+    collections."""
+    db = make_mock_db()
+    db.coding_sessions.find = MagicMock(
+        return_value=_AsyncCursor(terminal_sessions)
+    )
+    db.session_reports.find = MagicMock(
+        return_value=_AsyncCursor(reports)
+    )
+    session_manager = MagicMock()
+    session_manager.list_sessions = AsyncMock(return_value=[])
+    notification_service = MagicMock()
+    notification_service.notify = AsyncMock()
+    review_service = MagicMock()
+    review_service.review_session = AsyncMock()
+    wd = CodingWatchdog(
+        db=db,
+        session_manager=session_manager,
+        notification_service=notification_service,
+        review_service=review_service,
+    )
+    return wd
+
+
+def _terminal(i: int, **extra) -> dict:
+    doc = {"_id": f"sess-{i:03d}", "status": "completed"}
+    doc.update(extra)
+    return doc
+
+
+@pytest.mark.asyncio
+async def test_auto_review_picks_newest_not_oldest():
+    """With >100 terminal sessions the window must be the 100 NEWEST —
+    the old unsorted query pinned it to the oldest cohort, so new sessions
+    were never reviewed at all."""
+    # 150 terminal sessions; the find applies to_list(length=100) upstream,
+    # so the cursor already carries the newest 100 (the sort is the point
+    # under test — assert it is requested newest-first).
+    newest = [_terminal(i) for i in range(50, 150)]
+    wd = _make_review_watchdog(newest, reports=[])
+    await wd._check_sessions()
+
+    find = wd.db.coding_sessions.find
+    assert find.called
+    cursor = find.return_value
+    assert cursor.sort_calls == [(("created_at", -1), {})], \
+        "the terminal-session query must sort newest-first"
+
+
+@pytest.mark.asyncio
+async def test_auto_review_reports_checked_in_one_query():
+    """The report check is one find over all ids, not one find_one per
+    session (the old code did up to 100 round-trips every 5 s)."""
+    sessions = [_terminal(i) for i in range(10)]
+    reports = [{"session_id": "sess-000"}, {"session_id": "sess-001"}]
+    wd = _make_review_watchdog(sessions, reports)
+    await wd._check_sessions()
+
+    find = wd.db.session_reports.find
+    assert find.call_count == 1
+    query = find.call_args.args[0]
+    assert query["session_id"]["$in"] == [f"sess-{i:03d}" for i in range(10)]
+    # Only the unreported sessions are reviewed — and only the first two:
+    # the per-tick cap bounds the subprocess burst (see the next test).
+    reviewed = [c.args[0] for c in wd.review_service.review_session.call_args_list]
+    assert reviewed == ["sess-002", "sess-003"]
+
+
+@pytest.mark.asyncio
+async def test_auto_review_caps_repeated_failures():
+    """A session whose review keeps failing is skipped after three attempts
+    instead of being re-probed with subprocesses every 5 s forever."""
+    sessions = [_terminal(0, review_failures=3), _terminal(1, review_failures=0)]
+    wd = _make_review_watchdog(sessions, reports=[])
+    wd.review_service.review_session = AsyncMock(side_effect=RuntimeError("boom"))
+    await wd._check_sessions()
+
+    reviewed = [c.args[0] for c in wd.review_service.review_session.call_args_list]
+    assert reviewed == ["sess-001"]  # the 3-strike session is skipped
+    # The failure is counted; a success would reset it.
+    updates = [c for c in wd.db.coding_sessions.update_one.call_args_list]
+    inc = [c for c in updates if "$inc" in c.args[1]]
+    assert len(inc) == 1
+    assert inc[0].args[1]["$inc"] == {"review_failures": 1}
+
+
+@pytest.mark.asyncio
+async def test_auto_review_bounded_per_tick():
+    """At most two fresh reviews per tick — each runs git/pytest/ruff/npm/
+    eslint subprocesses, and a backlog must not starve the loop."""
+    sessions = [_terminal(i) for i in range(10)]
+    wd = _make_review_watchdog(sessions, reports=[])
+    await wd._check_sessions()
+    assert wd.review_service.review_session.call_count == 2

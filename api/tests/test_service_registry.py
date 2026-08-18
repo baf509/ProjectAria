@@ -173,3 +173,60 @@ def test_aria_tmux_is_not_manageable():
     aria-api's cgroup, and the next aria-api restart then kills every watched
     claude-* session. Documented in CLAUDE.md as a critical gotcha."""
     assert get_spec("aria-tmux").manageable is False
+
+
+# ---------------------------------------------------------------------------
+# Single-entity reads must not pay the full-fleet cost
+# ---------------------------------------------------------------------------
+
+def _counting_state_of(states: dict):
+    """Patch _state_of with a counter; `states` maps slug -> state."""
+    from unittest.mock import patch
+
+    calls: list[str] = []
+
+    async def fake(spec):
+        calls.append(spec.slug)
+        return states.get(spec.slug, "stopped")
+
+    return patch("aria.infrastructure.services._state_of", fake), calls
+
+
+@pytest.mark.asyncio
+async def test_get_probes_only_the_requested_service():
+    """get() used to run the full status() sweep — every service probed,
+    every row upserted — to answer a question about one."""
+    target = REGISTRY[0].slug
+    states = {spec.slug: "running" for spec in REGISTRY}
+    p, calls = _counting_state_of(states)
+    with p:
+        manager = ServiceManager()
+        entry = await manager.get(target)
+        assert calls == [target], f"get() probed {calls}, expected only {target}"
+        # Same row shape as the full sweep (which probes everything).
+        calls.clear()
+        full = await manager.status()
+        assert sorted(calls) == sorted(states)
+    assert entry["slug"] == target
+    assert entry["state"] == "running"
+    full_row = next(r for r in full if r["slug"] == target)
+    assert entry.keys() == full_row.keys()
+
+
+@pytest.mark.asyncio
+async def test_get_persists_only_its_own_row():
+    """A single-entity read upserts only its own service_state row — the
+    old code upserted the whole roster."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    target = REGISTRY[0].slug
+    p, calls = _counting_state_of({target: "running"})
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=MagicMock(update_one=AsyncMock()))
+    with p:
+        manager = ServiceManager()
+        await manager.get(target, db)
+    coll = db.__getitem__.return_value
+    assert coll.update_one.call_count == 1
+    query = coll.update_one.call_args.args[0]
+    assert query["_id"] == target
