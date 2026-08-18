@@ -308,7 +308,26 @@ class Settings(BaseSettings):
     stream_chunk_timeout_seconds: int = 60
 
     # Memory
+    # Retention for the `usage` collection, enforced by a TTL index on
+    # `timestamp`. Every LLM request inserts a row and nothing expired
+    # them. Every consumer windows to <= 30 days (weekly cost report,
+    # steward budget), so a year is generous. 0 disables the TTL.
+    # NOTE: lowering this DELETES rows older than the new value on the
+    # next TTL sweep -- there is no undo.
+    # Max messages kept inline on a conversation doc. Overflow moves to
+    # `conversation_archives` (never dropped) -- every $push rewrites the
+    # whole document, so an unbounded array makes each turn dearer than
+    # the last. The context builder only reads the tail, so nothing above
+    # this is on the LLM path. 0 disables archiving.
+    conversation_message_cap: int = 200
+    usage_retention_days: int = 365
     memory_search_cache_ttl_seconds: int = 10
+    # Recency window for the mongod-native fallback scan (search off).
+    # Bounds the worst case -- a query matching nothing walks the whole
+    # collection otherwise (measured 103 ms over 23,102 memories,
+    # 2026-08-18) and that cost grows with the collection. 0 disables
+    # the bound and restores the full-history scan.
+    memory_fallback_recency_days: int = 180
     memory_dedup_similarity_threshold: float = 0.95
 
     # Embeddings

@@ -163,7 +163,11 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
         name="memory_embedding_pending",
         partialFilterExpression={"embedding_pending": True},
     )
-    await _safe_create_index(db.usage, "timestamp", name="usage_timestamp")
+    await _ensure_usage_ttl(db)
+    await _safe_create_index(
+        db.conversation_archives, "conversation_id",
+        name="conversation_archive_conversation_id",
+    )
     await _safe_create_index(db.usage, "model", name="usage_model")
     await _safe_create_index(db.usage, "source", name="usage_source")
     await _safe_create_index(db.usage, "agent_slug", name="usage_agent_slug")
@@ -259,6 +263,44 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
         unique=True,
     )
     logger.info("Standard MongoDB indexes ensured")
+
+
+async def _ensure_usage_ttl(db: AsyncIOMotorDatabase) -> None:
+    """Keep `usage_timestamp` as the collection's TTL index.
+
+    The usage collection grows one row per LLM request and nothing expired
+    them. A TTL index also serves ordinary range queries, so this is the same
+    index the cost routes already use -- not a second one.
+
+    It has to be a collMod rather than a create: an index already exists on
+    `timestamp`, and creating a second one with different options fails with
+    IndexOptionsConflict (85), which _safe_create_index swallows -- so a plain
+    create_index would silently never apply the TTL.
+    """
+    days = int(getattr(settings, "usage_retention_days", 0) or 0)
+    await _safe_create_index(db.usage, "timestamp", name="usage_timestamp")
+    if days <= 0:
+        return
+    expire_seconds = days * 86400
+    try:
+        existing = await db.usage.list_indexes().to_list(length=100)
+    except Exception as exc:  # pragma: no cover - inspection is best-effort
+        logger.warning("Could not inspect usage indexes for TTL: %s", exc)
+        return
+    for idx in existing:
+        if idx.get("name") != "usage_timestamp":
+            continue
+        if idx.get("expireAfterSeconds") == expire_seconds:
+            return  # already correct
+        try:
+            await db.command({
+                "collMod": "usage",
+                "index": {"name": "usage_timestamp", "expireAfterSeconds": expire_seconds},
+            })
+            logger.info("usage retention set to %d days (TTL on usage_timestamp)", days)
+        except Exception as exc:
+            logger.warning("Could not set usage TTL (%d days): %s", days, exc)
+        return
 
 
 async def _safe_create_index(collection, keys, **kwargs) -> None:

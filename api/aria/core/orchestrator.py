@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import BackgroundTasks
 
+from aria.db.conversation_archive import archive_overflow
 from aria.agents.session import CodingSessionManager
 from aria.config import settings
 from aria.core.commands import CommandRouter
@@ -157,6 +158,15 @@ class Orchestrator:
                 "$inc": {"stats.message_count": 1},
             },
         )
+        # Once per turn is enough to keep the inline array bounded: the cap is
+        # a ceiling on document size, not an exact length, and archiving here
+        # costs one projected read while under it.
+        try:
+            await archive_overflow(
+                self.db, conversation_id, int(settings.conversation_message_cap or 0)
+            )
+        except Exception as exc:  # bookkeeping must never fail a turn
+            logger.warning("conversation archive failed for %s: %s", conversation_id, exc)
 
     async def process_message(
         self,

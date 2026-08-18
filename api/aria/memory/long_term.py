@@ -15,7 +15,7 @@ import logging
 import re as _re
 import struct
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from bson import Binary, ObjectId
 from bson.binary import BinaryVectorDtype, VECTOR_SUBTYPE
@@ -465,6 +465,20 @@ class LongTermMemory:
         ][:8]
 
         mongo_query = dict(filter)
+        # Bound the scan by recency. Without it a query that matches nothing
+        # walks every memory in the collection, and that cost grows forever
+        # while the switch stays off. Older memories stay reachable through
+        # explicit search and the ontology; the ranking below already breaks
+        # ties by recency, so this only trims what it was deprioritising.
+        recency_days = int(getattr(settings, "memory_fallback_recency_days", 0) or 0)
+        if recency_days > 0 and "created_at" not in mongo_query:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=recency_days)
+            mongo_query["created_at"] = {"$gte": cutoff}
+            logger.debug(
+                "Fallback memory scan bounded to the last %d days -- older "
+                "memories are not reachable this way while search is off.",
+                recency_days,
+            )
         if tokens:
             mongo_query["$or"] = [
                 {"content": {"$regex": _re.escape(t), "$options": "i"}} for t in tokens

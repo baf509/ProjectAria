@@ -12,6 +12,7 @@ Related Spec Sections:
 import json
 import re
 from datetime import datetime, timezone
+from aria.db.conversation_archive import messages_page
 from aria.api.deps import valid_object_id
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -154,14 +155,19 @@ async def get_conversation(
     # Paginate backward from the most recent message: skip `msg_skip` from the
     # end, then take a window of `msg_limit`. A negative start makes msg_skip=0
     # return the last `msg_limit` and successive pages tile without overlap.
-    projection = {"messages": {"$slice": [-(msg_skip + msg_limit), msg_limit]}}
-
-    conversation = await db.conversations.find_one(
-        {"_id": valid_object_id(conversation_id)},
-        projection,
-    )
+    #
+    # This reads THROUGH the archive: messages beyond the inline cap live in
+    # `conversation_archives`, and paging back far enough must still find them
+    # (see aria/db/conversation_archive.py). The common case -- a window
+    # inside the inline tail -- never touches the archive.
+    oid = valid_object_id(conversation_id)
+    conversation = await db.conversations.find_one({"_id": oid}, {"messages": 0})
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conversation["messages"] = await messages_page(
+        db, oid, msg_limit=msg_limit, msg_skip=msg_skip
+    ) or []
 
     return ConversationResponse(**serialize_conversation(conversation))
 
