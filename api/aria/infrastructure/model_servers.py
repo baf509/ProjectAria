@@ -980,7 +980,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                             "tokens = 1.06x concurrency at the full length. The retired "
                             "GGUF path's 327680 exceeds the model's position limit. "
                             "Hermes derives compaction as 0.5 x declared context, so "
-                            "this lands it at 135,168. ⚠️ 0.5 is NOT the effective value: models under 512K are floored at 0.75 by _effective_threshold_percent(). Keep declared ctx UNDER the server's max_model_len — 180224 vs 196608 reserves output headroom.",
+                            "Hermes declares 245760 against it (2026-08-18), trigger 184,320. ⚠️ 0.5 is NOT the effective value: models under 512K are floored at 0.75 by _effective_threshold_percent(). Keep declared ctx UNDER the server's max_model_len — 245760 vs 262144 reserves 16,384 tokens of output headroom, exactly as 180224 vs 196608 did before.",
             ),
             LaunchParam(
                 name="slots", env="MAXSEQS", label="Slots (max_num_seqs)", kind="int",
@@ -1026,7 +1026,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         weights_gib=17.93,
         exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-Radiance"),
         consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 (declared "
-        "180224 since 2026-08-16, compaction at 135,168); Hermes auxiliary roles "
+        "245760 since 2026-08-18, compaction at 184,320); Hermes auxiliary roles "
         "(compression, skills_hub, ...) -> the same port via the "
         "'qwen3.8-27b-rocmfp4-r9700' alias; ARIA config.steward_model uses that alias "
         "too. DS4 on :8108 remains the coding-agent (pi) model.",
