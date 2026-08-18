@@ -527,8 +527,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                     ("", "model/UD-IQ3_XXS/…-00001-of-00004.gguf — unsloth UD-IQ3_XXS, 97.05 GiB"),
                     ("/home/ben/Development/infrastructure/models/llm/DS4-0731-UD-IQ3_XXS-q6kattn/"
                      "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-q6kattn.gguf",
-                     "Kevletesteur StrixHalo-Verified q6kattn, 96.07 GiB — same unsloth weights "
-                     "with 3 attention tensor families requantized Q8_0 -> Q6_K"),
+                     "⚠️ WEIGHTS DELETED 2026-08-18 — selecting this FAILS at launch "
+                     "(serve.sh checks the file exists and exits 2). Kevletesteur "
+                     "StrixHalo-Verified q6kattn, 96.07 GiB, same unsloth weights with 3 "
+                     "attention tensor families requantized Q8_0 -> Q6_K. Measured 20.25 "
+                     "tok/s vs the base's 18.53 (+9.3%); quality never measured against "
+                     "the DwarfStar 12/15 baseline. Re-download to revive."),
                 ),
                 description="Both are UD-IQ3_XXS derivatives on the same Nathan/Vulkan "
                             "runtime and the same device, so swapping this is a ONE-VARIABLE "
@@ -878,7 +882,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 kind="enum", default="0",
                 choices=(
                     ("0", "off — ordinary target decode, ~15.8 tok/s measured"),
-                    ("1", "on — MEASURED AND REJECTED 2026-08-18, do not enable"),
+                    ("1", "on — REJECTED 2026-08-18; the support GGUF was also DELETED, "
+                           "so this now fails the launcher's existence check"),
                 ),
                 description="⚠️ EVALUATED AND REJECTED 2026-08-18 — leave at 0. On "
                             "the SERVER path DSpark is INERT (15.66 tok/s with it, "
@@ -1151,7 +1156,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         bench_at="2026-08-18",
         bench_note="MEASURED AND REJECTED 2026-08-18. Same probes as the incumbent, same corpus, same geometry-independent perplexity instrument:\n  quality  ppl 8.2164 vs incumbent 8.2109 -- the challenger is 0.066% WORSE, against a measured run-to-run noise floor of 0.013%, so the difference is real and in the wrong direction.\n  speed    decode 41.1 tok/s median vs 44.4 -- 8% SLOWER, despite its bf16 draft head (the incumbent quantizes the MTP head to int4).\n  context  231,296 max vs 262,144 -- 31k SHORTER, because the bf16 MTP head costs more (18.92 GiB of weights) than the finer group size saves.\nLoses on all three axes; the incumbent stays. ⚠️ The interesting negative result: near-identical perplexity does NOT mean a near-identical model -- top-1 token agreement between the two is only 91.17% with KL 0.0259 nats (for scale, ROCmFP4-FAST was rejected at 87.97% / 0.0636). Two AutoRound runs of the same model at different group sizes land ~9% of their argmaxes apart while scoring the same. CONCLUSION: group size is NOT the explanation for the incumbent being 0.89% behind unsloth UD-Q4_K_XL; the calibration run itself dominates. Reopening that question means a different quantizer or a self-run calibration, not another group size.",
         startable=False,
-        not_startable_reason="Measured and rejected 2026-08-18 -- worse quality, slower decode, less context than the incumbent (see bench_note). Weights kept at models/llm/Qwen3.8-27B-int4-AutoRound-g64 for now; delete them to reclaim 17.9 GiB if the question is not reopened.",
+        not_startable_reason="WEIGHTS DELETED 2026-08-18 (~19 GiB reclaimed) after being measured and rejected the same day -- worse quality, slower decode, less context than the incumbent (see bench_note). Re-download Vishva007/Qwen3.8-27B-W4A16-AutoRound-GPTQ if the question is reopened.",
         description="BENCHMARK CHALLENGER to Qwen3.8-27B-R9700-Radiance, added "
         "2026-08-17. Identical model, stack, launcher and kernel; the ONLY variable is "
         "the AutoRound checkpoint's quantization group size — 64 instead of 128 "
