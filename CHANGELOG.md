@@ -2,6 +2,34 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-19] - The sync bridge is a control channel, and Hermes is told to ask ARIA
+
+### Fixed — the vault sync path was classified as optional and probed only for liveness
+- `obsidian-livesync-bridge` was `expected_state="on_demand"` with `needs_review=True`, on a
+  2026-08-07 note reading *"C6 writes land in the vault regardless; this only syncs them
+  outward"*. That was true when written and **stopped being true on 2026-08-15**, when the
+  vault became the approval surface (D10): `approval:` and `autonomy:` are control inputs that
+  reach ARIA only through this bridge. A control channel whose failure must never page is not
+  a control channel. Now `always_up`, `needs_review=False`.
+- ⚠️ **Container state was never evidence that it works.** Through the entire 2026-08-17→19
+  outage the container was up and every check was green; the dead thing was the `corsair-files`
+  peer inside it. So the new `vault` probe in `shells/selfcheck.py` tests the **cause**, not
+  the symptom: any file under the vault that the bridge's uid cannot read. That fires *before*
+  the peer next restarts onto the landmine, rather than after — an unreadable file is a fault
+  whether or not the peer has tripped on it yet. `.git`/`.trash` are skipped. Live: `vault ok`,
+  155 files readable.
+
+### Changed — Hermes's ARIA section (`~/.hermes/SOUL.md`, outside this repo)
+Its entire ARIA guidance was 17 lines covering ~6 of the **90** MCP tools — all of them
+observation (`fleet_status`, screens, input, tasks). Nothing said when to ask ARIA instead of
+using its own shell, which is precisely how both of 2026-08-19's wrong answers happened: it
+checked socket bindings by hand and concluded the dashboard had no tailnet URL (it did, via
+`tailscale serve`), and it attributed a missing vault note to sync lag while the bridge was
+dead. Rewritten with a question→tool map (health/services, model servers, projects/steward,
+coding sessions, memory) and three overriding rules: **never set Ben's `approval:`/`autonomy:`
+keys**, **say what you cannot see instead of inferring a cause**, and **report ARIA's answer
+over your own guess**. Loaded fresh per message — no gateway restart needed.
+
 ## [2026-08-19] - Charters were parsed half-way, and tasks now say who must do them
 
 ### Fixed — `_on_charter` dropped most of the charter

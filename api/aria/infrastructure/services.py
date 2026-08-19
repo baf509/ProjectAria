@@ -315,12 +315,26 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     ServiceSpec(
         slug="obsidian-livesync-bridge",
         description="Obsidian LiveSync bridge — propagates vault writes to every device.",
-        expected_state="on_demand",
+        # RECLASSIFIED 2026-08-19: on_demand -> always_up.
+        #
+        # The 2026-08-07 note said "C6 writes land in the vault regardless;
+        # this only syncs them outward", which was true then. It stopped being
+        # true on 2026-08-15, when the vault became the APPROVAL SURFACE (D10):
+        # `approval:` on STEWARD_PLAN.md and `autonomy:` on CHARTER.md are
+        # control inputs that reach ARIA only if this bridge is moving bytes.
+        # A control channel whose failure "must never page" is not a control
+        # channel.
+        expected_state="always_up",
         kind="integration",
         container_name="obsidian-livesync-bridge-bridge-1",
-        needs_review=True,
-        notes="Coherence C6 writes land in the vault regardless; this only "
-        "syncs them outward. Up 6 days as of 2026-08-07.",
+        needs_review=False,
+        notes="Carries Ben's approval/autonomy edits back to ARIA (D10), so a "
+        "stop is an incident. ⚠️ Container state is NOT sufficient evidence "
+        "this works: on 2026-08-17 the container stayed up while its "
+        "`corsair-files` peer had died at startup on an EACCES, and sync was "
+        "dead for two days with every check green. The functional check is the "
+        "`vault` probe in shells/selfcheck.py, which tests the cause (a vault "
+        "file the bridge's uid cannot read) rather than the symptom.",
     ),
     ServiceSpec(
         slug="samba",

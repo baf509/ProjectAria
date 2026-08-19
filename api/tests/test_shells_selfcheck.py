@@ -120,3 +120,76 @@ def test_unreadable_pools_still_fail():
         ok, detail = selfcheck._check_gtt()
     assert ok is False
     assert "unreadable" in detail
+
+
+# ---------------------------------------------------------------------------
+# Vault readability (2026-08-19)
+#
+# The livesync bridge reads the vault from a container as a different uid. One
+# file it cannot read kills its `corsair-files` peer at startup with EACCES and
+# stops disk->phone sync for the entire vault -- while the container stays up,
+# so every container-level check reports healthy. It ran undetected for two
+# days. This probe tests the CAUSE, so it fires before the peer next trips.
+# ---------------------------------------------------------------------------
+
+class TestVaultReadableProbe:
+    def test_all_readable_passes(self, tmp_path):
+        from aria.shells.selfcheck import _check_vault_readable
+
+        (tmp_path / "Planning").mkdir()
+        note = tmp_path / "Planning" / "STEWARD_PLAN.md"
+        note.write_text("approval: pending\n")
+        note.chmod(0o644)
+
+        result = _check_vault_readable(str(tmp_path))
+        assert result["ok"] is True
+        assert result["name"] == "vault"
+
+    def test_one_unreadable_file_fails_the_check(self, tmp_path):
+        from aria.shells.selfcheck import _check_vault_readable
+
+        (tmp_path / "Planning").mkdir()
+        good = tmp_path / "Planning" / "CHARTER.md"
+        good.write_text("autonomy: 1\n")
+        good.chmod(0o644)
+        bad = tmp_path / "Planning" / "STEWARD_PLAN.md"
+        bad.write_text("approval: approved\n")
+        bad.chmod(0o600)  # exactly what tempfile.mkstemp used to leave behind
+
+        result = _check_vault_readable(str(tmp_path))
+        assert result["ok"] is False
+        assert "STEWARD_PLAN.md" in result["detail"]
+        assert "WHOLE vault" in result["detail"]
+
+    def test_git_internals_are_not_offenders(self, tmp_path):
+        """The vault's own backup repo is skipped by the bridge and has
+        legitimately varied modes; flagging it would make the check cry wolf."""
+        from aria.shells.selfcheck import _check_vault_readable
+
+        objects = tmp_path / ".git" / "objects" / "ab"
+        objects.mkdir(parents=True)
+        blob = objects / "cdef"
+        blob.write_text("x")
+        blob.chmod(0o600)
+
+        assert _check_vault_readable(str(tmp_path))["ok"] is True
+
+    def test_missing_vault_is_skipped_not_failed(self, tmp_path):
+        """A box with no vault must not page forever."""
+        from aria.shells.selfcheck import _check_vault_readable
+
+        result = _check_vault_readable(str(tmp_path / "nope"))
+        assert result["ok"] is True
+        assert "skipped" in result["detail"]
+
+
+class TestBridgeIsAControlChannel:
+    def test_the_bridge_pages_when_down(self):
+        """It carries Ben's approval edits back to ARIA (D10). An on_demand
+        classification means a stopped bridge never reaches the alert cron."""
+        from aria.infrastructure import services
+
+        spec = next(s for s in services.REGISTRY if s.slug == "obsidian-livesync-bridge")
+        assert spec.expected_state == "always_up"
+        assert spec.needs_review is False
+        assert services.is_healthy("stopped", spec.expected_state) is False

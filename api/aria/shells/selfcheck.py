@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import stat
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -99,6 +101,48 @@ def _check_gtt() -> tuple[bool, str]:
         return (True, detail)
     except Exception as exc:
         return (False, f"unreadable: {str(exc)[:100]}")
+
+
+VAULT_UNREADABLE_SAMPLE = 5
+
+
+def _check_vault_readable(vault_path: str) -> dict:
+    """Every vault file must be readable by the livesync bridge's uid.
+
+    Synchronous and run in a thread: this is a filesystem walk, and the event
+    loop serves the health endpoint.
+    """
+    root = Path(vault_path)
+    if not root.is_dir():
+        return {"name": "vault", "ok": True, "detail": f"no vault at {vault_path} (skipped)"}
+    offenders: list[str] = []
+    scanned = 0
+    try:
+        for path in root.rglob("*"):
+            # `.git` is the vault's own backup repo; the bridge is configured to
+            # skip it and its object files are legitimately mode-varied.
+            if ".git" in path.parts or ".trash" in path.parts:
+                continue
+            if not path.is_file():
+                continue
+            scanned += 1
+            if not (path.stat().st_mode & stat.S_IROTH):
+                offenders.append(str(path.relative_to(root)))
+                if len(offenders) >= VAULT_UNREADABLE_SAMPLE:
+                    break
+    except OSError as exc:
+        return {"name": "vault", "ok": False, "detail": f"walk failed: {str(exc)[:100]}"}
+    if offenders:
+        return {
+            "name": "vault",
+            "ok": False,
+            "detail": (
+                f"{len(offenders)}+ file(s) unreadable by the livesync bridge "
+                f"(uid mismatch) — sync stops for the WHOLE vault: "
+                + ", ".join(offenders)
+            ),
+        }
+    return {"name": "vault", "ok": True, "detail": f"{scanned} files readable"}
 
 
 async def run_checks(db) -> list[dict]:
@@ -209,6 +253,25 @@ async def run_checks(db) -> list[dict]:
             "ok": age_min <= stale_after,
             "detail": f"last run {age_min:.0f}m ago",
         })
+
+    # Vault readability — the sync path carries Ben's APPROVALS now.
+    #
+    # The obsidian-livesync bridge reads this vault from a container as a
+    # different uid. One file it cannot read does not degrade its sync: it
+    # kills the `corsair-files` peer at startup with EACCES and stops
+    # disk->phone sync for the WHOLE vault. That happened on 2026-08-17 and ran
+    # undetected for two days, because the container stayed up the entire time
+    # and every container-level check therefore said "healthy".
+    #
+    # This checks the CAUSE rather than the symptom, so it fires before the
+    # bridge next restarts onto the landmine rather than after: an unreadable
+    # file is a fault whether or not the peer has tripped on it yet. Cheap
+    # enough to run every tick — a vault is thousands of small files, and the
+    # walk stops at the first handful of offenders.
+    if settings.obsidian_enabled:
+        checks.append(await asyncio.get_running_loop().run_in_executor(
+            None, _check_vault_readable, settings.obsidian_vault_path
+        ))
 
     # Search (mongot) — Atlas text+vector search backs memory recall. It broke
     # silently once when the mongot container failed to start (bad bind mount),
