@@ -2,6 +2,40 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-19] - Charters were parsed half-way, and tasks now say who must do them
+
+### Fixed — `_on_charter` dropped most of the charter
+`_on_charter` filtered the frontmatter to `Charter.model_fields` and never looked at the
+body, so three things Ben had written were silently discarded:
+- **`## Goals` / `## Non-goals` prose** never reached the schema. `charter.goals` was `[]`
+  for every project while the file plainly listed them — which is why the steward proposed
+  *"Add explicit ARIA goals and success criteria to the charter"* against a charter that has
+  a Goals section. It was right about its own data and unreadable to the human. Frontmatter
+  still wins where both exist; `success_criteria` stays empty because it genuinely is.
+- **Top-level `allowed_paths` / `protected_paths`** are not `Charter` fields (they live under
+  `charter.guard`), so the **per-project blast radius was empty** on every project. The
+  fleet-wide `policy.yaml` still applied, so nothing was unguarded — but the narrowing Ben
+  wrote was inert, and would have stayed inert at A2.
+- **`check_command`** is a `Project` field, not a charter field, so it was dropped too:
+  every chartered project had **no verification-gate command**. At A2 a session's
+  `RALPH_DONE` would have been accepted with nothing to verify it.
+
+Verified live after the fix: `aria` now carries 3 goals, 2 non-goals, 2 allowed paths, 4
+protected paths and `cd api && python3 -m pytest tests/ -q`.
+
+### Added — `owner` on tasks: agent or human
+ARIA is a headless Linux box. Its first A1 proposal for war-audio-game was *"Verify the iOS
+and Android client fixes on real devices with a no-look voice playtest"* — correctly derived
+from `f3f1e1c fix(...): iOS + Android client fixes (authored, NOT device-verified)`, and
+impossible for any agent here. With no owner it arrived looking like something the system
+intended to do.
+- `Task.owner` / `TaskCreateRequest.owner` / `TaskUpdateRequest.owner`: `agent|human|unknown`,
+  defaulting to `unknown` so the existing rows are not relabelled by guesswork.
+- The steward's action schema asks for it, with a rule naming what only a human can do
+  (a physical device, judging audio or a screen, a credential or purchase, a decision that is
+  Ben's). `_task_owner()` coerces anything unrecognised to `unknown`, never `agent`: a task
+  wrongly marked `agent` gets picked up and fails, one wrongly marked `human` only waits.
+
 ## [2026-08-19] - One dashboard, one URL: the UI surfaces reconciled
 
 ### Changed — the dashboard has a single front door

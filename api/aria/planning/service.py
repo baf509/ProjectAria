@@ -250,6 +250,7 @@ class PlanningService:
             "title": body.title.strip(),
             "notes": body.notes,
             "status": body.status,
+            "owner": body.owner,
             "due_at": body.due_at,
             "project_id": body.project_id,
             "tags": list(body.tags),

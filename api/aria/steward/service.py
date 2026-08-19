@@ -58,7 +58,10 @@ from aria.integrations.obsidian import (
     extract_section,
     parse_frontmatter,
 )
-from aria.planning.models import Charter, Project, TaskCreateRequest, TaskSource
+from aria.planning.models import (
+    Charter, Project, ProjectUpdateRequest, TaskCreateRequest, TaskSource,
+)
+from aria.integrations.obsidian import extract_section
 from aria.planning.service import PlanningService, effective_budget
 
 logger = logging.getLogger(__name__)
@@ -132,6 +135,53 @@ def _as_utc(value: Any) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+# Body headings a charter may carry as prose instead of frontmatter lists. The
+# VaultReader hands us `body`; until 2026-08-19 nothing read it, so a charter
+# whose "## Goals" section Ben had written was stored as `goals: []` and the
+# steward proposed "add explicit goals to the charter" against a file that
+# visibly had them. Frontmatter still wins where both exist.
+CHARTER_BODY_SECTIONS = {
+    "goals": "## Goals",
+    "success_criteria": "## Success criteria",
+    "non_goals": "## Non-goals",
+}
+
+# Frontmatter keys that belong INSIDE charter.guard. They read naturally at the
+# top level of a CHARTER.md, and ARIA's own draft charters write them there --
+# but `Charter.model_fields` has no such keys, so the filter in `_on_charter`
+# dropped them silently. The per-project blast radius Ben had written was
+# therefore never in effect.
+CHARTER_GUARD_ALIASES = ("allowed_paths", "protected_paths", "merge_gate", "reviewer_family")
+
+
+def _task_owner(value: Any) -> str:
+    """Coerce the model's `owner` to agent|human|unknown.
+
+    Anything unrecognised becomes `unknown` rather than `agent`: a task wrongly
+    marked `agent` can be picked up and fail, while `unknown` simply waits for a
+    human to classify it. Fail toward the harmless side.
+    """
+    if isinstance(value, str) and value.strip().lower() in {"agent", "human"}:
+        return value.strip().lower()
+    return "unknown"
+
+
+def _bullets(text: Optional[str]) -> list[str]:
+    """`- item` / `* item` / `1. item` lines under a heading, in order."""
+    if not text:
+        return []
+    items: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(r"^(?:[-*+]|\d+[.)])\s+(.*)$", stripped)
+        if match:
+            item = match.group(1).strip()
+            # Drop the parenthetical guidance ARIA writes into its own drafts.
+            if item and not item.startswith("_"):
+                items.append(item)
+    return items
+
+
 def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -192,7 +242,8 @@ next actions from the allowed kinds below. Fewer is better; zero is a valid and
 often correct answer.
 
 Allowed action kinds this tick: {allowed}
-  task     - a to-do to PROPOSE to the human (title = one imperative sentence)
+  task     - a to-do to PROPOSE to the human (title = one imperative sentence;
+             set "owner" to who must DO it — see the owner rule below)
   research - a question to investigate (title = the question)
   session  - work for a sandboxed coding agent (title = the goal, prompt = the
              full instruction to the agent; it runs in an isolated git worktree
@@ -206,6 +257,14 @@ Rules:
 - Do not propose merging, pushing, deploying, or anything outside the repo.
 - Ground every action in something in the OBSERVED STATE; if the state gives you
   nothing to act on, return an empty actions list and say why in "gap".
+- OWNER (kind=task only). ARIA runs headless on a Linux server. Mark a task
+  "human" whenever doing it needs something no process here has: a physical
+  phone, tablet, console or peripheral; listening to audio or looking at a
+  screen to judge it; an account, purchase or credential only Ben holds; a
+  decision that is Ben's to make. Mark it "agent" only if a coding agent with a
+  shell and this repo could finish it unaided. When in doubt say "human" — a
+  task wrongly marked "agent" gets picked up and fails; wrongly marked "human"
+  only waits.
 
 Answer with ONE JSON object and nothing else:
 {{"assessment": "<2 sentences on where this project stands>",
@@ -213,6 +272,7 @@ Answer with ONE JSON object and nothing else:
   "actions": [{{"kind": "task|research|session|note",
                 "title": "<one line>",
                 "why": "<which goal or criterion this serves>",
+                "owner": "<only for kind=task: agent|human>",
                 "prompt": "<only for kind=session: the full agent instruction>"}}]}}
 """
 
@@ -970,17 +1030,19 @@ class StewardWorker:
         existing = await self.planning.find_open_task_by_hash(_content_hash(action["title"]))
         if existing:
             return {**action, "executed": False, "reason": "already open", "task_id": existing.id}
+        owner = _task_owner(action.get("owner"))
         task = await self.planning.create_task(
             TaskCreateRequest(
                 title=action["title"],
                 notes=action.get("why") or None,
                 project_id=project.id,
                 status="proposed",
+                owner=owner,
                 tags=["steward"],
             ),
             source=TaskSource(type="awareness", extracted_at=_now(), confidence=0.5),
         )
-        return {**action, "executed": True, "task_id": task.id}
+        return {**action, "executed": True, "task_id": task.id, "owner": owner}
 
     async def _propose_research(self, project: Project, action: dict) -> dict:
         """A research topic is recorded, not run.
@@ -1471,6 +1533,24 @@ class StewardWorker:
         # unknown key: a CHARTER.md's frontmatter also carries title/created/
         # updated, and a warning per doc key per poll is noise, not signal.
         patch = {k: v for k, v in raw.items() if k in set(Charter.model_fields)}
+
+        # Top-level guard keys -> charter.guard. Without this the per-project
+        # blast radius is silently empty while the file plainly declares it.
+        guard_patch = {k: raw[k] for k in CHARTER_GUARD_ALIASES if k in raw}
+        if guard_patch:
+            merged = dict(patch.get("guard") or {})
+            merged.update(guard_patch)
+            patch["guard"] = merged
+
+        # Prose sections -> list fields, where the frontmatter did not set them.
+        body = event.get("body") or ""
+        for field, heading in CHARTER_BODY_SECTIONS.items():
+            if patch.get(field):
+                continue  # frontmatter is authoritative
+            items = _bullets(extract_section(body, heading))
+            if items:
+                patch[field] = items
+
         if not patch:
             return {"action": "no-op", "reason": "no charter fields in frontmatter"}
         updated = await self.planning.set_charter(
@@ -1478,11 +1558,24 @@ class StewardWorker:
         )
         if updated is None:
             return {"action": "error", "error": "project vanished"}
+        # `check_command` rides in the charter's frontmatter but is a PROJECT
+        # field -- it is what the verification gate runs (C1). Dropping it left
+        # every chartered project with no gate command, so at A2 a session's
+        # RALPH_DONE would have been accepted with nothing to verify it.
+        applied = sorted(patch)
+        check_command = raw.get("check_command")
+        if isinstance(check_command, str) and check_command.strip():
+            if check_command.strip() != (project.check_command or "").strip():
+                await self.planning.update_project(
+                    project.id, ProjectUpdateRequest(check_command=check_command.strip())
+                )
+                applied.append("check_command")
+
         await self.planning.append_project_activity(
             project.id, source="vault",
-            note=f"charter updated from the vault: {', '.join(sorted(patch))}",
+            note=f"charter updated from the vault: {', '.join(applied)}",
         )
-        return {"action": "charter_applied", "slug": project.slug, "fields": sorted(patch)}
+        return {"action": "charter_applied", "slug": project.slug, "fields": applied}
 
     async def _on_autonomy(self, event: dict) -> dict:
         project = await self._resolve_project(event)

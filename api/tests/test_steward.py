@@ -1169,3 +1169,104 @@ class TestResearchNeedsAnApprovedPlan:
         budget = {"research_remaining": 0, "sessions_remaining": 5}
         allowed = w._allowed_kinds(2, budget, "local", approval="approved")
         assert "research" not in allowed
+
+
+# ---------------------------------------------------------------------------
+# Charter parsing: body prose and the guard/check_command keys (2026-08-19)
+#
+# `_on_charter` filtered the frontmatter to `Charter.model_fields` and ignored
+# the body entirely, so three things Ben had actually written were dropped:
+# `## Goals` prose, the top-level `allowed_paths`/`protected_paths`, and
+# `check_command`. The visible symptom was the steward proposing "add explicit
+# goals to the charter" against a charter that plainly had them; the invisible
+# one was an empty per-project blast radius and a gate with nothing to run.
+# ---------------------------------------------------------------------------
+
+class TestCharterBodyAndGuardParsing:
+    def test_bullets_parses_the_common_list_forms(self):
+        from aria.steward.service import _bullets
+
+        assert _bullets("- one\n- two") == ["one", "two"]
+        assert _bullets("* one\n+ two\n1. three\n2) four") == ["one", "two", "three", "four"]
+        assert _bullets(None) == []
+        assert _bullets("just prose, no bullets") == []
+        # ARIA's own drafts carry italic guidance under the heading; not a goal.
+        assert _bullets("- real goal\n- _(drafted from CLAUDE.md)_") == ["real goal"]
+
+    def test_body_sections_become_charter_lists(self):
+        from aria.steward.service import CHARTER_BODY_SECTIONS, _bullets
+        from aria.integrations.obsidian import extract_section
+
+        body = (
+            "# ProjectAria — charter\n\n"
+            "## Purpose\n\nSome prose.\n\n"
+            "## Goals\n\n- Be the control plane\n- Supervise every agent\n\n"
+            "## Non-goals\n\n- Being a chat front door\n\n"
+            "## Budget\n\nDefaults apply.\n"
+        )
+        parsed = {
+            field: _bullets(extract_section(body, heading))
+            for field, heading in CHARTER_BODY_SECTIONS.items()
+        }
+        assert parsed["goals"] == ["Be the control plane", "Supervise every agent"]
+        assert parsed["non_goals"] == ["Being a chat front door"]
+        assert parsed["success_criteria"] == []  # absent -> stays empty, not invented
+
+    def test_frontmatter_wins_over_body(self):
+        """Both present is not a conflict to resolve at read time — the typed
+        field is the one Ben can see ARIA parsing, so it wins."""
+        from aria.steward.service import CHARTER_BODY_SECTIONS, _bullets
+        from aria.integrations.obsidian import extract_section
+
+        patch = {"goals": ["from frontmatter"]}
+        body = "## Goals\n\n- from the body\n"
+        for field, heading in CHARTER_BODY_SECTIONS.items():
+            if patch.get(field):
+                continue
+            items = _bullets(extract_section(body, heading))
+            if items:
+                patch[field] = items
+        assert patch["goals"] == ["from frontmatter"]
+
+    def test_guard_aliases_are_nested_not_dropped(self):
+        from aria.steward.service import CHARTER_GUARD_ALIASES
+        from aria.planning.models import Charter
+
+        raw = {
+            "purpose": "p",
+            "allowed_paths": ["api/aria/**"],
+            "protected_paths": ["api/tests/**"],
+            "check_command": "cd api && pytest -q",
+        }
+        patch = {k: v for k, v in raw.items() if k in set(Charter.model_fields)}
+        assert "allowed_paths" not in patch, "precondition: the old filter dropped these"
+
+        guard_patch = {k: raw[k] for k in CHARTER_GUARD_ALIASES if k in raw}
+        merged = dict(patch.get("guard") or {})
+        merged.update(guard_patch)
+        patch["guard"] = merged
+
+        charter = Charter(**patch)
+        assert charter.guard.allowed_paths == ["api/aria/**"]
+        assert charter.guard.protected_paths == ["api/tests/**"]
+
+
+class TestTaskOwner:
+    def test_owner_coercion_fails_toward_human_review(self):
+        from aria.steward.service import _task_owner
+
+        assert _task_owner("human") == "human"
+        assert _task_owner("Agent") == "agent"
+        assert _task_owner(None) == "unknown"
+        assert _task_owner("") == "unknown"
+        assert _task_owner("robot") == "unknown"
+        assert _task_owner(True) == "unknown"
+
+    def test_the_prompt_asks_for_an_owner(self):
+        """The field only gets populated if the model is told to produce it."""
+        from aria.steward import service
+
+        prompt = service.ACTION_PROMPT if hasattr(service, "ACTION_PROMPT") else None
+        source = (prompt or "") + open(service.__file__).read()
+        assert '"owner": "<only for kind=task: agent|human>"' in source
+        assert "OWNER (kind=task only)" in source

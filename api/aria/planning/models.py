@@ -21,6 +21,15 @@ from pydantic import BaseModel, Field
 TaskStatus = Literal["proposed", "active", "done", "dismissed"]
 ProjectStatus = Literal["active", "paused", "archived"]
 TaskSourceType = Literal["manual", "conversation", "shell", "awareness", "import"]
+# WHO is expected to do this — not who filed it (`source` answers that).
+#
+# ARIA is a headless Linux box: it cannot hold a phone, listen to audio, or sit
+# in a meeting. A steward proposal like "verify the iOS and Android client fixes
+# on real devices with a no-look voice playtest" is a legitimate next action and
+# an impossible one for any agent here, and with no owner it arrives looking
+# like something the system intends to do. `unknown` is the default so the
+# thousands of pre-existing rows are not silently relabelled as either.
+TaskOwner = Literal["agent", "human", "unknown"]
 # `kind` separates "a directory on disk" from "a thing Ben works on". Before it
 # existed the harvester registered 59 rows — Downloads, /tmp/workspace, venv,
 # the Obsidian vault, .worktrees/* and pi smoke dirs included — all status=active,
@@ -46,6 +55,7 @@ class Task(BaseModel):
     title: str
     notes: Optional[str] = None
     status: TaskStatus = "active"
+    owner: TaskOwner = "unknown"
     due_at: Optional[datetime] = None
     project_id: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
@@ -64,6 +74,7 @@ class TaskCreateRequest(BaseModel):
     project_id: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     status: TaskStatus = "active"
+    owner: TaskOwner = "unknown"
 
 
 class TaskUpdateRequest(BaseModel):
@@ -71,6 +82,7 @@ class TaskUpdateRequest(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=500)
     notes: Optional[str] = Field(default=None, max_length=4000)
     status: Optional[TaskStatus] = None
+    owner: Optional[TaskOwner] = None
     due_at: Optional[datetime] = None
     project_id: Optional[str] = None
     tags: Optional[list[str]] = None
