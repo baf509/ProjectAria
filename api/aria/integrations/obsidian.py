@@ -660,6 +660,17 @@ class ObsidianWriter:
 
     # ------------------------------------------------------------- writes
 
+    # `mkstemp` creates 0600 and `os.replace` PRESERVES that mode, so every file
+    # written here used to land unreadable by anyone but ben. The vault is not
+    # ARIA's private directory: the obsidian-livesync bridge reads it from a
+    # container as uid 1993, and one unreadable file does not degrade its sync --
+    # it kills the whole `corsair-files` peer at startup with EACCES, silently
+    # stopping disk->phone sync for the ENTIRE vault. That happened on
+    # 2026-08-17T16:03 and went unnoticed for two days. 0644 is deliberate, not
+    # inherited from the umask: the reader is another uid, and this file is a
+    # note in a synced notebook, not a secret.
+    VAULT_FILE_MODE = 0o644
+
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
         fd, tmp = tempfile.mkstemp(
@@ -668,6 +679,7 @@ class ObsidianWriter:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content)
+            os.chmod(tmp, ObsidianWriter.VAULT_FILE_MODE)
             os.replace(tmp, path)
         except BaseException:
             try:

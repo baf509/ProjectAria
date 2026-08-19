@@ -2,6 +2,28 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-19] - One 0600 file silently stopped the whole vault syncing for two days
+
+### Fixed — vault writes were unreadable by the sync bridge
+- `ObsidianWriter._atomic_write` used `tempfile.mkstemp`, which creates **0600**, and
+  `os.replace` PRESERVES that mode — so every file ARIA wrote into the vault landed
+  readable only by `ben`. The vault is not ARIA's private directory: the
+  `obsidian-livesync-bridge` container reads it as **uid 1993**.
+- The failure mode is what made this expensive. One unreadable file does not degrade the
+  bridge's sync — it kills the `corsair-files` peer **at startup**:
+  `PermissionDenied … readfile '/app/vault/war-audio-game/Planning/STEWARD_PLAN.md'` →
+  `[Hub] peer "corsair-files" start() failed`. Disk→phone sync stopped for the **entire
+  vault** on 2026-08-17T16:03 and nobody noticed for two days, because phone→disk kept
+  working, so sync "looked fine".
+- Now `os.chmod(tmp, 0o644)` before the replace, with two regression tests — including one
+  that rewrites an existing 0600 file, since `os.replace` onto an existing inode is exactly
+  how the mode used to be inherited.
+- Repaired the five files already on disk (every `STEWARD_PLAN.md`). After restarting the
+  bridge, 69 markdown docs and ~400 attachments flushed to CouchDB in one burst
+  (doc_count 31,701 → 32,168); the last markdown push before that was 2026-08-17.
+- This mattered *now* rather than later: research notes publish through the same writer, so
+  every note the newly-armed research loop produces would have landed unreadable too.
+
 ## [2026-08-18] - Steward A1 and proactive research: the loops start running
 
 Two of the three clauses of the 2026-08-15 steward ask that had never executed are now live.

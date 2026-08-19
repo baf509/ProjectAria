@@ -156,3 +156,50 @@ async def test_seed_keys_default_to_the_three_control_keys(tmp_path):
     assert result["seeded"] == ["accepted", "approval", "autonomy"]
     text = open(result["path"], encoding="utf-8").read()
     assert "approval: pending" in text and "autonomy: 0" in text
+
+
+# ---------------------------------------------------------------------------
+# Vault file permissions (2026-08-19)
+#
+# `tempfile.mkstemp` creates 0600 and `os.replace` preserves it, so every file
+# written here landed readable only by ben. The obsidian-livesync bridge reads
+# this vault from a container as a DIFFERENT uid, and one unreadable file does
+# not degrade its sync -- it kills the `corsair-files` peer at startup with
+# EACCES and silently stops disk->phone sync for the whole vault.
+# ---------------------------------------------------------------------------
+
+class TestVaultFilePermissions:
+    def test_atomic_write_is_group_and_world_readable(self, tmp_path):
+        import os
+        import stat
+
+        from aria.integrations.obsidian import ObsidianWriter
+
+        target = tmp_path / "STEWARD_PLAN.md"
+        ObsidianWriter._atomic_write(target, "# plan\n")
+
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+        assert mode & stat.S_IROTH, (
+            f"mode {oct(mode)}: the livesync bridge runs as another uid and cannot "
+            "read this file -- one such file stops sync for the entire vault"
+        )
+        assert mode & stat.S_IRGRP, f"mode {oct(mode)}: not group-readable"
+        assert not (mode & (stat.S_IWOTH | stat.S_IXOTH)), (
+            f"mode {oct(mode)}: a note should not be world-writable or executable"
+        )
+
+    def test_rewrite_does_not_regress_the_mode(self, tmp_path):
+        """The second write goes through os.replace onto an existing inode --
+        the mode must come from the new temp file, not be inherited."""
+        import os
+        import stat
+
+        from aria.integrations.obsidian import ObsidianWriter
+
+        target = tmp_path / "STEWARD_PLAN.md"
+        ObsidianWriter._atomic_write(target, "# first\n")
+        os.chmod(target, 0o600)
+        ObsidianWriter._atomic_write(target, "# second\n")
+
+        mode = stat.S_IMODE(os.stat(target).st_mode)
+        assert mode & stat.S_IROTH, f"mode {oct(mode)}: rewrite left the file unreadable"
