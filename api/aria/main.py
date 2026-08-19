@@ -848,9 +848,17 @@ app.include_router(improve.router, prefix="/api/v1", tags=["improve"])
 
 @app.get("/")
 async def root():
-    """Root endpoint."""
+    """Root endpoint.
+
+    Reports the commit this PROCESS is running, not the commit on disk — see
+    aria/core/build_info.py. ARIA stewards itself, and a hardcoded version
+    string is how a steward comes to believe a merged fix is already live.
+    """
+    from aria.core import build_info
+
     return {
         "name": "ARIA",
-        "version": "0.2.0",
         "docs": "/docs",
+        **build_info.running(),
+        "drift": build_info.drift(),
     }

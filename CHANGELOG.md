@@ -2,6 +2,30 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-19] - ARIA can see which commit it is running
+
+### Added — `aria/core/build_info.py`
+`/` reported a hardcoded `version: "0.2.0"`, so a running ARIA could not tell whether the code
+on disk was the code it was executing. That is the real open loop in ARIA stewarding itself —
+**not** that its changes go unverified (the guard runs `check_command` in the worktree before
+any merge, and at A2 the merge is proposed to Ben regardless), but that a **merged** change is
+invisible to the process it changes until someone restarts `aria-api` — which ARIA deliberately
+will not do to itself (`manageable=False`: a process that restarts itself mid-request drops the
+request that asked for it).
+
+- `/` now reports `commit`, `branch`, `commit_at`, `dirty` and a `drift` block
+  (`running_commit`, `head_commit`, `behind`, `stale`). Sampled **at import**, because
+  re-reading later would report the disk — the very thing this distinguishes from the process.
+- The steward's observed state gains `self_runtime`, **only for the project whose path is this
+  repo**; every other project's merge *is* its application, so drift there would be noise.
+  When stale, the prompt says so in as many words: do not treat a merged fix as live, and do
+  not re-propose work already committed.
+- Degrades rather than raising: a box without git still serves `/health`.
+
+The UI has had this right all along (`/api/build` + `make ui-deploy` refusing to claim success
+unless the running sha matches the built one). This is the same idea for the API, sampled at
+process start rather than build time because `aria-api` runs natively from the working tree.
+
 ## [2026-08-19] - The sync bridge is a control channel, and Hermes is told to ask ARIA
 
 ### Fixed — the vault sync path was classified as optional and probed only for liveness

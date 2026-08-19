@@ -1270,3 +1270,83 @@ class TestTaskOwner:
         source = (prompt or "") + open(service.__file__).read()
         assert '"owner": "<only for kind=task: agent|human>"' in source
         assert "OWNER (kind=task only)" in source
+
+
+# ---------------------------------------------------------------------------
+# Self-stewardship: knowing which commit you are RUNNING (2026-08-19)
+#
+# ARIA is the only project it stewards that is also itself. A merged change
+# takes effect on `systemctl --user restart aria-api`, which ARIA deliberately
+# will not do to itself (`manageable=False`). Until now `/` reported a hardcoded
+# "0.2.0", so the process could not tell that the code on disk had moved past
+# the code in memory — and a steward that cannot see that gap re-proposes
+# merged work, or calls a fix live when the process predates it.
+# ---------------------------------------------------------------------------
+
+class TestSelfRuntime:
+    def test_running_reports_a_commit_not_a_hardcoded_string(self):
+        from aria.core import build_info
+
+        info = build_info.running()
+        assert info["version"] == build_info.VERSION
+        # In a git checkout this is a sha; the point is that the key exists and
+        # is sampled, not hardcoded.
+        assert "commit" in info and "dirty" in info and "branch" in info
+
+    def test_drift_is_clean_when_head_matches(self, monkeypatch):
+        from aria.core import build_info
+
+        monkeypatch.setattr(build_info, "STARTED", {"commit": "abc1234"})
+        monkeypatch.setattr(build_info, "_git", lambda *a, **k: "abc1234")
+        d = build_info.drift()
+        assert d["stale"] is False
+        assert d["behind"] == 0
+
+    def test_drift_counts_commits_the_process_does_not_have(self, monkeypatch):
+        from aria.core import build_info
+
+        monkeypatch.setattr(build_info, "STARTED", {"commit": "abc1234"})
+
+        def fake_git(*args, **kwargs):
+            if args[:2] == ("rev-parse", "--short"):
+                return "def5678"
+            if args[0] == "rev-list":
+                return "3"
+            return None
+
+        monkeypatch.setattr(build_info, "_git", fake_git)
+        d = build_info.drift()
+        assert d["stale"] is True
+        assert d["behind"] == 3
+        assert d["running_commit"] == "abc1234"
+        assert d["head_commit"] == "def5678"
+
+    def test_drift_degrades_rather_than_raising(self, monkeypatch):
+        """A box without git must still serve /health."""
+        from aria.core import build_info
+
+        monkeypatch.setattr(build_info, "_git", lambda *a, **k: None)
+        monkeypatch.setattr(build_info, "STARTED", {"commit": None})
+        d = build_info.drift()
+        assert d["stale"] is False
+
+    def test_self_runtime_is_only_for_aria_itself(self):
+        """Every other project's merge IS its application; reporting drift for
+        them would be meaningless noise."""
+        from aria.core import build_info
+        from aria.steward.service import StewardWorker
+
+        from datetime import datetime, timezone
+
+        from aria.planning.models import Project
+
+        def _at(path: str) -> Project:
+            now = datetime.now(timezone.utc)
+            return Project(
+                id="p1", name="n", slug="s", path=path,
+                created_at=now, updated_at=now,
+            )
+
+        worker = StewardWorker.__new__(StewardWorker)
+        assert worker._self_runtime(_at("/home/ben/Development/war-audio-game")) is None
+        assert worker._self_runtime(_at(str(build_info.REPO_ROOT))) is not None

@@ -624,11 +624,31 @@ class StewardWorker:
             "changed": changed,
             "outcomes": outcomes,
             "git": project.git or {},
+            # Self-stewardship: when ARIA is the project, the commit it is
+            # RUNNING and the commit on disk can differ, because applying a
+            # change to ARIA needs an aria-api restart and aria-api is
+            # deliberately `manageable=False`. Without this the steward would
+            # re-propose work already merged, or call a fix live when the
+            # process predates it. Absent for every other project, where the
+            # merge IS the application.
+            "self_runtime": self._self_runtime(project),
             "next_steps": list(project.next_steps or [])[:5],
             "check_command": project.check_command,
             "idle_days": round(idle_days, 1) if idle_days is not None else None,
             "plan": await self._read_plan(project),
         }
+
+    def _self_runtime(self, project: Project) -> Optional[dict]:
+        """Version drift, but only for the project that IS this process."""
+        try:
+            from aria.core import build_info
+
+            if Path(project.path or "").resolve() != build_info.REPO_ROOT:
+                return None
+            return build_info.drift()
+        except Exception:  # noqa: BLE001 - diagnostic only, never break a tick
+            logger.debug("steward: self-runtime probe failed", exc_info=True)
+            return None
 
     async def _resolve_shell_service(self):
         """The real ShellService when this process has one, else nothing.
@@ -938,6 +958,18 @@ class StewardWorker:
             f"stale tasks {att['stale_tasks']})",
             f"idle days: {observed['idle_days']}",
             f"git: {json.dumps(observed['git'], default=str)[:300]}",
+            *(
+                [
+                    f"running code: this process is on {rt['running_commit']}, the "
+                    f"working tree is on {rt['head_commit']} ({rt['behind']} commit(s) "
+                    "ahead). Merged changes to THIS project do not take effect until "
+                    "aria-api is restarted, which ARIA does not do to itself — so do "
+                    "not treat a merged fix as live, and do not re-propose work that "
+                    "is already committed."
+                ]
+                if (rt := observed.get("self_runtime")) and rt.get("stale")
+                else []
+            ),
             "open tasks:",
             bullets([f"[{t['status']}] {t['title']}" for t in observed["open_tasks"]]),
             "recent sessions:",
