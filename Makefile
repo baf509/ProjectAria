@@ -15,7 +15,7 @@ help:
 	@echo "ui-check   typecheck + lint + build + responsive gate"
 	@echo "ui-build   production build (no deploy)"
 	@echo "ui-deploy  build the image, restart the container, verify the running sha == HEAD"
-	@echo "ui-serve   serve the production build on :3100 for the gate"
+	@echo "ui-serve   serve the production build on :3100 for the gate (STOP IT WHEN DONE)"
 	@echo "ui-gate    run the responsive gate against :3100 (server must be up)"
 	@echo "ui-https   expose the UI over https on the tailnet"
 	@echo "api-test   python test suite"
@@ -54,9 +54,13 @@ ui-deploy:
 	done; \
 	echo "DEPLOY MISMATCH: running=$$running expected=$(SHA)"; exit 1
 
+# 443, not 8444: the dashboard is the front door of this host, so its URL has
+# no port in it. 8443/8444 were removed 2026-08-19 -- they proxied a Hermes
+# WebUI that has been disabled since 2026-08-13, and a duplicate of it, which
+# is why finding the dashboard used to mean guessing a port.
 ui-https:
-	tailscale serve --bg --https=8444 http://127.0.0.1:3000
-	@echo "UI: https://$$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'):8444"
+	tailscale serve --bg --https=443 http://127.0.0.1:3000
+	@echo "UI: https://$$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
 
 api-test:
 	cd api && python3 -m pytest tests/ -q

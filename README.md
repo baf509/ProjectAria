@@ -156,7 +156,7 @@ aria shells search "compilation error"
 aria shells tags claude-myproject primary urgent
 ```
 
-**Web UI** (`http://localhost:3000`) — `/cockpit`, `/operate` (launch configuration + local
+**Web UI** (`https://corsair-ai.tailb286a5.ts.net` over the tailnet; `http://localhost:3000` on the box) — `/supervise` (was `/cockpit`), `/operate` (launch configuration + local
 model route), `/inbox`, `/autonomy`, `/dashboard/shells` (sidebar list, live scrollback over
 SSE, special-key palette, send-input form). `/chat` is a dead page against the disabled agent.
 

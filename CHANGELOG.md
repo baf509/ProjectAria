@@ -2,6 +2,30 @@
 
 All notable changes to ARIA will be documented in this file.
 
+## [2026-08-19] - One dashboard, one URL: the UI surfaces reconciled
+
+### Changed — the dashboard has a single front door
+- **`https://corsair-ai.tailb286a5.ts.net`** (no port) is now the dashboard. Previously
+  `tailscale serve` had three handlers: `443` **and** `8443` both proxied `127.0.0.1:8787`
+  — **Hermes WebUI**, `disabled` and `inactive` since 2026-08-13, so the bare hostname was a
+  dead end — while the dashboard hid on `8444`. Finding it meant knowing a port that looked
+  like a test artifact. 8443 and 8444 are removed; `make ui-https` serves 443.
+- ⚠️ **Hermes WebUI no longer has a front door.** It was already down and disabled; if it is
+  re-enabled it needs its own `tailscale serve` entry on another port.
+- `:3000` was never legacy — it is the `aria-ui` container's loopback bind, i.e. the other
+  end of the same pipe, and stays as-is.
+
+### Fixed — a stale duplicate UI was live on the tailnet
+- A `make ui-serve` gate server (`next start -p 3100`, **working tree**, **all interfaces**,
+  **plain HTTP**) had been running since 2026-08-17T19:56 — two days serving a stale build of
+  the same app beside the real one, bypassing the HTTPS front door and the loopback-only bind
+  that the one-origin design depends on. Stopped. `make ui-check` cleans it up automatically;
+  `make ui-serve` by hand does not, which is now said in both the Makefile help and the runbook.
+
+### Docs
+- `docs/ops/WEB_UI.md`: topology redrawn on 443, plus what `:3100` is and why it must not be
+  left running. `README.md`: the tailnet URL, and `/cockpit` renamed to `/supervise`.
+
 ## [2026-08-19] - One 0600 file silently stopped the whole vault syncing for two days
 
 ### Fixed — vault writes were unreadable by the sync bridge
