@@ -1,0 +1,19 @@
+[Unit]
+Description=ARIA tmux server (owns the watched-shell sessions)
+Documentation=file:///home/ben/Development/ProjectAria/CLAUDE.md
+# Ordering only. aria-api pulls this in via its own Wants=/After= drop-in, so
+# the server exists before aria-api can create one in its own cgroup.
+Before=aria-api.service
+
+[Service]
+# The tmux server daemonises out of ExecStart, so ExecStart returns immediately.
+# RemainAfterExit keeps the unit active afterwards, which is what stops systemd
+# from tearing down the cgroup — and the server with it.
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/Development/ProjectAria/scripts/aria-tmux-server
+# `-` prefix: killing an already-dead server is not a failure.
+ExecStop=-/usr/bin/tmux kill-server
+
+[Install]
+WantedBy=default.target

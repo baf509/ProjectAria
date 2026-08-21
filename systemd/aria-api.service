@@ -1,0 +1,14 @@
+[Unit]
+Description=ARIA API Server
+After=network.target docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Development/ProjectAria/api
+ExecStart=%h/Development/ProjectAria/api/.venv/bin/uvicorn aria.main:app --host 0.0.0.0 --port 8200
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=%h/Development/ProjectAria/.env
+
+[Install]
+WantedBy=default.target
