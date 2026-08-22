@@ -104,8 +104,15 @@ aria-documents/
 .env.bak-*
 
 # scratch screenshots dropped in from phone/desktop
-inbox/
-inbox.png
+# ⚠️ ANCHORED. This was a bare `inbox/`, which git matches at ANY depth — so it
+# silently ignored ui/src/app/inbox/ and ui/src/features/inbox/ as well, i.e. the
+# entire Inbox surface (the alert queue read from the phone, and the needs_human
+# vs FYI lane split). That source existed only in the working tree and the built
+# container image; a clean checkout would have lost it. Found 2026-08-21.
+# Keep the leading slash: it means "the inbox/ directory at the repo root", which
+# is what this rule was always for.
+/inbox/
+/inbox.png
 
 # Screenshots dropped in via rsync/Taildrop for triage — not source.
 Screenshot*.png
