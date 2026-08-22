@@ -86,7 +86,7 @@ _DISCRETE_VRAM_FLOOR_GIB = 8.0
 
 # Above this much GTT on a discrete card, it is spilling into system RAM and
 # has started competing with the Halo's pool. Same 1 GiB threshold the
-# ds4-halo-xxs launcher uses before it will allowlist a co-resident dGPU model.
+# deepseek-v4-safe-launch.sh uses before it will allowlist a co-resident dGPU model.
 _SPILL_THRESHOLD_GIB = 1.0
 
 

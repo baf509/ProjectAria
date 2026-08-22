@@ -945,8 +945,8 @@ async def start_model_server(
     `parameters` accept them; compose-frozen ones refuse (409) rather than
     silently ignoring the request. Examples:
 
-        start_model_server("DS4-0731-IQ3_XXS-Halo-Vulkan",
-                           overrides={"kv": "q8_0", "draft": "none"})
+        start_model_server("DS4-0731-Q8Protected-Halo-DwarfStar",
+                           overrides={"ctx": "65536"})
         start_model_server("DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
                            overrides={"placement": "split", "ctx": "65536"})
 

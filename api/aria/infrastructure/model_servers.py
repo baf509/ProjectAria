@@ -408,7 +408,6 @@ def _pairs_between(
 _HALO_BIG = (
     "DS4-0731-Q8Protected-Halo-DwarfStar",
     "DS4-0731-REAP150B-MXFP4",
-    "DS4-0731-IQ3_XXS-Halo-Vulkan",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
     "DS4-0731-ROCMFPX-affine-256k",
@@ -493,153 +492,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     # these folders.
     # ══════════════════════════════════════════════════════════════════════
     ModelServerSpec(
-        slug="DS4-0731-IQ3_XXS-Halo-Vulkan",
-        description="DeepSeek V4 Flash 0731 UD-IQ3_XXS (97 GiB) on the Strix Halo "
-        "iGPU ALONE, via Nathan's Vulkan fork — which implements the DeepSeek-V4 "
-        "kernels mainline Vulkan disables (lightning indexer + the three fused "
-        "hyper-connection ops) plus hand-tuned MoE shaders, and therefore beats "
-        "both mainline Vulkan and mainline ROCm on this hardware. The APU-only "
-        "profile: leaves the R9700 completely free, so it is the DS4 to pick when "
-        "a dGPU model should run alongside (see DUAL-SERVING.md). Standing profile "
-        "since 2026-08-15 (profile-flowz13.conf): q8_0 KV, ONE 131,072-token slot, "
-        "no drafter — the single-slot coding-agent (pi) model.",
-        runtime_repo="Nathan's Strix Halo llama.cpp Vulkan fork",
-        runtime_ref="runtime/nathan-v0.6.1 (validated line). v0.6.3-beta1 adds "
-        "sparse-attention prefill (+39% @32k, +78% @64k) but is NOT installed — "
-        "selecting it fails until the bundle is placed at runtime/nathan-v0.6.3-beta1/.",
-        backend_device="Vulkan1 (Strix Halo iGPU, gfx1151)",
-        devices=("Strix Halo iGPU (Vulkan1)",),
-        memory_pool=POOL_HALO,
-        deployment="ds4-halo-xxs",
-        model_file="ds4-halo-xxs/model/UD-IQ3_XXS/"
-        "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004.gguf",
-        port=8108,
-        systemd_unit="ds4-halo-xxs.service",
-        launch_script="ds4-halo-xxs/serve.sh",
-        # ⚠️ -dev Vulkan1 is MANDATORY and is why DEV is exposed but defaulted:
-        # the bundled RADV enumerates Vulkan0 as the R9700, so omitting the
-        # device sends a 97 GiB model to a 32 GiB card and spills ~78 GiB over
-        # OCuLink (measured 1.65 t/s).
-        parameters=(
-            LaunchParam(
-                name="model", env="MODEL", label="GGUF served", kind="enum", default="",
-                choices=(
-                    ("", "model/UD-IQ3_XXS/…-00001-of-00004.gguf — unsloth UD-IQ3_XXS, 97.05 GiB"),
-                    ("/home/ben/Development/infrastructure/models/llm/DS4-0731-UD-IQ3_XXS-q6kattn/"
-                     "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-q6kattn.gguf",
-                     "⚠️ WEIGHTS DELETED 2026-08-18 — selecting this FAILS at launch "
-                     "(serve.sh checks the file exists and exits 2). Kevletesteur "
-                     "StrixHalo-Verified q6kattn, 96.07 GiB, same unsloth weights with 3 "
-                     "attention tensor families requantized Q8_0 -> Q6_K. Measured 20.25 "
-                     "tok/s vs the base's 18.53 (+9.3%); quality never measured against "
-                     "the DwarfStar 12/15 baseline. Re-download to revive."),
-                ),
-                description="Both are UD-IQ3_XXS derivatives on the same Nathan/Vulkan "
-                            "runtime and the same device, so swapping this is a ONE-VARIABLE "
-                            "comparison. The q6kattn variant targets memory BANDWIDTH — the "
-                            "requantized tensors are ~51.9% of bytes read per token, which is "
-                            "the right lever on a bandwidth-starved APU. Its model card "
-                            "reports no comparison against the unsloth base it derives from, "
-                            "so that comparison has to be made here.",
-            ),
-            LaunchParam(
-                name="kv", env="KV", label="KV cache type", kind="enum",
-                default="f16",
-                choices=(
-                    ("f16", "65,536 ctx default — best short-context decode, no quality tail"),
-                    ("q8_0", "131,072 ctx default — the standing profile since 2026-08-15 "
-                             "(Flow Z13 reference: KLD 0.0126 vs bf16, same-top-p 97.84%)"),
-                    ("q4_0", "smallest KV; never KL-gated on DSV4 — memory fallback only"),
-                ),
-                description="Also sets the script's default context: f16 -> 65536, "
-                            "q8_0 -> 131072. KV is allocated lazily (~45 KiB/token "
-                            "q8_0, ~90 KiB/token f16), so what costs memory is a "
-                            "FILLED slot, not -c.",
-            ),
-            LaunchParam(
-                name="ctx", env="CTX", label="Context per slot", kind="int",
-                description="Overrides the KV-derived default. The unit's "
-                            "profile-flowz13.conf drop-in serves 131072 (q8_0). "
-                            "Hermes refuses any model declaring under 64K.",
-            ),
-            LaunchParam(
-                name="draft", env="DRAFT", label="DSpark drafter", kind="path",
-                default="ds4-halo-xxs/draft/DSV4-Flash-DSpark-draft-bf16.gguf",
-                choices=(
-                    ("/home/ben/Development/infrastructure/ds4-halo-xxs/draft/"
-                     "DSV4-Flash-DSpark-draft-bf16.gguf", "bf16, 10.9 GB — script default"),
-                    ("/home/ben/Development/infrastructure/ds4-halo-xxs/draft/"
-                     "DSV4-Flash-DSpark-draft-Q2_K.gguf",
-                     "Q2_K (Q2K-Q8), 7.2 GB — the Flow Z13 reference's pick; on the "
-                     "Halo it is what trips the co-resident floor"),
-                    ("none", "no speculation — frees the whole drafter, costs DSpark's ~1.4x decode"),
-                ),
-                description="On the Halo the drafter is what does or doesn't fit: "
-                            "measured 2026-08-14 with Qwen resident and the full "
-                            "ARIA stack up, Q2_K on the Halo left 7.3 GiB and tripped "
-                            "the OOM guard 20 MiB short; DRAFT=none left 20.0 GiB. "
-                            "Since 2026-08-15 the drafter lives on the R9700 "
-                            "(draft_device=Vulkan0), where it is VRAM, not RAM.",
-            ),
-            LaunchParam(
-                name="draft_device", env="DRAFT_DEV", label="Drafter device", kind="enum",
-                default="Vulkan1",
-                choices=(
-                    ("Vulkan1", "Strix Halo — the target's device; the only placement "
-                                "that loads on Nathan v0.6.1. Costs the drafter's size "
-                                "in system RAM (tripped the co-resident floor 2026-08-14)."),
-                    ("Vulkan0", "R9700 — ABORTS on v0.6.1 while the target is on "
-                                "Vulkan1: the DSpark head shares the target's "
-                                "output.weight ('pre-allocated tensor (output.weight) "
-                                "in a buffer (Vulkan1) that cannot run the operation', "
-                                "measured 2026-08-15). Only meaningful once the target "
-                                "is itself split onto Vulkan0."),
-                ),
-                description="Where the DSpark drafter is loaded. Draft and target "
-                            "must share a device on this fork; the standing profile "
-                            "therefore runs with DRAFT=none rather than a "
-                            "drafter the Halo cannot afford beside Qwen.",
-            ),
-            LaunchParam(
-                name="runtime_version", env="VER", label="Runtime version", kind="enum",
-                default="v0.6.1",
-                choices=(
-                    ("v0.6.1", "validated line — the only bundle installed"),
-                    ("v0.6.3-beta1", "sparse-attention prefill; bundle NOT present on this box"),
-                ),
-            ),
-            LaunchParam(
-                name="device", env="DEV", label="Vulkan device", kind="enum",
-                default="Vulkan1",
-                choices=(
-                    ("Vulkan1", "Strix Halo iGPU — the only correct choice for a 97 GiB model"),
-                    ("Vulkan0", "R9700 (32 GiB) — will spill ~78 GiB over OCuLink; ~1.65 t/s"),
-                ),
-                description="RADV enumeration is INVERTED on this box relative to "
-                            "every reference guide, which is why this is explicit.",
-            ),
-            LaunchParam(
-                name="cache_ram", env="CACHE_RAM", label="Prompt cache (MiB)", kind="int",
-                default="1024",
-                description="Host-RAM prompt cache. llama.cpp's own default is "
-                            "8192 MiB, which drains headroom at ~0.37 GiB/min and "
-                            "trips the OOM guard — hence the 1024 floor here. Raise "
-                            "it only when the box is quiet.",
-            ),
-            _PARAM_PORT,
-        ),
-        ctx_param="ctx",
-        # 97 GiB of weights, plus KV, plus whatever drafter is selected. The
-        # gate biases to the larger of this and the last measured value, and
-        # the launcher's own MemAvailable floor is the real backstop.
-        resident_gib=100,
-        exclusive_with=_exclusive_with("DS4-0731-IQ3_XXS-Halo-Vulkan"),
-        consumers_note="THE CODING-AGENT MODEL since 2026-08-15T16:35: pi provider "
-        "'llama-cpp' -> :8108 (contextWindow 120000). Hermes keeps 'ds4-halo' as a "
-        "NON-default provider (its default moved to Qwen3.8 on :8080); a Hermes turn "
-        "here evicts pi's warm prefix — one slot, one consumer by design.",
-    ),
-    ModelServerSpec(
         slug="DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
         description="DeepSeek V4 Flash 0731 UD-IQ3_S (108 GiB) SPLIT ACROSS BOTH "
         "GPUs — Strix Halo iGPU + Radeon AI PRO R9700 — on stock mainline llama.cpp "
@@ -662,7 +514,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         parameters=(
             LaunchParam(
                 name="min_start_kib", env="DS4_MIN_START_KIB",
-                label="Start-time MemAvailable floor (KiB)", kind="int", default="",
+                label="Start-time MemAvailable floor (KiB)", kind="int",
+                default="113246208",
                 description="deepseek-v4-safe-launch.sh refuses to start below this. Its "
                             "default is 113246208 KiB = 108 GiB, which is a conservative "
                             "START gate, NOT the anti-OOM guard — DS4_MIN_RUN_KIB (12 GiB) "
@@ -675,7 +528,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             ),
             LaunchParam(
                 name="min_run_kib", env="DS4_MIN_RUN_KIB",
-                label="Run-time MemAvailable floor (KiB)", kind="int", default="",
+                label="Run-time MemAvailable floor (KiB)", kind="int",
+                default="12582912",
                 description="THE anti-OOM guard: the launcher kills the server if "
                             "MemAvailable falls below this while running (exit 42). Default "
                             "12582912 KiB = 12 GiB. DUAL-SERVING.md already lowers it to "
@@ -689,9 +543,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             ),
             LaunchParam(
                 name="runtime", env="RUNTIME_DIR", label="llama.cpp build", kind="enum",
-                default="",
+                default="/home/ben/Development/infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch",
                 choices=(
-                    ("", "runtime/mainline-hip-dualarch — build 10423, commit a94d563ed"),
+                    ("/home/ben/Development/infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch",
+                     "runtime/mainline-hip-dualarch — build 10423, commit a94d563ed"),
                     ("/home/ben/Development/infrastructure/llamacpp-src/build-hip-cub/bin",
                      "build-hip-cub — build 10432, commit 9ce67ae55 = a94d563ed + PR #26592 "
                      "(hipCUB argsort/top_k), the arm for the ~16K prefill hang"),
@@ -966,7 +821,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         exclusive_with=_exclusive_with("DS4-0731-Q8Protected-Halo-DwarfStar"),
         consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
         "not cut over: Hermes, pi-coding and ARIA still point at :8108 "
-        "(DS4-0731-IQ3_XXS-Halo-Vulkan). Cutover is a separate, deliberate step.",
+        "(DS4-0731-Q8Protected-Halo-DwarfStar). Cutover is a separate, deliberate step.",
     ),
     ModelServerSpec(
         slug="DS4-0731-REAP150B-MXFP4",
@@ -1017,7 +872,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         ctx_param="ctx",
         slots_param="slots",
         # ~79 GB weights + KV + buffers. THE POINT of this entry: at ~18 GB less than
-        # DS4-0731-IQ3_XXS-Halo-Vulkan it leaves ~28 GiB of host headroom with the dGPU
+        # DS4-0731-Q8Protected-Halo-DwarfStar it leaves ~28 GiB of host headroom with the dGPU
         # model resident, where the 97 GB one left ~0.4 GiB and tripped its OOM guard
         # three times on 2026-08-16 under benchmark load.
         resident_gib=84,
@@ -1432,7 +1287,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "~/ds4-mainline-dspark/ tree no longer exists (checked 2026-08-14). This "
         "profile was not migrated in the infrastructure consolidation — nothing "
         "under infrastructure/ carries the IQ2_M target or its Q8_0 drafter. Use "
-        "DS4-0731-IQ3_XXS-Halo-Vulkan or DS4-0731-IQ3_S-Hybrid-ROCm-Dual instead.",
+        "DS4-0731-Q8Protected-Halo-DwarfStar or DS4-0731-IQ3_S-Hybrid-ROCm-Dual instead.",
         consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
         endpoint_override="http://100.123.245.84:8107/v1",
     ),
@@ -3235,7 +3090,7 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
 
 
 def check_pi_slot_budget(
-    slug: str = "DS4-0731-IQ3_XXS-Halo-Vulkan",
+    slug: str = "DS4-0731-Q8Protected-Halo-DwarfStar",
 ) -> Optional[str]:
     """Complaint string if the coding-session cap over-subscribes the server's
     slots, else None.

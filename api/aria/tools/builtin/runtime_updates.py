@@ -100,7 +100,7 @@ TRACKED: list[dict[str, Any]] = [
         "name": "Nathan's llama.cpp Strix Halo Vulkan fork",
         "kind": "manual",
         "current": "build 10350 (3be50ccc2)",
-        "why": "Binary drop at infrastructure/ds4-halo-xxs/runtime/nathan-v0.6.1/vulkan — "
+        "why": "Binary drop at infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch — "
                "there is NO source tree or tracked remote on this box, so it CANNOT be "
                "checked automatically. Still serves :8108 (DS4 IQ3_XXS) and is the only "
                "runtime here that implements the DS4 Vulkan kernels mainline disables.",

@@ -24,7 +24,7 @@ export function pct(value?: number | null, digits = 0): string {
 
 /**
  * Machine slugs discriminate at BOTH ends
- * (`DS4-0731-Q8Protected-Halo-DwarfStar` vs `DS4-0731-IQ3_XXS-Halo-Vulkan`), so
+ * (`DS4-0731-Q8Protected-Halo-DwarfStar` vs `DS4-0731-IQ3_S-Hybrid-ROCm-Dual`), so
  * a trailing ellipsis destroys exactly the part that identifies them. Middle
  * truncation keeps both.
  */
