@@ -56,3 +56,26 @@ Corsair cannot reach (no read access to `/Users/devboxsvc`, no passwordless sudo
   `systemctl --user stop` (not via ARIA) and is still stopped — it cannot coexist with
   Flash-Next on the Halo. Radiance was also stopped/restarted locally for the dual-GPU test and
   is back up. If ARIA's view of either is stale, a `status` through the actuator refreshes it.
+
+## Hermes provider cleanup (added 2026-08-26 evening)
+
+`docs/ops/hermes-providers-cleanup-20260826.py` does step 3 above and prunes the provider list to
+what ARIA can actually start today. As `devboxsvc`:
+
+```
+python3 docs/ops/hermes-providers-cleanup-20260826.py            # dry run, prints the diff
+python3 docs/ops/hermes-providers-cleanup-20260826.py --apply    # backs up, rewrites model:/providers: only
+launchctl kickstart -k system/com.ben.devbox.hermes-gateway
+```
+
+Result: default `custom:qwen38-flash` / `qwen3.8-flash-next`; providers `qwen38-flash`,
+`qwen38-r9700`, `ds4-halo` (model list fixed to `deepseek-v4-flash`), `gemma-aux`, `aria`
+(pruned from 15 entries to the 4 registered slugs + `aria-resident`). Unknown provider keys are
+kept. Every other section is passed through byte-for-byte and re-verified after the splice.
+It was dry-run and apply-tested against the pre-migration reference copy of the config on Corsair
+(`~/.hermes/config.yaml`, 2026-08-18); the live devboxsvc copy may differ slightly, so read the
+dry-run diff first.
+
+⚠️ Every `auxiliary:` task and `fallback_model` point at Gemma on `:8104`, which is currently
+**stopped** on Corsair (gemma-4-e4b-Q4, host-RAM pool, 8 GB — it fits beside Flash-Next +
+Radiance). Start it through ARIA or those auxiliary calls keep failing.
