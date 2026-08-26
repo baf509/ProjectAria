@@ -407,6 +407,7 @@ def _pairs_between(
 # 124 GiB pool, so any two of them overflow it.
 _HALO_BIG = (
     "DS4-0731-Q8Protected-Halo-DwarfStar",
+    "Qwen3.8-Flash-Next-IQ4_XS-Halo",
     "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -822,6 +823,94 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
         "not cut over: Hermes, pi-coding and ARIA still point at :8108 "
         "(DS4-0731-Q8Protected-Halo-DwarfStar). Cutover is a separate, deliberate step.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-Flash-Next-IQ4_XS-Halo",
+        runtime_family="llamacpp",
+        bench_decode_tok_s=22.0,
+        bench_prefill_tok_s=463.0,
+        bench_at="2026-08-26",
+        bench_note="llama-bench on the Halo alone (HIP, -fa on, -ub 2048), Radiance running "
+        "on the R9700: tg128 22.0 shallow / 18.4 at 16K depth; pp512 426, pp2048 463 "
+        "(-ub 2048 is +19% over 512; -b is irrelevant), pp8192 404 / 273 at 16K depth. "
+        "Server-side decode at ~20K depth measured 12.5 (a 20K-token prompt at 352 pp) — "
+        "the gap to llama-bench's 18.4 is NOT isolated yet. Vulkan on the same commit: "
+        "+8% decode, -9% prefill; HIP chosen. Dual-GPU split (-ts 33/16 on the R9700, "
+        "pipeline parallelism OFF) measured +10-20% and was NOT adopted: it costs the "
+        "R9700, i.e. Radiance. ⚠️ With pipeline parallelism ON any two-device run halves "
+        "decode (11-13 t/s) and the split server segfaulted at 35K prefill (QSA compute "
+        "buffer OOM on the R9700).",
+        description="Qwen3.8-Flash-Next — Qwen's Qwen4-architecture preview "
+        "(general.architecture=qwen4exp): 125B/6B-active MoE, 512 experts top-10 + shared, "
+        "36 Gated-DeltaNet + 12 Qwen-Sparse-Attention layers, a 51B n-gram (PLE) embedding "
+        "table, 262,144 native context. Unsloth UD-IQ4_XS (87.24 GiB, imatrix): experts "
+        "~4-bit, n-gram table IQ4_NL 26.8 GiB, dense Q8_0. Beats Qwen3.8-27B on nearly "
+        "every published row (DeepSWE 58.7 vs 42.2, SWE-bench Multilingual 81.0 vs 73.8, "
+        "Toolathlon 73.5 vs 67.1, JobBench 55.7 vs 33.4).\n"
+        "Halo-only. Only the 12 QSA layers carry KV (~2.1 GiB per 64K ctx incl. the "
+        "indexer cache), so 256K is the standing default: measured 19 GiB spare idle and "
+        "17 GiB after a 20K-token prompt with Radiance up. Thinking is ON by default; "
+        "clients disable it per request with chat_template_kwargs.enable_thinking=false "
+        "(then use Qwen's non-thinking sampling: temp 0.7, top_p 0.8, top_k 20, "
+        "presence_penalty 1.5).\n"
+        "⚠️ No mmproj (vision) and no MTP GGUF published yet — text only, no speculation. "
+        "Quality probes 2026-08-26: greedy code output identical to a Halo-only reference "
+        "for ~1350 tokens (its own asserts pass), jug puzzle solved in thinking mode, "
+        "needle-in-haystack at 42K tokens answered correctly.\n"
+        "The 103.7 GiB UD-Q4_K_XL is also on disk (fits Halo-only at <=64K with 7 GiB "
+        "spare, 20.8 tok/s) but is not served.",
+        runtime_repo="https://github.com/unslothai/llama.cpp (branch qwen4exp/qwen3.8-flash-next)",
+        runtime_ref="infrastructure/llamacpp-qwen4exp — git worktree of llamacpp-src on the "
+        "Unsloth branch, commit 035e22731 (build 10656), built at build-hip/ for "
+        "gfx1151;gfx1201 with ROCm 7.2.4 (GGML_HIP_GRAPHS on, VMM off). ⚠️ Upstream "
+        "llama.cpp master has NO qwen4exp yet (2026-08-26): ggml-org PR #27742 (Unsloth, "
+        "draft — this branch) and #27739 (Qwen) compete, and they name the n-gram tensor "
+        "differently (per_layer_token_embd vs ple_ngram_embd), so the Unsloth GGUFs load "
+        "only on the Unsloth branch. Re-verify the tensor names before moving the worktree.",
+        backend_device="ROCm1 (Strix Halo iGPU, gfx1151), llama.cpp HIP — selected with -dev, "
+        "HIP_VISIBLE_DEVICES deliberately unset",
+        devices=("Strix Halo iGPU (ROCm1)",),
+        memory_pool=POOL_HALO,
+        deployment="qwen3.8-flash-next",
+        model_file="models/llm/Qwen3.8-Flash-Next-UD-IQ4_XS-GGUF/"
+        "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+        port=8120,
+        systemd_unit="qwen3.8-flash-next.service",
+        launch_script="qwen3.8-flash-next/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="CTX", label="Context", kind="int", default="262144",
+                description="KV is cheap on this arch: only 12 of 48 layers have one. "
+                            "Measured per 64K: 1536 MiB QSA KV + 576 MiB indexer cache = "
+                            "~2.1 GiB. 262144 -> ~8.4 GiB; 19 GiB spare idle with Radiance "
+                            "up. ⚠️ QSA compute buffers grow with prefill length (a 6 GiB "
+                            "reallocation was observed at 35K tokens), so keep >=10 GiB spare.",
+            ),
+            LaunchParam(
+                name="slots", env="SLOTS", label="Slots", kind="int", default="1",
+                description="Per-slot KV multiplies the ~2.1 GiB/64K figure. Untested above 1.",
+            ),
+            LaunchParam(
+                name="ubatch", env="UBATCH", label="Batch / micro-batch", kind="int",
+                default="2048",
+                description="Prefill lever: 512 -> 388, 1024 -> 443, 2048 -> 463, 4096 -> 459 "
+                            "tok/s at pp2048. 2048 is the knee; -b is set equal to it.",
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        # Measured 2026-08-26 at 65536 x 1 slot with --no-mmap: 61.2 GiB ROCm + 26.8 GiB
+        # host-side n-gram table + 0.6 host + 2.1 KV + 0.4 RS/compute = 91.2 GiB
+        # (MemAvailable delta 90). At 262144: ~97.5 GiB, 19 GiB spare observed.
+        resident_gib=98,
+        weights_gib=87.24,
+        kv_kib_per_token=33.0,
+        overhead_gib=3.0,
+        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-IQ4_XS-Halo"),
+        consumers_note="Hermes default model as of 2026-08-26 (provider qwen38-flash -> :8120); "
+        "Radiance (:8080) stays up on the R9700 as ARIA's steward/LLAMACPP_URL target and the "
+        "vision-capable fallback.",
     ),
     ModelServerSpec(
         slug="DS4-0731-REAP150B-MXFP4",
