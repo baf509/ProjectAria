@@ -581,6 +581,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # split; the remaining layers plus the 8.3 GiB drafter live in the
         # R9700's own VRAM and are gated separately.
         resident_gib=88,
+        startable=False,
+        not_startable_reason=(
+            "DRAFTER DELETED 2026-08-26: ds4-hybrid/draft/ (DSpark Q3KExperts-Q8Dense, 8.3 GiB) is gone and serve.sh hard-requires it (--spec-type draft-dspark). The split was superseded anyway: Flash-Next is the Halo resident and its own dual-GPU split measured only +10-20%. Runtime bundle intact."
+        ),
         exclusive_with=_exclusive_with("DS4-0731-IQ3_S-Hybrid-ROCm-Dual"),
         consumers_note="unbound — the quality-per-speed DS4 option when the R9700 "
         "is free. Known limit: a single ~16K-token prefill can hang (both GPUs "
@@ -819,6 +823,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # gemma at 500). That is a deliberate volunteer, not an accident.
         resident_gib=100,
         weights_gib=80.76,
+        startable=False,
+        not_startable_reason=(
+            "WEIGHTS DELETED 2026-08-26 (80.76 GiB reclaimed): models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/ is gone. Qwen3.8-Flash-Next-IQ4_XS-Halo replaced it as the Halo resident the same day (22 vs 15 tok/s decode, 463 vs 210 prefill, and it beats DS4 on the published agentic rows). The DwarfStar runtime checkout and dwarfstar-ds4/serve.sh are intact; re-download the GGUF to revive."
+        ),
         exclusive_with=_exclusive_with("DS4-0731-Q8Protected-Halo-DwarfStar"),
         consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
         "not cut over: Hermes, pi-coding and ARIA still point at :8108 "
@@ -1513,7 +1521,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=70,
         exclusive_with=_exclusive_with("Ling-3.0-flash-MXFP4"),
         startable=False,
-        not_startable_reason="Weights present, RUNTIME GONE: the bailingmoe3 bundle "
+        not_startable_reason="Weights ALSO DELETED 2026-08-26 (66 GiB reclaimed, incl. the model-distros link); RUNTIME GONE: the bailingmoe3 bundle "
         "under runtime-bundles/ling-3.0-flash/ was removed in the 2026-08-11..14 "
         "consolidation and was not relocated. Ling needs that fork specifically — "
         "the ports of PR ggml-org/llama.cpp#26608 are not in any installed build. "
@@ -1552,7 +1560,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=68,
         exclusive_with=_exclusive_with("Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
         startable=False,
-        not_startable_reason="Weights present, RUNTIME GONE: the rocmfp4-mtp bundle "
+        not_startable_reason="Weights ALSO DELETED 2026-08-26 (65 GiB reclaimed, incl. the model-distros link); RUNTIME GONE: the rocmfp4-mtp bundle "
         "was removed in the 2026-08-11..14 consolidation. The chadrock-rocmfpx:latest "
         "image is still on the box but is a DIFFERENT lineage (ciru-ai, not "
         "charlie12345 @ d3ca53726) and is not known to carry BailingMoeV3 — do not "
@@ -1698,6 +1706,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         container_name="qwen3.6-27b-Q8",
         profile="qwen",
         resident_gib=30,
+        startable=False,
+        not_startable_reason=(
+            "WEIGHTS DELETED 2026-08-26 (27 GiB reclaimed): models/llm/Qwen3.6-27B/Qwen3.6-27B-Q8_0.gguf and the model-distros/qwen3.6-27b-Q8 link are gone. Superseded by Qwen3.8-27B Radiance on the R9700."
+        ),
         exclusive_with=_exclusive_with("qwen3.6-27b-Q8"),
     ),
     ModelServerSpec(
@@ -1817,7 +1829,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=90,
         exclusive_with=_exclusive_with("Step-3.7-Flash-APEX-I-Compact"),
         startable=False,
-        not_startable_reason="Weights and mmproj present, RUNTIME GONE: the "
+        not_startable_reason="Weights and mmproj ALSO DELETED 2026-08-26 (models/llm/Step-3.7-Flash-APEX/, 88 GiB reclaimed); RUNTIME GONE: the "
         "step-3.7-flash rocmfp4-mtp bundle was removed in the 2026-08-11..14 "
         "consolidation. This is the only multimodal model on the box, so reviving "
         "the bundle is what restores vision.",
@@ -1843,7 +1855,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=100,
         exclusive_with=_exclusive_with("Step-3.7-Flash-APEX-I-Quality"),
         startable=False,
-        not_startable_reason="Both the runtime bundle AND the I-Quality GGUF were "
+        not_startable_reason="The whole models/llm/Step-3.7-Flash-APEX/ folder was deleted 2026-08-26; earlier, both the runtime bundle AND the I-Quality GGUF were "
         "removed in the 2026-08-11..14 consolidation (checked 2026-08-14); only "
         "I-Compact's weights survive.",
         consumers_note="unbound — added 2026-08-08; offload sizing unverified",
