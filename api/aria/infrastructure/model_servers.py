@@ -583,7 +583,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=88,
         startable=False,
         not_startable_reason=(
-            "DRAFTER DELETED 2026-08-26: ds4-hybrid/draft/ (DSpark Q3KExperts-Q8Dense, 8.3 GiB) is gone and serve.sh hard-requires it (--spec-type draft-dspark). The split was superseded anyway: Flash-Next is the Halo resident and its own dual-GPU split measured only +10-20%. Runtime bundle intact."
+            "WEIGHTS AND DRAFTER DELETED 2026-08-26 (109 + 8.3 GiB reclaimed): ds4-hybrid/model/UD-IQ3_S/ and ds4-hybrid/draft/ are gone, and serve.sh hard-requires it (--spec-type draft-dspark). The split was superseded anyway: Flash-Next is the Halo resident and its own dual-GPU split measured only +10-20%. Runtime bundle intact."
         ),
         exclusive_with=_exclusive_with("DS4-0731-IQ3_S-Hybrid-ROCm-Dual"),
         consumers_note="unbound — the quality-per-speed DS4 option when the R9700 "
