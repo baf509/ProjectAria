@@ -2,10 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Current deployment boundary (verified 2026-08-27):** ARIA, MongoDB/mongot,
+> Hermes/Signal, the UI, administrative state, and supporting services run on
+> Ben's MacBook Pro. Default Claude/Codex/Pi execution, active agent worktrees,
+> Emulator SSH, Qwen model runtimes, model engineering, and benchmarks run on
+> Corsair. Mac terminal wrappers route mapped projects to Corsair; `--local` is
+> the explicit native exception. The Mac source tree and the deployed
+> `/Users/devboxsvc/Services` copy are separate; source changes are not deployed
+> until the service copy is refreshed. Canonical live architecture:
+> `/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md`.
+
 ## Quick Start for New Sessions
 
 **Always start by reading these files in order:**
-0. **`vault/ProjectAria/START_HERE.md`** — what this system is and how it decides things,
+0. **`/Users/ben/Obsidian/ProjectAria/START_HERE.md`** — what this system is and how it decides things,
    in plain English, in about five minutes. Read it first if you have not worked on ARIA
    before; it is also the map of which vault docs are current and which are historical.
 1. `CHANGELOG.md` (last 50 lines) — what actually shipped, most recent first.
@@ -13,22 +23,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    page that duplicated CHANGELOG and drifted: on the evening the steward layer shipped it
    still asserted that one item was in progress. A status page nobody updates in the same
    commit as the work is worse than no status page — read the changelog and the live API.)*
-2. **`vault/ProjectAria/Design/ARCHITECTURE.md`** — how it is built: the agent-safety
+2. **`/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md`** — how it is built: the agent-safety
    subsystems, the memory schema, the fleet. *(`SPECIFICATION.md` was deleted 2026-08-15;
    about 90% of it described a system that was never built or was rebuilt, and what was true
    now lives in ARCHITECTURE.md or here.)*
 
-> **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault at `/home/ben/Obsidian/vault/ProjectAria/` (synced to all devices). Agent-operational docs (this file, `CHANGELOG.md`, `BACKLOG.md`, `docs/ops/`, READMEs) stay in the repo. See the `project-docs` skill.
+> **Doc routing:** design / spec / analysis / research / planning docs live in the Obsidian vault on the Mac. Agent-operational docs (this file, `CHANGELOG.md`, `BACKLOG.md`, `docs/ops/`, READMEs) stay in the repo.
 >
 > ⚠️ The vault has **both** a `ProjectAria/` and an `infrastructure/` folder. File by what the doc is *about*: agent architecture, routing, ARIA operations → `ProjectAria/`; how a model is built, quantized, tuned or measured → `infrastructure/`. (`HOUSE_AGENT_ARCHITECTURE_20260815` moved `infrastructure/Planning` → `ProjectAria/Planning` on 2026-08-15 for exactly this reason.)
 
 ## Working set: the `infrastructure` repo
 
-**ARIA orchestrates `~/Development/infrastructure`. Treat it as part of your working set, not
-as an external dependency you merely read.** This repo is the **control plane** — what runs,
-when, and how it loads; `infrastructure/` is the **data plane** it drives (compose project,
-per-deployment folders, weights, `endpoints.env`, `CATALOG.md`). The cross-repo map is in
-`~/Development/CLAUDE.md`; `infrastructure/CLAUDE.md` says the same from the other side.
+ARIA orchestrates the model artifacts represented by
+`/Users/ben/Development/Infrastructure/CorsairModelHost`. This repo is the
+canonical **control plane** on the Mac; Corsair's `/home/ben/Development/infrastructure`
+is the deployed hardware **data plane**.
 
 ⚠️ **They are two git repos, not submodules.** A deployment change usually touches both —
 **commit in both**, and say so. Editing `infrastructure/` and committing only here leaves the
@@ -37,7 +46,7 @@ change half-recorded.
 **A deployment ARIA does not know about is not deployed; it is a folder.** So adding or
 changing one is *always* a two-repo job:
 
-1. **Artifacts in `infrastructure/`** — a self-contained `<slug>/` folder (`model/`,
+1. **Artifacts in `CorsairModelHost/` and the deployed Corsair data plane** — a self-contained `<slug>/` folder (`model/`,
    `runtime/`, `serve.sh` whose env knobs ARE the "how"), plus its compose entry or systemd
    unit. Deployments with a `serve.sh` but no unit get an ARIA-generated
    `aria-model-<slug>.service`.
@@ -56,16 +65,16 @@ Retiring a deployment is the mirror image: set `startable=False` **with a stated
 rather than deleting the entry — the reason is the record of what happened, and deleting it
 invites re-adding a model that is already here.
 
-⚠️ **Never hand-run `docker`/`systemctl`/`serve.sh`** to start or stop any of this; the
-registries enforce RAM exclusivity, per-pool fit and port conflicts that a raw `docker start`
-does not (rule since 2026-07-29 — see *Current model topology* below).
+⚠️ **Use ARIA's restricted actuator for routine production lifecycle changes.** Direct
+`systemctl`/runtime work on Corsair is the explicit model-development or break-glass path.
+When that path promotes a model, updating the Corsair unit is only half the job: update and
+deploy ARIA's registry, tests, and the Mac forwarding route in the same reviewed change.
+The registry is what enforces RAM exclusivity, per-pool fit, and port conflicts.
 
-> **Spawning an agent for this work:** start it in **this repo**, not in `infrastructure/` —
-> here it inherits the registry rules, the topology, and this recipe. Note that
-> `start_coding_session` defaults to `coding_default_workspace`
-> (`/home/ben/Development/aria-projects`), so an ARIA-spawned session lands in *neither* repo
-> unless you pass `workspace=/home/ben/Development/ProjectAria` explicitly. Do pass it, and
-> state in the prompt that the task spans both repos.
+> **Spawning an agent for this work:** default coding agents run on Corsair. Pass
+> the intended Corsair workspace explicitly and treat reviewed Git commits—not
+> whichever dirty checkout was edited last—as source authority. A native Mac
+> session is an operator exception (`--local`) and inherits Ben's access.
 
 ## Architecture Overview
 
@@ -75,7 +84,7 @@ orchestration — capabilities a human or agent *drives*, not something a human
 chats with directly.
 
 > **Since 2026-08-15 it is also the STEWARD** (approved plan:
-> `vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md`). The line against
+> `/Users/ben/Obsidian/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md`). The line against
 > Hermes is now explicit: **any loop that runs while Ben is not talking lives in ARIA code; any
 > text Ben reads or writes goes through Hermes (short, typed) or the Obsidian vault (long,
 > editable).** Hermes holds no project state and no supervision policy — the loops that used to
@@ -87,11 +96,10 @@ default chat agent was disabled):**
 - **Hermes** (a separate agent, its own service) is the sole conversational/
   orchestrating agent between a human and ARIA. It reaches ARIA entirely
   through the **MCP server** (`mcp/server.py`) — ~40 tools wrapping `/api/v1`.
-  When ARIA needs a new capability exposed to Hermes, add the MCP tool here
-  and restart `hermes-gateway.service`; the `aria` MCP connection in Hermes's
-  config has no per-tool whitelist, so a new tool becomes available on that
-  restart alone — no separate Hermes-side registration needed (only Hermes's
-  own *native* toolsets are explicitly whitelisted, for token-budget reasons).
+  When ARIA needs a new capability exposed to Hermes, add the MCP tool here,
+  deploy the source into the Mac service tree, and restart the
+  `com.ben.devbox.hermes-gateway` LaunchDaemon through the service tooling. A
+  source edit alone does not update the deployed gateway.
 - **The TUI is a direct operator cockpit** — a human drives ARIA's primitives
   (shells, coding sessions, fleet status) by hand, with no agent in the loop.
   This is manual control, not chat; it doesn't need and isn't meant to have an
@@ -106,15 +114,19 @@ default chat agent was disabled):**
   coding sessions) remain enabled — only the general-purpose default persona
   is off.
 
-ARIA is the **single always-on service** on this host (`corsair-ai`). It listens on
-**:8200** and has absorbed the former standalone `aria-shells` service — the
+ARIA is the **single always-on control-plane service** on this Mac. It listens
+on loopback **:8200** and has absorbed the former standalone `aria-shells` service — the
 watched-shells / fleet subsystem now lives here (see *Watched Shells & Fleet*
 below). The `aria-shells` repo is retained only as reference.
 
 **Key principles:**
-- **Linux service only** — ARIA runs exclusively as a service on a Linux machine. There is no native mobile/iOS client; the TUI/CLI/Web UI are operator/admin surfaces, not the primary way to interact with ARIA — that's Hermes, via the MCP server.
+- **Mac control plane, Linux compute/agent data plane** — ARIA runs natively on
+  the Mac; MongoDB/mongot run in the Mac's Linux VM. Corsair runs model runtimes,
+  default coding agents/worktrees, Emulator workflows, and restricted remote
+  management components.
 - **No framework dependencies** — No LangChain, LlamaIndex, LangGraph, or AutoGen. Direct API integration only.
-- **Single-user design** — Personal agent, no multi-tenancy or auth.
+- **Single-owner design** — Personal control plane, not a multi-tenant service. API and
+  administrative operations still use their configured credentials and tailnet boundary.
 - **LLM agnostic** — Adapter pattern for local llama.cpp servers, context-1, Anthropic, OpenAI, OpenRouter, and Fireworks. Backend + model are selected **per agent**.
 - **Local-capable** — the default agents run on a **local** open-weights model on the GPU box; cloud backends are opt-in per agent.
 - **MongoDB 8.2 + mongot** — Self-hosted vector search without Atlas subscription.
@@ -137,7 +149,11 @@ User Message → API (FastAPI) → Orchestrator
 
 **Both retrieval dependencies are switchable at runtime** (`memory/capabilities.py`, added 2026-08-15). mongot (`search`) and the embeddings model (`embeddings`) are independent switches, persisted in a fixed-`_id` doc (`db.capabilities`/`_id=retrieval`) exactly like the killswitch — so a capability switched off **stays off across an `aria-api` restart**; `EMBEDDINGS_ENABLED`/`SEARCH_ENABLED` in `.env` are boot defaults only, never an override. Runbook: **`docs/ops/RETRIEVAL_CAPABILITIES.md`**.
 
-> ⚠️ **BOTH ARE CURRENTLY OFF (since 2026-08-15T17:19-04:00).** `retrieval_mode` is **`fallback`**: every memory search is served by the mongod-native scan, with no BM25 and no vectors. `shared-embeddings` is **stopped**; `shared-mongot` is still running but receives no queries (it is shared with AgentBenchPlatform, so stopping the container is a cross-project call). **826 memories + 21 ontology entities are queued for re-embedding** and drain automatically when `embeddings` is switched back on. **Check `GET /api/v1/capabilities/retrieval` before concluding that recall is broken** — degraded recall is the expected state right now, not a bug.
+> **Historical state, 2026-08-15:** both retrieval capabilities were off and the system ran
+> in fallback mode. That is not the current health claim: the 2026-08-27 Mac health probe
+> reports MongoDB and embeddings connected. Use the authenticated
+> `GET /api/v1/capabilities/retrieval` response for the persisted live switches and queue,
+> rather than copying the old counts from this document.
 
 - **Recall degrades, it does not fail.** `embeddings off` → BM25-only (no query embedding computed at all); `search off` → a mongod-native fallback scan (token overlap + importance). `retrieval_mode` (`hybrid`|`lexical`|`fallback`) is the one field that says what a search will actually do. The same fallback now also catches an *unswitched* dead mongot: search branches raise `SearchBranchUnavailable` instead of returning `[]`, so "nothing matched" and "could not answer" are no longer the same thing — the second used to yield silent empty recall.
 - **Writes never wait on either.** A memory that can't be embedded is stored with `embedding_pending: true`; that flag **is the backfill queue**. `memory/backfill.py` drains it on a timer *and* immediately when embeddings are switched back on — so "turn it back on" and "catch up on what was missed" are one action. It also covers `embedding: null` docs predating the flag and un-embedded ontology entities. Vector dedup needs mongot; while it's off, `create_memory` falls back to exact-content dedup (the machine emitters re-emit identical text routinely).
@@ -153,8 +169,17 @@ All backends implement `LLMAdapter` base class (`api/aria/llm/base.py`):
 
 Adapters: `llamacpp.py`, `context1.py`, `anthropic.py`, `openai.py`, `openrouter.py`, `fireworks.py`. The OpenRouter and Fireworks adapters use the OpenAI SDK internally (OpenAI-compatible); `fireworks.py` subclasses `OpenRouterAdapter` to reuse its GLM reasoning-mode handling. Manager (`manager.py`) handles backend selection and fallback chain.
 
-**Current model topology** (the agents are config rows in `db.agents` — read them, don't trust this list blindly; rewritten **2026-08-14** for the two-GPU box — full detail in `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md`):
-- **TWO GPUs, two separate memory pools — this is the governing fact now.** An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB of its own VRAM) sits alongside the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). A model on one does **not** compete with a model on the other, so the normal deployment is **one of each**: DS4 Flash on the Halo + Qwen3.8-27B on the R9700, both resident, verified live 2026-08-14 (`infrastructure/DUAL-SERVING.md`). ⚠️ **DRM enumeration is inverted from what you would guess**: `card0` = R9700 (discrete), `card1` = Strix Halo. The old hardcoded `/sys/class/drm/card0/.../mem_info_gtt_*` read therefore reported the *dGPU's* near-empty pool while the Halo held ~98 GiB; `infrastructure/gpu_devices.py` classifies cards by VRAM instead and reports **per pool**, and `model_servers.py` + `selfcheck.py` both gate on the pool a server actually draws from. ⚠️ **`Vulkan0` now means the R9700, not the iGPU** — every compose file written before the dGPU arrived is wrong about its device (those entries are flagged `startable=False` pending an audit). ⚠️ **Start order matters — and it INVERTED on 2026-08-16 when the dGPU moved to vLLM.** The old rule was *dGPU first*, because llama.cpp needed host RAM only transiently to reach VRAM. **vllm-radiance holds ~8–10 GiB of host RAM permanently** (container + runtime), so DS4 can no longer pass its 104.9 GiB `MIN_START_KIB` preflight while radiance is up. **The Halo model must start FIRST now**; radiance second. Getting this wrong is not subtle — DS4's start is simply refused (`preflight rejected: MemAvailable … < 110000000 KiB`).
+**Current model topology — verified 2026-08-27:** Corsair runs
+`qwen3.8-radiance.service` on R9700 `:8080` and
+`qwen3.8-flash-next.service` on Strix Halo `:8120`. DeepSeek principal weights
+were retired/deleted 2026-08-26; disabled registry entries, runtimes, archives,
+and benchmark tools remain. The Mac source registry includes Flash Next, but
+the deployed ARIA API currently omits it and the Mac forward omits `:8120`.
+Treat this as deployment drift until the service copy and route are refreshed.
+
+**Historical model topology detail (2026-08-14 through 2026-08-17; retained for
+measurement rationale, not current placement):**
+- **TWO GPUs, two separate memory pools — the governing hardware fact for this archived period.** An OCuLink **Radeon AI PRO R9700** (`gfx1201`, 32 GiB of its own VRAM) sat alongside the **Strix Halo iGPU** (`gfx1151`, 124 GiB of shared system memory). A model on one did **not** compete with a model on the other, so the then-normal deployment was **one of each**: DS4 Flash on the Halo + Qwen3.8-27B on the R9700, both resident, verified live 2026-08-14 (`infrastructure/DUAL-SERVING.md`). ⚠️ **DRM enumeration is inverted from what you would guess**: `card0` = R9700 (discrete), `card1` = Strix Halo. The old hardcoded `/sys/class/drm/card0/.../mem_info_gtt_*` read therefore reported the *dGPU's* near-empty pool while the Halo held ~98 GiB; `infrastructure/gpu_devices.py` classifies cards by VRAM instead and reports **per pool**, and `model_servers.py` + `selfcheck.py` both gate on the pool a server actually draws from. ⚠️ **`Vulkan0` meant the R9700, not the iGPU** — compose files written before the dGPU arrived were wrong about its device. In that DS4-era deployment, **start order mattered** after the dGPU moved to vLLM: Halo first, Radiance second. This paragraph preserves the measured rationale; it is not a current DS4 startup instruction.
   - ⚠️ **And radiance's *load* can kill a running DS4 even though they share no VRAM.** Streaming its 17.7 GiB checkpoint pushes host-wide `MemAvailable` down; it tripped DS4's 7 GiB OOM-guard floor twice on 2026-08-16, the second time **by 18 MB**. `qwen3.8-radiance.service` therefore carries **`MemoryHigh=24G`** so the kernel reclaims *its own* page cache instead of letting MemAvailable fall globally. Do not remove it, and do not use `MemoryMax` (that would OOM-kill the load rather than throttle it).
 - **Which model, and how it loads, are both selectable.** Each live deployment is a self-contained folder under `infrastructure/` (`ds4-halo-xxs`, `ds4-hybrid`, `ds4-affine`, `qwen-r9700`, `qwen3.8-27b`) holding `model/`, `runtime/`, and a `serve.sh` whose env knobs — device placement, KV type, context, drafter, slots, prompt cache — ARE the "how". The registry declares those knobs as `parameters`, and `start(overrides=...)` applies them **as a systemd drop-in** (`<unit>.d/zz-aria-overrides.conf`, sorts last) rather than by building a command line, so every ExecStartPre guard, the `OOMScoreAdjust=900` backstop and the launcher's MemAvailable floors survive — and the override is a file Ben can read or delete. A start with **no** overrides clears ARIA's drop-in, so a context size chosen for one experiment cannot silently outlive it. Deployments with a `serve.sh` but no unit of their own (`ds4-affine`, `ds4-hybrid`) get an ARIA-generated `aria-model-<slug>.service`, with the guard env declared in the registry entry.
 - **The Halo side, one at a time (86–100 GiB each).** `DS4-0731-IQ3_XXS-Halo-Vulkan` (`:8108`, `ds4-halo-xxs.service`, Nathan's Vulkan fork — it implements the DeepSeek-V4 kernels mainline Vulkan disables, which is why it beats both mainline Vulkan and mainline ROCm here) is the **APU-only** profile — since 2026-08-15T16:35 the **single-slot coding-agent (pi) model** (q8_0 KV, one 131K slot, no drafter; Hermes's default moved to Qwen3.8 on the R9700). `DS4-0731-IQ3_S-Hybrid-ROCm-Dual` (`:18211`, mainline HIP dual-arch) **splits the higher-quality IQ3_S across both cards** (80/20, `PLACEMENT=split|hybrid`). `DS4-0731-ROCmFPX-Affine-Quality` (`:8107`, sealed O5 runtime) is the **quality/long-recall reference** — 238/256 broad, 24/24 long-context, and slow; type-108 tensors load on that runtime ONLY. **`gemma-aux`** (`:8104`, Gemma 4 E4B Q4_0, **CPU-only**) takes Hermes's ~16 auxiliary side-tasks + crons plus ARIA's shell- and ontology-extraction workers, and coexists with anything.
@@ -258,7 +283,7 @@ surface, deliberately deferred pending its own design conversation):
   `project_path` for scoping.
 - **C6 Obsidian** (`integrations/obsidian.py` `ObsidianWriter`): atomic,
   never-clobber, human-edit-guarded markdown into
-  `vault/<RepoName>/<DocType>/`; research reports auto-publish; agents publish
+  `/Users/ben/Obsidian/<RepoName>/<DocType>/`; research reports auto-publish; agents publish
   via `POST /api/v1/obsidian/publish`. Enabled (`OBSIDIAN_ENABLED=true`).
 - **C8 Remote-node run_command** (`node/agent.py`, `ShellService.
   run_node_command`): `{exit_code, output_tail}` over the node command queue —
@@ -313,7 +338,7 @@ read as "stopped on purpose" and silence the alert. A disjointness test
 
 A queryable knowledge graph of Ben's world — machines, services, projects,
 datastores, networks, devices — cross-linked into `aria.memories`. Design:
-`vault/ProjectAria/Design/ARCHITECTURE.md` (Ontology Memory Map). Built 2026-08-07.
+`/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md` (Ontology Memory Map). Built 2026-08-07.
 
 **The rule that shapes everything: project what churns, hand-author what
 doesn't.** The original plan hand-seeded ~40 entities including every service;
@@ -371,16 +396,18 @@ Overview*) — ~40 tools wrapping `/api/v1`:
 - **Model servers** — list_model_servers, **model_server_utilization** (live busy/total slots + queue depth; `saturated` is the field to watch, and `null` there means *unknown* because the server lacks `--metrics`, not "not saturated"), start_model_server, stop_model_server, bind_model_server, unbind_model_server (the local LLM control plane — see *LLM Adapter Pattern* above).
 - **Long-form / trackers** — publish_to_obsidian (guarded markdown into the vault, C6), create_linear_ticket (Signal → Hermes → Linear capture path, C3; 409 while Linear is disabled).
 
-After editing `mcp/server.py`, restart `hermes-gateway.service` to reload the toolset —
-the `aria` MCP connection has no per-tool whitelist on Hermes's side, so this
-restart alone is sufficient; no config.yaml edit is needed to "register" a new tool.
+After editing `mcp/server.py`, deploy it into `/Users/devboxsvc/Services` and restart the
+Mac `com.ben.devbox.hermes-gateway` LaunchDaemon through the service tooling. The `aria` MCP
+connection has no per-tool whitelist on Hermes's side, but restarting without deploying the
+source copy merely reloads the old code.
 
 ⚠️ **That was only true after 2026-08-15.** Hermes launches
 `~/.local/share/aria-mcp/server.py`, which until then was a hand-made **copy** of this
 file — so "edit and restart" reloaded the *old* toolset and the new tool simply never
 appeared. The drift was 19 tools deep when it was found (71 deployed vs 90 here). It is
-now a **symlink to this repo file**, which is what makes the instruction above correct;
-the last copy is kept as `server.py.bak-predeploy-20260815`. If you ever replace the
+was later made a symlink to the Corsair repo. The production Mac deployment now uses a
+separate service copy, so that old symlink is historical; the last copy is kept as
+`server.py.bak-predeploy-20260815`. If you ever replace the
 symlink with a copy, you are reintroducing a failure whose only symptom is a tool that
 "doesn't exist" for no visible reason.
 
@@ -543,7 +570,7 @@ Routes: `/api/v1/alerts` (`?needs_human&undelivered&severity&kind&project`),
 ### Steward Layer (`api/aria/steward/`, `api/aria/guard/`) — added 2026-08-15
 
 The approved plan lives at
-`vault/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md` (decisions D1–D16, phase
+`/Users/ben/Obsidian/ProjectAria/Planning/ARIA_PROJECT_STEWARD_PROPOSAL_20260815.md` (decisions D1–D16, phase
 gates, and the live execution status in §E). **Every worker here is OFF by default** — a phase is
 enabled once its gate passes, so a fresh checkout never starts acting on its own.
 
@@ -570,9 +597,11 @@ all `status=active`, which is why the cockpit's attention score read zero for
 every row.
 
 **Autonomy is per project.** A0 observe · A1 propose (plans, tasks, research;
-no sessions) · A2 execute in a sandboxed worktree, merge proposed to Ben ·
-A3 auto-merge behind the full gate. **Local models cap at A2** until the
-eval gate in the plan's §8 passes.
+no sessions) · A2 execute and propose a merge · A3 auto-merge behind the full
+gate. The sandboxed-worktree description is the intended local guard path, not
+the current remote-Corsair execution path. Remote sessions run as Corsair user
+`ben` without the Mac worktree/bwrap guard; do not claim containment or automatic
+checkpoint guarantees for them.
 
 **Why OS-level containment rather than an allowlist** — the founding rationale for
 `guard/sandbox.py`, written down before it existed: **kernel-level masking of the network and
@@ -606,7 +635,13 @@ silently labelled every memory with zero entities.
 
 ## Shared Infrastructure
 
-ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/` (also used by AgentBenchPlatform). **Must be started first.**
+ARIA's application dependencies run on this Mac: MongoDB/mongot in the Linux
+VM/container and native Mac services where supported. Corsair provides the Qwen3.8 model
+data plane, default coding-agent worktrees, Emulator access, and model engineering through
+managed forwards and the restricted actuator. The pre-migration Corsair service table below is retained as history;
+it is not a startup guide and must not be used to restore those services there.
+
+### Historical pre-migration service and routing reference
 
 | Service | Port | Purpose |
 |---------|------|---------|
@@ -667,17 +702,17 @@ ARIA depends on shared infrastructure at `/home/ben/Development/infrastructure/`
 > `infrastructure/llm_route.py`, `tests/test_llm_route.py`.
 
 ```bash
-# Start shared infra first
-cd /home/ben/Development/infrastructure && docker compose up -d
+# Inspect the Mac system-domain launch services installed by the migration.
+sudo launchctl print system/com.ben.devbox.aria-api
+sudo launchctl print system/com.ben.devbox.aria-ui
 
-# Start ARIA API (native systemd service)
-systemctl --user start aria-api
-
-# Start ARIA Docker services (tts, stt, ui)
-cd /home/ben/Development/ProjectAria && docker compose up -d
+# Verify the Mac control plane.
+curl -fsS http://127.0.0.1:8200/health
+curl -fsS http://127.0.0.1:3000/ >/dev/null
 ```
 
-**Connection string**: `mongodb://mongod:27017/?directConnection=true&replicaSet=rs0`
+MongoDB's connection string is service-managed on the Mac. Do not publish it to
+Corsair or add it to an interactive agent environment.
 
 Search indexes are created via `infrastructure/scripts/init-mongo.js`:
 - `memory_vector_index` — vector search (1024 dims, cosine)
@@ -685,22 +720,18 @@ Search indexes are created via `infrastructure/scripts/init-mongo.js`:
 
 ## Development Commands
 
-### API (FastAPI backend — native systemd service)
+### API (FastAPI backend — production is a Mac LaunchDaemon)
 
 ```bash
-# The API runs natively (not in Docker) for filesystem/process access.
-# Managed via systemd user service:
-systemctl --user start aria-api     # Start
-systemctl --user stop aria-api      # Stop
-systemctl --user restart aria-api   # Restart
-systemctl --user status aria-api    # Check status
-journalctl --user -u aria-api -f   # View logs
+# Inspect the production service. It runs as devboxsvc in the system domain.
+sudo launchctl print system/com.ben.devbox.aria-api
+tail -f /Users/devboxsvc/Services/logs/aria-api.log
 
-# For development with auto-reload (stop the systemd service first, or use a
-# spare port, since the live service already binds :8200):
+# For development with auto-reload, use a spare port. Do not overwrite the
+# deployed /Users/devboxsvc/Services copy or unload production casually:
 cd api
-uvicorn aria.main:app --reload --host 0.0.0.0 --port 8200
-# Docs at http://localhost:8200/docs
+uvicorn aria.main:app --reload --host 127.0.0.1 --port 8201
+# Production docs: http://localhost:8200/docs
 ```
 
 ### UI (Next.js)
@@ -732,20 +763,20 @@ aria memories search "query"
 aria tools list
 aria mcp list
 aria tui                       # launch the Go TUI (the cockpit)
-aria tui --host corsair        # remote cockpit: point at another host (see below)
+aria tui --host http://100.125.251.55:8200  # Mac control plane from another tailnet host
 ```
 
 ### Cross-machine cockpit (TUI)
 
 The Go TUI (`tui/`) is a thin **pure-HTTP** client with no machine-local
 assumptions, so it doubles as a **remote cockpit**: run it on another machine
-(e.g. the MacBook) and point it at corsair over the tailnet — no SSH.
+and point it at the Mac ARIA API over the tailnet — no SSH.
 `aria tui --host <name|host:port|url>` (or `aria-tui --host …` for the raw binary)
 resolves profiles from `~/.config/aria/hosts`; resolution precedence is flag →
 `ARIA_API_URL`/`.env` → `default` profile → `http://localhost:8200`. Build the
 Apple-Silicon binary with `cd tui && make build-darwin` (see **`tui/README.md`**
 for the Taildrop/scp transfer + one-time ad-hoc `codesign` recipe). See *Multi-machine fleet* below for making the *fleet itself* span machines
-(designed in **`vault/ProjectAria/Design/ARCHITECTURE.md`**, Multi-machine fleet).
+(designed in **`/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md`**, Multi-machine fleet).
 
 ### Multi-machine fleet (`api/aria/nodes/`, `api/aria/node/`)
 
@@ -763,16 +794,12 @@ corsair's own shells keep the direct-local fast path (zero regression). Both
 layers are **implemented**; live end-to-end needs an `aria-api` restart. See
 `MCP: list_nodes` + `create_coding_session(host=…)` and the TUI fleet HOST column.
 
-### Docker Compose
+### Docker Compose (development only)
 
 ```bash
-docker compose up -d           # Start ARIA Docker services (tts, stt, ui)
-docker compose ps              # Check health
-docker compose logs -f tts     # View logs
-docker compose down            # Stop
-
-# API is managed separately via systemd:
-systemctl --user start aria-api
+# These commands exercise the repo's development compose definition. They do
+# not manage the production Mac LaunchDaemons.
+docker compose config
 ```
 
 ### Database
@@ -782,16 +809,24 @@ mongosh mongodb://localhost:27017/?directConnection=true&replicaSet=rs0
 # use aria → show collections → db.memories.getSearchIndexes()
 ```
 
-## ARIA Services
+## Production service summary — verified 2026-08-27
 
 | Service | Port | How it runs | Description |
 |---------|------|-------------|-------------|
-| api | 8200 | systemd user service (`aria-api`) | FastAPI backend (native, not Docker). Binds :8200 via a drop-in override (`~/.config/systemd/user/aria-api.service.d/override.conf`); the old :8000 is retired. |
-| ui | 3000 | Docker (docker-compose.yml) | Next.js web UI (built against `NEXT_PUBLIC_API_URL` → :8200) |
-| tts | 8002 | Docker (docker-compose.yml) | Qwen3-TTS 0.6B speech synthesis (CPU) |
-| stt | 8003 | Docker (docker-compose.yml) | whisper-large-v3-turbo transcription (CPU, int8) |
-| mcp | stdio | launched by Hermes | `mcp/server.py` — MCP bridge over `/api/v1` for the Hermes agent |
-| tmux | — | systemd user service (`aria-tmux`) | Owns the tmux server that hosts every watched `claude-*` session. Ordered before `aria-api`. See the gotcha below — **never** let aria-api spawn the server. |
+| api | 8200 | `com.ben.devbox.aria-api`, `devboxsvc` | FastAPI control plane |
+| ui | 3000 | `com.ben.devbox.aria-ui`, `devboxsvc` | Next.js operator UI |
+| tts | 8002 | `com.ben.devbox.tts`, `devboxsvc` | Native Kokoro TTS |
+| embeddings | 8001 | `com.ben.devbox.embeddings`, `devboxsvc` | Native embeddings service |
+| gemma | local | `com.ben.devbox.gemma`, `devboxsvc` | Native llama.cpp auxiliary model |
+| Hermes/Signal | gateway + 8090 | `com.ben.devbox.hermes-gateway` and `.signal-cli`, `devboxsvc` | Conversational gateway and Signal transport |
+| Mongo/mongot | private | `.mongo-tunnel` and `.lima-mongot`, `devboxsvc` | Database plus Linux-only search process |
+| ARIA agent node | node API | `com.ben.devbox.aria-agent-node`, `devboxagent` | Managed autonomous Mac execution boundary |
+| Corsair connectivity | forwards | `.corsair-forwards`, `.wake-relay`, proxies | Remote model and wake paths |
+| Vault replication | private | `.obsidian-bridge`, `devboxsvc` | Mac service projection to CouchDB |
+
+Corsair runs `aria-node.service`, `qwen3.8-radiance.service` on `:8080`,
+`qwen3.8-flash-next.service` on `:8120`, and its Obsidian bridge container. The two model
+units are observed directly on Corsair; ARIA's deployed registry currently omits Flash Next.
 
 ## Code Patterns
 
@@ -839,7 +874,11 @@ SSE via `sse-starlette`. The orchestrator yields `StreamChunk` objects that are 
 
 ## Critical Gotchas
 
-### The tmux server must be owned by `aria-tmux.service` (DO NOT let aria-api spawn it)
+### Historical Corsair tmux cgroup gotcha (`aria-tmux.service`)
+
+This applies to the old same-host systemd API/shell topology. Production ARIA now runs under
+launchd on the Mac, while default interactive shells run on Corsair. Preserve this rationale
+when changing Corsair tmux ownership, but do not use it as a Mac service instruction.
 
 A tmux server inherits the cgroup of the **client that first invokes tmux**. If
 `aria-api` wins that race (its adopt/spawn path calls tmux constantly), the
@@ -873,17 +912,18 @@ Model is `voyageai/voyage-4-nano` with **1024-dim MRL truncation**. The MongoDB 
 
 ### Shared Infrastructure
 
-- **Start infra first** — ARIA services depend on it
+- **Production dependencies are launchd-managed on the Mac** — do not use the old Corsair
+  Docker startup order as a recovery procedure.
 - **Replica set required** — Search features only work with `replicaSet=rs0`
-- **Connection string** — Must include `directConnection=true&replicaSet=rs0`
-- **Shared Docker network** — Services use `shared-infra` network; use container names (e.g., `mongod`, `embeddings`) not `localhost` in Docker contexts
-- **Stopping infra affects AgentBenchPlatform** — both projects share these services
-- **Security posture (S4, deliberate):** Mongo (`27017`) and `:8200` are bound to `0.0.0.0` with no per-service auth — safe only because this box lives on a closed tailnet. Writes are gated by the global `X-API-Key`; deeper hardening (re-binding off `0.0.0.0`) was explicitly ruled out of scope because existing tailnet clients hit Mongo directly. Don't "fix" this without Ben.
+- **Connection strings and credentials are service-managed on the Mac** — never copy them
+  into Corsair agent environments or documentation.
+- **Do not assume tailnet membership replaces authentication.** Verify actual bind addresses,
+  API-key enforcement, and Tailscale ACLs before exposing a new endpoint.
 
 ### When Making Changes
 
 1. Check `CHANGELOG.md` for what shipped most recently
-2. Read the relevant section in `vault/ProjectAria/Design/ARCHITECTURE.md`
+2. Read `/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md`
 3. Follow established code patterns
 4. Update `CHANGELOG.md` with changes
 5. Update `BACKLOG.md` if you closed or opened an item there
