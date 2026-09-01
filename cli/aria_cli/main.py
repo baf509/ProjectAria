@@ -1683,7 +1683,7 @@ def shells_list_cmd(status):
         table.add_column("Last Activity")
         for s in shells:
             table.add_row(
-                s.get("short_name") or s.get("name", ""),
+                s.get("name", ""),
                 s.get("status", ""),
                 s.get("project_dir", "") or "-",
                 str(s.get("line_count", 0)),

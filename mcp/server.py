@@ -258,14 +258,18 @@ async def create_shell(
     name: str,
     workdir: Optional[str] = None,
     launch_claude: bool = True,
+    launch_command: Optional[str] = None,
     cols: Optional[int] = None,
     rows: Optional[int] = None,
 ) -> dict:
     """Create a new watched tmux shell.
-    launch_claude=True spawns the configured claude command inside it."""
+    launch_claude=True spawns the configured claude command inside it;
+    launch_command can instead start another coding shell such as Codex or pi."""
     body: dict[str, Any] = {"name": name, "launch_claude": launch_claude}
     if workdir:
         body["workdir"] = workdir
+    if launch_command:
+        body["launch_command"] = launch_command
     if cols:
         body["cols"] = cols
     if rows:

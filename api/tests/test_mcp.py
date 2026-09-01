@@ -7,7 +7,11 @@ Covers:
 """
 
 import asyncio
+import importlib.util
 import json
+from pathlib import Path
+import sys
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,6 +19,68 @@ import pytest
 from aria.tools.base import ToolStatus, ToolType
 from aria.tools.mcp.client import MCPClient, MCPServerInfo, MCPTool
 from aria.tools.mcp.manager import MCPManager, MCPToolWrapper
+
+
+def _load_bridge_server():
+    """Load the standalone MCP bridge without requiring its optional package."""
+
+    class FakeFastMCP:
+        def __init__(self, _name):
+            pass
+
+        def tool(self):
+            return lambda func: func
+
+    mcp_package = ModuleType("mcp")
+    mcp_package.__path__ = []
+    mcp_server_package = ModuleType("mcp.server")
+    mcp_server_package.__path__ = []
+    fastmcp_module = ModuleType("mcp.server.fastmcp")
+    fastmcp_module.FastMCP = FakeFastMCP
+
+    server_path = Path(__file__).parents[2] / "mcp" / "server.py"
+    spec = importlib.util.spec_from_file_location("aria_mcp_bridge_for_test", server_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    with patch.dict(
+        sys.modules,
+        {
+            "mcp": mcp_package,
+            "mcp.server": mcp_server_package,
+            "mcp.server.fastmcp": fastmcp_module,
+        },
+    ):
+        spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.asyncio
+async def test_bridge_create_shell_passes_launch_command():
+    bridge = _load_bridge_server()
+    bridge._request = AsyncMock(return_value={"name": "codex-project-123456"})
+
+    result = await bridge.create_shell(
+        "codex-project-123456",
+        workdir="/work/project",
+        launch_claude=False,
+        launch_command="bash -lc '~/.local/bin/aria-codex-launch'",
+        cols=160,
+        rows=48,
+    )
+
+    assert result == {"name": "codex-project-123456"}
+    bridge._request.assert_awaited_once_with(
+        "POST",
+        "/api/v1/shells",
+        json={
+            "name": "codex-project-123456",
+            "launch_claude": False,
+            "workdir": "/work/project",
+            "launch_command": "bash -lc '~/.local/bin/aria-codex-launch'",
+            "cols": 160,
+            "rows": 48,
+        },
+    )
 
 
 # ============================================================================
