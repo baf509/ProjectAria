@@ -22,6 +22,7 @@ import os
 import platform
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 import socket
 import time
@@ -396,6 +397,12 @@ class NodeAgent:
         if kind == "start_session":
             name = args["shell_name"]
             workdir = args.get("workdir") or None
+            backend = args.get("backend")
+            binary = args.get("binary")
+            if backend and binary:
+                availability = await self._coding_backend_availability(backend, binary)
+                if not availability["ok"]:
+                    return availability
             # Pre-trust the workspace so Claude Code's blocking folder-trust
             # dialog doesn't hang the detached session (best-effort).
             try:
@@ -420,6 +427,58 @@ class NodeAgent:
             return {"shell_name": name, "ok": True}
 
         raise ValueError(f"unknown command kind: {kind}")
+
+    async def _coding_backend_availability(self, backend: str, binary: str) -> dict[str, Any]:
+        """Node-local binary/auth preflight for a managed coding launch."""
+        resolved = shutil.which(os.path.basename(binary) if "/" in binary else binary)
+        if not resolved:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "coding_backend_unavailable",
+                    "backend": backend,
+                    "reason": f"executable not found: {binary}",
+                    "retryable": False,
+                },
+            }
+        if backend != "claude_code":
+            return {"ok": True}
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                resolved,
+                "auth",
+                "status",
+                "--json",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
+            status = json.loads(stdout.decode("utf-8", errors="replace")) if proc.returncode == 0 else {}
+        except asyncio.TimeoutError as exc:
+            if proc is not None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
+            status = {}
+            stderr = str(exc or "auth preflight timed out").encode()
+        except (OSError, ValueError) as exc:
+            status = {}
+            stderr = str(exc).encode()
+        if not status.get("loggedIn"):
+            reason = stderr.decode("utf-8", errors="replace").strip() or "Claude CLI is not logged in"
+            return {
+                "ok": False,
+                "error": {
+                    "code": "coding_backend_unavailable",
+                    "backend": backend,
+                    "reason": reason[:300],
+                    "retryable": True,
+                },
+            }
+        return {"ok": True}
 
     # ----------------------------------------------------------------- run
     async def run(self) -> None:

@@ -316,7 +316,9 @@ async def test_remote_session_node_unreachable_marks_failed(monkeypatch):
     with patch("aria.nodes.commands.enqueue_command", new=AsyncMock(return_value="c1")), \
          patch("aria.nodes.commands.await_result", new=AsyncMock(return_value=None)):
         with pytest.raises(RuntimeError):
-            await mgr._start_remote_shell_session("sid", "mac", command, "/w")
+            await mgr._start_remote_shell_session(
+                "sid", "mac", command, "/w", "claude_code"
+            )
     update = db.coding_sessions.update_one.call_args[0][1]["$set"]
     assert update["status"] == "failed"
 
@@ -346,13 +348,56 @@ async def test_remote_launch_uses_basename_and_path_prepend(monkeypatch):
     with patch("aria.nodes.commands.enqueue_command", new=fake_enqueue), \
          patch("aria.nodes.commands.await_result",
                new=AsyncMock(return_value={"status": "done", "result": {"shell_name": "x"}})):
-        await mgr._start_remote_shell_session("sid", "mac", command, "/w")
+        await mgr._start_remote_shell_session(
+            "sid", "mac", command, "/w", "claude_code"
+        )
 
     launch = captured["launch"]
     assert "/home/ben/.local/bin/claude" not in launch      # absolute path stripped
     assert "claude --permission-mode auto" in launch  # bare binary name
     assert 'export PATH="$HOME/.local/bin:$PATH"' in launch    # PATH prepend
     assert " -p " not in launch                               # -p stripped for interactive
+    assert captured["backend"] == "claude_code"
+    assert captured["binary"] == "claude"
+
+
+@pytest.mark.asyncio
+async def test_remote_backend_preflight_failure_is_structured(monkeypatch):
+    monkeypatch.setattr(settings, "local_node_id", "corsair")
+    from tests.test_coding_session import _make_manager
+    from aria.agents.backends.registry import CodingBackendUnavailableError
+
+    db = make_mock_db()
+    mgr = _make_manager(db=db)
+    mgr.shell_service = MagicMock()
+    mgr.shell_service.register_shell = AsyncMock()
+    command = MagicMock(argv=["claude", "-p", "hi"], env=None, cwd="/w")
+    failure = {
+        "status": "done",
+        "result": {
+            "ok": False,
+            "error": {
+                "code": "coding_backend_unavailable",
+                "backend": "claude_code",
+                "reason": "Claude CLI is not logged in",
+                "retryable": True,
+            },
+        },
+    }
+
+    with patch("aria.nodes.commands.enqueue_command", new=AsyncMock(return_value="c1")), \
+         patch("aria.nodes.commands.await_result", new=AsyncMock(return_value=failure)):
+        with pytest.raises(CodingBackendUnavailableError) as error:
+            await mgr._start_remote_shell_session(
+                "sid", "mac", command, "/w", "claude_code"
+            )
+
+    assert error.value.backend == "claude_code"
+    assert error.value.retryable is True
+    assert "not logged in" in error.value.reason
+    mgr.shell_service.register_shell.assert_not_awaited()
+    update = db.coding_sessions.update_one.call_args[0][1]["$set"]
+    assert update["status"] == "failed"
 
 
 # ------------------------------------------------------------- node agent side
@@ -383,6 +428,26 @@ async def test_agent_exec_stop_and_start():
     out = await a._exec("start_session", {"shell_name": "claude-coding-1", "launch": "bash -lc x", "workdir": "/w"})
     assert out["shell_name"] == "claude-coding-1"
     a.tmux.new_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_start_session_refuses_missing_backend_binary():
+    a = _agent()
+    with patch("aria.node.agent.shutil.which", return_value=None):
+        out = await a._exec(
+            "start_session",
+            {
+                "shell_name": "claude-coding-1",
+                "launch": "bash -lc x",
+                "workdir": "/w",
+                "backend": "codex",
+                "binary": "definitely-missing-codex",
+            },
+        )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "coding_backend_unavailable"
+    assert out["error"]["retryable"] is False
+    a.tmux.new_session.assert_not_awaited()
 
 
 @pytest.mark.asyncio

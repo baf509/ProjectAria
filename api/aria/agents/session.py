@@ -1044,7 +1044,7 @@ class CodingSessionManager:
         from aria.nodes import is_remote_host
         if is_remote_host(host):
             return await self._start_remote_shell_session(
-                session_id, host, command, workspace_path
+                session_id, host, command, workspace_path, backend_name
             )
 
         # Everything below runs on THIS box, so everything below is guarded.
@@ -1154,7 +1154,12 @@ class CodingSessionManager:
         return await self.get_session(session_id)
 
     async def _start_remote_shell_session(
-        self, session_id: str, node_id: str, command, workspace_path: str
+        self,
+        session_id: str,
+        node_id: str,
+        command,
+        workspace_path: str,
+        backend_name: str,
     ) -> dict:
         """Start a coding session on a remote node: enqueue a start_session
         command (the node creates the claude-coding-* tmux shell locally), then
@@ -1188,7 +1193,13 @@ class CodingSessionManager:
 
         cmd_id = await node_commands.enqueue_command(
             self.db, node_id, "start_session",
-            {"shell_name": shell_name, "launch": launch, "workdir": workdir},
+            {
+                "shell_name": shell_name,
+                "launch": launch,
+                "workdir": workdir,
+                "backend": backend_name,
+                "binary": argv[0] if argv else "",
+            },
             idempotency_key=f"coding-start:{node_id}:{session_id}",
         )
         result = await node_commands.await_result(
@@ -1206,6 +1217,25 @@ class CodingSessionManager:
                 }},
             )
             raise RuntimeError(f"coding node {node_id} unreachable — session not started")
+
+        payload = result.get("result") or {}
+        backend_error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(backend_error, dict) and backend_error.get("code") == "coding_backend_unavailable":
+            now = datetime.now(timezone.utc)
+            await self.db.coding_sessions.update_one(
+                {"_id": session_id},
+                {"$set": {
+                    "status": "failed",
+                    "error": backend_error.get("reason") or "backend unavailable",
+                    "updated_at": now,
+                    "completed_at": now,
+                }},
+            )
+            raise CodingBackendUnavailableError(
+                str(backend_error.get("backend") or backend_name),
+                str(backend_error.get("reason") or "backend unavailable"),
+                retryable=bool(backend_error.get("retryable")),
+            )
 
         # Pre-register the shell doc (host=node_id) so it's drivable immediately,
         # before the node's capture loop first pushes events for it.
