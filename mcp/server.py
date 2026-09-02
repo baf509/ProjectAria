@@ -38,7 +38,9 @@ ProjectAria listens on :8200 after the cutover (it inherited aria-shells' port).
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from hashlib import sha256
+from pathlib import Path
+from typing import Any, Literal, Optional
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -48,6 +50,7 @@ ARIA_KEY = os.environ.get("ARIA_API_KEY", "")
 TIMEOUT = float(os.environ.get("ARIA_HTTP_TIMEOUT", "20"))
 
 mcp = FastMCP("aria")
+TOOL_CONTRACT_VERSION = "2026-09-02.1"
 
 
 def _client() -> httpx.AsyncClient:
@@ -136,25 +139,41 @@ async def fleet_status(awaiting_only: bool = False) -> dict:
 
 @mcp.tool()
 async def list_shells(status: Optional[str] = None) -> dict:
-    """List watched shells (metadata only). status: 'active', 'idle', 'stopped',
-    or comma-separated. For an activity/attention digest use fleet_status."""
+    """Use when you need the registry/archive rather than current fleet state.
+
+    Returns watched-shell metadata, including stopped history. status accepts
+    'active', 'idle', 'stopped', or comma-separated values. For "what is alive,
+    reachable, or waiting now?" use fleet_status instead."""
     params = {"status": status} if status else None
     return await _request("GET", "/api/v1/shells", params=params)
 
 
 @mcp.tool()
 async def get_shell(name: str) -> dict:
-    """Get metadata for one shell (full or short name)."""
+    """Use when you need metadata for one known shell. Accepts a canonical name
+    or a unique displayed alias; an ambiguous alias returns the canonical
+    matches so you can retry without guessing. Use get_shell_screen for live
+    pane contents and get_shell_events for transcript history."""
     return await _request("GET", f"/api/v1/shells/{name}")
 
 
 @mcp.tool()
 async def aria_health() -> dict:
-    """Quick health of the ProjectAria stack: database, embeddings, and LLM
-    backend AVAILABILITY (config/SDK presence, not real reachability — a
-    backend can report available here and still be down). Use this for a
-    fast up/down check; use health_services for real per-backend reachability."""
-    return await _request("GET", "/api/v1/health")
+    """Use before launching work when ARIA may still be booting. This is the
+    readiness contract: success means the database, migrations, and required
+    background services finished startup. A launchd process merely being alive
+    is not equivalent. Use health_services for optional backend reachability."""
+    return await _request("GET", "/api/v1/health/ready")
+
+
+@mcp.tool()
+async def tool_contract_status() -> dict:
+    """Use after an MCP deployment/reconnect to identify the exact ARIA tool
+    contract Hermes loaded. Returns a human version and SHA-256 of this running
+    bridge source; compare the hash with the deployed file when a parameter or
+    description appears missing. This does not probe ARIA readiness."""
+    source = Path(__file__).read_bytes()
+    return {"version": TOOL_CONTRACT_VERSION, "sha256": sha256(source).hexdigest()}
 
 
 @mcp.tool()
@@ -172,7 +191,8 @@ async def health_services() -> dict:
 
 @mcp.tool()
 async def get_shell_screen(name: str, lines: int = 40) -> dict:
-    """Capture a shell's visible pane RIGHT NOW (fresh, ANSI-stripped).
+    """Use when you need what a known shell shows RIGHT NOW (fresh and
+    ANSI-stripped).
 
     Best for "what's on screen at this moment", e.g. after sending input.
     For the last worker-stored snapshot (can be ~30s old) use
@@ -194,7 +214,8 @@ async def get_shell_events(
     limit: int = 200,
     kinds: Optional[str] = None,
 ) -> dict:
-    """Fetch recent event lines from a shell (raw captured output/input).
+    """Use for durable transcript/history, pagination, or changes that scrolled
+    off the visible pane. Fetches captured output/input events.
     kinds: comma-separated subset of 'output,input' (default both).
     Pass since_line to page forward from a previous call."""
     params: dict[str, Any] = {"limit": limit}
@@ -259,17 +280,25 @@ async def create_shell(
     workdir: Optional[str] = None,
     launch_claude: bool = True,
     launch_command: Optional[str] = None,
+    profile: Optional[Literal["shell", "claude", "codex", "pi"]] = None,
+    host: Optional[str] = None,
     cols: Optional[int] = None,
     rows: Optional[int] = None,
 ) -> dict:
-    """Create a new watched tmux shell.
-    launch_claude=True spawns the configured claude command inside it;
-    launch_command can instead start another coding shell such as Codex or pi."""
+    """Use when you need a new interactive ARIA-watched shell, including on a
+    fleet node. Prefer profile='claude'|'codex'|'pi'|'shell'; use the lower-level
+    launch_command only for a command not covered by those profiles. host is an
+    online node id from list_nodes. Do not manually create/register tmux when
+    this tool can express the launch."""
     body: dict[str, Any] = {"name": name, "launch_claude": launch_claude}
     if workdir:
         body["workdir"] = workdir
     if launch_command:
         body["launch_command"] = launch_command
+    if profile:
+        body["profile"] = profile
+    if host:
+        body["host"] = host
     if cols:
         body["cols"] = cols
     if rows:
@@ -279,8 +308,10 @@ async def create_shell(
 
 @mcp.tool()
 async def delete_shell(name: str, purge: bool = False) -> dict:
-    """Stop tracking a shell (kills the tmux session). purge=True also deletes
-    its stored events and snapshots."""
+    """Use to stop a watched shell through its owning node. Remote offline
+    removals return pending and are durably delivered when that node reconnects.
+    purge=True also deletes stored events/snapshots after stop acknowledgement;
+    omit it to preserve searchable history."""
     params = {"purge": "true"} if purge else None
     return await _request("DELETE", f"/api/v1/shells/{name}", params=params)
 
@@ -367,8 +398,9 @@ async def publish_to_obsidian(
     doc_type: str = "Analysis",
     project: Optional[str] = None,
 ) -> dict:
-    """Publish long-form markdown (an analysis, design draft, research
-    report) into Ben's Obsidian vault, where it syncs to all his devices.
+    """Use when Ben asks for a durable plan, analysis, design, specification, or
+    research artifact; publish the finished long-form markdown to Obsidian so it
+    syncs to all devices. Do not use for transient narration or routine status.
     doc_type picks the subfolder: Design, Specs, Analysis, Research, or
     Planning. project is a repo path or vault folder name (e.g.
     '/home/ben/Development/ProjectAria' or 'ProjectAria'); omit it for
@@ -803,7 +835,7 @@ async def list_agents() -> Any:
 async def update_agent(
     agent_slug: str,
     enabled: Optional[bool] = None,
-    backend: Optional[str] = None,
+    backend: Optional[Literal["claude_code", "codex", "pi-code", "pi", "pool"]] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
 ) -> dict:
@@ -1245,19 +1277,23 @@ async def create_coding_session(
     workspace: str,
     prompt: str,
     backend: Optional[str] = None,
+    llm: Optional[str] = None,
+    model: Optional[str] = None,
     loop: bool = False,
     host: Optional[str] = None,
     subagent_profile: Optional[str] = None,
     create_worktree: Optional[bool] = None,
 ) -> dict:
-    """Spawn a coding sub-agent in `workspace` with an initial `prompt`.
+    """Use for a self-contained coding implementation/review task, not merely
+    to open an interactive shell. Spawns a managed sub-agent in `workspace`.
 
-    backend: 'claude_code' (default) | 'codex' | 'pi-code' (alias 'pi') |
+    backend: 'claude_code' | 'codex' (deployment default) | 'pi-code' (alias 'pi') |
         'pool' (Poolside's agent against local Laguna; aliases 'pool-cli',
         'poolside').
     loop=True: watchdog nudges on idle until RALPH_DONE or the nudge/deadline
         caps. Toggle later with set_coding_loop.
-    host: an aria-node id to run remotely; omit for this host.
+    llm/model: explicit Pi provider/model pins; normally use a specialist profile.
+    host: an aria-node id to run remotely; omit to use deployment policy.
     subagent_profile: a db.agents slug whose backend/model/role apply; an
         explicit backend still wins.
     create_worktree: leave unset. None means "use the configured default",
@@ -1265,12 +1301,19 @@ async def create_coding_session(
         checkpoint commits, and it can be rolled back. Passing False opts out of
         the guard for that session and is a deliberate act, not a shortcut.
 
+    Invalid backends return a structured list of valid names and aliases; retry
+    with one of those names instead of inventing another spelling.
+
     Returns immediately (queued/running) — it does NOT wait. Short task: call
     wait_for_coding_session next to block for the result rather than making the
     human poll. Long or looped: check back with get_coding_session."""
     body: dict[str, Any] = {"workspace": workspace, "prompt": prompt}
     if backend:
         body["backend"] = backend
+    if llm:
+        body["llm"] = llm
+    if model:
+        body["model"] = model
     if loop:
         body["loop"] = {}  # server defaults fill in the loop config
     if host:
@@ -1284,9 +1327,11 @@ async def create_coding_session(
 
 @mcp.tool()
 async def list_nodes() -> Any:
-    """List the machines in the fleet (aria-node agents) with online/offline
-    status. Use a node's id as the `host` for create_coding_session to run work
-    on that machine (e.g. a MacBook for iOS builds)."""
+    """Use when a request names a machine or requires host-specific capability.
+    Lists aria-node ids with online/offline status. Pass an online id as `host`
+    to create_shell or create_coding_session. Omit host when placement does not
+    matter so ARIA's deployment policy decides; never infer connectivity from a
+    shell's semantic activity state."""
     return await _request("GET", "/api/v1/nodes")
 
 

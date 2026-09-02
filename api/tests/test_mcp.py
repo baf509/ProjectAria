@@ -83,6 +83,81 @@ async def test_bridge_create_shell_passes_launch_command():
     )
 
 
+@pytest.mark.asyncio
+async def test_bridge_create_shell_passes_typed_profile_and_host():
+    bridge = _load_bridge_server()
+    bridge._request = AsyncMock(return_value={"name": "claude-codex-remote"})
+
+    await bridge.create_shell(
+        "codex-remote",
+        workdir="/work/project",
+        profile="codex",
+        host="corsair-ai",
+        launch_claude=False,
+    )
+
+    bridge._request.assert_awaited_once_with(
+        "POST",
+        "/api/v1/shells",
+        json={
+            "name": "codex-remote",
+            "launch_claude": False,
+            "workdir": "/work/project",
+            "profile": "codex",
+            "host": "corsair-ai",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_bridge_create_coding_session_passes_backend_model_contract():
+    bridge = _load_bridge_server()
+    bridge._request = AsyncMock(return_value={"id": "session-1"})
+
+    await bridge.create_coding_session(
+        "/work/project",
+        "fix it",
+        backend="pi-code",
+        llm="aria",
+        model="qwen-test",
+        host="corsair-ai",
+    )
+
+    bridge._request.assert_awaited_once_with(
+        "POST",
+        "/api/v1/coding/sessions",
+        json={
+            "workspace": "/work/project",
+            "prompt": "fix it",
+            "backend": "pi-code",
+            "llm": "aria",
+            "model": "qwen-test",
+            "host": "corsair-ai",
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_bridge_contract_descriptions_make_routing_choices_explicit():
+    bridge = _load_bridge_server()
+
+    assert "interactive ARIA-watched shell" in bridge.create_shell.__doc__
+    assert "self-contained coding" in bridge.create_coding_session.__doc__
+    assert "registry/archive" in bridge.list_shells.__doc__
+    assert "RIGHT NOW" in bridge.get_shell_screen.__doc__
+    assert "durable transcript/history" in bridge.get_shell_events.__doc__
+    assert "create_shell or create_coding_session" in bridge.list_nodes.__doc__
+    assert "durable plan" in bridge.publish_to_obsidian.__doc__
+
+
+@pytest.mark.asyncio
+async def test_bridge_exposes_source_fingerprint_for_live_contract_checks():
+    bridge = _load_bridge_server()
+    status = await bridge.tool_contract_status()
+
+    assert status["version"] == "2026-09-02.1"
+    assert len(status["sha256"]) == 64
+
 # ============================================================================
 # MCPClient
 # ============================================================================

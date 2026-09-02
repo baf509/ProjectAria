@@ -11,6 +11,22 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def isolate_machine_deployment_policy(monkeypatch):
+    """Keep unit tests independent of the Mac's deployed operator policy.
+
+    The production `.env` intentionally routes coding to the `mac-agents`
+    logical node and enables a Linux bwrap sandbox. Loading those host-specific
+    defaults in a source test run made ordinary unit tests perform remote-node
+    launches or fail because macOS has no bwrap. Tests that exercise either
+    policy still opt in explicitly with their own monkeypatches.
+    """
+    from aria.config import settings
+
+    monkeypatch.setattr(settings, "coding_default_host", "")
+    monkeypatch.setattr(settings, "guard_sandbox_enabled", False)
+
 from aria.llm.base import LLMAdapter, Message, StreamChunk, Tool, ToolCall
 from aria.tools.base import BaseTool, ToolDefinition, ToolParameter, ToolResult, ToolStatus, ToolType
 from aria.tools.router import ToolRouter

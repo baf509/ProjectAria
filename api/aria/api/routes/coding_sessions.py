@@ -12,6 +12,10 @@ from pydantic import BaseModel
 from aria.agents.review import CodingReviewService
 from aria.agents.watchdog import CodingWatchdog
 from aria.agents.session import CodingSessionManager
+from aria.agents.backends.registry import (
+    CodingBackendUnavailableError,
+    UnknownCodingBackendError,
+)
 from aria.agents.estop import EstopManager
 from aria.api.deps import (
     get_coding_review_service,
@@ -108,6 +112,16 @@ async def start_coding_session(
             create_worktree=body.create_worktree,
             worktree_name=body.worktree_name,
         )
+    except CodingBackendUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "coding_backend_unavailable",
+                "backend": exc.backend,
+                "reason": exc.reason,
+                "retryable": exc.retryable,
+            },
+        ) from exc
     except RuntimeError as exc:
         # start_session also raises RuntimeError for caller-visible refusals:
         # an unknown subagent_profile, the manual killswitch, and the e-stop.
@@ -116,6 +130,17 @@ async def start_coding_session(
         # it could act on. 409 Conflict: request is well-formed, the service
         # is refusing in its current state.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except UnknownCodingBackendError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "unknown_coding_backend",
+                "requested": exc.requested,
+                "valid": exc.valid,
+                "aliases": exc.aliases,
+                "retryable": False,
+            },
+        ) from exc
     except ValueError as exc:
         # A bad request argument (unknown backend, unusable workspace) is the
         # CALLER's error, so return 400 with the reason rather than a bare 500.

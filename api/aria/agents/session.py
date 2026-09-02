@@ -7,8 +7,10 @@ Purpose: Start, stop, and inspect coding-agent subprocess sessions.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
+import shutil
 import subprocess
 from datetime import datetime, timezone
 from typing import Optional
@@ -19,6 +21,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.agents.backends.base import CommandSpec, StartParams
 from aria.agents.backends.registry import BackendRegistry
+from aria.agents.backends.registry import CodingBackendUnavailableError
 from aria.agents.backends.tmux import TmuxManager
 from aria.agents.checkpoint import (
     build_resume_prompt,
@@ -109,6 +112,12 @@ class CodingSessionManager:
         self.shell_service = ShellService(db) if settings.shells_enabled else None
         self.mailbox = AgentMailbox(db)
         self.notification_service = notification_service
+        # Deployment routing policy is captured with the manager just like the
+        # concurrency limits below. This keeps one coherent policy for the
+        # manager's lifetime and makes explicit host=None tests independent of
+        # whichever operator .env happens to be loaded on the test machine.
+        configured_host = getattr(settings, "coding_default_host", "")
+        self._default_host = configured_host.strip() if isinstance(configured_host, str) else ""
         self._watch_tasks: dict[str, asyncio.Task] = {}
         # Periodic guard checkpoints, one task per guarded session. ARIA makes
         # the commit (proposal principle 11) — an agent that can skip its own
@@ -319,10 +328,7 @@ class CodingSessionManager:
 
         # A deployment can pin unattended work to an OS-isolated fleet node.
         # Explicit callers still win, including tests and operator overrides.
-        configured_host = getattr(settings, "coding_default_host", "")
-        if not isinstance(configured_host, str):
-            configured_host = ""
-        host = host or configured_host.strip() or None
+        host = host or self._default_host or None
 
         # The session id is minted HERE, before anything else, because the guard
         # keys its worktree, branch, start tag and checkpoint commits off it.
@@ -434,6 +440,9 @@ class CodingSessionManager:
             model = model or pi_llm.get("model")
         if backend_name == "pi-code" and (not llm or not model):
             raise ValueError("pi-code requires a configured provider and model")
+
+        if not host:
+            await self._preflight_local_backend(backend_name)
 
         # Non-Pi coding backends historically received a specialist role as a
         # preamble to the task. Pi has a native system-prompt append flag, so
@@ -565,6 +574,62 @@ class CodingSessionManager:
             session_id, self._slot_limit, self._active,
         )
         return await self.get_session(session_id)
+
+    async def _preflight_local_backend(self, backend_name: str) -> None:
+        """Fail before provisioning when a local coding CLI cannot launch.
+
+        Remote capability belongs to the node. Locally, binary/auth failures
+        are cheap to identify and should be structured API errors rather than a
+        disposable tmux session Hermes has to inspect after the fact.
+        """
+        binary = {
+            "claude_code": settings.claude_code_binary,
+            "codex": settings.codex_binary,
+            "pi-code": settings.pi_coding_binary,
+            "pool": settings.pool_binary,
+        }.get(backend_name)
+        if not binary:
+            return
+        if os.path.isabs(binary):
+            # Configuration is shared across Mac/Corsair deployments. An
+            # absolute path valid on the other OS may be present here; resolve
+            # the same executable name on this host before declaring it absent.
+            resolved = binary if os.access(binary, os.X_OK) else shutil.which(os.path.basename(binary))
+        else:
+            resolved = shutil.which(binary)
+        if not resolved:
+            raise CodingBackendUnavailableError(
+                backend_name, f"executable not found: {binary}", retryable=False
+            )
+        if backend_name != "claude_code":
+            return
+
+        def claude_auth_status() -> tuple[bool, str]:
+            try:
+                completed = subprocess.run(
+                    [resolved, "auth", "status", "--json"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return False, f"auth preflight failed: {exc}"
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "not authenticated").strip()
+                return False, detail[:300]
+            try:
+                status = json.loads(completed.stdout)
+            except (ValueError, TypeError):
+                return False, "auth status returned invalid JSON"
+            if not status.get("loggedIn"):
+                return False, "Claude CLI is not logged in"
+            return True, ""
+
+        ok, reason = await asyncio.to_thread(claude_auth_status)
+        if not ok:
+            raise CodingBackendUnavailableError(
+                backend_name, reason, retryable=True
+            )
 
     async def _deferred_launch(
         self, session_id, command, backend_name, resource_backend,
@@ -1124,6 +1189,7 @@ class CodingSessionManager:
         cmd_id = await node_commands.enqueue_command(
             self.db, node_id, "start_session",
             {"shell_name": shell_name, "launch": launch, "workdir": workdir},
+            idempotency_key=f"coding-start:{node_id}:{session_id}",
         )
         result = await node_commands.await_result(
             self.db, cmd_id, timeout_seconds=settings.node_command_timeout_seconds

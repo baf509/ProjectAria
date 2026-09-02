@@ -15,6 +15,7 @@ import pytest
 
 from tests.conftest import make_mock_db
 from aria.agents.backends.registry import BackendRegistry
+from aria.agents.backends.registry import CodingBackendUnavailableError
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ def _make_manager(db=None, tmux=None, notification_service=None):
          patch("aria.agents.session.settings") as mock_settings:
 
         mock_settings.coding_default_backend = "claude-code"
+        mock_settings.coding_default_host = ""
         mock_settings.coding_output_lines = 500
 
         # Prevent real tmux availability check
@@ -48,6 +50,7 @@ def _make_manager(db=None, tmux=None, notification_service=None):
         )
         mgr.registry = MagicMock()
         mgr.registry.get.return_value = mock_backend
+        mgr._preflight_local_backend = AsyncMock()
 
         mock_proc_mgr = MagicMock()
         running = MagicMock()
@@ -457,6 +460,20 @@ async def test_start_session_refuses_pool_when_disabled():
 
         with pytest.raises(RuntimeError, match="pool backend is disabled"):
             await mgr.start_session(workspace="/tmp/ws", backend="pool", prompt="do stuff")
+
+
+@pytest.mark.asyncio
+async def test_backend_preflight_reports_missing_binary_structurally():
+    mgr = _make_manager()
+    real_preflight = type(mgr)._preflight_local_backend
+    with patch("aria.agents.session.settings.codex_binary", "missing-codex"), patch(
+        "aria.agents.session.shutil.which", return_value=None
+    ):
+        with pytest.raises(CodingBackendUnavailableError) as error:
+            await real_preflight(mgr, "codex")
+    assert error.value.backend == "codex"
+    assert error.value.retryable is False
+    assert "executable not found" in error.value.reason
 
 
 @pytest.mark.asyncio

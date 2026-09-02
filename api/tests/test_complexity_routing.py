@@ -507,6 +507,7 @@ def _routing_manager():
     # routing decision, so an unstubbed MagicMock return value there breaks
     # is_routable_backend()'s string comparison and routing never fires.
     mgr.registry.canonicalize.side_effect = lambda name: name
+    mgr._preflight_local_backend = AsyncMock()
     mgr.shell_service = None
     mgr.process_manager = MagicMock()
     running = MagicMock()

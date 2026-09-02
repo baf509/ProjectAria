@@ -5,7 +5,7 @@ control plane runs on the MacBook Pro; Corsair is its primary model data plane.
 ARIA is infrastructure other programs and operators drive. Hermes, not ARIA's
 disabled default chat agent, is the conversational front door over Signal.
 
-Last reconciled against the live deployment: **2026-08-29**.
+Last reconciled against the live deployment: **2026-09-02**.
 
 ## Deployment boundary
 
@@ -59,7 +59,9 @@ an explicitly mapped Corsair worktree. The Mac API owns local shell creation;
 Corsair's `aria-node` observes and captures its `claude-*` tmux namespace.
 Disconnects reattach to the live shell, and recreation uses the resume-aware
 tool launchers. A full machine reboot does not automatically start every
-historical shell.
+historical shell. During a cold boot, the wrappers wait up to five minutes for
+ARIA readiness (Mongo, migrations, and workers) instead of launching an
+unmanaged fallback or failing immediately on a temporarily closed API socket.
 
 Install or refresh the maintained Mac wrappers from the canonical checkout:
 
@@ -99,7 +101,7 @@ awareness; Pi owns its coding transcript and tools.
 
 ```bash
 # Mac
-curl -fsS http://127.0.0.1:8200/api/v1/health
+curl -fsS http://127.0.0.1:8200/api/v1/health/ready
 curl -fsS http://127.0.0.1:3000/
 sudo launchctl print system/com.ben.devbox.aria-api
 sudo launchctl print system/com.ben.devbox.aria-ui
@@ -113,6 +115,11 @@ ss -ltn | rg '127.0.0.1:(8080|8120)'
 Authenticated infrastructure checks should compare ARIA's registry with the
 backend identity/readiness probes. A healthy API does not by itself prove that a
 shared-port model has the expected identity.
+
+For a post-boot end-to-end check, run
+`scripts/aria-boot-check --wait 300 --canary-shell`. It verifies process state,
+application readiness, the deployed MCP contract, node heartbeats, and one
+non-paid managed shell create/remove cycle without printing credentials.
 
 Routine model lifecycle changes go through ARIA's restricted actuator. Direct
 service work on Corsair is appropriate for an authorized model repair/test, but
