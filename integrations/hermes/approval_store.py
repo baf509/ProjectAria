@@ -12,9 +12,33 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
 from typing import Any, Optional
+
+
+_SENSITIVE_KEY = re.compile(r"(?:api[_-]?key|token|password|passwd|secret|authorization)", re.I)
+_SENSITIVE_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[_-]?key|token|password|passwd|secret)\s*=\s*([^\s;&|]+)"
+)
+_BEARER = re.compile(r"(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]+")
+
+
+def _scrub(value: Any, *, key: str = "") -> Any:
+    """Redact credential-shaped durable detail independently of chat logging."""
+    if key and _SENSITIVE_KEY.search(key):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(k): _scrub(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(item) for item in value]
+    if isinstance(value, tuple):
+        return [_scrub(item) for item in value]
+    if isinstance(value, str):
+        value = _SENSITIVE_ASSIGNMENT.sub(r"\1=[REDACTED]", value)
+        return _BEARER.sub(r"\1 [REDACTED]", value)
+    return value
 
 
 def _default_path() -> Path:
@@ -74,7 +98,7 @@ class ApprovalStore:
                     expires.isoformat(),
                     risk,
                     summary,
-                    json.dumps(detail, default=str, separators=(",", ":")),
+                    json.dumps(_scrub(detail), default=str, separators=(",", ":")),
                     "pending",
                 ),
             )

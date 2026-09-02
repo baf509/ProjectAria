@@ -50,3 +50,25 @@ def test_approval_store_expires_and_finalizes_restart_orphans(tmp_path):
     assert [row["operation_id"] for row in store.pending("s")] == ["live"]
     assert store.finalize_orphans(set()) == 1
     assert store.pending("s") == []
+
+
+def test_approval_store_redacts_secret_keys_assignments_and_bearers(tmp_path):
+    store = ApprovalStore(tmp_path / "state.db")
+    operation_id = store.create(
+        "s",
+        {
+            "description": "run canary",
+            "api_key": "do-not-persist",
+            "command": "curl -H 'Authorization: Bearer abc.def' x?api_key=secret123",
+        },
+        ttl_seconds=300,
+    )
+    with sqlite3.connect(tmp_path / "state.db") as conn:
+        detail = conn.execute(
+            "SELECT detail_json FROM pending_approvals WHERE operation_id=?",
+            (operation_id,),
+        ).fetchone()[0]
+    assert "do-not-persist" not in detail
+    assert "abc.def" not in detail
+    assert "secret123" not in detail
+    assert detail.count("[REDACTED]") == 3
