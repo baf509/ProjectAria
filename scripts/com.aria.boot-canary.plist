@@ -15,10 +15,6 @@
   <true/>
   <key>ProcessType</key>
   <string>Background</string>
-  <key>UserName</key>
-  <string>ben</string>
-  <key>GroupName</key>
-  <string>staff</string>
   <key>StandardOutPath</key>
   <string>/Users/ben/Services/logs/aria-boot-canary.log</string>
   <key>StandardErrorPath</key>

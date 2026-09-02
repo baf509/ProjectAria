@@ -120,6 +120,9 @@ For a post-boot end-to-end check, run
 `scripts/aria-boot-check --wait 300 --canary-shell`. It verifies process state,
 application readiness, the deployed MCP contract, node heartbeats, and one
 non-paid managed shell create/remove cycle without printing credentials.
+The matching plist is installed as a per-login LaunchAgent, so it needs no
+administrator password and exercises the same user/session context as the desk
+wrappers.
 
 Routine model lifecycle changes go through ARIA's restricted actuator. Direct
 service work on Corsair is appropriate for an authorized model repair/test, but
