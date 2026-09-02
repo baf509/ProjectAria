@@ -59,6 +59,17 @@ class TmuxClient:
         rc, _out, _err = await self._run("has-session", "-t", name)
         return rc == 0
 
+    async def pane_current_path(self, name: str) -> str:
+        """Return the active pane's current directory."""
+        if not await self.has_session(name):
+            raise TmuxSessionNotFoundError(name)
+        rc, out, err = await self._run(
+            "display-message", "-p", "-t", name, "#{pane_current_path}"
+        )
+        if rc != 0:
+            raise TmuxError(f"tmux display-message failed: {err.strip()}")
+        return out.strip()
+
     async def pipe_pane(self, name: str, shim_command: str) -> None:
         """Start capturing a session's pane output to `shim_command` via
         `tmux pipe-pane -o`. The `-o` flag toggles: if a pipe is already

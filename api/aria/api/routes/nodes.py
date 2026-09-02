@@ -18,6 +18,7 @@ from aria.nodes.models import (
     CommandResultIn,
     EventBatchIn,
     NodeInfo,
+    NodeHeartbeatRequest,
     NodeRegisterRequest,
     SnapshotIn,
 )
@@ -41,9 +42,13 @@ async def register_node(
 
 @router.post("/{node_id}/heartbeat")
 async def node_heartbeat(
-    node_id: str, svc: Annotated[NodeService, Depends(get_node_service)]
+    node_id: str,
+    svc: Annotated[NodeService, Depends(get_node_service)],
+    body: NodeHeartbeatRequest | None = None,
 ):
-    if not await svc.heartbeat(node_id):
+    if not await svc.heartbeat(
+        node_id, live_shells=body.live_shells if body is not None else None
+    ):
         raise HTTPException(status_code=404, detail="Node not registered")
     return {"node_id": node_id, "ok": True}
 

@@ -20,8 +20,12 @@ import hashlib
 import logging
 import os
 import platform
+import json
+from pathlib import Path
+import sqlite3
 import socket
 import time
+import uuid
 from typing import Any, Optional
 
 import httpx
@@ -33,6 +37,54 @@ from aria.shells.tmux import TmuxClient, TmuxError, TmuxSessionNotFoundError
 logger = logging.getLogger("aria.node")
 
 AGENT_VERSION = "0.1.0"
+
+
+class NodeSpool:
+    """Small bounded durable queue for node-to-control-plane deliveries."""
+
+    def __init__(self, path: str, *, max_items: int = 10_000):
+        self.path = Path(path).expanduser()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.max_items = max_items
+        with self._connect() as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS queue ("
+                "id TEXT PRIMARY KEY, path TEXT NOT NULL, payload TEXT NOT NULL, "
+                "created REAL NOT NULL)"
+            )
+
+    def _connect(self):
+        return sqlite3.connect(self.path, timeout=5)
+
+    def put(self, item_id: str, path: str, payload: dict) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO queue(id,path,payload,created) VALUES(?,?,?,?)",
+                (item_id, path, json.dumps(payload, separators=(",", ":")), time.time()),
+            )
+            excess = db.execute(
+                "SELECT MAX((SELECT COUNT(*) FROM queue) - ?, 0)", (self.max_items,)
+            ).fetchone()[0]
+            if excess:
+                db.execute(
+                    "DELETE FROM queue WHERE id IN (SELECT id FROM queue ORDER BY created LIMIT ?)",
+                    (excess,),
+                )
+
+    def items(self, limit: int = 100) -> list[tuple[str, str, dict]]:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT id,path,payload FROM queue ORDER BY created LIMIT ?", (limit,)
+            ).fetchall()
+        return [(row[0], row[1], json.loads(row[2])) for row in rows]
+
+    def ack(self, item_id: str) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM queue WHERE id = ?", (item_id,))
+
+    def count(self) -> int:
+        with self._connect() as db:
+            return int(db.execute("SELECT COUNT(*) FROM queue").fetchone()[0])
 
 
 class NodeAgent:
@@ -48,6 +100,7 @@ class NodeAgent:
         snapshot_lines: int = 400,
         commands_enabled: bool = True,
         command_mode: str | None = None,
+        spool_path: str | None = None,
     ):
         self.base = api_url.rstrip("/")
         self.node_id = node_id
@@ -66,10 +119,13 @@ class NodeAgent:
             timeout=httpx.Timeout(35.0),
         )
         self._last_tail: dict[str, str] = {}   # name -> last line pushed
+        self._last_lines: dict[str, list[str]] = {}  # name -> previous pane history
         self._snap_hash: dict[str, str] = {}   # name -> last snapshot hash
         self._known: set[str] = set()          # shells we've seen this run
         self._last_post: dict[str, float] = {} # name -> monotonic time of last ingest
         self._keepalive_seconds = 8.0          # re-assert a live idle shell this often
+        default_spool = os.path.expanduser("~/.local/state/aria/node-spool.sqlite3")
+        self.spool = NodeSpool(spool_path or os.getenv("ARIA_NODE_SPOOL_PATH", default_spool))
 
     # ---------------------------------------------------------------- http
     async def _post(self, path: str, json: dict, *, timeout: Optional[float] = None) -> dict:
@@ -77,11 +133,23 @@ class NodeAgent:
         r.raise_for_status()
         return r.json() if r.content else {}
 
-    async def _safe_post(self, path: str, json: dict) -> None:
+    async def _safe_post(self, path: str, json: dict, *, item_id: str | None = None) -> bool:
         try:
             await self._post(path, json)
+            return True
         except Exception as e:  # best-effort ingest — never crash the loop
             logger.debug("post %s failed: %s", path, e)
+            self.spool.put(item_id or uuid.uuid4().hex, path, json)
+            return False
+
+    async def _flush_spool(self) -> None:
+        for item_id, path, payload in self.spool.items():
+            try:
+                await self._post(path, payload)
+            except Exception as exc:
+                logger.debug("spool replay paused at %s: %s", item_id, exc)
+                return
+            self.spool.ack(item_id)
 
     # ------------------------------------------------------------ register
     async def register(self) -> None:
@@ -105,7 +173,12 @@ class NodeAgent:
     async def heartbeat_loop(self) -> None:
         while True:
             try:
-                await self._post(f"/api/v1/nodes/{self.node_id}/heartbeat", {})
+                live_shells = await self.tmux.list_sessions(prefix=self.prefix)
+                await self._post(
+                    f"/api/v1/nodes/{self.node_id}/heartbeat",
+                    {"live_shells": live_shells},
+                )
+                await self._flush_spool()
             except Exception as e:
                 logger.warning("heartbeat failed: %s", e)
             await asyncio.sleep(self.heartbeat_interval)
@@ -135,6 +208,7 @@ class NodeAgent:
             )
             self._known.discard(gone)
             self._last_tail.pop(gone, None)
+            self._last_lines.pop(gone, None)
             self._snap_hash.pop(gone, None)
 
         for name in names:
@@ -147,6 +221,10 @@ class NodeAgent:
                 continue
             clean = strip_ansi(raw).rstrip()
             posted = False
+            try:
+                project_dir = await self.tmux.pane_current_path(name)
+            except TmuxError:
+                project_dir = ""
 
             # Snapshot (what remote current_screen/get_output reads) if changed.
             h = hashlib.sha256(clean.encode("utf-8", "replace")).hexdigest()
@@ -164,15 +242,19 @@ class NodeAgent:
             new_lines = self._delta_lines(name, clean)
             first_time = name not in self._known
             if new_lines or first_time:
+                batch_id = uuid.uuid4().hex
                 await self._safe_post(
                     f"/api/v1/nodes/{self.node_id}/events",
                     {
                         "shell_name": name,
+                        "batch_id": batch_id,
+                        "project_dir": project_dir,
                         "events": [
-                            {"kind": "output", "text_raw": ln, "text_clean": ln, "source": "node-capture"}
-                            for ln in new_lines
+                            {"event_id": f"{batch_id}:{index}", "kind": "output", "text_raw": ln, "text_clean": ln, "source": "node-capture"}
+                            for index, ln in enumerate(new_lines)
                         ],
                     },
+                    item_id=batch_id,
                 )
                 posted = True
 
@@ -182,7 +264,7 @@ class NodeAgent:
             if not posted and (time.monotonic() - self._last_post.get(name, 0.0)) > self._keepalive_seconds:
                 await self._safe_post(
                     f"/api/v1/nodes/{self.node_id}/events",
-                    {"shell_name": name, "events": []},
+                    {"shell_name": name, "project_dir": project_dir, "events": []},
                 )
                 posted = True
 
@@ -191,17 +273,31 @@ class NodeAgent:
             self._known.add(name)
 
     def _delta_lines(self, name: str, clean: str) -> list[str]:
+        """Return appended history lines without turning TUI redraws into output.
+
+        A visible-pane poll is a screen revision, not a terminal byte stream.
+        Same-size edits (spinners, menus, token counters) therefore update the
+        snapshot only. We emit events only when history grows or clearly rolls
+        forward with a substantial suffix/prefix overlap.
+        """
         lines = [ln for ln in clean.splitlines() if ln.strip()]
         if not lines:
             return []
-        last = self._last_tail.get(name)
+        previous = self._last_lines.get(name)
+        self._last_lines[name] = lines
         self._last_tail[name] = lines[-1]
-        if last is None:
+        if previous is None:
             return lines[-1:]  # first capture: just the current last line
-        if last in lines:
-            idx = len(lines) - 1 - lines[::-1].index(last)
-            return lines[idx + 1:]
-        return lines[-1:]  # couldn't locate anchor; push just the current last line
+        if len(lines) > len(previous) and lines[: len(previous)] == previous:
+            return lines[len(previous) :]
+        if len(lines) == len(previous):
+            # Look for a scroll-forward at a full history window. A high overlap
+            # distinguishes it from an in-place TUI repaint.
+            minimum = max(2, len(lines) // 2)
+            for overlap in range(len(lines) - 1, minimum - 1, -1):
+                if previous[-overlap:] == lines[:overlap]:
+                    return lines[overlap:]
+        return []
 
     # ------------------------------------------------------------ commands
     async def command_loop(self) -> None:
@@ -354,6 +450,11 @@ def main() -> None:
         help="only capture tmux sessions whose name starts with this (default claude-)",
     )
     p.add_argument(
+        "--spool-path",
+        default=os.getenv("ARIA_NODE_SPOOL_PATH", ""),
+        help="durable offline-delivery SQLite queue",
+    )
+    p.add_argument(
         "--capture-only",
         action="store_true",
         default=os.getenv("ARIA_NODE_COMMANDS_ENABLED", "true").strip().lower()
@@ -377,6 +478,7 @@ def main() -> None:
         prefix=args.prefix,
         commands_enabled=not args.capture_only,
         command_mode=("capture" if args.capture_only else args.command_mode),
+        spool_path=args.spool_path or None,
     )
     logger.info("starting aria-node id=%s api=%s", args.node_id, args.api_url)
     try:

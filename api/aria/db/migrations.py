@@ -234,6 +234,13 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     )
     await _safe_create_index(
         db.shell_events,
+        [("shell_name", 1), ("event_id", 1)],
+        name="shell_events_node_event_id",
+        unique=True,
+        sparse=True,
+    )
+    await _safe_create_index(
+        db.shell_events,
         [("shell_name", 1), ("ts", 1)],
         name="shell_events_name_ts",
     )

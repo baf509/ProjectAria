@@ -13,7 +13,8 @@ import time
 from datetime import datetime
 from typing import Annotated, Optional, get_args
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
 from aria.api.deps import get_shell_service
@@ -35,6 +36,8 @@ from aria.shells.models import (
 )
 from aria.shells.service import (
     ShellAlreadyExistsError,
+    ShellNameAmbiguousError,
+    RemoteNodeUnavailableError,
     ShellNotFoundError,
     ShellService,
     ShellStoppedError,
@@ -72,6 +75,23 @@ def _allow_input(name: str) -> bool:
 
 _VALID_SHELL_STATUSES = set(get_args(ShellStatus))
 _VALID_EVENT_KINDS = set(get_args(ShellEventKind))
+
+
+async def _canonical_name(service: ShellService, identifier: str) -> str:
+    try:
+        name = await service.resolve_shell_name(identifier)
+    except ShellNameAmbiguousError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ambiguous_shell_name",
+                "identifier": exc.alias,
+                "matches": exc.matches,
+            },
+        ) from exc
+    if name is None:
+        raise HTTPException(status_code=404, detail=f"Shell not found: {identifier}")
+    return name
 
 
 def _parse_filter_csv(raw: str, valid: set[str], field_name: str) -> list[str]:
@@ -126,6 +146,8 @@ async def create_shell(
             workdir=body.workdir or "",
             launch_claude=body.launch_claude,
             launch_command=body.launch_command,
+            profile=body.profile,
+            host=body.host,
             cols=body.cols,
             rows=body.rows,
         )
@@ -135,6 +157,15 @@ async def create_shell(
         )
     except TmuxError as exc:
         raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
+    except RemoteNodeUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "shell_host_unavailable",
+                "host": str(exc),
+                "retryable": True,
+            },
+        ) from exc
     return shell
 
 
@@ -271,13 +302,12 @@ async def get_shell(
     name: str,
     service: Annotated[ShellService, Depends(get_shell_service)],
 ):
+    name = await _canonical_name(service, name)
     shell = await service.get_shell(name)
-    if not shell:
-        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
     return shell
 
 
-@router.delete("/shells/{name}", status_code=204)
+@router.delete("/shells/{name}")
 async def delete_shell(
     name: str,
     service: Annotated[ShellService, Depends(get_shell_service)],
@@ -292,17 +322,14 @@ async def delete_shell(
     and snapshots. Use purge for cleanup; default preserves history so
     `GET /shells/search` keeps working across closed sessions.
     """
-    shell = await service.get_shell(name)
-    if not shell:
-        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    name = await _canonical_name(service, name)
     try:
-        if purge:
-            await service.purge_shell(name)
-        else:
-            await service.kill_shell(name)
+        result = await service.request_remove(name, purge=purge)
     except TmuxError as exc:
         raise HTTPException(status_code=500, detail=f"tmux error: {exc}")
-    return None
+    if result["status"] == "pending":
+        return JSONResponse(status_code=202, content=result)
+    return Response(status_code=204)
 
 
 @router.get("/shells/{name}/events", response_model=ShellEventsResponse)
@@ -315,6 +342,7 @@ async def list_shell_events(
     kinds: Optional[str] = Query(default=None),
     service: Annotated[ShellService, Depends(get_shell_service)] = None,
 ):
+    name = await _canonical_name(service, name)
     kind_list = None
     if kinds:
         kind_list = _parse_filter_csv(kinds, _VALID_EVENT_KINDS, "kind")
@@ -334,6 +362,7 @@ async def get_latest_snapshot(
     name: str,
     service: Annotated[ShellService, Depends(get_shell_service)],
 ):
+    name = await _canonical_name(service, name)
     snap = await service.get_last_snapshot(name)
     if not snap:
         raise HTTPException(status_code=404, detail="No snapshot available")
@@ -352,9 +381,7 @@ async def get_current_screen(
     ~30s stale), this captures the pane right now. Best for "what does the
     screen look like at this moment" after sending input.
     """
-    shell = await service.get_shell(name)
-    if not shell:
-        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    name = await _canonical_name(service, name)
     try:
         screen = await service.current_screen(name, lines=lines)
     except TmuxError as exc:
@@ -372,9 +399,7 @@ async def stream_shell_events(
     service: Annotated[ShellService, Depends(get_shell_service)] = None,
 ):
     """SSE stream of shell events. Starts with a catchup fetch then polls."""
-    shell = await service.get_shell(name)
-    if not shell:
-        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
+    name = await _canonical_name(service, name)
 
     async def event_generator():
         last_line = since_line or 0
@@ -427,6 +452,7 @@ async def send_shell_input(
     body: ShellInput,
     service: Annotated[ShellService, Depends(get_shell_service)],
 ):
+    name = await _canonical_name(service, name)
     if not _allow_input(name):
         raise HTTPException(status_code=429, detail="Rate limit exceeded for shell")
     try:
@@ -459,6 +485,7 @@ async def resize_shell(
     geometry. Without this, sessions stay at tmux's 80x24 default and TUIs
     wrap badly on phones.
     """
+    name = await _canonical_name(service, name)
     try:
         await service.resize_shell(name, body.cols, body.rows)
     except TmuxSessionNotFoundError:
@@ -474,9 +501,8 @@ async def set_shell_tags(
     body: ShellTagsUpdate,
     service: Annotated[ShellService, Depends(get_shell_service)],
 ):
+    name = await _canonical_name(service, name)
     shell = await service.get_shell(name)
-    if not shell:
-        raise HTTPException(status_code=404, detail=f"Shell not found: {name}")
     await service.set_tags(name, body.tags)
     refreshed = await service.get_shell(name)
     return refreshed

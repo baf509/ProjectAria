@@ -19,6 +19,10 @@ class FakeResponse:
     def json(self):
         return self._data
 
+    @property
+    def content(self):
+        return b"{}" if self._data else b""
+
 
 class RecordingClient:
     def __init__(self, responses=None):
@@ -33,12 +37,15 @@ class RecordingClient:
 def test_shells_list_displays_canonical_addressable_name(monkeypatch):
     client = RecordingClient(
         {
-            ("GET", "/shells"): {
+            ("GET", "/shells/overview"): {
                 "shells": [
                     {
                         "name": CANONICAL_NAME,
                         "short_name": SHORT_NAME,
                         "status": "active",
+                        "activity_state": "working",
+                        "connectivity_state": "online",
+                        "host": "corsair-ai",
                         "project_dir": "/home/ben/Development/infrastructure/red5090",
                         "line_count": 5540,
                         "last_activity_at": "2026-09-01T23:41:17Z",
@@ -54,7 +61,8 @@ def test_shells_list_displays_canonical_addressable_name(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert CANONICAL_NAME in result.output
-    assert client.calls == [("GET", "/shells", {"params": {}})]
+    assert "corsair-ai" in result.output
+    assert client.calls == [("GET", "/shells/overview", {"params": {}})]
 
 
 def test_shell_commands_use_displayed_canonical_name_unchanged(monkeypatch):

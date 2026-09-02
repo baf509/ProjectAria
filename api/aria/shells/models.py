@@ -25,8 +25,14 @@ class Shell(BaseModel):
     status: ShellStatus = "active"
     created_at: datetime
     last_activity_at: datetime
+    # Presence is not activity. ``last_seen_at`` is refreshed by registration,
+    # node keepalives, and snapshots; activity timestamps only move for input
+    # or output events. Optional for documents created before this contract.
+    last_seen_at: Optional[datetime] = None
     last_output_at: Optional[datetime] = None
     last_input_at: Optional[datetime] = None
+    last_screen_at: Optional[datetime] = None
+    screen_revision: Optional[str] = None
     line_count: int = 0
     #: Mirror of this shell's extraction cursor (shell_extraction_state
     #: is authoritative). Kept here so "has unextracted work" is a query
@@ -38,6 +44,7 @@ class Shell(BaseModel):
 
 
 class ShellEvent(BaseModel):
+    event_id: Optional[str] = None
     shell_name: str
     ts: datetime
     line_number: int
@@ -96,8 +103,16 @@ class ShellCreateRequest(BaseModel):
     # layer). Used by the codex desk wrapper; API-key-gated like everything
     # else, and no more powerful than send_input already is.
     launch_command: Optional[str] = Field(default=None, max_length=1024)
+    profile: Optional[Literal["shell", "claude", "codex", "pi"]] = None
+    host: Optional[str] = Field(default=None, min_length=1, max_length=128)
     cols: Optional[int] = Field(default=None, ge=20, le=500)
     rows: Optional[int] = Field(default=None, ge=10, le=200)
+
+    @model_validator(mode="after")
+    def _profile_and_command_are_exclusive(self):
+        if self.profile is not None and self.launch_command is not None:
+            raise ValueError("profile and launch_command are mutually exclusive")
+        return self
 
 
 class ShellResizeRequest(BaseModel):
@@ -135,10 +150,14 @@ class ShellOverviewItem(BaseModel):
     # done = idle AND backs a coding session that reached a terminal status;
     # idle = idle with neither. See fleet_overview()'s docstring.
     activity_state: Literal["working", "blocked", "done", "idle"] = "idle"
+    state_evidence: str = ""
+    state_confidence: Literal["high", "medium", "low"] = "medium"
     host: str = ""
+    connectivity_state: Literal["local", "online", "unreachable"] = "local"
     project_dir: str = ""
     line_count: int = 0
     last_activity_at: datetime
+    last_seen_at: Optional[datetime] = None
     idle_seconds: int = 0
     awaiting_input: bool = False
     prompt_line: Optional[str] = None

@@ -18,6 +18,7 @@ from aria.config import settings
 from aria.nodes import commands, is_remote_host, local_node_id
 from aria.nodes.models import EventBatchIn, NodeRegisterRequest, ShellEventIn, SnapshotIn
 from aria.nodes.service import NodeService
+from aria.node.agent import NodeSpool
 from aria.shells.service import ShellService
 from tests.conftest import make_mock_db
 
@@ -34,6 +35,20 @@ def test_is_remote_host(monkeypatch):
     assert is_remote_host("corsair") is False
     assert is_remote_host("") is False
     assert is_remote_host(None) is False
+
+
+def test_node_spool_is_durable_ordered_and_bounded(tmp_path):
+    path = tmp_path / "spool.sqlite3"
+    spool = NodeSpool(str(path), max_items=2)
+    spool.put("one", "/events", {"n": 1})
+    spool.put("two", "/events", {"n": 2})
+    spool.put("three", "/events", {"n": 3})
+
+    reopened = NodeSpool(str(path), max_items=2)
+    assert reopened.count() == 2
+    assert [item[0] for item in reopened.items()] == ["two", "three"]
+    reopened.ack("two")
+    assert reopened.count() == 1
 
 
 # --------------------------------------------------------------------- commands
@@ -122,6 +137,39 @@ async def test_list_nodes_online_offline():
     nodes = {n["node_id"]: n["status"] for n in await svc.list_nodes()}
     assert nodes["mac"] == "online"
     assert nodes["old"] == "offline"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_reconciles_complete_remote_inventory():
+    db = make_mock_db()
+    db.nodes.update_one = AsyncMock(return_value=MagicMock(matched_count=1))
+    class Cursor:
+        def __aiter__(self):
+            return self
+
+        def __init__(self):
+            self._items = iter(
+                [
+                    {"name": "claude-live", "host": "mac", "status": "active"},
+                    {"name": "claude-gone", "host": "mac", "status": "active"},
+                ]
+            )
+
+        async def __anext__(self):
+            try:
+                return next(self._items)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    cursor = Cursor()
+    db.shells.find = MagicMock(return_value=cursor)
+    svc = NodeService(db)
+    svc.shell_service.register_shell = AsyncMock()
+    svc.shell_service.mark_stopped = AsyncMock()
+
+    assert await svc.heartbeat("mac", live_shells=["claude-live"]) is True
+    svc.shell_service.register_shell.assert_awaited_once_with("claude-live", host="mac")
+    svc.shell_service.mark_stopped.assert_awaited_once_with("claude-gone")
 
 
 @pytest.mark.asyncio
@@ -220,11 +268,12 @@ async def test_kill_shell_remote_dispatches(monkeypatch):
     svc, db = _svc(monkeypatch)
     svc.get_shell = AsyncMock(return_value=_remote_shell())
     svc.mark_stopped = AsyncMock()
-    svc._remote_command = AsyncMock(return_value={"ok": True})
-    await svc.kill_shell("claude-x")
-    svc._remote_command.assert_awaited_once()
+    db.nodes.find_one = AsyncMock(return_value=None)
+    with patch("aria.nodes.commands.enqueue_command", new=AsyncMock(return_value="c1")) as enqueue:
+        await svc.kill_shell("claude-x")
+    enqueue.assert_awaited_once()
     svc.tmux.kill_session.assert_not_awaited()
-    svc.mark_stopped.assert_awaited_once_with("claude-x")
+    svc.mark_stopped.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -382,3 +431,24 @@ def test_agent_delta_lines_incremental():
     assert a._delta_lines("s", "line1\nline2") == ["line2"]
     # Next capture appends line3 → only the new line is emitted.
     assert a._delta_lines("s", "line1\nline2\nline3") == ["line3"]
+
+
+def test_agent_delta_lines_ignores_in_place_tui_redraw():
+    a = _agent()
+    assert a._delta_lines("s", "task\nspinner 1") == ["spinner 1"]
+    assert a._delta_lines("s", "task\nspinner 2") == []
+
+
+@pytest.mark.asyncio
+async def test_remote_remove_is_durable_and_idempotent_while_offline(monkeypatch):
+    svc, db = _svc(monkeypatch)
+    svc.get_shell = AsyncMock(return_value=_remote_shell())
+    db.nodes.find_one = AsyncMock(return_value=None)
+    enqueue = AsyncMock(return_value="command-1")
+    with patch("aria.nodes.commands.enqueue_command", new=enqueue):
+        first = await svc.request_remove("claude-x", purge=True)
+        second = await svc.request_remove("claude-x", purge=True)
+    assert first == second
+    assert first["status"] == "pending"
+    assert first["command_id"] == "command-1"
+    assert enqueue.await_args.kwargs["idempotency_key"].endswith(":claude-x:1")

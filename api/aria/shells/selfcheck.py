@@ -170,6 +170,44 @@ async def run_checks(db) -> list[dict]:
     except Exception as exc:
         checks.append({"name": "mongodb", "ok": False, "detail": str(exc)[:120]})
 
+    # Fleet registry invariants. Connectivity and semantic activity are
+    # independent, but several combinations are impossible and indicate drift
+    # rather than a real shell state.
+    try:
+        now = datetime.now(timezone.utc)
+        nodes: dict[str, dict] = {}
+        async for node in db.nodes.find({}, {"last_heartbeat_at": 1}):
+            nodes[str(node.get("_id"))] = node
+        problems: list[str] = []
+        async for shell in db.shells.find(
+            {"status": {"$in": ["active", "idle"]}},
+            {"name": 1, "host": 1, "last_seen_at": 1},
+        ):
+            host = str(shell.get("host") or "")
+            if not host or host == settings.local_node_id:
+                continue
+            node = nodes.get(host)
+            if node is None:
+                problems.append(f"{shell.get('name')}: unregistered host {host}")
+                continue
+            heartbeat = node.get("last_heartbeat_at")
+            if heartbeat and heartbeat.tzinfo is None:
+                heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+            online = bool(heartbeat) and (
+                now - heartbeat
+            ).total_seconds() < settings.node_heartbeat_timeout_seconds
+            if online and not shell.get("last_seen_at"):
+                problems.append(f"{shell.get('name')}: online remote shell has no last_seen_at")
+        checks.append(
+            {
+                "name": "fleet_registry",
+                "ok": not problems,
+                "detail": "consistent" if not problems else "; ".join(problems[:5]),
+            }
+        )
+    except Exception as exc:
+        checks.append({"name": "fleet_registry", "ok": False, "detail": str(exc)[:120]})
+
     # Local LLM (OpenAI-compatible /models) — the endpoint that was dead before.
     #
     # Since 2026-08-05 llamacpp_url is ARIA's own /llm/v1 passthrough, not a
