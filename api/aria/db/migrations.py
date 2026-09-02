@@ -237,7 +237,10 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
         [("shell_name", 1), ("event_id", 1)],
         name="shell_events_node_event_id",
         unique=True,
-        sparse=True,
+        # A sparse compound index still contains legacy documents because
+        # shell_name exists, representing the missing event_id as null. Use a
+        # partial index so only node-spool events participate in uniqueness.
+        partialFilterExpression={"event_id": {"$type": "string"}},
     )
     await _safe_create_index(
         db.shell_events,
