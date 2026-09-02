@@ -1,6 +1,100 @@
 # ARIA Changelog
 
+## 2026-08-29 — Architecture and documentation reconciliation
+
+- Reconciled active repository documentation with Architecture Charter v0.2 and
+  the live Mac-control-plane/Corsair-data-plane deployment.
+- Replaced pre-migration Docker/systemd, `devboxsvc`, Corsair-API, retired model,
+  and direct-model-client instructions in the active README and runbooks.
+- Documented the enforced Pi policy: one `aria` provider, Radiance and Flash Next
+  only, through the Mac identified-model gateway, with no Fireworks entries.
+- Corrected retrieval state to live `hybrid`, both services enabled/running, and
+  zero pending backfill at verification time.
+- Reclassified vendored ARIA systemd units as historical evidence and prevented
+  active-control-plane restoration from that directory.
+- Replaced the stale backlog with current architecture, resilience, UI, and
+  code-quality gaps.
+- Routed Hermes local roles and ARIA's steward/research/improver through the
+  identified gateway; verified both Qwen choices with the inference-only key.
+- Made Mac coding the default for both interactive wrappers and ARIA-spawned
+  sessions. Mac and Corsair wrappers now create or reattach watched tmux shells
+  so ARIA registers, captures, and can resume them.
+- Replaced the obsolete Corsair-default Mac desk installer with maintained
+  `aria-shells-mac.sh` and `aria-local-shell` sources; the installer requires a
+  pre-provisioned scoped key and no longer copies service credentials.
+- Reconciled Flash runtime/geometry metadata, reduced the managed forward set,
+  retired duplicate Corsair Gemma, and marked deleted-weight DeepSeek profiles
+  unstartable without deleting retained DeepSeek assets.
+- Repaired the migrated Playwright MCP path and the stale relay-warning behavior
+  in the generated steward inbox.
+
 All notable changes to ARIA will be documented in this file.
+
+## [2026-08-27] - Obsidian LiveSync Corsair recovery toolkit (tooling only; not yet run)
+
+Implements the deliverables in
+`vault/ProjectAria/Planning/OBSIDIAN_LIVESYNC_CORSAIR_RECOVERY_PLAN_20260826.md`.
+**The recovery has not been executed** — no bridge, vault, CouchDB database, Git history or
+crontab has been changed. Runbook: `docs/ops/OBSIDIAN_LIVESYNC_RECOVERY.md`.
+
+### Added — `scripts/obsidian-recovery/`
+The 2026-08-23 migration stopped Corsair's LiveSync bridge container *and* filtered its
+ten-minute `obsidian-autocommit.sh` cron line out of the saved crontab, on the assumption
+"Obsidian moved to the Mac". The hybrid rollback brought agents back to Corsair but not its
+vault peer, so both machines have been editing the same vault independently for three days.
+
+The reason this needs a toolkit rather than a `docker start`: Corsair's bridge is
+bidirectional with `scanOfflineChanges: true`, so restarting it publishes the stale August 23
+tree — 25 deletions — into CouchDB and every connected device. **Absence on one peer is not
+evidence of deletion**, and that single rule shapes every script here.
+
+- `reconcile.py` — three-way merge of base (`e7534f6`) / Mac / Corsair implementing the plan's
+  resolution table with `ABSENT` as an explicit state. Deletion candidates are preserved and
+  written to a generated `Recovery/DeletionReview/<date>/INVENTORY.md` note; both-changed files
+  go through `git merge-file --diff3` with all three originals retained. **A remaining conflict
+  is a stop gate, not an mtime tiebreak.** `validate-merged.py` re-checks the gate after a
+  human resolves one.
+- `05-seed.sh` — the only script that writes to a live vault, so every path passes
+  `obs_assert_safe_dir` (rejects empty/unexpanded variables, `~` shorthand, relative and
+  too-shallow targets — the failure the plan names). Deletions off by default, listed and
+  typed-confirmed when enabled, and every overwrite lands in a timestamped `--backup-dir`.
+- `01-freeze.sh` / `02-snapshot.sh` — the freeze proves quiescence by reading CouchDB's
+  `update_seq` twice rather than trusting "I stopped the bridges"; the snapshot validates its
+  own output (regenerated manifests, byte-for-byte spot checks against the frozen source,
+  `git bundle verify`, replica doc-count parity) because Section 10's rollback depends on it.
+- `bridge-config.py` — assigns `vault-remote-mac`/`mac-files` and
+  `vault-remote-corsair`/`corsair-files`. The bridge derives internal keys from peer name, so
+  two hosts sharing one are *one peer* as far as replication state is concerned — and the only
+  config readable from here (the `ObsidianBridge` source mirror) carries the unqualified
+  `vault-remote` plus `corsair-files`. ⚠️ Neither *active* config was inspected: the Mac's needs
+  root, Corsair was unreachable. Phase 3 checks both. Credentials are preserved byte for byte,
+  never printed, written mode 0600 from creation.
+- `obsidian-autocommit.sh` — explicit `--git-dir`/`--work-tree` everywhere, and it **refuses to
+  run** if a `.git` marker appears inside the vault: a `gitdir:` pointer naming a
+  machine-specific path is one replication cycle from every other device.
+- `install-autocommit-cron.sh` — additive and idempotent, matching on the script path so a
+  hand-edited schedule is recognised rather than duplicated, and **refusing to write if the
+  count of unrelated entries would change** — the inverse of the wholesale rewrite that caused
+  this incident.
+- `bridge-health.sh` — the plan's seven-state health model as JSON, carrying raw measurements
+  next to the verdict. It reports two *configuration* faults even while everything is up:
+  `dual_replication_engine_on_mac` and `git_marker_in_a_vault`.
+- `couch-config.py` — CouchDB credentials reach curl through a mode-0600 `--config` file, so
+  they never enter argv, shell history or a log; all script output is scrubbed regardless.
+
+### Added — `api/tests/test_obsidian_recovery.py`
+21 cases pinning every row of the resolution table, the preserve-don't-delete policy, the
+content-set boundary (no `.git`, `.obsidian` or bridge config can reach a merged tree), and the
+agreement between the rsync and reconciler exclude lists — a divergence there would mean the
+tree that gets merged is not the tree that gets seeded.
+
+### Found while building it
+- The Mac Obsidian plugin has `liveSync: true` for `/Users/ben/Obsidian` while the headless
+  bridge watches the same folder — the two-replication-engines-on-one-root fault of plan §3.3,
+  live right now. `00-preflight.sh` fails on it; Phase 3 step 5 is the fix.
+- A launchd query that cannot run (no passwordless sudo) must report **unknown**, never
+  "stopped" — treating an unanswerable query as "stopped" is how you snapshot a vault that is
+  still being written to.
 
 ## [2026-08-19] - ARIA can see which commit it is running
 

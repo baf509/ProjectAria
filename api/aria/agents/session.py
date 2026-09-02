@@ -317,6 +317,13 @@ class CodingSessionManager:
                 f"Emergency stop active — coding session start blocked. Reason: {state.reason}"
             )
 
+        # A deployment can pin unattended work to an OS-isolated fleet node.
+        # Explicit callers still win, including tests and operator overrides.
+        configured_host = getattr(settings, "coding_default_host", "")
+        if not isinstance(configured_host, str):
+            configured_host = ""
+        host = host or configured_host.strip() or None
+
         # The session id is minted HERE, before anything else, because the guard
         # keys its worktree, branch, start tag and checkpoint commits off it.
         session_id = str(uuid4())

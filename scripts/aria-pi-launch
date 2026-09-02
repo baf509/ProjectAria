@@ -18,6 +18,12 @@
 # path (agents/session.py passes an explicit provider/model launch command).
 set -uo pipefail
 
+# tmux updates a new session from the creating client's environment. ARIA's
+# launchd service and SSH clients can therefore replace tmux's otherwise-good
+# global PATH with a system-only PATH. Include both Homebrew and the per-user
+# npm bin directory so the Pi binary survives either installation layout.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+
 # Name the tmux window after the tool so the status bar reads `0:pi` instead
 # of `0:bash` (the login shell that exec'd us). rename-window also switches
 # the window's automatic-rename off, so it sticks.

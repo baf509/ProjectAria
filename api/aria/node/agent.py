@@ -46,6 +46,8 @@ class NodeAgent:
         capture_interval: float = 2.0,
         heartbeat_interval: float = 10.0,
         snapshot_lines: int = 400,
+        commands_enabled: bool = True,
+        command_mode: str | None = None,
     ):
         self.base = api_url.rstrip("/")
         self.node_id = node_id
@@ -53,6 +55,10 @@ class NodeAgent:
         self.capture_interval = capture_interval
         self.heartbeat_interval = heartbeat_interval
         self.snapshot_lines = snapshot_lines
+        # full: start/run/control; control: input/stop existing user shells;
+        # capture: observation only. ``commands_enabled`` remains compatible
+        # with older callers and maps false to capture.
+        self.command_mode = command_mode or ("full" if commands_enabled else "capture")
         self.tmux = TmuxClient()
         self.http = httpx.AsyncClient(
             base_url=self.base,
@@ -86,7 +92,11 @@ class NodeAgent:
                 "hostname": socket.gethostname(),
                 "os": platform.system(),
                 "arch": platform.machine(),
-                "capabilities": ["shells", "coding", "run_command"],
+                "capabilities": {
+                    "full": ["shells", "shell_control", "coding", "run_command"],
+                    "control": ["shells", "shell_control"],
+                    "capture": ["shells", "capture_only"],
+                }[self.command_mode],
                 "agent_version": AGENT_VERSION,
             },
         )
@@ -228,6 +238,11 @@ class NodeAgent:
                 pass
 
     async def _exec(self, kind: str, args: dict) -> dict[str, Any]:
+        if self.command_mode == "capture":
+            raise PermissionError("node is capture-only")
+        if self.command_mode != "full" and kind in {"run_command", "start_session"}:
+            raise PermissionError(f"{kind} is disabled on this shell-control node")
+
         if kind == "send_input":
             name = args["name"]
             await self.tmux.send_keys(
@@ -322,9 +337,10 @@ class NodeAgent:
             except Exception as e:
                 logger.warning("register failed (%s); retrying in 5s", e)
                 await asyncio.sleep(5)
-        await asyncio.gather(
-            self.heartbeat_loop(), self.capture_loop(), self.command_loop()
-        )
+        loops = [self.heartbeat_loop(), self.capture_loop()]
+        if self.command_mode != "capture":
+            loops.append(self.command_loop())
+        await asyncio.gather(*loops)
 
 
 def main() -> None:
@@ -337,11 +353,31 @@ def main() -> None:
         default=os.getenv("ARIA_NODE_SHELL_PREFIX", "claude-"),
         help="only capture tmux sessions whose name starts with this (default claude-)",
     )
+    p.add_argument(
+        "--capture-only",
+        action="store_true",
+        default=os.getenv("ARIA_NODE_COMMANDS_ENABLED", "true").strip().lower()
+        in {"0", "false", "no", "off"},
+        help="publish watched shells but do not accept remote execution commands",
+    )
+    p.add_argument(
+        "--command-mode",
+        choices=("full", "control", "capture"),
+        default=os.getenv("ARIA_NODE_COMMAND_MODE", "").strip() or None,
+        help="full execution, existing-shell control, or capture-only",
+    )
     args = p.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s aria-node: %(message)s"
     )
-    agent = NodeAgent(args.api_url, args.api_key, args.node_id, prefix=args.prefix)
+    agent = NodeAgent(
+        args.api_url,
+        args.api_key,
+        args.node_id,
+        prefix=args.prefix,
+        commands_enabled=not args.capture_only,
+        command_mode=("capture" if args.capture_only else args.command_mode),
+    )
     logger.info("starting aria-node id=%s api=%s", args.node_id, args.api_url)
     try:
         asyncio.run(agent.run())

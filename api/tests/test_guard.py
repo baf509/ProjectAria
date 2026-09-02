@@ -775,6 +775,19 @@ class TestPreflight:
         monkeypatch.setattr(guard_sandbox, "mem_available_gib", lambda: 64.0)
         assert guard_sandbox.preflight()["spawn_allowed"] is True
 
+    def test_darwin_memory_pressure_supplies_the_spawn_floor_signal(self, monkeypatch):
+        output = (
+            "The system has 34359738368 (2097152 pages with a page size of 16384).\n"
+            "System-wide memory free percentage: 35%\n"
+        )
+        monkeypatch.setattr(guard_sandbox.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            guard_sandbox.subprocess,
+            "run",
+            lambda *a, **kw: subprocess.CompletedProcess(a[0], 0, output, ""),
+        )
+        assert guard_sandbox._darwin_mem_available_gib() == pytest.approx(11.2)
+
 
 class TestSessionEnvAndResources:
     def test_strips_credentials_and_neuters_git_config(self, tmp_path):

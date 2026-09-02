@@ -1,16 +1,37 @@
 #!/usr/bin/env bash
 # aria-node — run the ARIA node agent (joins this machine to the fleet).
 #
-# Talks outbound-only to the central ARIA API over the tailnet. Configure via
-# env (or pass flags through):
-#   ARIA_API_URL   e.g. http://corsair-ai:8200
+# Talks outbound-only to the Mac-hosted ARIA API. Configure via env (or pass
+# flags through):
+#   ARIA_API_URL   e.g. http://127.0.0.1:8200 on the Mac
 #   ARIA_API_KEY   the central API_KEY
-#   ARIA_NODE_ID   e.g. bens-macbook-air   (defaults to hostname)
+#   ARIA_NODE_ID   e.g. bens-macbook-pro (defaults to hostname)
+#
+# launchd does not expand shell variables or read shell profiles. To avoid
+# putting the broad API key in a world-readable plist, this launcher imports
+# the operator-owned mode-0600 environment file when present.
 set -euo pipefail
+
+ARIA_ENV_FILE="${ARIA_ENV_FILE:-$HOME/.config/aria/env}"
+if [[ -z "${ARIA_API_KEY:-${API_KEY:-}}" && -r "$ARIA_ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ARIA_ENV_FILE"
+    set +a
+fi
+
+# API_KEY is retained as an input compatibility alias, but the child process
+# receives the purpose-specific name.
+if [[ -z "${ARIA_API_KEY:-}" && -n "${API_KEY:-}" ]]; then
+    export ARIA_API_KEY="$API_KEY"
+fi
 
 ARIA_API_DIR="${ARIA_API_DIR:-$HOME/Development/ProjectAria/api}"
 PY="${ARIA_PYTHON:-$ARIA_API_DIR/.venv/bin/python3}"
 [ -x "$PY" ] || PY="$(command -v python3)"
+
+: "${ARIA_API_URL:?set ARIA_API_URL in the environment or $ARIA_ENV_FILE}"
+: "${ARIA_API_KEY:?set ARIA_API_KEY in the environment or $ARIA_ENV_FILE}"
 
 cd "$ARIA_API_DIR"
 exec "$PY" -m aria.node "$@"

@@ -1429,7 +1429,7 @@ async def create_workflow(
     WARNING: params.backend means DIFFERENT things per action.
     - `code_session`: a coding SUBSTRATE — claude_code|codex|pi-code|pool.
     - `synthesize`: an LLM ADAPTER — llamacpp|agentic|ridge|anthropic|openai|
-      openrouter|fireworks.
+      openrouter.
     Passing one vocabulary where the other is expected is invalid."""
     body: dict[str, Any] = {"name": name, "description": description, "steps": steps}
     if tags:

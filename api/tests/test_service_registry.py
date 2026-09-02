@@ -14,6 +14,7 @@ server's port — or vice versa — that failure comes back, so it is asserted.
 """
 
 import pytest
+from unittest.mock import patch
 
 from aria.infrastructure.model_servers import REGISTRY as MODEL_SERVERS
 from aria.infrastructure.services import (
@@ -107,6 +108,11 @@ def test_on_demand_service_that_failed_is_still_unhealthy():
     assert not is_healthy("failed", "on_demand")
 
 
+def test_not_applicable_service_is_not_an_incident():
+    assert is_healthy("not_applicable", "always_up")
+    assert is_healthy("not_applicable", "on_demand")
+
+
 def test_every_spec_has_a_valid_expected_state():
     for spec in REGISTRY:
         assert spec.expected_state in ("always_up", "on_demand"), spec.slug
@@ -144,6 +150,48 @@ def test_every_spec_has_exactly_one_addressing_mode():
             f"{spec.slug} must have exactly one of user_unit/system_unit/"
             f"container_name, got {sum(modes)}"
         )
+
+
+@pytest.mark.asyncio
+async def test_darwin_uses_launchd_instead_of_linux_service_manager():
+    from aria.infrastructure import services
+
+    spec = get_spec("aria-api")
+    calls = []
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args)
+        return 0, "state = running\n", ""
+
+    with patch.object(services.sys, "platform", "darwin"), patch.object(
+        services, "_run", fake_run
+    ):
+        state = await services._state_of(spec)
+
+    assert state == "running"
+    assert calls == [("launchctl", "print", "system/com.ben.devbox.aria-api")]
+
+
+@pytest.mark.asyncio
+async def test_darwin_linux_only_service_is_not_applicable():
+    from aria.infrastructure import services
+
+    spec = get_spec("samba")
+    with patch.object(services.sys, "platform", "darwin"):
+        assert await services._state_of(spec) == "not_applicable"
+
+
+def test_darwin_rows_report_native_handle_and_no_linux_mutation():
+    from aria.infrastructure import services
+
+    spec = get_spec("aria-ui")
+    with patch.object(services.sys, "platform", "darwin"):
+        row = services._row_for(spec, "running")
+
+    assert row["unit"] == "com.ben.devbox.aria-ui"
+    assert row["container"] is None
+    assert row["compose_file"] is None
+    assert row["manageable"] is False
 
 
 def test_slugs_are_unique():

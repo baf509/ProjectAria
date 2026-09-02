@@ -771,7 +771,7 @@ class TestPublishGate:
         run = await db.research_runs.find_one({"_id": "run-1"})
         assert run["planner"]["project_slug"] == "projectaria"
         assert run["topic_hash"] == topic_hash("What limits FP4 decode on gfx1151?")
-        assert run["planner"]["endpoint"].endswith("/v1")
+        assert run["planner"]["endpoint"].endswith("/llm/v1-identified")
 
 
 # ---------------------------------------------------------------------------

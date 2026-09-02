@@ -46,7 +46,10 @@ class ClaudeRunner:
         self.timeout = timeout_seconds or settings.dream_timeout_seconds
         self.cwd = cwd or settings.coding_default_workspace
         self.allowed_tools = allowed_tools
-        self.skip_permissions = skip_permissions or settings.claude_runner_skip_permissions
+        # Never let a background runner disable Claude Code's permission
+        # boundary.  The old setting was effectively a remote-code-execution
+        # switch for any prompt-injected background task.
+        self.skip_permissions = False
         # Initialize so reading it on a fresh/successful runner never AttributeErrors.
         self.last_error: Optional[str] = None
 
@@ -63,8 +66,7 @@ class ClaudeRunner:
         argv = [settings.claude_code_binary]
         if self.model:
             argv.extend(["--model", self.model])
-        if self.skip_permissions:
-            argv.append("--dangerously-skip-permissions")
+        argv.extend(["--permission-mode", "auto"])
         if self.allowed_tools:
             argv.extend(["--allowedTools", ",".join(self.allowed_tools)])
         argv.extend(["-p", prompt])

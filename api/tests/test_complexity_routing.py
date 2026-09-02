@@ -451,6 +451,33 @@ class TestManagedEnv:
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == "claude-opus-4-8"
 
+    def test_claude_code_uses_sandboxed_auto_mode(self):
+        from aria.agents.backends.base import StartParams
+        from aria.agents.backends.claude_code import ClaudeCodeBackend
+
+        params = StartParams(workspace="/tmp/ws", prompt="do it")
+        for argv in (
+            ClaudeCodeBackend().start_command(params).argv,
+            ClaudeCodeBackend().resume_command("sid", params).argv,
+        ):
+            assert argv[:3] == [argv[0], "--permission-mode", "auto"]
+            assert "--dangerously-skip-permissions" not in argv
+
+    def test_codex_is_workspace_sandboxed_and_prompt_is_positional(self):
+        from aria.agents.backends.base import StartParams
+        from aria.agents.backends.codex import CodexBackend
+
+        params = StartParams(workspace="/tmp/ws", prompt="do it")
+        start = CodexBackend().start_command(params).argv
+        resume = CodexBackend().resume_command("sid", params).argv
+        for argv in (start, resume):
+            assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+            assert argv[argv.index("--ask-for-approval") + 1] == "never"
+            assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+            assert "-p" not in argv  # Codex -p means profile, not prompt.
+        assert start[-1] == "do it"
+        assert resume[-2:] == ["sid", "do it"]
+
 
 # ---------------------------------------------------------------------------
 # start_session integration — when does routing run at all?

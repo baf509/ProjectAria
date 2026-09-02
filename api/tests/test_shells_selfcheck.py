@@ -122,6 +122,17 @@ def test_unreadable_pools_still_fail():
     assert "unreadable" in detail
 
 
+def test_gpu_pool_probe_is_not_an_incident_on_darwin_control_plane():
+    with patch.object(selfcheck.sys, "platform", "darwin"), patch.object(
+        selfcheck.gpu_devices,
+        "pool_snapshot",
+        side_effect=AssertionError("Darwin must not read Linux DRM sysfs"),
+    ):
+        ok, detail = selfcheck._check_gtt()
+    assert ok is True
+    assert "not applicable" in detail
+
+
 # ---------------------------------------------------------------------------
 # Vault readability (2026-08-19)
 #
@@ -154,12 +165,21 @@ class TestVaultReadableProbe:
         good.chmod(0o644)
         bad = tmp_path / "Planning" / "STEWARD_PLAN.md"
         bad.write_text("approval: approved\n")
-        bad.chmod(0o600)  # exactly what tempfile.mkstemp used to leave behind
+        bad.chmod(0o000)
 
         result = _check_vault_readable(str(tmp_path))
         assert result["ok"] is False
         assert "STEWARD_PLAN.md" in result["detail"]
         assert "WHOLE vault" in result["detail"]
+
+    def test_owner_readable_0600_file_passes_after_account_unification(self, tmp_path):
+        from aria.shells.selfcheck import _check_vault_readable
+
+        note = tmp_path / "private-note.md"
+        note.write_text("readable by its owner\n")
+        note.chmod(0o600)
+
+        assert _check_vault_readable(str(tmp_path))["ok"] is True
 
     def test_git_internals_are_not_offenders(self, tmp_path):
         """The vault's own backup repo is skipped by the bridge and has

@@ -285,7 +285,7 @@ async def test_remote_launch_uses_basename_and_path_prepend(monkeypatch):
     mgr.shell_service = MagicMock()
     mgr.shell_service.register_shell = AsyncMock()
     command = MagicMock(
-        argv=["/home/ben/.local/bin/claude", "--dangerously-skip-permissions", "-p", "hi"],
+        argv=["/home/ben/.local/bin/claude", "--permission-mode", "auto", "-p", "hi"],
         env=None, cwd="/w",
     )
     captured = {}
@@ -301,7 +301,7 @@ async def test_remote_launch_uses_basename_and_path_prepend(monkeypatch):
 
     launch = captured["launch"]
     assert "/home/ben/.local/bin/claude" not in launch      # absolute path stripped
-    assert "claude --dangerously-skip-permissions" in launch  # bare binary name
+    assert "claude --permission-mode auto" in launch  # bare binary name
     assert 'export PATH="$HOME/.local/bin:$PATH"' in launch    # PATH prepend
     assert " -p " not in launch                               # -p stripped for interactive
 

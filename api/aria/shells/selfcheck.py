@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import stat
+import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,6 +73,12 @@ def _check_gtt() -> tuple[bool, str]:
     their order; a pool crossing the threshold fails the check and names
     itself, so the alert says WHICH device is under pressure.
     """
+    if sys.platform == "darwin":
+        return (
+            True,
+            "not applicable on the Mac control plane; inference GPU pools are node-observed",
+        )
+
     try:
         pools = [
             pool for pool in gpu_devices.pool_snapshot()
@@ -107,10 +114,17 @@ VAULT_UNREADABLE_SAMPLE = 5
 
 
 def _check_vault_readable(vault_path: str) -> dict:
-    """Every vault file must be readable by the livesync bridge's uid.
+    """Every vault file must be readable by the process running the bridge.
 
     Synchronous and run in a thread: this is a filesystem walk, and the event
     loop serves the health endpoint.
+
+    This used to test the world-readable bit (``S_IROTH``). That was a proxy for
+    "a *different* user can read this", correct only while the bridge ran as a
+    dedicated service account against files owned by someone else. Since the
+    2026-08-29 account unification the bridge runs as the owner, so 0600 files
+    are perfectly readable and the bit test reported a permanent false failure.
+    Test real access instead of guessing from a permission bit.
     """
     root = Path(vault_path)
     if not root.is_dir():
@@ -126,7 +140,7 @@ def _check_vault_readable(vault_path: str) -> dict:
             if not path.is_file():
                 continue
             scanned += 1
-            if not (path.stat().st_mode & stat.S_IROTH):
+            if not os.access(path, os.R_OK):
                 offenders.append(str(path.relative_to(root)))
                 if len(offenders) >= VAULT_UNREADABLE_SAMPLE:
                     break
@@ -138,7 +152,7 @@ def _check_vault_readable(vault_path: str) -> dict:
             "ok": False,
             "detail": (
                 f"{len(offenders)}+ file(s) unreadable by the livesync bridge "
-                f"(uid mismatch) — sync stops for the WHOLE vault: "
+                f"— sync stops for the WHOLE vault: "
                 + ", ".join(offenders)
             ),
         }

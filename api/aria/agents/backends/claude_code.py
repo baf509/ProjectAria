@@ -18,14 +18,14 @@ class ClaudeCodeBackend:
     name = "claude_code"
 
     def start_command(self, params: StartParams) -> CommandSpec:
-        argv = [settings.claude_code_binary, "--dangerously-skip-permissions"]
+        argv = [settings.claude_code_binary, "--permission-mode", "auto"]
         if params.model:
             argv.extend(["--model", params.model])
         argv.extend(["-p", params.prompt])
         return CommandSpec(argv=argv, cwd=params.workspace, env=dict(MANAGED_ENV))
 
     def resume_command(self, session_id: str, params: StartParams) -> CommandSpec:
-        argv = [settings.claude_code_binary, "--dangerously-skip-permissions",
+        argv = [settings.claude_code_binary, "--permission-mode", "auto",
                 "--session-id", session_id, "--resume", "-p", params.prompt]
         if params.model:
             argv.extend(["--model", params.model])

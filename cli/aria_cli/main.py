@@ -1644,7 +1644,7 @@ def shells_new_cmd(name, workdir, no_claude):
     if workdir:
         tmux_args += ["-c", workdir]
     if not no_claude:
-        tmux_args.append("claude --dangerously-skip-permissions")
+        tmux_args.append("claude --permission-mode auto")
     console.print(f"[cyan]starting tmux session:[/cyan] {session}")
     os.execvp("tmux", tmux_args)
 

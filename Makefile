@@ -14,10 +14,10 @@ BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 help:
 	@echo "ui-check   typecheck + lint + build + responsive gate"
 	@echo "ui-build   production build (no deploy)"
-	@echo "ui-deploy  build the image, restart the container, verify the running sha == HEAD"
+	@echo "ui-deploy  disabled until the atomic Mac launchd deploy is implemented"
 	@echo "ui-serve   serve the production build on :3100 for the gate (STOP IT WHEN DONE)"
 	@echo "ui-gate    run the responsive gate against :3100 (server must be up)"
-	@echo "ui-https   expose the UI over https on the tailnet"
+	@echo "ui-https   print the human-only Mac Tailscale publication command"
 	@echo "api-test   python test suite"
 
 ui-build:
@@ -41,26 +41,20 @@ ui-check:
 		kill $$(cat /tmp/aria-ui-gate.pid) 2>/dev/null || true; \
 		exit $$status
 
-# A deploy that cannot silently serve a week-old image: the running build must
-# report the sha we just built.
+# Production is native launchd on the Mac. The old implementation below built a
+# Corsair Docker container and could deploy the wrong architecture. Fail closed
+# until a tested atomic source -> /Users/ben/Services/apps/ProjectAria procedure
+# is added; docs/ops/WEB_UI.md records the live layout and acceptance checks.
 ui-deploy:
-	BUILD_SHA=$(SHA) BUILD_BRANCH=$(BRANCH) docker compose build ui
-	BUILD_SHA=$(SHA) BUILD_BRANCH=$(BRANCH) docker compose up -d ui
-	@echo "waiting for the container to answer..."
-	@for i in $$(seq 1 30); do \
-		running=$$(curl -fsS http://127.0.0.1:3000/api/build 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin).get("sha",""))' 2>/dev/null); \
-		if [ "$$running" = "$(SHA)" ]; then echo "deployed $(SHA)"; exit 0; fi; \
-		sleep 2; \
-	done; \
-	echo "DEPLOY MISMATCH: running=$$running expected=$(SHA)"; exit 1
+	@echo "ERROR: production is the Mac launchd service tree, not Docker." >&2
+	@echo "Use the reviewed Mac deployment procedure and verify the live build; see docs/ops/WEB_UI.md." >&2
+	@exit 2
 
-# 443, not 8444: the dashboard is the front door of this host, so its URL has
-# no port in it. 8443/8444 were removed 2026-08-19 -- they proxied a Hermes
-# WebUI that has been disabled since 2026-08-13, and a duplicate of it, which
-# is why finding the dashboard used to mean guessing a port.
+# Agents may not change host network/Tailscale settings. Print the exact Mac
+# command for Ben instead of silently altering whichever host ran make.
 ui-https:
-	tailscale serve --bg --https=443 http://127.0.0.1:3000
-	@echo "UI: https://$$(tailscale status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')"
+	@echo "Human-only on the MacBook Pro:"
+	@echo "/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=443 http://127.0.0.1:3000"
 
 api-test:
 	cd api && python3 -m pytest tests/ -q

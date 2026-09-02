@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -93,6 +94,12 @@ class ServiceSpec:
     system_unit: Optional[str] = None  # system-wide systemd unit (e.g. smbd)
     container_name: Optional[str] = None  # `docker ps` name
 
+    # Native macOS control-plane addressing.  The compatibility fields above
+    # remain the Linux deployment description; when ARIA runs on Darwin these
+    # take precedence so health never asks systemd/docker about launchd jobs.
+    darwin_label: Optional[str] = None  # system LaunchDaemon label
+    darwin_process: Optional[str] = None  # exact process name (pgrep -x)
+
     # Where it listens, when it listens anywhere. Used by the operator view and
     # by the disjointness test against the model-server registry.
     port: Optional[int] = None
@@ -140,6 +147,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongod",
+        darwin_label="com.ben.devbox.lima-mongot",
         port=27017,
         compose_file="infrastructure/docker-compose.yml",
         service_name="mongod",
@@ -152,6 +160,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongot",
+        darwin_label="com.ben.devbox.lima-mongot",
         compose_file="infrastructure/docker-compose.yml",
         service_name="mongot",
         depends_on=("shared-mongod",),
@@ -169,6 +178,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="service",
         container_name="shared-embeddings",
+        darwin_label="com.ben.devbox.embeddings",
         port=8001,
         health_path="/health",
         compose_file="infrastructure/docker-compose.yml",
@@ -185,15 +195,16 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     # --- ARIA itself. ---
     ServiceSpec(
         slug="aria-api",
-        description="ARIA FastAPI backend (native systemd user service) on :8200.",
+        description="ARIA FastAPI backend on :8200 (launchd on the Mac control plane).",
         expected_state="always_up",
         kind="app",
         user_unit="aria-api.service",
+        darwin_label="com.ben.devbox.aria-api",
         port=8200,
         health_path="/health",
         manageable=False,
         notes="Not manageable from here — it would be restarting itself from "
-        "inside its own request handler. Use systemctl --user.",
+        "inside its own request handler. Use the host service manager.",
     ),
     ServiceSpec(
         slug="aria-tmux",
@@ -201,6 +212,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         user_unit="aria-tmux.service",
+        darwin_process="tmux",
         manageable=False,
         notes="LOAD-BEARING: if this dies and aria-api respawns the tmux "
         "server, the server lands in aria-api's cgroup and the next "
@@ -214,6 +226,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         container_name="aria-ui",
+        darwin_label="com.ben.devbox.aria-ui",
         port=3000,
         compose_file="ProjectAria/docker-compose.yml",
         service_name="ui",
@@ -224,6 +237,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="service",
         container_name="shared-tts",
+        darwin_label="com.ben.devbox.tts",
         port=8002,
         health_path="/health",
         compose_file="ProjectAria/docker-compose.yml",
@@ -253,6 +267,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         user_unit="hermes-gateway.service",
+        darwin_label="com.ben.devbox.hermes-gateway",
         depends_on=("aria-api",),
         notes="Hosts the aria MCP connection. Restart after editing mcp/server.py.",
     ),
@@ -276,6 +291,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="integration",
         user_unit="signal-cli.service",
+        darwin_label="com.ben.devbox.signal-cli",
         port=8090,
         notes="Alert triage and the Signal→Linear capture path both die quietly "
         "without this.",
@@ -283,10 +299,11 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     # --- Proxies to other machines. ---
     ServiceSpec(
         slug="ridge-llama-proxy",
-        description="corsair → Ridge LLM proxy on :8092 (WoL wake + OpenAI passthrough).",
+        description="Mac → Ridge LLM proxy on :8092 (WoL wake + OpenAI passthrough).",
         expected_state="always_up",
         kind="proxy",
         user_unit="ridge-llama-proxy.service",
+        darwin_label="com.ben.devbox.ridge-proxy",
         port=8092,
         notes="Bound on the TAILNET IP ONLY — localhost:8092 is "
         "connection-refused even though `ss` shows a listener. Repeatedly "
@@ -294,10 +311,11 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     ),
     ServiceSpec(
         slug="red-proxy",
-        description="corsair → RED inference proxy, game-facing OpenAI endpoint on :8094.",
+        description="Mac → RED inference proxy, game-facing OpenAI endpoint on :8094.",
         expected_state="on_demand",
         kind="proxy",
         user_unit="red-proxy.service",
+        darwin_label="com.ben.devbox.red-proxy",
         port=8094,
         needs_review=True,
         notes="Running as of 2026-08-07, but whether it is meant to be "
@@ -309,6 +327,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="on_demand",
         kind="proxy",
         user_unit="ridge-waker.service",
+        darwin_label="com.ben.devbox.wake-relay",
         needs_review=True,
     ),
     # --- Integrations and side services. ---
@@ -327,6 +346,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="integration",
         container_name="obsidian-livesync-bridge-bridge-1",
+        darwin_label="com.ben.devbox.obsidian-bridge",
         needs_review=False,
         notes="Carries Ben's approval/autonomy edits back to ARIA (D10), so a "
         "stop is an incident. ⚠️ Container state is NOT sufficient evidence "
@@ -456,7 +476,47 @@ async def _container_state(name: str) -> str:
     return "running" if status == "running" else status or "unknown"
 
 
+async def _launchd_state(label: str) -> str:
+    """Return a launchd system job's state in the registry vocabulary."""
+    rc, out, err = await _run("launchctl", "print", f"system/{label}")
+    if rc != 0:
+        lowered = (err or out).lower()
+        if "could not find service" in lowered or "not found" in lowered:
+            return "not_created"
+        return "unknown"
+
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line.startswith("state ="):
+            continue
+        state = line.split("=", 1)[1].strip()
+        if state == "running":
+            return "running"
+        if state in ("waiting", "exited"):
+            return "stopped"
+        return state or "unknown"
+    # A loaded launchd job without a state line is present but not executing.
+    return "stopped"
+
+
+async def _process_state(name: str) -> str:
+    rc, out, _ = await _run("pgrep", "-x", name)
+    if rc == 0 and out.strip():
+        return "running"
+    if rc == 1:
+        return "stopped"
+    return "unknown"
+
+
 async def _state_of(spec: ServiceSpec) -> str:
+    if sys.platform == "darwin":
+        if spec.darwin_label:
+            return await _launchd_state(spec.darwin_label)
+        if spec.darwin_process:
+            return await _process_state(spec.darwin_process)
+        # Linux-only compatibility and historical project services are not
+        # incidents on the Mac control plane.
+        return "not_applicable"
     if spec.user_unit:
         return await _unit_state(spec.user_unit, user=True)
     if spec.system_unit:
@@ -475,6 +535,8 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
     """
     if state in _LIVE_STATES:
         return True
+    if state == "not_applicable":
+        return True
     if expected == "on_demand":
         return state != "failed"
     return False
@@ -488,6 +550,14 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
 def _row_for(spec: ServiceSpec, state: str) -> dict:
     """One service's status row. Shared by the full status() sweep and the
     single-spec get() so the two views cannot drift."""
+    darwin = sys.platform == "darwin"
+    if darwin:
+        handle = spec.darwin_label or (
+            f"process:{spec.darwin_process}" if spec.darwin_process else None
+        )
+    else:
+        handle = spec.user_unit or spec.system_unit
+
     return {
         "slug": spec.slug,
         "description": spec.description,
@@ -496,14 +566,16 @@ def _row_for(spec: ServiceSpec, state: str) -> dict:
         "expected_state": spec.expected_state,
         "healthy": is_healthy(state, spec.expected_state),
         "port": spec.port,
-        "manageable": spec.manageable,
+        # launchd mutation is intentionally not implemented here. Status is
+        # native and accurate; service lifecycle remains a host-admin action.
+        "manageable": spec.manageable and not darwin,
         "needs_review": spec.needs_review,
         "notes": spec.notes,
         "depends_on": list(spec.depends_on),
-        "unit": spec.user_unit or spec.system_unit,
-        "container": spec.container_name,
-        "compose_file": spec.compose_file,
-        "service_name": spec.service_name,
+        "unit": handle,
+        "container": None if darwin else spec.container_name,
+        "compose_file": None if darwin else spec.compose_file,
+        "service_name": None if darwin else spec.service_name,
     }
 
 

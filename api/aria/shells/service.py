@@ -264,14 +264,13 @@ class ShellService:
         now = _utcnow()
         prefix = settings.shells_tmux_session_prefix
         short = _strip_prefix(name, prefix)
+        explicit_host = host is not None
         host = host or socket.gethostname()
 
         update = {
             "$setOnInsert": {
                 "name": name,
                 "short_name": short,
-                "project_dir": project_dir,
-                "host": host,
                 "created_at": now,
                 "line_count": 0,
                 "tags": [],
@@ -283,6 +282,14 @@ class ShellService:
         }
         if pane_id:
             update.setdefault("$set", {})["metadata.pane_id"] = pane_id
+        if explicit_host:
+            update["$set"]["host"] = host
+        else:
+            update["$setOnInsert"]["host"] = host
+        if project_dir:
+            update["$set"]["project_dir"] = project_dir
+        else:
+            update["$setOnInsert"]["project_dir"] = ""
 
         await self.shells.update_one({"name": name}, update, upsert=True)
         shell = await self.get_shell(name)

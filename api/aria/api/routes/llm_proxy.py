@@ -480,20 +480,28 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
         raise _unavailable(route)
     slug, base = route.slug, route.base_url
 
-    # Inject only when the caller could NOT have known the model — i.e. it used
-    # the auto alias. When it named a concrete model it already knows what it is,
-    # and a line telling it so is redundant tokens on every single turn.
-    if identify and isinstance(body, dict) and not _names_a_model(requested):
-        # Ground truth from the backend, falling back to the registry slug.
+    # ARIA model names are routing identifiers, not necessarily the id exposed
+    # by the selected OpenAI-compatible backend.  vLLM rejects an unknown model
+    # instead of ignoring it, so resolve the backend's ground-truth id and
+    # rewrite the forwarded request after routing.
+    if isinstance(body, dict):
         model_id = await _backend_model_id(base)
         try:
-            payload = json.dumps(_inject_identity(body, _identity_line(route, model_id))).encode()
-        except (TypeError, ValueError):
-            logger.warning("llm-proxy: identity injection failed; forwarding verbatim")
+            forwarded = dict(body)
+            if model_id:
+                forwarded["model"] = model_id
 
-    # The body is forwarded verbatim, `model` included: llama.cpp ignores the
-    # field and serves whatever it has loaded, so rewriting it would buy
-    # nothing — and the response already carries the backend's own model id.
+            # Inject only when the caller could NOT have known the model — i.e.
+            # it used the auto alias.  A concrete ARIA model name is already an
+            # explicit declaration and does not need a repeated system line.
+            if identify and not _names_a_model(requested):
+                forwarded = _inject_identity(
+                    forwarded, _identity_line(route, model_id)
+                )
+            payload = json.dumps(forwarded).encode()
+        except (TypeError, ValueError):
+            logger.warning("llm-proxy: model rewrite failed; forwarding verbatim")
+
     url = f"{base}/{path}"
     headers = _forward_headers(request)
 
