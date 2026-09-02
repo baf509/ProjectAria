@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
@@ -22,6 +22,7 @@ from aria.infrastructure.model_servers import ModelServerManager
 from aria.db.models import HealthResponse
 from aria.llm.manager import llm_manager
 from aria.memory.capabilities import retrieval_capabilities
+from aria.core import readiness
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,21 @@ class LLMStatusResponse(BaseModel):
     backend: str
     available: bool
     reason: str
+
+
+@router.get("/health/live")
+async def liveness_check():
+    """Return process liveness without probing any dependency."""
+    return {"live": True, "timestamp": datetime.now(timezone.utc)}
+
+
+@router.get("/health/ready")
+async def readiness_check(response: Response):
+    """Return whether startup completed and mutations are safe to accept."""
+    state = readiness.snapshot()
+    if not state["ready"]:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return state
 
 
 @router.get("/health", response_model=HealthResponse)

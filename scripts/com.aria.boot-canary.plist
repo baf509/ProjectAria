@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ben.devbox.aria-boot-canary</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/ben/Services/apps/ProjectAria/scripts/aria-boot-check</string>
+    <string>--wait</string>
+    <string>300</string>
+    <string>--canary-shell</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>UserName</key>
+  <string>ben</string>
+  <key>GroupName</key>
+  <string>staff</string>
+  <key>StandardOutPath</key>
+  <string>/Users/ben/Services/logs/aria-boot-canary.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ben/Services/logs/aria-boot-canary.error.log</string>
+</dict>
+</plist>

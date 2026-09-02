@@ -8,14 +8,18 @@ import json
 import os
 from pathlib import Path
 import re
+import random
 import shlex
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 
 SHELL_PREFIX = "claude-"
+DEFAULT_API_URL = "http://127.0.0.1:8200"
+RETRYABLE_HTTP_CODES = {502, 503, 504}
 
 
 def _canonical_shell_name(name: str) -> str:
@@ -35,6 +39,86 @@ def _load_key() -> str:
         if key.strip() in {"ARIA_API_KEY", "API_KEY"}:
             return value.strip()
     return ""
+
+
+def _retry_delay(attempt: int) -> float:
+    initial = max(float(os.environ.get("ARIA_STARTUP_RETRY_INITIAL_SECONDS", "0.5")), 0.01)
+    ceiling = max(float(os.environ.get("ARIA_STARTUP_RETRY_MAX_SECONDS", "5")), initial)
+    base = min(ceiling, initial * (2 ** min(attempt, 6)))
+    return base * random.uniform(0.85, 1.15)
+
+
+def _wait_for_readiness(api_url: str, deadline: float) -> bool:
+    """Wait for the local API to finish its post-login startup sequence."""
+    ready_url = f"{api_url.rstrip('/')}/api/v1/health/ready"
+    attempt = 0
+    last_notice = 0.0
+    last_detail = "API socket is not accepting connections"
+
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            print(f"aria: timed out waiting for readiness ({last_detail})", file=sys.stderr)
+            return False
+        try:
+            with urllib.request.urlopen(ready_url, timeout=5) as response:
+                state = json.load(response)
+            if state.get("ready"):
+                return True
+            phase = state.get("phase", "starting")
+            blocked_on = state.get("blocked_on")
+            last_detail = f"{phase}: {blocked_on}" if blocked_on else phase
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                # Rolling-upgrade compatibility with an API predating /ready.
+                return True
+            if exc.code not in RETRYABLE_HTTP_CODES:
+                print(f"aria: readiness check failed ({exc.code})", file=sys.stderr)
+                return False
+            try:
+                state = json.loads(exc.read().decode(errors="replace"))
+                phase = state.get("phase") or state.get("detail") or f"HTTP {exc.code}"
+                blocked_on = state.get("blocked_on")
+                last_detail = f"{phase}: {blocked_on}" if blocked_on else str(phase)
+            except (ValueError, AttributeError):
+                last_detail = f"HTTP {exc.code}"
+        except (OSError, ValueError) as exc:
+            last_detail = str(exc)
+
+        now = time.monotonic()
+        if now - last_notice >= 10 or attempt == 0:
+            remaining = max(0, round(deadline - now))
+            print(f"aria: waiting for ARIA ({last_detail}; up to {remaining}s)", file=sys.stderr)
+            last_notice = now
+        delay = min(_retry_delay(attempt), max(0, deadline - time.monotonic()))
+        time.sleep(delay)
+        attempt += 1
+
+
+def _register_shell(request: urllib.request.Request, deadline: float) -> tuple[bool, dict]:
+    """POST a deterministic shell request, retrying only startup failures."""
+    attempt = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                return True, json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                return True, {}
+            if exc.code not in RETRYABLE_HTTP_CODES:
+                detail = exc.read().decode(errors="replace")[:300]
+                print(f"aria: shell registration failed ({exc.code}): {detail}", file=sys.stderr)
+                return False, {}
+        except (OSError, ValueError) as exc:
+            if time.monotonic() >= deadline:
+                print(f"aria: shell registration failed: {exc}", file=sys.stderr)
+                return False, {}
+
+        if time.monotonic() >= deadline:
+            print("aria: timed out registering shell after ARIA became ready", file=sys.stderr)
+            return False, {}
+        time.sleep(min(_retry_delay(attempt), max(0, deadline - time.monotonic())))
+        attempt += 1
 
 
 def main() -> int:
@@ -74,24 +158,25 @@ def main() -> int:
             "rows": 50,
         }
     ).encode()
+    api_url = os.environ.get("ARIA_API_URL", DEFAULT_API_URL).rstrip("/")
     request = urllib.request.Request(
-        "http://127.0.0.1:8200/api/v1/shells",
+        f"{api_url}/api/v1/shells",
         data=body,
         method="POST",
         headers={"Content-Type": "application/json", "X-API-Key": api_key},
     )
+    wait_seconds = max(float(os.environ.get("ARIA_STARTUP_WAIT_SECONDS", "300")), 0.0)
+    deadline = time.monotonic() + wait_seconds
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            shell = json.load(response)
-            full_name = shell.get("name", full_name)
-    except urllib.error.HTTPError as exc:
-        if exc.code != 409:
-            detail = exc.read().decode(errors="replace")[:300]
-            print(f"aria: shell registration failed ({exc.code}): {detail}", file=sys.stderr)
+        if not _wait_for_readiness(api_url, deadline):
             return 1
-    except (OSError, ValueError) as exc:
-        print(f"aria: shell registration failed: {exc}", file=sys.stderr)
+        registered, shell = _register_shell(request, deadline)
+    except KeyboardInterrupt:
+        print("\naria: cancelled while waiting for startup", file=sys.stderr)
+        return 130
+    if not registered:
         return 1
+    full_name = shell.get("name", full_name)
 
     action = "switch-client" if os.environ.get("TMUX") else "attach-session"
     return subprocess.call(["tmux", action, "-t", f"={full_name}"])
