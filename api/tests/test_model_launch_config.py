@@ -431,7 +431,14 @@ def test_unstartable_entries_always_explain_themselves():
 
 def test_live_deployments_point_at_files_that_exist():
     """The failure this catches is exactly the one that made most of this
-    registry stale: a path that moved without the entry following it."""
+    registry stale: a path that moved without the entry following it.
+
+    The canonical source now lives on the Mac while these deployment paths live
+    on Corsair. The filesystem assertion is therefore a Corsair data-plane test,
+    not a portable ProjectAria source-tree test.
+    """
+    if not os.path.isdir(ms.settings.infrastructure_root):
+        pytest.skip("Corsair deployment tree is not mounted on this host")
     live = [s for s in ms.REGISTRY if s.startable and s.onbox and s.launch_script]
     assert live, "expected at least one script-launched deployment"
     for spec in live:

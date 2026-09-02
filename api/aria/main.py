@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from aria.config import settings
 from aria.core.bg import spawn_bg
 from aria.core.logging import setup_logging
+from aria.core import readiness
 
 # Initialize structured logging with secret scrubbing before anything else
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
@@ -78,9 +79,14 @@ async def lifespan(app: FastAPI):
     import logging as _logging
     startup_logger = _logging.getLogger("aria.startup")
 
+    readiness.reset()
+    readiness.mark_phase("local_state", "soul file")
     soul_manager.ensure_file()
+    readiness.mark_phase("database", "MongoDB connection")
     await connect_db()
+    readiness.mark_phase("migrations", "database migrations")
     await run_migrations(await get_database())
+    readiness.mark_phase("services", "service and worker initialization")
 
     # Validate critical services at startup
     import httpx
@@ -573,6 +579,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover - non-fatal
         startup_logger.warning("Planning index creation failed: %s", exc)
 
+    readiness.mark_ready()
+    startup_logger.info("ARIA readiness: ready")
+
     yield
 
     # Shutdown — graceful drain of in-flight work
@@ -580,6 +589,7 @@ async def lifespan(app: FastAPI):
 
     shutdown_logger = logging.getLogger("aria.shutdown")
     shutdown_logger.info("Initiating graceful shutdown...")
+    readiness.mark_phase("shutting_down", "graceful worker drain")
 
     # 1. Stop accepting new scheduled work
     from aria.api.deps import (
@@ -718,6 +728,29 @@ async def rate_limit_middleware(request: Request, call_next):
     return response
 
 
+def _is_llm_gateway_path(path: str) -> bool:
+    """Return whether *path* is inside an OpenAI-compatible LLM proxy."""
+    return (
+        path == "/llm/v1"
+        or path.startswith("/llm/v1/")
+        or path == "/llm/v1-identified"
+        or path.startswith("/llm/v1-identified/")
+    )
+
+
+def _api_key_authorized(path: str, provided: str | None) -> bool:
+    """Authorize either the admin key, or the gateway-only key on LLM paths."""
+    full_access = bool(settings.api_key) and hmac.compare_digest(
+        provided or "", settings.api_key
+    )
+    inference_only = (
+        _is_llm_gateway_path(path)
+        and bool(settings.llm_gateway_api_key)
+        and hmac.compare_digest(provided or "", settings.llm_gateway_api_key)
+    )
+    return full_access or inference_only
+
+
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
     """Optional API key auth for remote access."""
@@ -744,7 +777,7 @@ async def api_key_middleware(request: Request, call_next):
         auth_header = request.headers.get("Authorization") or ""
         if auth_header.lower().startswith("bearer "):
             provided = auth_header[7:].strip()
-    if not settings.api_key or not hmac.compare_digest(provided or "", settings.api_key):
+    if not _api_key_authorized(request.url.path, provided):
         # Best-effort audit — a DB failure must NOT turn the intended 401 into a 500.
         try:
             db = await get_database()

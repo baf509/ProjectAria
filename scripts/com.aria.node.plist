@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  aria-node launchd agent (macOS). Install:
+  Mac control-node logical role. Install for the interactive Mac user:
     cp scripts/com.aria.node.plist ~/Library/LaunchAgents/
-    # edit the paths, ARIA_API_KEY, and ARIA_NODE_ID below, then:
-    launchctl load ~/Library/LaunchAgents/com.aria.node.plist
-  Tail logs: tail -f /tmp/aria-node.log
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.aria.node.plist
+
+  The broad API key is read by scripts/aria-node from the operator-owned
+  ~/.config/aria/env file. Never place it in this mode-0644 plist.
 -->
 <plist version="1.0">
 <dict>
@@ -14,23 +15,29 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ben/Development/ProjectAria/api/.venv/bin/python3</string>
-        <string>-m</string>
-        <string>aria.node</string>
+        <string>/Users/ben/Development/Infrastructure/ProjectAria/scripts/aria-node</string>
     </array>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>ARIA_API_URL</key>
-        <string>http://corsair-ai:8200</string>
-        <key>ARIA_API_KEY</key>
-        <string>REPLACE_WITH_CORSAIR_API_KEY</string>
+        <string>http://127.0.0.1:8200</string>
         <key>ARIA_NODE_ID</key>
-        <string>bens-macbook-air</string>
+        <string>bens-macbook-pro</string>
+        <key>ARIA_NODE_COMMAND_MODE</key>
+        <string>control</string>
+        <key>ARIA_API_DIR</key>
+        <string>/Users/ben/Development/Infrastructure/ProjectAria/api</string>
+        <key>ARIA_PYTHON</key>
+        <string>/Users/ben/Services/venvs/aria-node/bin/python</string>
+        <key>ARIA_ENV_FILE</key>
+        <string>/Users/ben/.config/aria/env</string>
+        <key>PATH</key>
+        <string>/Users/ben/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ben/Development/ProjectAria/api</string>
+    <string>/Users/ben/Development/Infrastructure/ProjectAria/api</string>
 
     <key>RunAtLoad</key>
     <true/>
@@ -38,8 +45,8 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/tmp/aria-node.log</string>
+    <string>/Users/ben/Library/Logs/aria-control-node.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/aria-node.log</string>
+    <string>/Users/ben/Library/Logs/aria-control-node.error.log</string>
 </dict>
 </plist>

@@ -243,7 +243,7 @@ class RateLimitWatchdog:
 
         rate_limited_backends = []
 
-        for backend_name in ("anthropic", "openai", "openrouter", "fireworks"):
+        for backend_name in ("anthropic", "openai", "openrouter"):
             available, _ = llm_manager.is_backend_available(backend_name)
             if not available:
                 continue

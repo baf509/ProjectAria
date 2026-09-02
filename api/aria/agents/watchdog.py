@@ -372,7 +372,7 @@ class CodingWatchdog:
                         # record a cooldown here and let the complexity router
                         # demote new sessions to the fallback tier until it
                         # expires. Only for Claude-backed sessions: a rate limit
-                        # on Fireworks says nothing about the subscription.
+                        # from another provider says nothing about the subscription.
                         if session.get("backend") == "claude_code":
                             await self._record_quota_cooldown(session_id, output)
                     elif reason == StuckReason.RETRY_LOOP:

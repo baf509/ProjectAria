@@ -1,5 +1,12 @@
 # HANDOFF — Qwen3.8-Flash-Next on Corsair → Mac control plane (2026-08-26)
 
+> **HISTORICAL — do not execute as written.** Recorded 2026-08-26, when the Mac
+> control plane still ran under the `devboxsvc` service account. That account no
+> longer exists on the Mac (`/Users/devboxsvc` is absent); all Mac services now
+> run as `ben` and the service tree is `/Users/ben/Services/apps/ProjectAria`.
+> Translate any `devboxsvc` path or `sudo -u devboxsvc` step to `ben` before use.
+> Retained for the decision record. (Annotated 2026-08-31.)
+
 Written from Corsair (`ben@corsair-ai`). The Corsair side is done and the registry entry is
 committed in this repo. Three steps need the `devboxsvc` service account on this Mac, which
 Corsair cannot reach (no read access to `/Users/devboxsvc`, no passwordless sudo).

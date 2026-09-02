@@ -14,8 +14,27 @@
 # for a corrupt history.
 set -uo pipefail
 
-# Long form of --yolo; spelled out so the intent survives grep.
-CODEX_ARGS=(--dangerously-bypass-approvals-and-sandbox)
+# tmux updates a new session from the creating client's environment. ARIA's
+# launchd service and SSH clients can therefore replace tmux's otherwise-good
+# global PATH with a system-only PATH. Keep the launch shim self-contained so
+# the standalone Codex binary is available regardless of who created it.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+
+# Detached sessions cannot answer approval prompts. Keep them autonomous but
+# fail closed outside the workspace by default. An explicit caller request for
+# Codex's bypass mode takes precedence; combining it with either option below
+# is rejected by the Codex argument parser and previously killed the new tmux
+# session before aria-local-shell could attach to it.
+CODEX_ARGS=(--sandbox workspace-write --ask-for-approval never)
+BYPASS_DEFAULTS=0
+for arg in "$@"; do
+    case "$arg" in
+        --yolo|--dangerously-bypass-approvals-and-sandbox)
+            BYPASS_DEFAULTS=1
+            break
+            ;;
+    esac
+done
 
 # Name the tmux window after the tool (`0:codex`, not `0:bash`); see
 # aria-claude-launch for why automatic-rename shows the wrong thing.
@@ -24,13 +43,20 @@ if [ -n "${TMUX:-}" ]; then
 fi
 
 started=$SECONDS
-codex resume --last "${CODEX_ARGS[@]}"
+if (( BYPASS_DEFAULTS )); then
+    codex resume --last "$@"
+else
+    codex resume --last "${CODEX_ARGS[@]}" "$@"
+fi
 rc=$?
 # A non-zero exit within a few seconds means resume could not start (no
 # session for this cwd, corrupt rollout) rather than a session you used and
 # quit, so start a fresh one instead of leaving a dead pane behind.
 if [ "$rc" -ne 0 ] && [ $((SECONDS - started)) -lt 5 ]; then
     echo "aria: codex resume --last failed (exit $rc) — starting a fresh session" >&2
-    exec codex "${CODEX_ARGS[@]}"
+    if (( BYPASS_DEFAULTS )); then
+        exec codex "$@"
+    fi
+    exec codex "${CODEX_ARGS[@]}" "$@"
 fi
 exit "$rc"

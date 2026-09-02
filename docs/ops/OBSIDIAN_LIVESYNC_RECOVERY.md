@@ -160,7 +160,7 @@ The recovery established that peer names are host-local Deno checkpoint keys;
 matching names on different hosts do not collide. Preserve the active names
 and checkpoint state. Verify the storage roots instead:
 
-- Mac headless bridge: `/Users/devboxsvc/Services/data/obsidian/vault/`
+- Mac headless bridge: `/Users/ben/Services/data/obsidian/vault/`
 - Corsair container bridge: `/app/vault/` (host `/home/ben/Obsidian/vault`)
 - Mac desktop plugin: `/Users/ben/Obsidian`
 

@@ -80,7 +80,10 @@ async def _run_capture(shell_name: str) -> None:
                     "$setOnInsert": {
                         "short_name": shell_name.split("-", 1)[-1] if "-" in shell_name else shell_name,
                         "project_dir": os.environ.get("SHELLS_CAPTURE_PROJECT_DIR", ""),
-                        "host": os.uname().nodename if hasattr(os, "uname") else "",
+                        # The configured logical node id is the fleet identity;
+                        # the OS hostname is only descriptive and may include a
+                        # .local suffix that makes this process look remote.
+                        "host": settings.local_node_id or (os.uname().nodename if hasattr(os, "uname") else ""),
                         "created_at": now_utc,
                         "status": "active",
                         "tags": [],

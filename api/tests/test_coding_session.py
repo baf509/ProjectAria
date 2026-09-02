@@ -15,6 +15,7 @@ import pytest
 
 from tests.conftest import make_mock_db
 from aria.agents.backends.registry import BackendRegistry
+from aria.agents.backends.registry import CodingBackendUnavailableError
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +31,7 @@ def _make_manager(db=None, tmux=None, notification_service=None):
          patch("aria.agents.session.settings") as mock_settings:
 
         mock_settings.coding_default_backend = "claude-code"
+        mock_settings.coding_default_host = ""
         mock_settings.coding_output_lines = 500
 
         # Prevent real tmux availability check
@@ -48,6 +50,7 @@ def _make_manager(db=None, tmux=None, notification_service=None):
         )
         mgr.registry = MagicMock()
         mgr.registry.get.return_value = mock_backend
+        mgr._preflight_local_backend = AsyncMock()
 
         mock_proc_mgr = MagicMock()
         running = MagicMock()
@@ -383,15 +386,14 @@ async def test_send_input_pi_code_routes_through_shell_substrate():
 
 @pytest.mark.asyncio
 async def test_start_session_subagent_profile_llm_backend_not_confused_with_session_backend():
-    """A specialist profile's llm.backend is an LLM-adapter name (llamacpp,
-    agentic, ridge, ...) — a different vocabulary from the coding-session
+    """A specialist profile's llm.backend is a Pi provider name (aria) — a
+    different vocabulary from the coding-session
     substrate (claude_code/codex/pi-code/pool). It must be routed through
     the external pi-code process with that name pinned as its provider, not
     adopted as the session `backend` itself.
 
-    Regression test for subagent_profile="pi-coding-ridge" (llm.backend=
-    "ridge"): before the fix this set backend="ridge" and start_session raised
-    "Unknown coding backend: ridge" before ever reaching pi-code dispatch.
+    The historical pi-coding-ridge slug now selects Flash Next through ARIA;
+    it must not be interpreted as a coding-session process backend.
     """
     db = make_mock_db()
 
@@ -399,8 +401,11 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
         if query.get("slug") == "pi-coding-ridge":
             return {
                 "slug": "pi-coding-ridge",
-                "llm": {"backend": "ridge", "model": "qwen3.6-35b-a3b"},
-                "system_prompt": "You are the Ridge-backed coding agent.",
+                "llm": {
+                    "backend": "aria",
+                    "model": "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+                },
+                "system_prompt": "Use Flash Next through ARIA.",
             }
         return None
 
@@ -428,11 +433,11 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
     mock_launch.assert_awaited_once()
     command = mock_launch.call_args.args[1]
     assert command.argv[1:5] == [
-        "--provider", "ridge", "--model", "qwen3.6-35b-a3b",
+        "--provider", "aria", "--model", "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     ]
     inserted = db.coding_sessions.insert_one.call_args.args[0]
     assert inserted["backend"] == "pi-code"
-    assert inserted["llm"] == "ridge"
+    assert inserted["llm"] == "aria"
     assert "agent_conversation_id" not in inserted
 
 
@@ -455,6 +460,20 @@ async def test_start_session_refuses_pool_when_disabled():
 
         with pytest.raises(RuntimeError, match="pool backend is disabled"):
             await mgr.start_session(workspace="/tmp/ws", backend="pool", prompt="do stuff")
+
+
+@pytest.mark.asyncio
+async def test_backend_preflight_reports_missing_binary_structurally():
+    mgr = _make_manager()
+    real_preflight = type(mgr)._preflight_local_backend
+    with patch("aria.agents.session.settings.codex_binary", "missing-codex"), patch(
+        "aria.agents.session.shutil.which", return_value=None
+    ):
+        with pytest.raises(CodingBackendUnavailableError) as error:
+            await real_preflight(mgr, "codex")
+    assert error.value.backend == "codex"
+    assert error.value.retryable is False
+    assert "executable not found" in error.value.reason
 
 
 @pytest.mark.asyncio

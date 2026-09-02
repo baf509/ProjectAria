@@ -92,6 +92,14 @@ def _oid(alert_id: str) -> ObjectId:
         raise HTTPException(status_code=400, detail=f"Invalid alert id: {alert_id}")
 
 
+async def _refresh_steward_inbox(request: Request) -> None:
+    """Keep the generated vault inbox coherent with an alert mutation."""
+    watchdog = getattr(request.app.state, "relay_watchdog", None)
+    refresh = getattr(watchdog, "refresh_inbox", None)
+    if callable(refresh):
+        await refresh()
+
+
 @router.get("")
 async def list_alerts(
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
@@ -140,6 +148,7 @@ async def list_alerts(
 @router.post("/{alert_id}/ack")
 async def ack_alert(
     alert_id: str,
+    request: Request,
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
 ):
     """Mark an alert acknowledged so it is not relayed again."""
@@ -149,12 +158,14 @@ async def ack_alert(
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail=f"Alert not found: {alert_id}")
+    await _refresh_steward_inbox(request)
     return {"ok": True, "id": alert_id, "acked": True}
 
 
 @router.post("/{alert_id}/decide")
 async def decide_alert(
     alert_id: str,
+    request: Request,
     body: DecideRequest,
     db: Annotated[AsyncIOMotorDatabase, Depends(get_db)],
 ):
@@ -187,6 +198,7 @@ async def decide_alert(
     )
     if not doc:
         raise HTTPException(status_code=404, detail=f"Alert not found: {alert_id}")
+    await _refresh_steward_inbox(request)
     return {"ok": True, "id": alert_id, "decision": action, "alert": _serialize(doc)}
 
 

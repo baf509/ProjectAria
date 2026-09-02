@@ -1785,7 +1785,9 @@ class Improver:
             raise ImproverError("no mutable targets are readable")
         backend = str(_setting("steward_backend", "llamacpp"))
         model = str(_setting("steward_model", "qwen3.8-27b-rocmfp4-r9700"))
-        endpoint = _setting("steward_endpoint", "http://127.0.0.1:8080/v1")
+        endpoint = _setting(
+            "steward_endpoint", "http://127.0.0.1:8200/llm/v1-identified"
+        )
         listing = "\n".join(
             f"- {c['target']} ({len(c['content'] or '')} chars)" for c in candidates
         )

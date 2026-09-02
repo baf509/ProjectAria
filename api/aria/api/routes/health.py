@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import BaseModel
 
@@ -22,6 +22,7 @@ from aria.infrastructure.model_servers import ModelServerManager
 from aria.db.models import HealthResponse
 from aria.llm.manager import llm_manager
 from aria.memory.capabilities import retrieval_capabilities
+from aria.core import readiness
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,21 @@ class LLMStatusResponse(BaseModel):
     backend: str
     available: bool
     reason: str
+
+
+@router.get("/health/live")
+async def liveness_check():
+    """Return process liveness without probing any dependency."""
+    return {"live": True, "timestamp": datetime.now(timezone.utc)}
+
+
+@router.get("/health/ready")
+async def readiness_check(response: Response):
+    """Return whether startup completed and mutations are safe to accept."""
+    state = readiness.snapshot()
+    if not state["ready"]:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return state
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -106,7 +122,7 @@ async def health_check(
     )) if _probe_urls else {}
 
     available_backends = []
-    for b in ("llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter", "fireworks"):
+    for b in ("llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter"):
         avail, _ = llm_manager.is_backend_available(b)
         if avail and b in reachability and not reachability[b]:
             avail = False
@@ -142,7 +158,7 @@ async def health_check(
 @router.get("/health/llm", response_model=list[LLMStatusResponse])
 async def llm_health_check():
     """Check status of all LLM backends."""
-    backends = ["llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter", "fireworks"]
+    backends = ["llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter"]
     statuses = []
 
     for backend in backends:
@@ -166,7 +182,7 @@ async def services_health(
     """Concurrently probe every backing service and report per-service health.
 
     Powers the TUI/web health page: mongod, mongot, the three local llama.cpp
-    servers, embeddings, tts, stt, and Fireworks reachability.
+    servers, embeddings, tts, and stt.
     """
     import asyncio
     import time
@@ -175,10 +191,16 @@ async def services_health(
     def _base(url: str) -> str:
         return url.rstrip("/").replace("/v1", "")
 
-    async def http_ping(name: str, url: str, headers: dict | None = None) -> dict:
+    async def http_ping(
+        name: str,
+        url: str,
+        headers: dict | None = None,
+        *,
+        timeout: float = 4.0,
+    ) -> dict:
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.get(url, headers=headers or {})
             # 4xx auth failures mean the credential is wrong — that is *not*
             # healthy, even though the server answered.
@@ -302,7 +324,17 @@ async def services_health(
                 "detail": f"{slug} stopped (start on demand)",
             }
         headers = {"X-API-Key": settings.api_key} if settings.api_key else None
-        return await http_ping(name, f"{url.rstrip('/')}/models", headers=headers)
+        # The gateway catalog resolves observed model state across the remote
+        # inference plane. Four seconds was below normal warm-path latency and
+        # produced false incidents; twelve still fails quickly enough for an
+        # operator health surface while covering the measured control-plane
+        # path.
+        return await http_ping(
+            name,
+            f"{url.rstrip('/')}/models",
+            headers=headers,
+            timeout=12.0,
+        )
 
     async def svc_ping(name: str, url: str) -> dict:
         """Probe a non-LLM service, honouring its registry `expected_state`.
@@ -358,12 +390,6 @@ async def services_health(
     ]
     if settings.context1_enabled:
         tasks.append(http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"))
-    if settings.fireworks_api_key:
-        tasks.append(http_ping(
-            "fireworks",
-            f"{settings.fireworks_base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {settings.fireworks_api_key}"},
-        ))
     results = list(await asyncio.gather(*tasks))
 
     # Registry-driven additions: the always_up services with no HTTP surface to
@@ -380,6 +406,8 @@ async def services_health(
         for u in (settings.embedding_url, settings.tts_url, settings.stt_url)
     } - {None}
     for s in svc_all:
+        if s.get("state") == "not_applicable":
+            continue
         if s.get("expected_state") != "always_up":
             continue
         if s.get("port") in probed_ports:

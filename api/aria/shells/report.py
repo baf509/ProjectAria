@@ -37,7 +37,7 @@ async def build_report(db) -> dict:
         top.append(p.get("slug") or p.get("name"))
 
     text = (
-        f"{'✅' if all_ok else '⚠️'} ARIA weekly report (corsair-ai)\n"
+        f"{'✅' if all_ok else '⚠️'} ARIA weekly report (Mac control plane)\n"
         f"Projects: {total_p} ({active_p} active, {total_p - active_p} idle)\n"
         f"Open tasks: {open_tasks}\n"
         f"Memories: {mem_total} (+{mem_week} this week)\n"

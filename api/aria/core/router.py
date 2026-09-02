@@ -11,7 +11,7 @@ from __future__ import annotations
 # (keywords, backend, why). First match wins; order matters.
 _RULES = [
     (("architect", "design", "complex", "tricky", "hard", "reason", "analyze", "plan"),
-     "fireworks", "heavy reasoning → GLM 5.2"),
+     "agentic", "heavy reasoning → local agentic model"),
     (("quick", "simple", "trivial", "summarize", "summary", "rename", "format", "typo", "tldr"),
      "llamacpp", "simple/cheap → local qwen-chat"),
     (("implement", "code", "refactor", "debug", "script", "tool", "agent", "build", "fix"),
@@ -19,13 +19,10 @@ _RULES = [
 ]
 
 
-def suggest_backend(hint: str, *, has_fireworks: bool = True) -> tuple[str, str]:
+def suggest_backend(hint: str) -> tuple[str, str]:
     """Return (backend, why) for a task hint."""
     h = (hint or "").lower()
     for keywords, backend, why in _RULES:
         if any(k in h for k in keywords):
-            if backend == "fireworks" and not has_fireworks:
-                return "agentic", why + " (fireworks unavailable → qwen-agentic)"
             return backend, why
-    # Default: the orchestrator default (GLM) when available, else local.
-    return ("fireworks" if has_fireworks else "llamacpp", "default")
+    return "llamacpp", "default"

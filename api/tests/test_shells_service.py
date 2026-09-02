@@ -6,7 +6,12 @@ from typing import Any
 
 import pytest
 
-from aria.shells.service import ShellService, ShellNotFoundError, ShellStoppedError
+from aria.shells.service import (
+    ShellNameAmbiguousError,
+    ShellNotFoundError,
+    ShellService,
+    ShellStoppedError,
+)
 from aria.shells.tmux import TmuxSessionNotFoundError
 
 
@@ -185,6 +190,26 @@ async def test_register_and_get(service):
 
 
 @pytest.mark.asyncio
+async def test_unique_short_name_resolves_but_canonical_name_wins(service):
+    await service.register_shell("claude-claude-red5090-034654")
+    assert await service.resolve_shell_name("claude-red5090-034654") == (
+        "claude-claude-red5090-034654"
+    )
+    assert await service.get_shell("claude-red5090-034654") is not None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_short_name_is_an_explicit_conflict(service):
+    await service.register_shell("claude-one")
+    await service.register_shell("claude-two")
+    for doc in service._fake_db.shells.docs:
+        doc["short_name"] = "shared"
+    with pytest.raises(ShellNameAmbiguousError) as exc:
+        await service.resolve_shell_name("shared")
+    assert set(exc.value.matches) == {"claude-one", "claude-two"}
+
+
+@pytest.mark.asyncio
 async def test_insert_events_line_numbers(service):
     await service.register_shell("claude-proj", project_dir="/tmp/proj")
     await service.insert_events_batch(
@@ -204,6 +229,25 @@ async def test_insert_events_line_numbers(service):
     assert [e.line_number for e in events] == [1, 2, 3]
     shell = await service.get_shell("claude-proj")
     assert shell.line_count == 3
+
+
+@pytest.mark.asyncio
+async def test_replayed_node_event_ids_are_inserted_exactly_once(service):
+    await service.register_shell("claude-proj")
+    batch = [
+        {
+            "event_id": "node-batch:0",
+            "kind": "output",
+            "text_raw": "hello",
+            "text_clean": "hello",
+            "source": "node-capture",
+        }
+    ]
+    assert await service.insert_events_batch("claude-proj", batch) == 1
+    assert await service.insert_events_batch("claude-proj", batch) == 0
+    shell = await service.get_shell("claude-proj")
+    assert shell.line_count == 1
+    assert len((await service.list_events("claude-proj", limit=10))) == 1
 
 
 @pytest.mark.asyncio

@@ -93,7 +93,7 @@ claude() {
     if [ "$_rc" -ne 0 ]; then
         # API unreachable / routing disabled / judge failed. Never block.
         printf 'aria: router unavailable — launching on the default model\n' >&2
-        command claude --dangerously-skip-permissions "$@"
+        command claude --permission-mode auto "$@"
         return $?
     fi
 
@@ -123,10 +123,10 @@ claude() {
     # ARIA_MANAGED inside the pane keeps a nested `claude` invocation from
     # re-entering the wrapper.
     local _cmd
-    _cmd="ARIA_MANAGED=1 command claude --dangerously-skip-permissions --model $(_aria_shquote "$_model") $(_aria_shquote "$*")"
+    _cmd="ARIA_MANAGED=1 command claude --permission-mode auto --model $(_aria_shquote "$_model") $(_aria_shquote "$*")"
     tmux new-session -d -s "$_name" -c "$PWD" -x 200 -y 50 "$_cmd" || {
         printf 'aria: tmux session create failed — launching inline\n' >&2
-        ARIA_MANAGED=1 command claude --dangerously-skip-permissions --model "$_model" "$@"
+        ARIA_MANAGED=1 command claude --permission-mode auto --model "$_model" "$@"
         return $?
     }
 

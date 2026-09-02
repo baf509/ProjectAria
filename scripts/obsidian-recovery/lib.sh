@@ -22,7 +22,7 @@ set -euo pipefail
 : "${OBS_RUN_ID:=$(date +%Y%m%d-%H%M%S)}"
 
 : "${OBS_MAC_VAULT:=/Users/ben/Obsidian}"
-: "${OBS_MAC_SERVICE_VAULT:=/Users/devboxsvc/Services/data/obsidian/vault}"
+: "${OBS_MAC_SERVICE_VAULT:=/Users/ben/Services/data/obsidian/vault}"
 : "${OBS_MAC_RECOVERY_ROOT:=/Users/ben/Obsidian-Recovery/${OBS_RUN_ID}}"
 : "${OBS_CORSAIR_HOST:=ben@100.123.245.84}"
 # Corsair is NOT reachable as a bare hostname: there is no `corsair` entry in

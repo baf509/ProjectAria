@@ -50,11 +50,13 @@ on that path.
 from __future__ import annotations
 
 import asyncio
+import json
 import pathlib
 import logging
 import os
 import re
 import shlex
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -77,6 +79,16 @@ from aria.infrastructure.gpu_devices import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _corsair_forward_mode() -> bool:
+    """True when this Mac control plane observes Corsair through SSH forwards."""
+    return sys.platform == "darwin" and os.getenv(
+        "ARIA_CORSAIR_MODEL_FORWARDS", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+_CORSAIR_ACTUATOR_SLUG_RE = re.compile(r"^[A-Za-z0-9._:+-]+$")
 
 # Allowlist for free-form override values. Deliberately narrow: these are
 # interpolated into a systemd Environment= line and read by a shell script.
@@ -292,6 +304,10 @@ class ModelServerSpec:
     # cannot find `-c` in a shell script the way it finds it in an ExecStart.
     ctx_param: Optional[str] = None
     slots_param: Optional[str] = None
+    # Modern llama.cpp treats -c as the TOTAL KV pool when -np > 1, while the
+    # older qualified forks in this registry treat -c as context per slot.
+    # Set this only when the live server reports n_ctx_slot=-c/-np.
+    ctx_is_total: bool = False
     # Unit body for a deployment that has a serve.sh but no systemd unit of
     # its own (ds4-affine, ds4-hybrid). ARIA materialises `aria-<slug>.service`
     # from these, so the guard env stays explicit and reviewable here instead
@@ -328,7 +344,6 @@ class ModelServerSpec:
 #   context1 + anything — it ran alongside both qwens historically.
 _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("Laguna-S-2.1", "Chadrock-Laguna-S-2.1"),        # chadrock compose: "CANNOT both be resident"
-    ("Laguna-S-2.1", "qwen3.6-35b-a3b-Q4"),           # laguna compose: exclusive with the qwen pair
     ("Laguna-S-2.1", "qwen3.6-27b-Q8"),
     ("Laguna-S-2.1", "ROCmFP4-qwen3.6-35b-a3b"),      # 87+29 SWAG > margin; never validated together
     ("Laguna-S-2.1", "Chadrock-ROCmFP6-qwen3.6-27b"), # 87+30 > margin
@@ -338,7 +353,6 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("DS4-0731-ROCMFPX-affine-256k", "Laguna-S-2.1"),
     ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-Laguna-S-2.1"),
     ("DS4-0731-ROCMFPX-affine-256k", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-ROCMFPX-affine-256k", "qwen3.6-35b-a3b-Q4"),
     ("DS4-0731-ROCMFPX-affine-256k", "qwen3.6-27b-Q8"),
     ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-ROCmFP6-qwen3.6-27b"),
     # Ling-3.0-flash at ~70 GiB clears the 114 GiB margin against the small
@@ -363,7 +377,6 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("DS4-0731-IQ2M-DSpark-64k", "Laguna-S-2.1"),
     ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-Laguna-S-2.1"),
     ("DS4-0731-IQ2M-DSpark-64k", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-IQ2M-DSpark-64k", "qwen3.6-35b-a3b-Q4"),
     ("DS4-0731-IQ2M-DSpark-64k", "qwen3.6-27b-Q8"),
     ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-ROCmFP6-qwen3.6-27b"),
     ("DS4-0731-IQ2M-DSpark-64k", "Ling-3.0-flash-MXFP4"),
@@ -378,7 +391,6 @@ _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Laguna-S-2.1"),
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-Laguna-S-2.1"),
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "qwen3.6-35b-a3b-Q4"),
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "qwen3.6-27b-Q8"),
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-ROCmFP6-qwen3.6-27b"),
     ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Ling-3.0-flash-MXFP4"),
@@ -407,7 +419,7 @@ def _pairs_between(
 # 124 GiB pool, so any two of them overflow it.
 _HALO_BIG = (
     "DS4-0731-Q8Protected-Halo-DwarfStar",
-    "Qwen3.8-Flash-Next-IQ4_XS-Halo",
+    "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -825,7 +837,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         weights_gib=80.76,
         startable=False,
         not_startable_reason=(
-            "WEIGHTS DELETED 2026-08-26 (80.76 GiB reclaimed): models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/ is gone. Qwen3.8-Flash-Next-IQ4_XS-Halo replaced it as the Halo resident the same day (22 vs 15 tok/s decode, 463 vs 210 prefill, and it beats DS4 on the published agentic rows). The DwarfStar runtime checkout and dwarfstar-ds4/serve.sh are intact; re-download the GGUF to revive."
+            "WEIGHTS DELETED 2026-08-26 (80.76 GiB reclaimed): models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/ is gone. Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K replaced it as the Halo resident. The DwarfStar runtime checkout and dwarfstar-ds4/serve.sh are intact; re-download the GGUF to revive."
         ),
         exclusive_with=_exclusive_with("DS4-0731-Q8Protected-Halo-DwarfStar"),
         consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
@@ -833,92 +845,97 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "(DS4-0731-Q8Protected-Halo-DwarfStar). Cutover is a separate, deliberate step.",
     ),
     ModelServerSpec(
-        slug="Qwen3.8-Flash-Next-IQ4_XS-Halo",
+        slug="Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
         runtime_family="llamacpp",
-        bench_decode_tok_s=22.0,
-        bench_prefill_tok_s=463.0,
-        bench_at="2026-08-26",
-        bench_note="llama-bench on the Halo alone (HIP, -fa on, -ub 2048), Radiance running "
-        "on the R9700: tg128 22.0 shallow / 18.4 at 16K depth; pp512 426, pp2048 463 "
-        "(-ub 2048 is +19% over 512; -b is irrelevant), pp8192 404 / 273 at 16K depth. "
-        "Server-side decode at ~20K depth measured 12.5 (a 20K-token prompt at 352 pp) — "
-        "the gap to llama-bench's 18.4 is NOT isolated yet. Vulkan on the same commit: "
-        "+8% decode, -9% prefill; HIP chosen. Dual-GPU split (-ts 33/16 on the R9700, "
-        "pipeline parallelism OFF) measured +10-20% and was NOT adopted: it costs the "
-        "R9700, i.e. Radiance. ⚠️ With pipeline parallelism ON any two-device run halves "
-        "decode (11-13 t/s) and the split server segfaulted at 35K prefill (QSA compute "
-        "buffer OOM on the R9700).",
+        bench_decode_tok_s=47.22,
+        bench_prefill_tok_s=453.0,
+        bench_at="2026-08-29",
+        bench_note="UD-Q4_K_XL on the Halo, 1 x 256K, llama.cpp 8148b062e with "
+        "--spec-type draft-mtp,ngram-mod. Mean decode improved 18.78 -> 47.22 tok/s "
+        "with the PPL check neutral at 0.14 sigma. Depth probes: decode 21.0 / 19.70 / "
+        "17.57 / 14.18 and prefill 407 / 453 / 365 / 285 tok/s at 1K / 8K / 32K / "
+        "64K. Dual-GPU remains rejected because it consumes the R9700 reserved for "
+        "Qwen3.8-27B Radiance.",
         description="Qwen3.8-Flash-Next — Qwen's Qwen4-architecture preview "
         "(general.architecture=qwen4exp): 125B/6B-active MoE, 512 experts top-10 + shared, "
         "36 Gated-DeltaNet + 12 Qwen-Sparse-Attention layers, a 51B n-gram (PLE) embedding "
-        "table, 262,144 native context. Unsloth UD-IQ4_XS (87.24 GiB, imatrix): experts "
-        "~4-bit, n-gram table IQ4_NL 26.8 GiB, dense Q8_0. Beats Qwen3.8-27B on nearly "
+        "table, 262,144 native context. Unsloth UD-Q4_K_XL (103.7 GiB, 4 shards); its "
+        "26.8 GiB IQ4_NL n-gram table is lazily mapped rather than resident. Beats Qwen3.8-27B on nearly "
         "every published row (DeepSWE 58.7 vs 42.2, SWE-bench Multilingual 81.0 vs 73.8, "
         "Toolathlon 73.5 vs 67.1, JobBench 55.7 vs 33.4).\n"
-        "Halo-only. Only the 12 QSA layers carry KV (~2.1 GiB per 64K ctx incl. the "
-        "indexer cache), so 256K is the standing default: measured 19 GiB spare idle and "
-        "17 GiB after a 20K-token prompt with Radiance up. Thinking is ON by default; "
+        "Halo-only with one full native-context slot (-c 262144 -np 1). Only the 12 QSA "
+        "layers carry KV (~2.1 GiB per 64K). Thinking is ON by default; "
         "clients disable it per request with chat_template_kwargs.enable_thinking=false "
         "(then use Qwen's non-thinking sampling: temp 0.7, top_p 0.8, top_k 20, "
         "presence_penalty 1.5).\n"
-        "⚠️ No mmproj (vision) and no MTP GGUF published yet — text only, no speculation. "
-        "Quality probes 2026-08-26: greedy code output identical to a Halo-only reference "
-        "for ~1350 tokens (its own asserts pass), jug puzzle solved in thinking mode, "
-        "needle-in-haystack at 42K tokens answered correctly.\n"
-        "The 103.7 GiB UD-Q4_K_XL is also on disk (fits Halo-only at <=64K with 7 GiB "
-        "spare, 20.8 tok/s) but is not served.",
-        runtime_repo="https://github.com/unslothai/llama.cpp (branch qwen4exp/qwen3.8-flash-next)",
-        runtime_ref="infrastructure/llamacpp-qwen4exp — git worktree of llamacpp-src on the "
-        "Unsloth branch, commit 035e22731 (build 10656), built at build-hip/ for "
-        "gfx1151;gfx1201 with ROCm 7.2.4 (GGML_HIP_GRAPHS on, VMM off). ⚠️ Upstream "
-        "llama.cpp master has NO qwen4exp yet (2026-08-26): ggml-org PR #27742 (Unsloth, "
-        "draft — this branch) and #27739 (Qwen) compete, and they name the n-gram tensor "
-        "differently (per_layer_token_embd vs ple_ngram_embd), so the Unsloth GGUFs load "
-        "only on the Unsloth branch. Re-verify the tensor names before moving the worktree.",
+        "Vision is served via mmproj-F16. Speculative decoding combines the local Q8_0 "
+        "MTP head with ngram-mod; the model remains selected by its compatibility slug.",
+        runtime_repo="https://github.com/ggml-org/llama.cpp (qwen4exp merged upstream)",
+        runtime_ref="Pinned commit 8148b062e in infrastructure/llamacpp-worktrees/"
+        "flash-next-buildA-20260828-210313/build-hip-A. Includes lazy PLE/engram handling "
+        "and Qwen4exp NextN/MTP draft-head support. serve.sh accepts the older 280e76452 "
+        "only when speculation is explicitly disabled.",
         backend_device="ROCm1 (Strix Halo iGPU, gfx1151), llama.cpp HIP — selected with -dev, "
         "HIP_VISIBLE_DEVICES deliberately unset",
         devices=("Strix Halo iGPU (ROCm1)",),
         memory_pool=POOL_HALO,
         deployment="qwen3.8-flash-next",
-        model_file="models/llm/Qwen3.8-Flash-Next-UD-IQ4_XS-GGUF/"
-        "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf",
+        model_file="models/llm/Qwen3.8-Flash-Next-UD-Q4_K_XL-GGUF/"
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
         port=8120,
         systemd_unit="qwen3.8-flash-next.service",
         launch_script="qwen3.8-flash-next/serve.sh",
         parameters=(
             LaunchParam(
-                name="ctx", env="CTX", label="Context", kind="int", default="262144",
-                description="KV is cheap on this arch: only 12 of 48 layers have one. "
-                            "Measured per 64K: 1536 MiB QSA KV + 576 MiB indexer cache = "
-                            "~2.1 GiB. 262144 -> ~8.4 GiB; 19 GiB spare idle with Radiance "
-                            "up. ⚠️ QSA compute buffers grow with prefill length (a 6 GiB "
-                            "reallocation was observed at 35K tokens), so keep >=10 GiB spare.",
+                name="ctx", env="CTX", label="Total context", kind="int", default="262144",
+                description="Modern llama.cpp treats this as the total pool. With one slot, "
+                            "the slot receives the full 262144-token native context.",
             ),
             LaunchParam(
                 name="slots", env="SLOTS", label="Slots", kind="int", default="1",
-                description="Per-slot KV multiplies the ~2.1 GiB/64K figure. Untested above 1.",
+                description="The qualified speculative deployment uses one native-context slot.",
             ),
             LaunchParam(
                 name="ubatch", env="UBATCH", label="Batch / micro-batch", kind="int",
-                default="2048",
-                description="Prefill lever: 512 -> 388, 1024 -> 443, 2048 -> 463, 4096 -> 459 "
-                            "tok/s at pp2048. 2048 is the knee; -b is set equal to it.",
+                default="1024",
+                description="1024 is the validated memory/prefill balance. 2048 doubles the "
+                            "context-scaled QSA scratch and does not fit safely at 2x256K.",
+            ),
+            LaunchParam(
+                name="cache_ram_mib", env="CACHE_RAM_MIB", label="Host prompt cache MiB",
+                kind="int", default="4096",
+                description="About 125K cached prefix tokens; larger values consume the safety margin.",
+            ),
+            LaunchParam(
+                name="device", env="DEVICE", label="Device", kind="enum", default="ROCm1",
+                choices=(("ROCm1", "Strix Halo iGPU (required production placement)"),),
+            ),
+            LaunchParam(
+                name="load_mode", env="LOAD_MODE", label="Load mode", kind="enum", default="none",
+                choices=(("none", "read weights; lazy-map only the PLE table"),),
+            ),
+            LaunchParam(
+                name="spec_type", env="SPEC_TYPE", label="Speculative mode", kind="enum",
+                default="draft-mtp,ngram-mod",
+                choices=(("draft-mtp,ngram-mod", "qualified MTP + ngram deployment"),
+                         ("ngram-mod", "ngram only"),
+                         ("none", "disable speculative decoding")),
             ),
             _PARAM_PORT,
         ),
         ctx_param="ctx",
         slots_param="slots",
-        # Measured 2026-08-26 at 65536 x 1 slot with --no-mmap: 61.2 GiB ROCm + 26.8 GiB
-        # host-side n-gram table + 0.6 host + 2.1 KV + 0.4 RS/compute = 91.2 GiB
-        # (MemAvailable delta 90). At 262144: ~97.5 GiB, 19 GiB spare observed.
-        resident_gib=98,
-        weights_gib=87.24,
+        ctx_is_total=True,
+        # Conservative standing footprint for the model, one 262144-token KV
+        # pool, draft head, compute and vision. The PLE table is file-backed/lazy.
+        resident_gib=96,
+        weights_gib=76.2,
         kv_kib_per_token=33.0,
         overhead_gib=3.0,
-        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-IQ4_XS-Halo"),
-        consumers_note="Hermes default model as of 2026-08-26 (provider qwen38-flash -> :8120); "
+        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K"),
+        consumers_note="Pi-selectable through ARIA on :8120; "
         "Radiance (:8080) stays up on the R9700 as ARIA's steward/LLAMACPP_URL target and the "
-        "vision-capable fallback.",
+        "fast conversation fallback. Gemma remains CPU-only.",
     ),
     ModelServerSpec(
         slug="DS4-0731-REAP150B-MXFP4",
@@ -1661,34 +1678,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "currently disabled, so single active consumer in practice)",
     ),
     ModelServerSpec(
-        slug="qwen3.6-35b-a3b-Q4",
-        description="Qwen3.6-35B-A3B-MTP UD-Q4_K_XL on the charlie12345 rocmfp4-llama "
-        "HIP runtime. Profile-gated (`qwen`), retired, not currently created. Designed "
-        "to run TOGETHER with qwen3.6-27b-Q8 (~61 GiB pair). Moved off :8092 to :8107 "
-        "on 2026-07-30 — ridge-llama-proxy holds :8092 on the tailnet IP, so this "
-        "service could never have bound there while the proxy runs.",
-        runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
-        runtime_ref="branch mtp-rocmfp4-strix",
-        backend_device="HIP (ROCm0)",
-        # CORRECTED 2026-08-05: this used to read qwen-rocmfp4/models/... back when
-        # the compose project mounted its own ./models dir. That directory was
-        # deleted the same day and the GGUFs moved under models/llm/; the compose
-        # file was updated to mount models/llm but this pointer was not, so it
-        # dangled. Caught by `pairs doctor` (see ~/Development/model-distros).
-        model_file="models/llm/Qwen3.6-35B-A3B-MTP/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
-        # MOVED 8092 -> 8107 (2026-07-30): ridge-llama-proxy holds :8092 on the
-        # tailnet IP, so this service could never bind there while the proxy runs.
-        port=8107,
-        compose_file="qwen-rocmfp4/docker-compose.yml",
-        # renamed from qwen-chat 2026-07-29 (service + container_name, safe
-        # while not created) so the compose service matches this slug.
-        service_name="qwen3.6-35b-a3b-Q4",
-        container_name="qwen3.6-35b-a3b-Q4",
-        profile="qwen",
-        resident_gib=35,
-        exclusive_with=_exclusive_with("qwen3.6-35b-a3b-Q4"),
-    ),
-    ModelServerSpec(
         slug="qwen3.6-27b-Q8",
         description="Qwen3.6-27B Q8_0 on the charlie12345 rocmfp4-llama HIP runtime. "
         "Profile-gated (`qwen`), retired, not currently created. Designed to run "
@@ -1736,7 +1725,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="gemma-4-e4b-Q4",
         description="Gemma 4 E4B-it Q4_0, CPU-only on mainline llama.cpp. Never "
-        "contends with the GPU-resident servers.",
+        "contends with the GPU-resident servers.\n"
+        "⚠️ SINCE THE 2026-08 MIGRATION THIS RUNS NATIVELY ON THE MAC, not on "
+        "Corsair: llama-server under the `com.ben.devbox.gemma` LaunchDaemon "
+        "(/Users/ben/Services/apps/bin/run-gemma), listening on the Mac's "
+        "own 127.0.0.1:8104. run-corsair-model-forwards deliberately does NOT "
+        "forward 8104 (see its header comment). Corsair has no listener there.",
         runtime_repo="https://github.com/ggml-org/llama.cpp.git",
         runtime_ref="mainline (ghcr.io/ggml-org/llama.cpp:server image, no custom build)",
         backend_device="CPU only",
@@ -1752,6 +1746,26 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # this against the GTT pool is a category error — the compose file's
         # own mem_limit/oom_score_adj are the real guard here.
         gtt_resident=False,
+        # ── 2026-08-28: onbox stays True DELIBERATELY ───────────────────────
+        # It is overloaded: llm_route.select() gates on `state == "running" AND
+        # onbox`, and ARIA routes its OWN extraction workers here
+        # (config.shells_extraction_model / ontology_extraction_model both =
+        # "gemma-4-e4b-Q4"). Flipping it to False to express "not on Corsair"
+        # would silently stop that routing. Since ARIA also runs on the Mac,
+        # 127.0.0.1:8104 IS the correct endpoint from here — the state is right,
+        # only the implied HOST was wrong, and the description now states it.
+        # In forward mode _inspect() reports this "running" by probing local
+        # :8104 — which answers because of the Mac-native server, NOT a forward.
+        startable=False,
+        not_startable_reason=(
+            "SERVED FROM THE MAC, not Corsair — start/stop it there with "
+            "`sudo launchctl kickstart -k system/com.ben.devbox.gemma`. The "
+            "gemma-aux/docker-compose.yml below still exists on Corsair, so "
+            "without this guard a start would SSH to the actuator and boot a "
+            "SECOND, unforwarded Gemma there while the Mac one keeps serving "
+            "every consumer. Enforced on Corsair: its actuator unsets "
+            "ARIA_CORSAIR_MODEL_FORWARDS, so manager.start() reaches this gate."
+        ),
         exclusive_with=_exclusive_with("gemma-4-e4b-Q4"),
         consumers_note="Hermes auxiliary side-tasks (~16, e.g. title_generation/"
         "compression/curator/triage) + 2 cron jobs (alert triage, stock scanner)",
@@ -1909,7 +1923,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             "powershell -NoProfile -ExecutionPolicy Bypass -File "
             "C:\\Windows\\Temp\\sleep-now.ps1",
         ),
-        endpoint_override="http://100.123.245.84:8092/v1",
+        endpoint_override="http://127.0.0.1:8092/v1",
     ),
     ModelServerSpec(
         slug="Red-Qwen3.6-35B-A3B",
@@ -1967,9 +1981,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             "powershell -NoProfile -ExecutionPolicy Bypass -File "
             "C:\\Windows\\Temp\\sleep-now.ps1",
         ),
-        # Consumers point at corsair's red-proxy, not RED directly: the proxy
-        # owns wake-on-request and the corsair-local fallback.
-        endpoint_override="http://100.123.245.84:8094/v1",
+        # Consumers point at the Mac-native red-proxy, not RED directly: the
+        # proxy owns wake-on-request and the Corsair-hosted fallback.
+        endpoint_override="http://127.0.0.1:8094/v1",
     ),
 )
 
@@ -2287,6 +2301,9 @@ def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
         slots = _as_int(_effective_param_value(spec, spec.slots_param))
     if source is None:
         source = spec.launch_script
+    if spec.ctx_is_total and n_ctx and slots:
+        n_ctx = n_ctx // slots
+        source = f"{source or spec.launch_script} (-c total, divided across slots)"
     return LaunchGeometry(n_ctx=n_ctx, slots=slots, source=source)
 
 
@@ -3254,6 +3271,11 @@ async def measure_resident_gib(spec: "ModelServerSpec") -> Optional[float]:
     reports per device, so a server is measured against the pool it actually
     draws from rather than against a box-wide total.
     """
+    # These historical ``onbox`` entries describe Corsair after the control
+    # plane moves to macOS. The Mac can probe forwarded health, but it cannot
+    # inspect Corsair's Linux PID/GPU accounting.
+    if _corsair_forward_mode() and spec.onbox:
+        return None
     pid = await _server_pid(spec)
     if pid is None:
         return None
@@ -3336,6 +3358,68 @@ async def _run(*args: str) -> tuple[int, str, str]:
         raise ModelServerError(f"'{args[0]}' binary not found: {exc}")
     stdout, stderr = await proc.communicate()
     return proc.returncode, stdout.decode("utf-8", "replace"), stderr.decode("utf-8", "replace")
+
+
+async def _corsair_actuate(action: str, slug: str, *, force: bool = False) -> dict:
+    """Invoke Corsair's forced-command model actuator over its dedicated key.
+
+    The key cannot open a shell or forward ports.  The remote forced command
+    independently validates the action and static registry slug, then delegates
+    to the Linux-side ModelServerManager so its memory/exclusivity gates remain
+    authoritative.
+    """
+    if action not in {"status", "start", "stop"}:
+        raise ModelServerSafetyError(f"Corsair actuator action not allowed: {action}")
+    if not _CORSAIR_ACTUATOR_SLUG_RE.fullmatch(slug):
+        raise ModelServerSafetyError("Corsair actuator refused an unsafe registry slug")
+    if force and action != "start":
+        raise ModelServerSafetyError("Corsair actuator force is valid only for start")
+
+    key = os.getenv(
+        "ARIA_CORSAIR_ACTUATOR_KEY",
+        "/Users/ben/Services/secrets/corsair_actuator_ed25519",
+    )
+    known_hosts = os.getenv(
+        "ARIA_CORSAIR_ACTUATOR_KNOWN_HOSTS",
+        "/Users/ben/Services/config/corsair-known-hosts",
+    )
+    host = os.getenv("ARIA_CORSAIR_ACTUATOR_HOST", "100.123.245.84")
+    user = os.getenv("ARIA_CORSAIR_ACTUATOR_USER", "ben")
+    command = [
+        "/usr/bin/ssh", "-T",
+        "-p", "2222",
+        "-i", key,
+        "-o", "IdentitiesOnly=yes",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}",
+        "-o", "HostKeyAlias=corsair-ai.local",
+        "-o", "ClearAllForwardings=yes",
+        "-o", "RequestTTY=no",
+        "-o", "ConnectTimeout=10",
+        f"{user}@{host}",
+        "aria-model-actuator", action, slug,
+    ]
+    if force:
+        command.append("--force")
+
+    rc, out, err = await _run(*command)
+    line = next((item for item in reversed(out.splitlines()) if item.strip()), "")
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError as exc:
+        detail = (err or out or "empty response").strip()[-300:]
+        raise ModelServerError(f"Corsair actuator returned an invalid response: {detail}") from exc
+
+    if rc != 0 or not payload.get("ok"):
+        detail = str(payload.get("error") or (err or out).strip() or f"exit {rc}")[-500:]
+        if payload.get("kind") in {"request", "safety"}:
+            raise ModelServerSafetyError(detail)
+        raise ModelServerError(f"Corsair actuator failed: {detail}")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise ModelServerError("Corsair actuator response did not contain an operation result")
+    return result
 
 
 # ── remote operate (2026-08-15) ──────────────────────────────────────────
@@ -3584,6 +3668,37 @@ def _endpoints_for(spec: "ModelServerSpec") -> dict:
     }
 
 
+async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
+    """Return whether Corsair answers health through its loopback forward.
+
+    A TCP connect alone is insufficient because ssh owns the local listener
+    even when the remote model process is down.
+    """
+    if not spec.port:
+        return False
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection("127.0.0.1", spec.port), timeout=0.75
+        )
+    except (OSError, asyncio.TimeoutError):
+        return False
+    try:
+        writer.write(
+            b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        )
+        await asyncio.wait_for(writer.drain(), timeout=0.75)
+        status_line = await asyncio.wait_for(reader.readline(), timeout=0.75)
+        healthy = status_line.startswith(b"HTTP/") and b" 200 " in status_line
+    except (OSError, asyncio.TimeoutError):
+        healthy = False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return healthy
+
+
 def _server_row(
     spec: "ModelServerSpec",
     state: str,
@@ -3751,6 +3866,13 @@ class ModelServerManager:
             # point of remote operate is that "awake but not serving" is a
             # distinct, actionable condition. Cached — see _remote_state.
             return await _remote_state(spec), False
+        if _corsair_forward_mode():
+            if not spec.port:
+                return "unwired", False
+            return (
+                ("running" if await _forwarded_endpoint_open(spec) else "exited"),
+                False,
+            )
         unit = unit_name(spec)
         if unit:
             state, managed = await _systemd_inspect(unit)
@@ -3917,8 +4039,19 @@ class ModelServerManager:
                 if doc["slug"] not in _BY_SLUG:
                     specs.append(self._spec_from_doc(doc))
 
+        forwarded_states: dict[str, str] = {}
+        if _corsair_forward_mode():
+            forwarded_specs = [spec for spec in specs if spec.onbox]
+            probes = await asyncio.gather(
+                *(_forwarded_endpoint_open(spec) for spec in forwarded_specs)
+            )
+            forwarded_states = {
+                spec.slug: ("running" if open_ else ("exited" if spec.port else "unwired"))
+                for spec, open_ in zip(forwarded_specs, probes)
+            }
+
         unit_active: set[str] = set()
-        if any(s.onbox and unit_name(s) for s in specs):
+        if not _corsair_forward_mode() and any(s.onbox and unit_name(s) for s in specs):
             rc, out, _ = await _run(
                 "systemctl", "--user", "list-units",
                 "--state=active", "--type=service", "--no-legend",
@@ -3928,7 +4061,9 @@ class ModelServerManager:
                     line.split()[0] for line in out.splitlines() if line.strip()
                 }
         container_running: set[str] = set()
-        if any(s.onbox and not unit_name(s) and s.container_name for s in specs):
+        if not _corsair_forward_mode() and any(
+            s.onbox and not unit_name(s) and s.container_name for s in specs
+        ):
             rc, out, _ = await _run(
                 "docker", "ps", "--filter", "status=running", "--format", "{{.Names}}"
             )
@@ -3938,15 +4073,18 @@ class ModelServerManager:
         results = []
         for spec in specs:
             if spec.onbox:
-                unit = unit_name(spec)
-                if unit:
-                    state = "running" if unit in unit_active else "exited"
-                elif spec.container_name:
-                    # `status=running` excludes paused containers — a paused
-                    # container cannot serve, and ARIA has no unpause path.
-                    state = "running" if spec.container_name in container_running else "exited"
+                if _corsair_forward_mode():
+                    state = forwarded_states[spec.slug]
                 else:
-                    state = "unwired"
+                    unit = unit_name(spec)
+                    if unit:
+                        state = "running" if unit in unit_active else "exited"
+                    elif spec.container_name:
+                        # `status=running` excludes paused containers — a paused
+                        # container cannot serve, and ARIA has no unpause path.
+                        state = "running" if spec.container_name in container_running else "exited"
+                    else:
+                        state = "unwired"
             elif spec.remotely_operable:
                 state = await _remote_state(spec)
             else:
@@ -4024,6 +4162,13 @@ class ModelServerManager:
         """
         self.invalidate_status()  # a start changes what status() would answer
         spec = await self.resolve_spec(slug, db)
+        if _corsair_forward_mode() and spec.onbox:
+            if overrides:
+                raise ModelServerSafetyError(
+                    f"{slug} runs on Corsair; launch overrides are not accepted "
+                    "through the restricted remote actuator."
+                )
+            return await _corsair_actuate("start", slug, force=force)
         if not spec.onbox:
             if not spec.remotely_operable:
                 raise ModelServerSafetyError(
@@ -4275,6 +4420,8 @@ class ModelServerManager:
     async def stop(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
         self.invalidate_status()  # a stop changes what status() would answer
         spec = await self.resolve_spec(slug, db)
+        if _corsair_forward_mode() and spec.onbox:
+            return await _corsair_actuate("stop", slug)
         if not spec.onbox:
             if not spec.remotely_operable:
                 raise ModelServerSafetyError(

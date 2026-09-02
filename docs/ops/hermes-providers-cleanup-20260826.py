@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Clean up Hermes's model providers on the Mac gateway (run as devboxsvc).
+"""Clean up Hermes's model providers on the Mac gateway.
+
+HISTORICAL (2026-08-26): originally written to run as the `devboxsvc` service
+account. That account no longer exists on the Mac; run as `ben`. Annotated
+2026-08-31.
 
     python3 hermes-providers-cleanup-20260826.py            # dry run: prints the diff
     python3 hermes-providers-cleanup-20260826.py --apply    # backs up config.yaml, writes it

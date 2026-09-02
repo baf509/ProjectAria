@@ -14,7 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aria.api.routes.llm_proxy import _autostart, _names_a_model, _norm_slug
+from aria.api.routes.llm_proxy import (
+    _Route,
+    _autostart,
+    _names_a_model,
+    _norm_slug,
+    _proxy,
+)
 
 
 def test_norm_slug_matches_gguf_filename_to_slug():
@@ -123,3 +129,42 @@ async def test_offbox_model_is_not_started():
 
     assert ok is False
     manager.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_proxy_rewrites_aria_slug_to_backend_model_id():
+    """ARIA's routing slug must never be forwarded as a vLLM model id."""
+    request = MagicMock()
+    request.body = AsyncMock(return_value=(
+        b'{"model":"Qwen3.8-27B-R9700-Radiance",'
+        b'"messages":[{"role":"user","content":"hello"}]}'
+    ))
+    request.headers = {}
+
+    response = MagicMock()
+    response.status_code = 200
+    response.headers = {"content-type": "application/json"}
+    response.json.return_value = {"choices": []}
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    route = _Route(
+        "Qwen3.8-27B-R9700-Radiance",
+        "http://127.0.0.1:8080/v1",
+        "requested",
+        [],
+    )
+    with (
+        patch("aria.api.routes.llm_proxy._pick_backend", AsyncMock(return_value=route)),
+        patch(
+            "aria.api.routes.llm_proxy._backend_model_id",
+            AsyncMock(return_value="qwen3.8-27b-r9700"),
+        ),
+        patch("aria.api.routes.llm_proxy._client", return_value=client),
+    ):
+        result = await _proxy("chat/completions", request, MagicMock(), MagicMock())
+
+    assert result.status_code == 200
+    sent = client.post.await_args.kwargs["content"]
+    assert b'"model": "qwen3.8-27b-r9700"' in sent
+    assert b'"model": "Qwen3.8-27B-R9700-Radiance"' not in sent

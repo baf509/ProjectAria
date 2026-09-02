@@ -234,6 +234,16 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     )
     await _safe_create_index(
         db.shell_events,
+        [("shell_name", 1), ("event_id", 1)],
+        name="shell_events_node_event_id",
+        unique=True,
+        # A sparse compound index still contains legacy documents because
+        # shell_name exists, representing the missing event_id as null. Use a
+        # partial index so only node-spool events participate in uniqueness.
+        partialFilterExpression={"event_id": {"$type": "string"}},
+    )
+    await _safe_create_index(
+        db.shell_events,
         [("shell_name", 1), ("ts", 1)],
         name="shell_events_name_ts",
     )
@@ -479,11 +489,10 @@ did not run.
 
 
 async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
-    """Ensure the Ridge-backed Pi Coding Agent exists (idempotent).
+    """Keep the old slug as a Flash-Next compatibility profile.
 
-    Deliberately distinct from `pi-coding`: both launch the real Pi executable,
-    but this profile selects Ridge's 3090 through the wake-on-demand proxy while
-    `pi-coding` selects the local Chadrockv2 server.
+    Pi inference is restricted to Corsair's two Qwen deployments through ARIA;
+    the historical Ridge route is no longer a valid Pi provider.
     """
     existing = await db.agents.find_one({"slug": "pi-coding-ridge"})
     if existing:
@@ -491,31 +500,22 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
 
     now = datetime.now(timezone.utc)
     agent = {
-        "name": "Pi Coding Agent (Ridge)",
+        "name": "Pi Coding Agent (Flash Next via ARIA)",
         "slug": "pi-coding-ridge",
         "description": (
-            "Hands-on coding agent: inference on Ridge's RTX 3090 "
-            "(Qwen3.6-35B-A3B via NInfer), tools execute locally on corsair-ai. "
-            "Wakes Ridge on demand; the real Pi CLI runs locally in an ARIA shell."
+            "Hands-on coding agent using Qwen3.8 Flash Next on Corsair through "
+            "ARIA's inference gateway. The real Pi CLI runs in an ARIA shell."
         ),
-        "system_prompt": _PI_CODING_RIDGE_SYSTEM_PROMPT,
+        "system_prompt": _PI_CODING_SYSTEM_PROMPT,
         "mode_category": "coding",
-        "greeting": "Pi Coding (Ridge) ready — thinking on the 3090, writing on corsair. What are we building?",
+        "greeting": "Pi Coding (Flash Next via ARIA) ready. What are we building?",
         "context_instructions": None,
         "llm": {
-            "backend": "ridge",
-            "model": "qwen3.6-35b-a3b",
-            # Reasoning is verbose on this model (~1k tokens before content); a
-            # small budget returns an EMPTY content with finish_reason=length.
+            "backend": "aria",
+            "model": "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
             "temperature": 0.3,
             "max_tokens": 8192,
-            # Measured on Ridge's 24 GiB card (2026-07-27). 147456 comes from
-            # running with CUDA graphs disabled, which costs only ~2% throughput
-            # (~259 vs 265 tok/s) but buys 57% more context. Disabling MTP too
-            # would reach 172032 at 141 tok/s — rejected. Keep in step with
-            # --max-context in D:\ninfer\run-ninfer.bat, which carries the
-            # full measurement table.
-            "max_context_tokens": 147456,
+            "max_context_tokens": 253952,
             "force_non_streaming": False,
         },
         "fallback_chain": [],
@@ -527,7 +527,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_metadata": {
             "icon": "code",
             "color": "#f97316",
-            "keywords": ["ridge", "3090", "qwen", "code", "coding", "local-gpu"],
+            "keywords": ["flash-next", "aria", "qwen", "code", "coding", "local-gpu"],
             "keyboard_shortcut": None,
         },
         "memory_config": {
@@ -545,7 +545,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
     }
 
     await db.agents.insert_one(agent)
-    logger.info("Seeded Pi Coding Agent (Ridge) (slug=pi-coding-ridge, backend=ridge)")
+    logger.info("Seeded Pi Coding Agent Flash compatibility profile through ARIA")
 
 
 async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
@@ -563,14 +563,14 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_category": "coding",
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
-        # This legacy db.agents row is now a launch profile for the external Pi
-        # CLI, selecting the dedicated local Chadrockv2 server.
+        # This legacy db.agents row is a launch profile for the external Pi CLI.
+        # Pi carries only the two Corsair Qwen models, both through ARIA.
         "llm": {
-            "backend": "agentic",
-            "model": "chadrockv2-qwen36-27b-fp6",
+            "backend": "aria",
+            "model": "Qwen3.8-27B-R9700-Radiance",
             "temperature": 0.4,
             "max_tokens": 4096,
-            "max_context_tokens": 258048,
+            "max_context_tokens": 245760,
             "force_non_streaming": False,
         },
         "fallback_chain": [],

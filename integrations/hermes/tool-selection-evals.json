@@ -1,0 +1,63 @@
+[
+  {
+    "id": "inspect-corsair-shell",
+    "prompt": "What is the Corsair shell named claude-red5090 doing?",
+    "first_tool": "fleet_status",
+    "secondary_tool": "get_shell_screen",
+    "forbidden": ["tmux ls", "mongosh", "ARIA_API_KEY"]
+  },
+  {
+    "id": "remote-shell-not-local-tmux",
+    "prompt": "It is not in tmux ls on the Mac. Is the Corsair shell stale?",
+    "first_tool": "fleet_status",
+    "secondary_tool": "list_nodes",
+    "forbidden": ["delete_shell", "tmux kill-session"]
+  },
+  {
+    "id": "close-shell",
+    "prompt": "Close the resolved shell but preserve its history.",
+    "first_tool": "delete_shell",
+    "arguments": {"purge": false},
+    "forbidden": ["tmux kill-session", "mongosh"]
+  },
+  {
+    "id": "create-claude-coding-work",
+    "prompt": "Have Claude Code implement this multi-file fix in /work/repo.",
+    "first_tool": "create_coding_session",
+    "arguments": {"backend": "claude_code", "workspace": "/work/repo"},
+    "forbidden": ["create_shell", "terminal"]
+  },
+  {
+    "id": "create-codex-interactive-shell",
+    "prompt": "Open an interactive Codex shell on Corsair in /work/repo.",
+    "first_tool": "create_shell",
+    "arguments": {"profile": "codex", "host": "corsair-ai", "workdir": "/work/repo"},
+    "forbidden": ["tmux new-session", "codex --yolo"]
+  },
+  {
+    "id": "create-pi-coding-work",
+    "prompt": "Use Pi to implement the task in /work/repo.",
+    "first_tool": "create_coding_session",
+    "arguments": {"backend": "pi-code", "workspace": "/work/repo"},
+    "forbidden": ["create_shell", "pi --"]
+  },
+  {
+    "id": "backend-unavailable",
+    "prompt": "Claude is unavailable for the requested Claude task.",
+    "first_tool": null,
+    "expected_behavior": "report the structured availability error; do not silently switch backend",
+    "forbidden": ["codex --yolo", "tmux new-session", "mongosh"]
+  },
+  {
+    "id": "approval-control-message",
+    "prompt": "/approve a1b2c3d4",
+    "first_tool": null,
+    "expected_behavior": "resolve the identified pending approval out of band without steering the run"
+  },
+  {
+    "id": "steer-active-run",
+    "prompt": "Also make this generic for Pi sessions.",
+    "first_tool": null,
+    "expected_behavior": "steer the active run at a safe boundary while retaining completed evidence"
+  }
+]
