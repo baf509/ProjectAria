@@ -1,5 +1,21 @@
 # ARIA Changelog
 
+## 2026-09-03 — Gateway per-request routing overhead removed
+
+- The LLM gateway (`/llm/v1`, `/llm/v1-identified`) re-resolved routing on
+  every request: `running_summary()` probes each forwarded endpoint with a
+  full HTTP /health round trip through the Corsair SSH tunnel (sub-second
+  timeouts that stack when a tunnel goes stale), and `backend_model_id()`
+  opened a fresh connection for another round trip. Measured overhead was
+  1.7–3.7s per request on top of the backend's own latency — the "models are
+  VERY slow" report. Both lookups are now TTL-cached in `llm_proxy.py`
+  (summary 3s, model id 30s; the autostart path forces fresh state and drops
+  the summary cache). Routing semantics are unchanged; the other routing
+  inputs (`select()`, pins, autostart) are untouched.
+- Note: a stale Corsair SSH forward (all channels CLOSE_WAIT after the remote
+  path dropped) independently stalls every probe through it; bouncing the
+  forward process recovers it.
+
 ## 2026-09-02 — Codex desk-shell slowness fix and untracked `--local` launch
 
 - `scripts/aria-codex-launch` no longer auto-resumes a Codex session whose

@@ -44,6 +44,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import httpx
@@ -145,12 +146,41 @@ async def _pick_backend(
     and their relative footprint. The full view is still available to the
     display endpoints, which poll rather than sit on the request path.
     """
-    servers = await manager.running_summary(db)
+    servers = await _running_summary_cached(manager, db)
     pin = await read_pin(db)
     chosen, reason, unavailable = select(servers, requested=requested, pin=pin)
     if chosen is None:
         return _Route(None, None, reason, servers, unavailable)
     return _Route(chosen.get("slug"), base_url_for(chosen), reason, servers)
+
+
+# In forward mode `running_summary()` probes every forwarded endpoint with a
+# full HTTP /health round trip through the Corsair SSH tunnel (each bounded by
+# sub-second timeouts that stack when a tunnel is stale), so answering every
+# request from a fresh summary made the gateway 2-4s slower than the backend
+# it fronts. Cache the summary briefly instead: routing only ranks footprint
+# magnitudes and reads start/stop states, which change rarely. The autostart
+# path forces its own fresh, uncached status() and drops this cache.
+_SUMMARY_TTL_SECONDS = 3.0
+_summary_cache: Optional[tuple[float, list[dict]]] = None
+
+
+def _drop_summary_cache() -> None:
+    global _summary_cache
+    _summary_cache = None
+
+
+async def _running_summary_cached(
+    manager: ModelServerManager,
+    db: AsyncIOMotorDatabase,
+) -> list[dict]:
+    global _summary_cache
+    now = time.monotonic()
+    if _summary_cache is not None and now - _summary_cache[0] < _SUMMARY_TTL_SECONDS:
+        return _summary_cache[1]
+    servers = await manager.running_summary(db)
+    _summary_cache = (now, servers)
+    return servers
 
 
 def _unavailable(route: _Route) -> HTTPException:
@@ -402,6 +432,26 @@ def _norm_slug(value: Optional[str]) -> str:
     return (value or "").strip().casefold().removesuffix(".gguf")
 
 
+# A backend's ground-truth model id only changes when that process loads a
+# different model, but fetching it is a tunnel round trip on every request.
+# A short cache is invisible next to a model swap: the swap restarts the
+# backend, which voids its prompt cache anyway.
+_BACKEND_MODEL_ID_TTL_SECONDS = 30.0
+_backend_model_id_cache: dict[str, tuple[float, Optional[str]]] = {}
+
+
+async def _backend_model_id_cached(base: str) -> Optional[str]:
+    if not base:
+        return None
+    hit = _backend_model_id_cache.get(base)
+    now = time.monotonic()
+    if hit is not None and now - hit[0] < _BACKEND_MODEL_ID_TTL_SECONDS:
+        return hit[1]
+    model_id = await _backend_model_id(base)
+    _backend_model_id_cache[base] = (now, model_id)
+    return model_id
+
+
 def _names_a_model(requested: Optional[str]) -> bool:
     """Did the caller name a concrete model, rather than the auto alias?
 
@@ -474,6 +524,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     # never set for the auto alias.
     if route.unavailable and requested and settings.llm_proxy_autostart:
         if await _autostart(manager, db, requested):
+            _drop_summary_cache()
             route = await _pick_backend(manager, db, requested=requested)
 
     if not route.base_url:
@@ -485,7 +536,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     # instead of ignoring it, so resolve the backend's ground-truth id and
     # rewrite the forwarded request after routing.
     if isinstance(body, dict):
-        model_id = await _backend_model_id(base)
+        model_id = await _backend_model_id_cached(base)
         try:
             forwarded = dict(body)
             if model_id:
