@@ -7,11 +7,19 @@
 # --last` is cwd-filtered by default) so a respawned shell (reboot, crash,
 # killed tmux server) doesn't silently drop you into an empty conversation.
 #
+# Codex replays the entire prior rollout when it resumes, so a very large
+# session used to keep every new shell in that directory slow for minutes.
+# Before resuming, look at the newest rollout for this cwd and skip
+# auto-resume when it exceeds ARIA_CODEX_RESUME_MAX_BYTES (default 10 MiB;
+# 0 disables auto-resume entirely). An oversized session starts fresh with a
+# notice, and `codex resume` still opens it on demand.
+#
 # Unlike Claude Code, Codex gives no cheap way to ask "is there history for
 # this cwd?" (session cwd lives inside ~/.codex/sessions rollout files), so
-# instead of probing first we always try to resume and treat a fast non-zero
-# exit as "nothing to resume" — same fallback pattern aria-claude-launch uses
-# for a corrupt history.
+# the size guard reads only the first line of each rollout. A failed resume
+# (nothing to resume, corrupt rollout) always falls back to a fresh session
+# instead of leaving a dead pane behind — same fallback pattern
+# aria-claude-launch uses for a corrupt history.
 set -uo pipefail
 
 # tmux updates a new session from the creating client's environment. ARIA's
@@ -36,27 +44,77 @@ for arg in "$@"; do
     esac
 done
 
+# Newest rollout for this cwd, by bytes. Reads one line per rollout file, so
+# the guard stays cheap even with years of session history. Prints 0 when
+# python3 or the session store is unavailable — auto-resume then proceeds
+# exactly as before this guard existed.
+_resume_candidate_bytes() {
+    python3 - "$PWD" <<'PY'
+import json, os, pathlib, sys
+
+cwd = sys.argv[1]
+home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+root = pathlib.Path(home) / "sessions"
+best_key = None
+best_size = 0
+if root.is_dir():
+    for path in root.rglob("*.jsonl"):
+        try:
+            with path.open("rb") as fh:
+                meta = json.loads(fh.readline())
+            if (meta.get("payload") or meta).get("cwd") != cwd:
+                continue
+            stat = path.stat()
+        except (OSError, ValueError):
+            continue
+        key = (stat.st_mtime, stat.st_size, path.name)
+        if best_key is None or key > best_key:
+            best_key, best_size = key, stat.st_size
+print(best_size)
+PY
+}
+
+RESUME_MAX_BYTES="${ARIA_CODEX_RESUME_MAX_BYTES:-10485760}"
+case "$RESUME_MAX_BYTES" in
+    ''|*[!0-9]*) RESUME_MAX_BYTES=10485760 ;;
+esac
+
+attempt_resume=1
+if (( RESUME_MAX_BYTES == 0 )); then
+    attempt_resume=0
+else
+    candidate_bytes=$(_resume_candidate_bytes 2>/dev/null || printf '0')
+    if (( candidate_bytes > RESUME_MAX_BYTES )); then
+        attempt_resume=0
+        printf 'aria: newest codex session here is %d MB; skipping auto-resume (ARIA_CODEX_RESUME_MAX_BYTES=%d)\n' \
+            "$((candidate_bytes / 1048576))" "$RESUME_MAX_BYTES" >&2
+        printf 'aria: starting fresh — run `codex resume` to open the old session anyway\n' >&2
+    fi
+fi
+
 # Name the tmux window after the tool (`0:codex`, not `0:bash`); see
 # aria-claude-launch for why automatic-rename shows the wrong thing.
 if [ -n "${TMUX:-}" ]; then
     tmux rename-window -t "${TMUX_PANE:-}" codex 2>/dev/null || true
 fi
 
-started=$SECONDS
-if (( BYPASS_DEFAULTS )); then
-    codex resume --last "$@"
-else
-    codex resume --last "${CODEX_ARGS[@]}" "$@"
-fi
-rc=$?
-# A non-zero exit within a few seconds means resume could not start (no
-# session for this cwd, corrupt rollout) rather than a session you used and
-# quit, so start a fresh one instead of leaving a dead pane behind.
-if [ "$rc" -ne 0 ] && [ $((SECONDS - started)) -lt 5 ]; then
-    echo "aria: codex resume --last failed (exit $rc) — starting a fresh session" >&2
+if (( attempt_resume )); then
     if (( BYPASS_DEFAULTS )); then
-        exec codex "$@"
+        codex resume --last "$@"
+    else
+        codex resume --last "${CODEX_ARGS[@]}" "$@"
     fi
-    exec codex "${CODEX_ARGS[@]}" "$@"
+    rc=$?
+    # A non-zero exit means resume could not start (no session for this cwd,
+    # corrupt rollout) rather than a session you used and quit — the TUI exits
+    # 0 on a normal quit. Always start a fresh session instead of leaving a
+    # dead pane behind, whatever the failure took.
+    if (( rc == 0 )); then
+        exit 0
+    fi
+    echo "aria: codex resume --last failed (exit $rc) — starting a fresh session" >&2
 fi
-exit "$rc"
+if (( BYPASS_DEFAULTS )); then
+    exec codex "$@"
+fi
+exec codex "${CODEX_ARGS[@]}" "$@"

@@ -1,5 +1,26 @@
 # ARIA Changelog
 
+## 2026-09-02 — Codex desk-shell slowness fix and untracked `--local` launch
+
+- `scripts/aria-codex-launch` no longer auto-resumes a Codex session whose
+  rollout is oversized (budget: `ARIA_CODEX_RESUME_MAX_BYTES`, default 10 MiB,
+  0 disables auto-resume). A 125 MB rollout in this repository made every new
+  ARIA codex shell here stall for a long time while Codex replayed it.
+  Oversized sessions start fresh with a notice; `codex resume` still opens
+  them on demand.
+- A failed `codex resume --last` now always falls back to a fresh session
+  instead of leaving a dead pane when the failure outlived the old 5-second
+  probe window.
+- `claude|codex|pi --local` is now the untracked escape hatch on the Mac desk
+  wrapper: the tool runs directly in the terminal with no ARIA registration
+  and no tmux interception (same contract as `--no-aria`, retained as an
+  alias). The Corsair-side `aria-remote-shell` honors `--local` the same way
+  instead of silently stripping it into a tracked launch.
+- Reinstalled the Mac desk wrappers via `scripts/aria-desk-install-mac`: the
+  live `~/.config/aria/aria-shells-mac.sh` had drifted and predated even the
+  `--no-aria` bypass, so no untracked launch path existed on the Mac until
+  now.
+
 ## 2026-08-29 — Architecture and documentation reconciliation
 
 - Reconciled active repository documentation with Architecture Charter v0.2 and

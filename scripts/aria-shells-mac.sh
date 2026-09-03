@@ -2,8 +2,9 @@
 #
 # Source from ~/.zshrc. Interactive coding agents register with ARIA and run
 # locally by default. `--corsair`/`--remote` selects an explicitly mapped
-# Corsair worktree; the compatibility flags `--local` and `--no-aria` still
-# select Mac execution but do not bypass ARIA registration.
+# Corsair worktree. `--local` (or `--no-aria`) is the untracked escape hatch:
+# it invokes the original tool directly in this terminal — no registration,
+# no tmux interception, nothing that an ARIA problem can block or slow down.
 
 _aria_corsair_path() {
     local here="$PWD" local_root remote_root
@@ -52,17 +53,21 @@ _aria_corsair_command() {
 _aria_coding_agent() {
     local tool="$1"
     shift
-    local arg remote_mode=0
+    local arg remote_mode=0 bypass_aria=0
     local -a forwarded_args
     forwarded_args=()
     for arg in "$@"; do
         case "$arg" in
             --corsair|--remote) remote_mode=1 ;;
-            --local|--no-aria) ;;
+            --local|--no-aria) bypass_aria=1 ;;
             *) forwarded_args+=("$arg") ;;
         esac
     done
     if [ "${ARIA_MANAGED:-}" = 1 ]; then
+        command "$tool" "${forwarded_args[@]}"
+        return $?
+    fi
+    if (( bypass_aria )); then
         command "$tool" "${forwarded_args[@]}"
         return $?
     fi

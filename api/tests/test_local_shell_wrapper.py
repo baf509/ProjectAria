@@ -12,6 +12,9 @@ import pytest
 
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "aria-local-shell"
+REMOTE_SCRIPT = Path(__file__).parents[2] / "scripts" / "aria-remote-shell"
+MAC_ROUTER = Path(__file__).parents[2] / "scripts" / "aria-shells-mac.sh"
+CODEX_LAUNCH = Path(__file__).parents[2] / "scripts" / "aria-codex-launch"
 
 
 def _load_script() -> dict:
@@ -176,3 +179,38 @@ def test_readiness_timeout_never_launches_tmux(monkeypatch):
 
     assert main() == 1
     assert calls == []
+
+
+def test_remote_wrapper_consumes_aria_placement_flags():
+    source = REMOTE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "--no-aria|--corsair|--remote) ;;" in source
+    assert '"$launcher" "${forwarded_args[@]}"' in source
+
+
+def test_remote_wrapper_local_flag_launches_untracked():
+    source = REMOTE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "--local) local_mode=1" in source
+    assert 'exec "$tool" "${forwarded_args[@]}"' in source
+
+
+def test_mac_wrapper_local_flags_are_a_real_direct_launch_escape_hatch():
+    source = MAC_ROUTER.read_text(encoding="utf-8")
+
+    assert "--local|--no-aria) bypass_aria=1" in source
+    assert "if (( bypass_aria )); then" in source
+    assert 'command "$tool" "${forwarded_args[@]}"' in source
+
+
+def test_codex_launch_shim_guards_auto_resume_and_fresh_fallback():
+    source = CODEX_LAUNCH.read_text(encoding="utf-8")
+
+    # Auto-resume is bounded: a huge rollout must not make every new shell
+    # in its directory slow while codex replays it.
+    assert "ARIA_CODEX_RESUME_MAX_BYTES" in source
+    assert "codex resume --last" in source
+    # A failed resume must always fall back to a fresh session rather than
+    # leave a dead pane, however long the failure took.
+    assert "starting a fresh session" in source
+    assert 'exec codex "${CODEX_ARGS[@]}" "$@"' in source
