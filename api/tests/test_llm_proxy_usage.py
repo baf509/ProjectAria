@@ -8,13 +8,24 @@ import pytest
 from starlette.requests import Request
 
 from aria.api.routes import llm_proxy
+from aria.infrastructure.preamble_fingerprint import PreambleTracker
 from tests.conftest import make_mock_db
 
 
-def _request(body: dict, *, caller: str | None = None) -> Request:
+def _request(
+    body: dict,
+    *,
+    caller: str | None = None,
+    conversation_id: str | None = None,
+    session_id: str | None = None,
+) -> Request:
     headers = [(b"user-agent", b"gateway-test/1.0")]
     if caller:
         headers.append((b"x-aria-caller", caller.encode()))
+    if conversation_id:
+        headers.append((b"x-aria-conversation-id", conversation_id.encode()))
+    if session_id:
+        headers.append((b"x-aria-session-id", session_id.encode()))
     raw = json.dumps(body).encode()
     sent = False
 
@@ -54,6 +65,81 @@ def test_usage_counts_separates_prompt_cache_hits():
 def test_usage_counts_supports_llama_timings_fallback():
     payload = {"timings": {"prompt_n": 40, "predicted_n": 6, "cache_n": 32}}
     assert llm_proxy._usage_counts(payload) == (8, 6, 32, 40)
+
+
+def test_trace_timings_extracts_cache_speed_context_and_mtp():
+    payload = {
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+        "timings": {
+            "prompt_ms": 12.5,
+            "prompt_per_second": 320.0,
+            "predicted_ms": 400.0,
+            "predicted_per_second": 50.0,
+            "draft_n": 30,
+            "draft_n_accepted": 21,
+        },
+    }
+
+    trace = llm_proxy._trace_timings(payload)
+
+    assert trace["context_tokens"] == 120
+    assert trace["cache_hit_rate"] == 0.8
+    assert trace["decode_tokens_per_second"] == 50.0
+    assert trace["speculative_acceptance_rate"] == 0.7
+
+
+def test_preamble_tracker_classifies_stability_and_timestamp_only_drift():
+    tracker = PreambleTracker(max_entries=2)
+    body = {
+        "messages": [
+            {"role": "system", "content": "Started 2026-09-04T10:11:12Z secret"}
+        ],
+        "tools": [{"type": "function", "function": {"name": "read_file"}}],
+        "reasoning_effort": "medium",
+    }
+
+    first = tracker.observe("pi/model/chat", body)
+    stable = tracker.observe("pi/model/chat", body)
+    changed = tracker.observe(
+        "pi/model/chat",
+        {
+            **body,
+            "messages": [
+                {"role": "system", "content": "Started 2026-09-04T10:59:01Z secret"}
+            ],
+        },
+    )
+
+    assert first["state"] == "first_seen"
+    assert stable["state"] == "stable"
+    assert changed["state"] == "changed"
+    assert changed["change_reason"] == "volatile_timestamp"
+    assert changed["tool_count"] == 1
+    assert "secret" not in repr(first)
+    assert "secret" not in repr(changed)
+
+
+def test_preamble_tracker_classifies_tool_and_reasoning_drift():
+    tracker = PreambleTracker()
+    base = {
+        "messages": [{"role": "system", "content": "stable"}],
+        "tools": [{"type": "function", "function": {"name": "read"}}],
+        "reasoning_effort": "low",
+    }
+    tracker.observe("key", base)
+    changed = tracker.observe(
+        "key",
+        {
+            **base,
+            "tools": [{"type": "function", "function": {"name": "write"}}],
+            "reasoning_effort": "medium",
+        },
+    )
+    assert changed["change_reason"] == "tools_and_reasoning_template_changed"
 
 
 def test_stream_usage_handles_split_sse_chunks_without_retaining_text():
@@ -185,6 +271,11 @@ async def test_nonstream_proxy_records_attributed_usage(monkeypatch):
             "completion_tokens": 5,
             "prompt_tokens_details": {"cached_tokens": 12},
         },
+        "timings": {
+            "predicted_per_second": 51.5,
+            "draft_n": 8,
+            "draft_n_accepted": 6,
+        },
     }
     client = MagicMock()
     client.post = AsyncMock(return_value=response)
@@ -195,9 +286,17 @@ async def test_nonstream_proxy_records_attributed_usage(monkeypatch):
         _request(
             {
                 "model": "aria-resident",
-                "messages": [{"role": "user", "content": "private prompt"}],
+                "messages": [
+                    {"role": "system", "content": "private system prompt"},
+                    {"role": "user", "content": "private prompt"},
+                ],
+                "tools": [
+                    {"type": "function", "function": {"name": "private_tool"}}
+                ],
             },
             caller="pi coding/mac",
+            conversation_id="conversation-123",
+            session_id="session-456",
         ),
         MagicMock(),
         db,
@@ -211,9 +310,75 @@ async def test_nonstream_proxy_records_attributed_usage(monkeypatch):
     assert doc["input_tokens"] == 8
     assert doc["cache_read_tokens"] == 12
     assert doc["output_tokens"] == 5
+    assert doc["conversation_id"] == "conversation-123"
+    assert doc["session_id"] == "session-456"
+    assert len(doc["trace_id"]) == 32
+    assert doc["preamble_hash"] == doc["metadata"]["preamble"]["fingerprint"]
     assert doc["metadata"]["status_code"] == 200
     assert doc["metadata"]["route_reason"] == "pinned"
     assert doc["metadata"]["queue_wait_ms"] == 0.0
     assert doc["metadata"]["admission_controlled"] is False
+    assert doc["metadata"]["decode_tokens_per_second"] == 51.5
+    assert doc["metadata"]["speculative_acceptance_rate"] == 0.75
+    assert result.headers["x-aria-trace-id"] == doc["trace_id"]
     assert "private prompt" not in repr(doc)
+    assert "private system prompt" not in repr(doc)
+    assert "private_tool" not in repr(doc)
     assert "not persisted" not in repr(doc)
+
+
+@pytest.mark.asyncio
+async def test_stream_proxy_records_final_trace_and_first_chunk(monkeypatch):
+    db = make_mock_db()
+    route = llm_proxy._Route("hybrid", "http://127.0.0.1:8004/v1", "requested", [])
+    monkeypatch.setattr(llm_proxy, "_pick_backend", AsyncMock(return_value=route))
+    monkeypatch.setattr(
+        llm_proxy, "_backend_model_id_cached", AsyncMock(return_value="qwen-flash-next")
+    )
+
+    class Response:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_raw(self):
+            yield b'data: {"choices":[{"delta":{"content":"private"}}]}\n\n'
+            yield (
+                b'data: {"usage":{"prompt_tokens":10,"completion_tokens":2,'
+                b'"prompt_tokens_details":{"cached_tokens":8}},"timings":'
+                b'{"predicted_per_second":40,"draft_n":4,"draft_n_accepted":3}}\n\n'
+            )
+            yield b"data: [DONE]\n\n"
+
+    client = MagicMock()
+    client.stream.return_value = Response()
+    monkeypatch.setattr(llm_proxy, "_client", lambda: client)
+
+    result = await llm_proxy._proxy(
+        "chat/completions",
+        _request(
+            {
+                "model": "hybrid",
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                "messages": [{"role": "system", "content": "private stream system"}],
+            },
+            caller="hermes",
+        ),
+        MagicMock(),
+        db,
+    )
+    chunks = [chunk async for chunk in result.body_iterator]
+
+    assert chunks[-1] == b"data: [DONE]\n\n"
+    doc = db.usage.insert_one.call_args.args[0]
+    assert result.headers["x-aria-trace-id"] == doc["trace_id"]
+    assert doc["metadata"]["streamed"] is True
+    assert doc["metadata"]["first_chunk_ms"] is not None
+    assert doc["metadata"]["cache_hit_rate"] == 0.8
+    assert doc["metadata"]["speculative_acceptance_rate"] == 0.75
+    assert "private stream system" not in repr(doc)

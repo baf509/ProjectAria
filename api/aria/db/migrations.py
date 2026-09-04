@@ -183,6 +183,9 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     await _safe_create_index(db.usage, "model", name="usage_model")
     await _safe_create_index(db.usage, "source", name="usage_source")
     await _safe_create_index(db.usage, "caller", name="usage_caller")
+    await _safe_create_index(
+        db.usage, "trace_id", name="usage_trace_id", unique=True, sparse=True
+    )
     await _safe_create_index(db.usage, "agent_slug", name="usage_agent_slug")
     await _safe_create_index(db.usage, "conversation_id", name="usage_conversation_id")
     await _safe_create_index(db.signal_contacts, "sender", name="signal_contact_sender", unique=True)

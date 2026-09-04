@@ -1,5 +1,19 @@
 # ARIA Changelog
 
+## 2026-09-04 — Privacy-safe inference traces and prefix drift
+
+- Added a unique trace ID to every OpenAI-gateway request and response. Usage
+  rows now join routing, admission wait, backend latency, first-stream-chunk,
+  cache reuse, context, throughput, and per-request MTP effectiveness without
+  persisting prompt or response text.
+- Added observational system/tools preamble fingerprints. A bounded in-memory
+  tracker distinguishes stable prefixes from timestamp-only, system, tool
+  schema, and reasoning-template drift; Mongo stores only hashes, byte counts,
+  tool counts, and the drift classification.
+- Added `/usage/traces` and a Recent inference traces table to the Usage view.
+  Optional conversation/session correlation headers are recorded after strict
+  character and length bounding.
+
 ## 2026-09-03 — Hybrid runtime effectiveness telemetry
 
 - Extended llama.cpp utilization parsing with cumulative prompt-cache tokens,

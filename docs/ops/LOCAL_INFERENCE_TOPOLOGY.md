@@ -4,7 +4,7 @@ Current operations guide for ARIA's model data plane. Historical benchmark and
 DeepSeek-era measurements remain in dated vault analysis; they are not startup
 instructions.
 
-Last reconciled: **2026-09-03**.
+Last reconciled: **2026-09-04**.
 
 ## Boundary and routing
 
@@ -144,6 +144,21 @@ output, cache-read tokens, status and latency. Prompt and generated text are not
 stored. Hermes and both managed Pi installations send explicit caller labels;
 unidentified clients receive a bounded peer/user-agent fallback. Mongo logging
 failure does not break inference.
+
+Each request receives an opaque `X-Aria-Trace-ID`, forwarded to the backend and
+returned to the caller. Its content-free trace joins routing, admission wait,
+backend/first-chunk latency, context, cache reuse, prefill/decode throughput and
+per-request MTP acceptance. `GET /api/v1/usage/traces` returns the recent bounded
+projection used by the Usage dashboard. Clients may additionally send
+`X-Aria-Conversation-ID` and `X-Aria-Session-ID`; these are correlation labels,
+not authorization, and are character/length bounded before storage.
+
+For chat requests the gateway fingerprints the actual forwarded system/tools
+prefix plus reasoning-template controls. Only hashes, component byte counts,
+tool count and a drift category are stored. The bounded in-process tracker
+classifies `first_seen`, `stable`, timestamp-only, system, tools and reasoning
+template changes; it never rewrites a prompt. A process restart intentionally
+resets comparisons to `first_seen` rather than guessing from persisted text.
 
 The gateway also owns admission for any backend whose registry geometry reports
 exactly one slot. Hermes is interactive priority, Pi and other foreground

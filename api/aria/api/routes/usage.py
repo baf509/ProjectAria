@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.api.deps import get_db
@@ -16,6 +16,58 @@ from aria.db.usage import UsageRepo
 from aria.llm.pricing import cost_for
 
 router = APIRouter()
+
+
+def _inference_trace_row(doc: dict) -> dict:
+    """Public, content-free projection of one gateway usage document."""
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
+    preamble = (
+        metadata.get("preamble")
+        if isinstance(metadata.get("preamble"), dict)
+        else {"state": "absent", "change_reason": None}
+    )
+    cached = doc.get("cache_read_tokens", 0) or 0
+    fresh = doc.get("input_tokens", 0) or 0
+    prompt = cached + fresh
+    return {
+        "trace_id": doc.get("trace_id"),
+        "timestamp": doc.get("timestamp"),
+        "caller": doc.get("caller"),
+        "model": doc.get("model"),
+        "conversation_id": doc.get("conversation_id"),
+        "session_id": doc.get("session_id"),
+        "path": metadata.get("path"),
+        "status_code": metadata.get("status_code"),
+        "outcome": metadata.get("outcome"),
+        "route_reason": metadata.get("route_reason"),
+        "streamed": metadata.get("streamed", False),
+        "latency_ms": metadata.get("latency_ms"),
+        "routing_ms": metadata.get("routing_ms"),
+        "queue_wait_ms": metadata.get("queue_wait_ms"),
+        "backend_ms": metadata.get("backend_ms"),
+        "first_chunk_ms": metadata.get("first_chunk_ms"),
+        "prompt_tokens": prompt,
+        "fresh_prompt_tokens": fresh,
+        "cache_read_tokens": cached,
+        "cache_hit_rate": round(cached / prompt, 4) if prompt else 0.0,
+        "output_tokens": doc.get("output_tokens", 0) or 0,
+        "context_tokens": metadata.get("context_tokens"),
+        "prompt_tokens_per_second": metadata.get("prompt_tokens_per_second"),
+        "decode_tokens_per_second": metadata.get("decode_tokens_per_second"),
+        "speculative_draft_tokens": metadata.get("speculative_draft_tokens"),
+        "speculative_accepted_tokens": metadata.get("speculative_accepted_tokens"),
+        "speculative_acceptance_rate": metadata.get("speculative_acceptance_rate"),
+        "preamble": {
+            "state": preamble.get("state"),
+            "change_reason": preamble.get("change_reason"),
+            "fingerprint": preamble.get("fingerprint"),
+            "previous_fingerprint": preamble.get("previous_fingerprint"),
+            "prefix_bytes": preamble.get("prefix_bytes"),
+            "system_bytes": preamble.get("system_bytes"),
+            "tools_bytes": preamble.get("tools_bytes"),
+            "tool_count": preamble.get("tool_count"),
+        },
+    }
 
 
 @router.get("/usage/summary")
@@ -119,6 +171,27 @@ async def usage_by_caller(
         fresh = row.get("input_tokens", 0) or 0
         row["cache_hit_rate"] = round(cached / (cached + fresh), 4) if cached + fresh else 0.0
     return rows
+
+
+@router.get("/usage/traces")
+async def usage_traces(
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+    limit: int = Query(default=50, ge=1, le=200),
+    caller: str | None = Query(default=None, max_length=120),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Recent content-free inference timelines from the OpenAI gateway."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    query: dict = {
+        "source": "llm-gateway",
+        "trace_id": {"$nin": [None, ""]},
+        "timestamp": {"$gte": cutoff},
+    }
+    if caller:
+        query["caller"] = caller
+    cursor = db.usage.find(query).sort("timestamp", -1).limit(limit)
+    docs = await cursor.to_list(length=limit)
+    return [_inference_trace_row(doc) for doc in docs]
 
 
 @router.get("/usage/cost")

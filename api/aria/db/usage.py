@@ -33,6 +33,8 @@ class UsageRepo:
         conversation_id: Optional[str] = None,
         session_id: Optional[str] = None,
         caller: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        preamble_hash: Optional[str] = None,
         backend: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> str:
@@ -61,6 +63,13 @@ class UsageRepo:
             "metadata": metadata,
             "timestamp": datetime.now(timezone.utc),
         }
+        # Omit absent values rather than storing null: the trace id has a
+        # sparse unique index, and MongoDB sparse indexes still index an
+        # explicitly present null value. These are opaque ids/hashes only.
+        if trace_id:
+            doc["trace_id"] = trace_id
+        if preamble_hash:
+            doc["preamble_hash"] = preamble_hash
         result = await self.db.usage.insert_one(doc)
         return str(result.inserted_id)
 

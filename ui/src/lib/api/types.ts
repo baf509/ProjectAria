@@ -651,6 +651,46 @@ export type UsageRow = {
   cache_hit_rate?: number
 }
 
+export type InferenceTrace = {
+  trace_id?: string | null
+  timestamp?: string | null
+  caller?: string | null
+  model?: string | null
+  conversation_id?: string | null
+  session_id?: string | null
+  path?: string | null
+  status_code?: number | null
+  outcome?: string | null
+  route_reason?: string | null
+  streamed?: boolean
+  latency_ms?: number | null
+  routing_ms?: number | null
+  queue_wait_ms?: number | null
+  backend_ms?: number | null
+  first_chunk_ms?: number | null
+  prompt_tokens?: number
+  fresh_prompt_tokens?: number
+  cache_read_tokens?: number
+  cache_hit_rate?: number
+  output_tokens?: number
+  context_tokens?: number | null
+  prompt_tokens_per_second?: number | null
+  decode_tokens_per_second?: number | null
+  speculative_draft_tokens?: number | null
+  speculative_accepted_tokens?: number | null
+  speculative_acceptance_rate?: number | null
+  preamble?: {
+    state?: string | null
+    change_reason?: string | null
+    fingerprint?: string | null
+    previous_fingerprint?: string | null
+    prefix_bytes?: number | null
+    system_bytes?: number | null
+    tools_bytes?: number | null
+    tool_count?: number | null
+  }
+}
+
 /* -------------------------------------------------- converse (2026-08-17) */
 
 /**

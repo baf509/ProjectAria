@@ -48,6 +48,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any, AsyncIterator, Callable, Optional
 
 import httpx
@@ -59,6 +60,7 @@ from aria.api.deps import get_db, get_model_server_manager
 from aria.config import settings
 from aria.db.usage import UsageRepo
 from aria.infrastructure.model_servers import ModelServerManager
+from aria.infrastructure.preamble_fingerprint import preamble_tracker
 from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
     base_url_for,
@@ -330,6 +332,23 @@ def _gateway_caller(request: Request) -> tuple[str, str, str]:
     return caller[:120], host[:120], user_agent
 
 
+def _safe_context_id(value: Optional[str]) -> Optional[str]:
+    """Bound a client-supplied correlation id without treating it as auth."""
+    if not value:
+        return None
+    cleaned = _CALLER_SAFE.sub("_", value.strip()).strip("_")
+    return cleaned[:160] or None
+
+
+def _request_context_ids(request: Request) -> tuple[Optional[str], Optional[str]]:
+    conversation = _safe_context_id(
+        request.headers.get("x-aria-conversation-id")
+        or request.headers.get("x-conversation-id")
+    )
+    session = _safe_context_id(request.headers.get("x-aria-session-id"))
+    return conversation, session
+
+
 def _usage_counts(payload: Optional[dict]) -> tuple[int, int, int, int]:
     """Fresh input, output, cache-read, and raw prompt token counts.
 
@@ -356,6 +375,40 @@ def _usage_counts(payload: Optional[dict]) -> tuple[int, int, int, int]:
     return max(0, prompt - cached), output, cached, prompt
 
 
+def _trace_timings(payload: Optional[dict]) -> dict[str, Any]:
+    """Extract per-request performance data without retaining generated text."""
+    payload = payload if isinstance(payload, dict) else {}
+    timings = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+    fresh, output, cached, prompt = _usage_counts(payload)
+
+    def number(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return round(float(value), 4)
+        return None
+
+    drafted = number(timings.get("draft_n"))
+    accepted = number(timings.get("draft_n_accepted"))
+    acceptance = (
+        round((accepted or 0.0) / drafted, 4) if drafted and drafted > 0 else None
+    )
+    prompt_total = cached + fresh
+    return {
+        "prompt_tokens": prompt_total,
+        "fresh_prompt_tokens": fresh,
+        "cache_read_tokens": cached,
+        "cache_hit_rate": round(cached / prompt_total, 4) if prompt_total else 0.0,
+        "output_tokens": output,
+        "context_tokens": prompt_total + output,
+        "prompt_ms": number(timings.get("prompt_ms")),
+        "decode_ms": number(timings.get("predicted_ms")),
+        "prompt_tokens_per_second": number(timings.get("prompt_per_second")),
+        "decode_tokens_per_second": number(timings.get("predicted_per_second")),
+        "speculative_draft_tokens": drafted,
+        "speculative_accepted_tokens": accepted,
+        "speculative_acceptance_rate": acceptance,
+    }
+
+
 async def _record_gateway_usage(
     db: AsyncIOMotorDatabase,
     *,
@@ -371,6 +424,11 @@ async def _record_gateway_usage(
     streamed: bool = False,
     error: Optional[str] = None,
     admission: Optional[_AdmissionStats] = None,
+    trace_id: Optional[str] = None,
+    preamble: Optional[dict[str, Any]] = None,
+    routing_ms: Optional[float] = None,
+    backend_ms: Optional[float] = None,
+    first_chunk_ms: Optional[float] = None,
 ) -> None:
     """Persist one gateway request without ever storing prompt/response text.
 
@@ -379,13 +437,19 @@ async def _record_gateway_usage(
     """
     try:
         caller, client_host, user_agent = _gateway_caller(request)
+        conversation_id, session_id = _request_context_ids(request)
         fresh_input, output, cache_read, prompt = _usage_counts(response_payload)
+        trace_timings = _trace_timings(response_payload)
         slug = route.slug if route and route.slug else None
         await UsageRepo(db).record(
             model=slug or backend_model_id or requested_model or "unknown",
             source="llm-gateway",
             backend="local",
             caller=caller,
+            conversation_id=conversation_id,
+            session_id=session_id,
+            trace_id=trace_id,
+            preamble_hash=(preamble or {}).get("fingerprint"),
             input_tokens=fresh_input,
             output_tokens=output,
             cache_read_tokens=cache_read,
@@ -401,6 +465,9 @@ async def _record_gateway_usage(
                 "backend_model_id": backend_model_id,
                 "route_reason": route.reason if route else None,
                 "latency_ms": round((time.monotonic() - started) * 1000, 2),
+                "routing_ms": routing_ms,
+                "backend_ms": backend_ms,
+                "first_chunk_ms": first_chunk_ms,
                 "admission_controlled": bool(admission and admission.controlled),
                 "queue_priority": admission.priority if admission else None,
                 "queue_wait_ms": admission.queue_wait_ms if admission else 0.0,
@@ -410,6 +477,8 @@ async def _record_gateway_usage(
                 "prompt_tokens_reported": prompt,
                 "client_host": client_host,
                 "user_agent": user_agent,
+                "preamble": preamble or {"state": "absent", "change_reason": None},
+                **trace_timings,
             },
         )
     except Exception:
@@ -843,6 +912,7 @@ def _inject_identity(body: dict, line: str) -> dict:
 async def _proxy(path: str, request: Request, manager: ModelServerManager,
                  db: AsyncIOMotorDatabase, identify: bool = False) -> Any:
     started = time.monotonic()
+    trace_id = uuid.uuid4().hex
     payload = await request.body()
     stream = False
     requested: Optional[str] = None
@@ -856,6 +926,8 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     except (ValueError, AttributeError):
         body = None
 
+    caller = _gateway_caller(request)[0]
+
     route = await _pick_backend(manager, db, requested=requested)
 
     # Named a registered server that isn't resident? Make it resident. Only for
@@ -867,6 +939,9 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             route = await _pick_backend(manager, db, requested=requested)
 
     if not route.base_url:
+        preamble = preamble_tracker.observe(
+            f"{caller}\0unavailable\0{path}", body
+        )
         exc = _unavailable(route)
         await _record_gateway_usage(
             db,
@@ -879,10 +954,14 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             started=started,
             status_code=exc.status_code,
             error="backend unavailable",
+            trace_id=trace_id,
+            preamble=preamble,
+            routing_ms=round((time.monotonic() - started) * 1000, 2),
         )
+        exc.headers = {**(exc.headers or {}), "X-Aria-Trace-ID": trace_id}
         raise exc
     slug, base = route.slug, route.base_url
-    caller = _gateway_caller(request)[0]
+    forwarded_body = body
 
     # ARIA model names are routing identifiers, not necessarily the id exposed
     # by the selected OpenAI-compatible backend.  vLLM rejects an unknown model
@@ -902,17 +981,25 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                 forwarded = _inject_identity(
                     forwarded, _identity_line(route, model_id)
                 )
+            forwarded_body = forwarded
             payload = json.dumps(forwarded).encode()
         except (TypeError, ValueError):
             logger.warning("llm-proxy: model rewrite failed; forwarding verbatim")
 
     url = f"{base}/{path}"
     headers = _forward_headers(request)
+    headers["x-aria-trace-id"] = trace_id
+    preamble = preamble_tracker.observe(
+        f"{caller}\0{slug or 'unknown'}\0{path}", forwarded_body
+    )
+    routing_ms = round((time.monotonic() - started) * 1000, 2)
 
     if not stream:
         admission_stats: Optional[_AdmissionStats] = None
+        backend_started: Optional[float] = None
         try:
             async with _admit(route, caller) as admission_stats:
+                backend_started = time.monotonic()
                 resp = await _client().post(url, content=payload, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: %s failed against %s: %s", path, slug, exc)
@@ -928,10 +1015,18 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                 status_code=502,
                 error=type(exc).__name__,
                 admission=admission_stats,
+                trace_id=trace_id,
+                preamble=preamble,
+                routing_ms=routing_ms,
+                backend_ms=(
+                    round((time.monotonic() - backend_started) * 1000, 2)
+                    if backend_started is not None else None
+                ),
             )
             raise HTTPException(
                 status_code=502,
                 detail={"error": f"backend {slug} unreachable", "backend": base},
+                headers={"X-Aria-Trace-ID": trace_id},
             ) from exc
 
         response_payload: Optional[dict] = None
@@ -957,6 +1052,13 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             status_code=resp.status_code,
             response_payload=response_payload,
             admission=admission_stats,
+            trace_id=trace_id,
+            preamble=preamble,
+            routing_ms=routing_ms,
+            backend_ms=(
+                round((time.monotonic() - backend_started) * 1000, 2)
+                if backend_started is not None else None
+            ),
         )
         return JSONResponse(
             content=content,
@@ -964,6 +1066,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             headers={
                 "X-Aria-Backend": slug or "unknown",
                 "X-Aria-Queue-Ms": str(admission_stats.queue_wait_ms),
+                "X-Aria-Trace-ID": trace_id,
             },
         )
 
@@ -974,12 +1077,17 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
         status_code = 200
         error: Optional[str] = None
         admission_stats: Optional[_AdmissionStats] = None
+        backend_started: Optional[float] = None
+        first_chunk_at: Optional[float] = None
         try:
             async with _admit(route, caller) as admission_stats:
                 client = _client()
+                backend_started = time.monotonic()
                 async with client.stream("POST", url, content=payload, headers=headers) as resp:
                     status_code = resp.status_code
                     async for chunk in resp.aiter_raw():
+                        if first_chunk_at is None:
+                            first_chunk_at = time.monotonic()
                         usage.feed(chunk)
                         yield chunk
         except httpx.HTTPError as exc:
@@ -1005,6 +1113,17 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                 streamed=True,
                 error=error,
                 admission=admission_stats,
+                trace_id=trace_id,
+                preamble=preamble,
+                routing_ms=routing_ms,
+                backend_ms=(
+                    round((time.monotonic() - backend_started) * 1000, 2)
+                    if backend_started is not None else None
+                ),
+                first_chunk_ms=(
+                    round((first_chunk_at - started) * 1000, 2)
+                    if first_chunk_at is not None else None
+                ),
             ))
             try:
                 await asyncio.shield(record_task)
@@ -1015,7 +1134,11 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     return StreamingResponse(
         relay(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Aria-Backend": slug or "unknown"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Aria-Backend": slug or "unknown",
+            "X-Aria-Trace-ID": trace_id,
+        },
     )
 
 

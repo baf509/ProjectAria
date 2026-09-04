@@ -3,16 +3,14 @@
 /**
  * ARIA - Know: usage (tokens + cost by model and agent)
  *
- * Three small aggregates over `usage_records`. Local backends cost $0, so the
- * cost column mattering at all means a cloud backend was used — it is kept
- * visible for exactly that reason (the spend circuit-breaker trips on hourly
- * priced spend). Tables live inside ScrollX: a 7-column table is the one
- * legitimate wide element here and must scroll in its own box, never widen
- * the page.
+ * Aggregate cost/cache views plus content-free per-request inference traces.
+ * Local backends cost $0, so a nonzero cost means a cloud backend was used.
+ * Wide tables live inside ScrollX and must scroll in their own box, never
+ * widen the page.
  */
 import { useResource } from '@/lib/swr'
 import { K } from '@/lib/api/endpoints'
-import type { UsageSummary, UsageRow } from '@/lib/api/types'
+import type { InferenceTrace, UsageSummary, UsageRow } from '@/lib/api/types'
 import { Card, KeyValue } from '@/components/ui/primitives'
 import { Async } from '@/components/ui/Async'
 import { Stack, ScrollX } from '@/components/layout'
@@ -20,6 +18,24 @@ import { count, usd, pct, middleTruncate } from '@/lib/format'
 import { useKnowStats } from '@/features/know/knowStatus'
 
 const DAYS = 7
+
+function traceTime(value?: string | null): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString(undefined, { hour12: false })
+}
+
+function milliseconds(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  return value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`
+}
+
+function prefixState(trace: InferenceTrace): string {
+  const state = trace.preamble?.state
+  if (state === 'changed') return trace.preamble?.change_reason?.replaceAll('_', ' ') || 'changed'
+  if (state === 'first_seen') return 'first seen'
+  return state || 'absent'
+}
 
 function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }) {
   return (
@@ -60,11 +76,69 @@ function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }
   )
 }
 
+function TraceTable({ rows }: { rows: InferenceTrace[] }) {
+  return (
+    <ScrollX>
+      <table className="w-full min-w-[64rem] border-collapse text-label">
+        <thead>
+          <tr className="border-b border-line text-left text-micro uppercase tracking-[0.08em] text-ink-faint">
+            <th className="whitespace-nowrap py-1.5 pr-3 font-medium">Time</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 font-medium">Caller</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 font-medium">Model</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 font-medium">Result</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Context</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Cache</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">MTP</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Queue</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Decode</th>
+            <th className="whitespace-nowrap py-1.5 font-medium">Prefix</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((trace, i) => (
+            <tr
+              key={trace.trace_id ?? `trace-${i}`}
+              className="border-b border-line last:border-b-0"
+              title={[
+                trace.trace_id ? `trace ${trace.trace_id}` : null,
+                `total ${milliseconds(trace.latency_ms)}`,
+                `route ${milliseconds(trace.routing_ms)}`,
+                `backend ${milliseconds(trace.backend_ms)}`,
+                trace.first_chunk_ms != null ? `first chunk ${milliseconds(trace.first_chunk_ms)}` : null,
+              ].filter(Boolean).join(' · ')}
+            >
+              <td className="tnum whitespace-nowrap py-1.5 pr-3 text-micro text-ink-dim">{traceTime(trace.timestamp)}</td>
+              <td className="py-1.5 pr-3 font-mono text-micro text-ink" title={trace.caller ?? undefined}>
+                {middleTruncate(trace.caller || 'unknown', 24)}
+              </td>
+              <td className="py-1.5 pr-3 font-mono text-micro text-ink-dim" title={trace.model ?? undefined}>
+                {middleTruncate(trace.model || 'unknown', 28)}
+              </td>
+              <td className="py-1.5 pr-3 text-ink-dim">{trace.outcome || trace.status_code || '—'}</td>
+              <td className="tnum py-1.5 pr-3 text-right">{count(trace.context_tokens)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">{pct(trace.cache_hit_rate)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">{pct(trace.speculative_acceptance_rate)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">{milliseconds(trace.queue_wait_ms)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">
+                {trace.decode_tokens_per_second != null ? `${trace.decode_tokens_per_second.toFixed(1)} t/s` : '—'}
+              </td>
+              <td className="py-1.5 text-micro text-ink-dim" title={trace.preamble?.fingerprint ?? undefined}>
+                {prefixState(trace)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ScrollX>
+  )
+}
+
 export default function UsagePage() {
   const summary = useResource<UsageSummary>(K.usage(DAYS), { tier: 'lazy' })
   const byModel = useResource<UsageRow[]>(K.usageByModel(DAYS), { tier: 'lazy' })
   const byAgent = useResource<UsageRow[]>(K.usageByAgent(DAYS), { tier: 'lazy' })
   const byCaller = useResource<UsageRow[]>(K.usageByCaller(DAYS), { tier: 'lazy' })
+  const traces = useResource<InferenceTrace[]>(K.usageTraces(24, 50), { tier: 'lazy' })
 
   const totalCost = (byModel.data ?? []).reduce((acc, r) => acc + (r.cost ?? 0), 0)
 
@@ -108,6 +182,12 @@ export default function UsagePage() {
       <Card title="By gateway caller">
         <Async r={byCaller} skeletonRows={3} isEmpty={(d) => d.length === 0} empty="No attributed gateway usage in this window.">
           {(rows) => <UsageTable rows={rows} nameLabel="Caller" />}
+        </Async>
+      </Card>
+
+      <Card title="Recent inference traces · last 24 hours">
+        <Async r={traces} skeletonRows={5} isEmpty={(d) => d.length === 0} empty="No gateway traces recorded in this window.">
+          {(rows) => <TraceTable rows={rows} />}
         </Async>
       </Card>
     </Stack>

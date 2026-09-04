@@ -71,6 +71,7 @@ export const K = {
   usage: (days = 7) => `/usage/summary?days=${days}`,
   usageByModel: (days = 7) => `/usage/by-model?days=${days}`,
   usageByCaller: (days = 7) => `/usage/by-caller?days=${days}`,
+  usageTraces: (hours = 24, limit = 50) => `/usage/traces?hours=${hours}&limit=${limit}`,
   benchRuns: (limit = 25) => `/benchmarks/runs?limit=${limit}`,
   benchSuites: '/benchmarks/suites',
   benchTargets: '/benchmarks/targets',
