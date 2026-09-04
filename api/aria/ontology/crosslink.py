@@ -82,20 +82,25 @@ BULK_SOURCE_TYPES: tuple[str, ...] = (
     "claude_session_digest",
 )
 
-HOME = os.path.expanduser("~")
+_HOME_PREFIX = re.compile(r"^/(?:home|Users)/[^/]+(?=/|$)")
 
 
 def _norm_path(p: Optional[str]) -> Optional[str]:
-    """Normalise a path-ish string, expanding `~` to the real home.
+    """Normalise a path-ish string into a host-independent home path.
 
     Memory categories are stored as `~/Development/ProjectAria` while projects
-    carry absolute paths, so without this expansion nothing would ever match.
+    carry absolute paths. ARIA compares Mac `/Users/ben/...` and Corsair
+    `/home/ben/...` records on the same control plane, so expanding `~` to the
+    *current* host's home makes remote project ownership fail. Canonicalize any
+    conventional user-home prefix back to `~` instead.
     """
     if not p:
         return None
     p = p.strip()
-    if p.startswith("~"):
-        p = HOME + p[1:]
+    if p == "~" or p.startswith("~/"):
+        pass
+    elif _HOME_PREFIX.match(p):
+        p = _HOME_PREFIX.sub("~", p, count=1)
     return p.rstrip("/") or "/"
 
 
@@ -123,7 +128,12 @@ class PathProjectIndex:
         # ~/Development/ProjectAria ("ARIA" and "ProjectAria"), and without a
         # stable tiebreak the winner would depend on Mongo's iteration order,
         # silently reassigning thousands of memories between runs.
-        self._entries = sorted(entries, key=lambda e: (-len(e[0]), e[1]))
+        normalized = [
+            (root, slug)
+            for raw, slug in entries
+            if (root := _norm_path(raw)) is not None
+        ]
+        self._entries = sorted(normalized, key=lambda e: (-len(e[0]), e[1]))
 
     @classmethod
     async def build(cls, db: AsyncIOMotorDatabase) -> "PathProjectIndex":

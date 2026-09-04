@@ -19,7 +19,6 @@ class CodexBackend:
             "workspace-write",
             "--ask-for-approval",
             "never",
-            "-p",
             params.prompt,
         ]
         if params.model:
@@ -27,7 +26,16 @@ class CodexBackend:
         return CommandSpec(argv=argv, cwd=params.workspace, env=dict(MANAGED_ENV))
 
     def resume_command(self, session_id: str, params: StartParams) -> CommandSpec:
-        argv = [settings.codex_binary, "resume", session_id, "-p", params.prompt]
+        argv = [
+            settings.codex_binary,
+            "resume",
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+            session_id,
+            params.prompt,
+        ]
         if params.model:
             argv.extend(["--model", params.model])
         return CommandSpec(argv=argv, cwd=params.workspace, env=dict(MANAGED_ENV))

@@ -1,0 +1,88 @@
+# HANDOFF — Qwen3.8-Flash-Next on Corsair → Mac control plane (2026-08-26)
+
+> **HISTORICAL — do not execute as written.** Recorded 2026-08-26, when the Mac
+> control plane still ran under the `devboxsvc` service account. That account no
+> longer exists on the Mac (`/Users/devboxsvc` is absent); all Mac services now
+> run as `ben` and the service tree is `/Users/ben/Services/apps/ProjectAria`.
+> Translate any `devboxsvc` path or `sudo -u devboxsvc` step to `ben` before use.
+> Retained for the decision record. (Annotated 2026-08-31.)
+
+Written from Corsair (`ben@corsair-ai`). The Corsair side is done and the registry entry is
+committed in this repo. Three steps need the `devboxsvc` service account on this Mac, which
+Corsair cannot reach (no read access to `/Users/devboxsvc`, no passwordless sudo).
+
+## What is already done
+
+- Corsair: `infrastructure/qwen3.8-flash-next/` (serve.sh, README, SHA256SUMS), vendored unit
+  `systemd/qwen3.8-flash-next.service` installed as a user unit, `endpoints.env`
+  `QWEN38_FLASH_URL=http://127.0.0.1:8120/v1`, `QWEN38_FLASH_MODEL=qwen3.8-flash-next`.
+  Model is running on `:8120` (Halo, 256K ctx, 1 slot). Radiance stays on `:8080`.
+- Registry: `ModelServerSpec(slug="Qwen3.8-Flash-Next-IQ4_XS-Halo", port=8120,
+  systemd_unit="qwen3.8-flash-next.service", memory_pool=POOL_HALO, ...)` added to
+  `api/aria/infrastructure/model_servers.py` and to `_HALO_BIG` (so it is mutually exclusive
+  with DS4 DwarfStar and the other Halo residents). Also installed into Corsair's actuator
+  runtime copy (`~/.local/share/aria-model-actuator/api/.../model_servers.py`), so
+  `aria-model-actuator {status,start,stop} Qwen3.8-Flash-Next-IQ4_XS-Halo` works now.
+- ⚠️ Registry tests could NOT be run from `ben`'s environment on this Mac (no python with
+  pytest + the aria deps). The module parses and imports; `test_registry_has_no_duplicate_slugs`
+  and `test_exclusivity_is_symmetric` were checked by hand via the actuator venv on Corsair.
+  Run `api/tests/test_model_servers.py` from the devboxsvc environment before deploying.
+
+## To do as devboxsvc
+
+1. **Deploy the registry change to the running ARIA** — `/Users/devboxsvc/Services/apps/bin/run-aria-api`
+   runs its own copy of ProjectAria; sync this commit into it and restart
+   `com.ben.devbox.aria-api` (launchd). Verify:
+   `GET /api/v1/infrastructure/model-servers` lists `Qwen3.8-Flash-Next-IQ4_XS-Halo` as running.
+2. **Add `:8120` to the Corsair model forwards** (`run-corsair-model-forwards`,
+   `com.ben.devbox.corsair-forwards`) alongside 8080/8112, and restart it. Until then nothing on
+   the Mac can reach the model.
+3. **Hermes default model → Flash-Next.** In devboxsvc's `~/.hermes/config.yaml`
+   (`com.ben.devbox.hermes-gateway`): add a provider, e.g.
+
+   ```yaml
+   qwen38-flash:
+     base_url: http://127.0.0.1:8120/v1     # via the forward from step 2
+     api_key: EMPTY
+     models:
+       - name: qwen3.8-flash-next
+         context_window: 262144
+   ```
+
+   and set the default model to `custom:qwen38-flash` / `qwen3.8-flash-next`. Keep the existing
+   `qwen38-r9700` provider (Radiance) as the vision-capable fallback. Restart the gateway.
+   Notes for the provider: thinking is on by default; pass
+   `chat_template_kwargs: {enable_thinking: false}` for non-thinking calls; recommended
+   non-thinking sampling `temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5`;
+   thinking `temperature 1.0, top_p 0.95, top_k 20`. No vision (no mmproj published yet).
+4. ARIA's `steward_model` / `LLAMACPP_URL` target was deliberately left on Radiance.
+
+## State to reconcile
+
+- DS4 `DS4-0731-Q8Protected-Halo-DwarfStar` was stopped on Corsair at 09:44 with
+  `systemctl --user stop` (not via ARIA) and is still stopped — it cannot coexist with
+  Flash-Next on the Halo. Radiance was also stopped/restarted locally for the dual-GPU test and
+  is back up. If ARIA's view of either is stale, a `status` through the actuator refreshes it.
+
+## Hermes provider cleanup (added 2026-08-26 evening)
+
+`docs/ops/hermes-providers-cleanup-20260826.py` does step 3 above and prunes the provider list to
+what ARIA can actually start today. As `devboxsvc`:
+
+```
+python3 docs/ops/hermes-providers-cleanup-20260826.py            # dry run, prints the diff
+python3 docs/ops/hermes-providers-cleanup-20260826.py --apply    # backs up, rewrites model:/providers: only
+launchctl kickstart -k system/com.ben.devbox.hermes-gateway
+```
+
+Result: default `custom:qwen38-flash` / `qwen3.8-flash-next`; providers `qwen38-flash`,
+`qwen38-r9700`, `ds4-halo` (model list fixed to `deepseek-v4-flash`), `gemma-aux`, `aria`
+(pruned from 15 entries to the 4 registered slugs + `aria-resident`). Unknown provider keys are
+kept. Every other section is passed through byte-for-byte and re-verified after the splice.
+It was dry-run and apply-tested against the pre-migration reference copy of the config on Corsair
+(`~/.hermes/config.yaml`, 2026-08-18); the live devboxsvc copy may differ slightly, so read the
+dry-run diff first.
+
+⚠️ Every `auxiliary:` task and `fallback_model` point at Gemma on `:8104`, which is currently
+**stopped** on Corsair (gemma-4-e4b-Q4, host-RAM pool, 8 GB — it fits beside Flash-Next +
+Radiance). Start it through ARIA or those auxiliary calls keep failing.

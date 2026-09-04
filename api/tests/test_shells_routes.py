@@ -36,6 +36,15 @@ class FakeShellService:
     async def get_shell(self, name):
         return self.shells.get(name)
 
+    async def resolve_shell_name(self, identifier):
+        if identifier in self.shells:
+            return identifier
+        matches = [s.name for s in self.shells.values() if s.short_name == identifier]
+        if len(matches) > 1:
+            from aria.shells.service import ShellNameAmbiguousError
+            raise ShellNameAmbiguousError(identifier, matches)
+        return matches[0] if matches else None
+
     async def list_events(self, name, **kwargs):
         return list(self.events_by_shell.get(name, []))
 
@@ -59,9 +68,12 @@ class FakeShellService:
             self.shells[name].tags = list(tags)
 
     async def create_shell(
-        self, name, *, workdir="", launch_claude=True, launch_command=None, cols=None, rows=None
+        self, name, *, workdir="", launch_claude=True, launch_command=None,
+        profile=None, host=None, cols=None, rows=None
     ):
         self.last_launch_command = launch_command
+        self.last_profile = profile
+        self.last_host = host
         full_name = name if name.startswith("claude-") else f"claude-{name}"
         existing = self.shells.get(full_name)
         if existing is not None:
@@ -93,6 +105,13 @@ class FakeShellService:
         self.purged.append(name)
         self.shells.pop(name, None)
         return {"shells": 1, "events": 0, "snapshots": 0}
+
+    async def request_remove(self, name, *, purge=False):
+        if purge:
+            await self.purge_shell(name)
+        else:
+            await self.kill_shell(name)
+        return {"status": "completed", "name": name, "purge": purge}
 
 
 def _make_shell(name="claude-proj", status="active") -> Shell:

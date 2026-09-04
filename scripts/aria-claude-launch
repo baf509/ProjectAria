@@ -15,7 +15,16 @@
 # explicit `launch_command`, which takes precedence over this.
 set -uo pipefail
 
-CLAUDE_ARGS=(--dangerously-skip-permissions)
+# tmux updates a new session from the creating client's environment. ARIA's
+# launchd service and SSH clients can therefore replace tmux's otherwise-good
+# global PATH with a system-only PATH. Keep the launch shim self-contained so
+# the native Claude binary is available regardless of who created the session.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+
+# Auto mode permits normal coding operations within Claude Code's native
+# sandbox. Managed settings separately forbid falling back to an unsandboxed
+# command or selecting bypassPermissions.
+CLAUDE_ARGS=(--permission-mode auto)
 
 # Name the tmux window after the tool so the status bar reads `0:claude`
 # rather than `0:bash` (this script is the pane's foreground process group
@@ -29,16 +38,16 @@ history_dir="$HOME/.claude/projects/$(printf '%s' "$PWD" | sed 's/[^A-Za-z0-9]/-
 
 if compgen -G "$history_dir/*.jsonl" >/dev/null 2>&1; then
     started=$SECONDS
-    claude "${CLAUDE_ARGS[@]}" --continue
+    claude "${CLAUDE_ARGS[@]}" --continue "$@"
     rc=$?
     # A non-zero exit within a few seconds means --continue could not start
     # (corrupt or unreadable history) rather than a thread you used and quit,
     # so fall back to a fresh one instead of leaving a dead pane behind.
     if [ "$rc" -ne 0 ] && [ $((SECONDS - started)) -lt 5 ]; then
         echo "aria: --continue failed (exit $rc) — starting a fresh thread" >&2
-        exec claude "${CLAUDE_ARGS[@]}"
+        exec claude "${CLAUDE_ARGS[@]}" "$@"
     fi
     exit "$rc"
 fi
 
-exec claude "${CLAUDE_ARGS[@]}"
+exec claude "${CLAUDE_ARGS[@]}" "$@"

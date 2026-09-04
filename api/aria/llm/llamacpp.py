@@ -51,6 +51,12 @@ class LlamaCppAdapter(OpenAIAdapter):
         self.client = AsyncOpenAI(
             base_url=base_url,
             api_key=self.api_key,
+            # Every adapter created here belongs to ARIA's own orchestration,
+            # stewardship, review, or maintenance loops. Pi and Hermes use
+            # their own clients and caller labels. Mark these calls as
+            # background so the gateway can keep the human front door
+            # responsive when work stacks up on a one-slot deployment.
+            default_headers={"X-Aria-Caller": "aria-background"},
             timeout=float(
                 timeout_seconds
                 if timeout_seconds is not None

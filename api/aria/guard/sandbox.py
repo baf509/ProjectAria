@@ -61,6 +61,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from typing import Any, Iterable, Optional
@@ -443,8 +444,36 @@ def resource_prefix(session_id: str) -> list[str]:
     ]
 
 
+def _darwin_mem_available_gib() -> Optional[float]:
+    """Estimate available memory from macOS's native pressure report."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/memory_pressure", "-Q"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        total_bytes: Optional[int] = None
+        free_percent: Optional[float] = None
+        for raw in result.stdout.splitlines():
+            line = raw.strip()
+            if line.startswith("The system has "):
+                total_bytes = int(line.split()[3])
+            elif line.startswith("System-wide memory free percentage:"):
+                free_percent = float(line.rsplit(" ", 1)[1].rstrip("%"))
+        if result.returncode == 0 and total_bytes is not None and free_percent is not None:
+            return total_bytes * (free_percent / 100.0) / (1024 ** 3)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        logger.warning("guard: could not read macOS memory pressure", exc_info=True)
+    return None
+
+
 def mem_available_gib() -> Optional[float]:
-    """MemAvailable from /proc/meminfo, or None if it cannot be read."""
+    """Host-native available memory estimate, or None if unreadable."""
+    if sys.platform == "darwin":
+        return _darwin_mem_available_gib()
+
     try:
         with open("/proc/meminfo", "r", encoding="utf-8") as handle:
             for line in handle:

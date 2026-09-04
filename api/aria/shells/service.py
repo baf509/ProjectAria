@@ -11,7 +11,6 @@ import asyncio
 import hashlib
 import logging
 import os
-import socket
 from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator, Iterable, Optional
 
@@ -19,6 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
 from aria.config import settings
+from aria.nodes import local_node_id
 from aria.shells.ansi import matches_prompt, parse_prompt_patterns, strip_ansi
 from aria.shells.claude_trust import ensure_trusted
 from aria.shells.codex_trust import ensure_codex_trusted
@@ -38,6 +38,19 @@ class ShellStoppedError(Exception):
 
 class ShellAlreadyExistsError(Exception):
     """Raised when creating a shell whose tmux session already exists."""
+
+
+class ShellNameAmbiguousError(Exception):
+    """Raised when a short shell alias identifies more than one shell."""
+
+    def __init__(self, alias: str, matches: list[str]):
+        self.alias = alias
+        self.matches = matches
+        super().__init__(f"ambiguous shell alias {alias!r}: {', '.join(matches)}")
+
+
+class RemoteNodeUnavailableError(Exception):
+    """Raised when an explicitly selected shell host cannot launch work."""
 
 
 def _strip_prefix(name: str, prefix: str) -> str:
@@ -85,14 +98,26 @@ class ShellService:
         return (_utcnow() - hb).total_seconds() < settings.node_heartbeat_timeout_seconds
 
     async def _remote_command(
-        self, node_id: str, kind: str, args: dict, *, timeout: Optional[int] = None
+        self,
+        node_id: str,
+        kind: str,
+        args: dict,
+        *,
+        timeout: Optional[int] = None,
+        idempotency_key: Optional[str] = None,
     ) -> Optional[dict]:
         """Enqueue a command to a remote node and await its result. Returns the
         result dict, or None if the node is offline / the command times out."""
         from aria.nodes import commands
         if not await self._node_online(node_id):
             return None
-        cmd_id = await commands.enqueue_command(self.db, node_id, kind, args)
+        cmd_id = await commands.enqueue_command(
+            self.db,
+            node_id,
+            kind,
+            args,
+            idempotency_key=idempotency_key,
+        )
         doc = await commands.await_result(self.db, cmd_id, timeout_seconds=timeout)
         if not doc or doc.get("status") != "done":
             return None
@@ -188,11 +213,32 @@ class ShellService:
         return out
 
     async def get_shell(self, name: str) -> Optional[Shell]:
-        doc = await self.shells.find_one({"name": name})
+        canonical = await self.resolve_shell_name(name)
+        if canonical is None:
+            return None
+        doc = await self.shells.find_one({"name": canonical})
         if not doc:
             return None
         doc.pop("_id", None)
         return Shell(**doc)
+
+    async def resolve_shell_name(self, identifier: str) -> Optional[str]:
+        """Resolve the canonical name first, then a unique short-name alias.
+
+        Canonical identity always wins, even if another document has a
+        colliding ``short_name``. Ambiguous aliases are explicit conflicts,
+        never an arbitrary first match.
+        """
+        exact = await self.shells.find_one({"name": identifier})
+        if exact:
+            return exact.get("name", identifier)
+        matches: list[str] = []
+        async for doc in self.shells.find({"short_name": identifier}).limit(2):
+            if doc.get("name"):
+                matches.append(doc["name"])
+        if len(matches) > 1:
+            raise ShellNameAmbiguousError(identifier, matches)
+        return matches[0] if matches else None
 
     async def list_events(
         self,
@@ -264,25 +310,33 @@ class ShellService:
         now = _utcnow()
         prefix = settings.shells_tmux_session_prefix
         short = _strip_prefix(name, prefix)
-        host = host or socket.gethostname()
+        explicit_host = host is not None
+        host = host or local_node_id()
 
         update = {
             "$setOnInsert": {
                 "name": name,
                 "short_name": short,
-                "project_dir": project_dir,
-                "host": host,
                 "created_at": now,
                 "line_count": 0,
                 "tags": [],
             },
             "$set": {
                 "status": "active",
-                "last_activity_at": now,
+                "last_seen_at": now,
             },
         }
+        update["$setOnInsert"]["last_activity_at"] = now
         if pane_id:
             update.setdefault("$set", {})["metadata.pane_id"] = pane_id
+        if explicit_host:
+            update["$set"]["host"] = host
+        else:
+            update["$setOnInsert"]["host"] = host
+        if project_dir:
+            update["$set"]["project_dir"] = project_dir
+        else:
+            update["$setOnInsert"]["project_dir"] = ""
 
         await self.shells.update_one({"name": name}, update, upsert=True)
         shell = await self.get_shell(name)
@@ -290,9 +344,13 @@ class ShellService:
         return shell
 
     async def mark_stopped(self, name: str) -> None:
+        existing = await self.get_shell(name)
+        if existing and existing.status == "stopped":
+            return
+        now = _utcnow()
         await self.shells.update_one(
             {"name": name},
-            {"$set": {"status": "stopped", "last_activity_at": _utcnow()}},
+            {"$set": {"status": "stopped", "last_seen_at": now}},
         )
         await self.insert_events_batch(
             name,
@@ -324,6 +382,8 @@ class ShellService:
         workdir: str = "",
         launch_claude: bool = True,
         launch_command: Optional[str] = None,
+        profile: Optional[str] = None,
+        host: Optional[str] = None,
         cols: Optional[int] = None,
         rows: Optional[int] = None,
     ) -> Shell:
@@ -345,6 +405,35 @@ class ShellService:
         """
         prefix = settings.shells_tmux_session_prefix
         full_name = name if name.startswith(prefix) else f"{prefix}{name}"
+
+        if profile:
+            launch_command, launch_claude = self._launch_for_profile(profile)
+
+        if host and host != local_node_id():
+            existing = await self.get_shell(full_name)
+            if existing and existing.status in ("active", "idle"):
+                raise ShellAlreadyExistsError(full_name)
+            if not await self._node_online(host):
+                raise RemoteNodeUnavailableError(host)
+            command = launch_command or (
+                settings.shells_claude_launch_command if launch_claude else None
+            )
+            result = await self._remote_command(
+                host,
+                "start_session",
+                {
+                    "shell_name": full_name,
+                    "launch": command,
+                    "workdir": workdir or None,
+                    "cols": cols or settings.shells_default_cols,
+                    "rows": rows or settings.shells_default_rows,
+                },
+                timeout=settings.node_command_timeout_seconds,
+                idempotency_key=f"shell-create:{host}:{full_name}",
+            )
+            if result is None:
+                raise RemoteNodeUnavailableError(host)
+            return await self.register_shell(full_name, project_dir=workdir or "", host=host)
 
         if await self.tmux.has_session(full_name):
             existing = await self.get_shell(full_name)
@@ -380,6 +469,19 @@ class ShellService:
         )
         return await self.register_shell(full_name, project_dir=workdir or "")
 
+    @staticmethod
+    def _launch_for_profile(profile: str) -> tuple[Optional[str], bool]:
+        """Resolve the small, typed shell launch vocabulary in one place."""
+        if profile == "shell":
+            return None, False
+        if profile == "claude":
+            return settings.shells_claude_launch_command, False
+        if profile == "codex":
+            return "$HOME/.local/bin/aria-codex-launch", False
+        if profile == "pi":
+            return "$HOME/.local/bin/aria-pi-launch", False
+        raise ValueError(f"Unknown shell profile: {profile}")
+
     async def resize_shell(self, name: str, cols: int, rows: int) -> None:
         """Resize a shell's tmux window. Fires SIGWINCH so the running TUI repaints."""
         await self.tmux.resize_window(name, cols, rows)
@@ -393,11 +495,63 @@ class ShellService:
         """
         shell = await self.get_shell(name)
         if shell and self._shell_is_remote(shell):
-            await self._remote_command(shell.host, "stop", {"name": name}, timeout=15)
-            await self.mark_stopped(name)
+            await self.request_remove(name)
             return
         await self.tmux.kill_session(name)
         await self.mark_stopped(name)
+
+    async def request_remove(self, name: str, *, purge: bool = False) -> dict:
+        """Stop (and optionally purge) a shell with host-aware durability.
+
+        Local operations complete immediately. Remote operations are queued
+        with an idempotency key and remain pending while the node is offline;
+        NodeService finalizes the registry/history when the node acknowledges.
+        """
+        shell = await self.get_shell(name)
+        if shell is None:
+            raise ShellNotFoundError(name)
+        if not self._shell_is_remote(shell):
+            if purge:
+                await self.purge_shell(name)
+            else:
+                await self.kill_shell(name)
+            return {"status": "completed", "name": name, "purge": purge}
+
+        from aria.nodes import commands
+
+        command_id = await commands.enqueue_command(
+            self.db,
+            shell.host,
+            "stop",
+            {"name": name, "purge": purge},
+            ttl_seconds=max(86400, settings.node_command_ttl_seconds),
+            idempotency_key=f"shell-remove:{shell.host}:{name}:{int(purge)}",
+        )
+        result = None
+        if await self._node_online(shell.host):
+            result = await commands.await_result(
+                self.db, command_id, timeout_seconds=settings.node_command_timeout_seconds
+            )
+        if result and result.get("status") == "error":
+            raise TmuxError(result.get("error") or f"remote stop failed: {name}")
+        if result and result.get("status") == "done":
+            if purge:
+                await self.delete_shell_history(name)
+            else:
+                await self.mark_stopped(name)
+            return {
+                "status": "completed",
+                "name": name,
+                "purge": purge,
+                "command_id": command_id,
+            }
+        return {
+            "status": "pending",
+            "name": name,
+            "purge": purge,
+            "host": shell.host,
+            "command_id": command_id,
+        }
 
     async def purge_shell(self, name: str) -> dict:
         """Kill the tmux session and delete the shell row, events, and snapshots.
@@ -409,6 +563,10 @@ class ShellService:
             await self.tmux.kill_session(name)
         except TmuxError as exc:  # pragma: no cover - defensive
             logger.debug("purge: kill-session failed for %s: %s", name, exc)
+        return await self.delete_shell_history(name)
+
+    async def delete_shell_history(self, name: str) -> dict:
+        """Delete registry history after the owning host has stopped a shell."""
         s = await self.shells.delete_one({"name": name})
         e = await self.events.delete_many({"shell_name": name})
         n = await self.snapshots.delete_many({"shell_name": name})
@@ -437,6 +595,22 @@ class ShellService:
         if not events:
             return 0
 
+        # Remote nodes spool failed deliveries and replay them after reconnect.
+        # Their event ids make that at-least-once transport exactly-once at the
+        # registry boundary. Local pipe-pane events intentionally omit ids.
+        event_ids = [str(e["event_id"]) for e in events if e.get("event_id")]
+        if event_ids:
+            existing: set[str] = set()
+            cursor = self.events.find(
+                {"shell_name": name, "event_id": {"$in": event_ids}}
+            )
+            async for row in cursor:
+                if row.get("event_id"):
+                    existing.add(str(row["event_id"]))
+            events = [e for e in events if not e.get("event_id") or str(e["event_id"]) not in existing]
+            if not events:
+                return 0
+
         now = _utcnow()
         count = len(events)
 
@@ -449,14 +623,14 @@ class ShellService:
             "$setOnInsert": {
                 "short_name": _strip_prefix(name, settings.shells_tmux_session_prefix),
                 "project_dir": "",
-                "host": host or socket.gethostname(),
+                "host": host or local_node_id(),
                 "created_at": now,
                 "status": "active",
                 "tags": [],
             },
         }
         if update_shell_timestamps:
-            update["$set"] = {"last_activity_at": now}
+            update["$set"] = {"last_activity_at": now, "last_seen_at": now}
         doc = await self.shells.find_one_and_update(
             {"name": name},
             update,
@@ -471,8 +645,7 @@ class ShellService:
         has_output = False
         has_input = False
         for i, e in enumerate(events):
-            docs.append(
-                {
+            event_doc = {
                     "shell_name": name,
                     "ts": now,
                     "line_number": start_line + i,
@@ -482,7 +655,9 @@ class ShellService:
                     "source": e.get("source", "pipe-pane"),
                     "byte_offset": e.get("byte_offset"),
                 }
-            )
+            if e.get("event_id"):
+                event_doc["event_id"] = str(e["event_id"])
+            docs.append(event_doc)
             if docs[-1]["kind"] == "output":
                 has_output = True
             if docs[-1]["kind"] == "input":
@@ -505,14 +680,33 @@ class ShellService:
         self, name: str, content: str, content_hash: str
     ) -> None:
         shell = await self.get_shell(name)
+        last = await self.get_last_snapshot(name)
+        if last and last.content_hash == content_hash:
+            now = _utcnow()
+            await self.shells.update_one(
+                {"name": name},
+                {"$set": {"last_seen_at": now, "last_screen_at": now}},
+            )
+            return
+        now = _utcnow()
         doc = {
             "shell_name": name,
-            "ts": _utcnow(),
+            "ts": now,
             "content": content,
             "content_hash": content_hash,
             "line_count_at_snapshot": shell.line_count if shell else 0,
         }
         await self.snapshots.insert_one(doc)
+        await self.shells.update_one(
+            {"name": name},
+            {
+                "$set": {
+                    "last_seen_at": now,
+                    "last_screen_at": now,
+                    "screen_revision": content_hash,
+                }
+            },
+        )
 
     async def capture_and_snapshot(self, name: str) -> Optional[ShellSnapshot]:
         """Run tmux capture-pane for a session and upsert a snapshot if it
@@ -584,6 +778,15 @@ class ShellService:
         now = _utcnow()
 
         shells = await self.list_shells(status=list(statuses))
+        remote_hosts = {s.host for s in shells if self._shell_is_remote(s)}
+        online_hosts: set[str] = set()
+        if remote_hosts:
+            async for node in self.db.nodes.find({"_id": {"$in": list(remote_hosts)}}):
+                hb = node.get("last_heartbeat_at")
+                if hb and hb.tzinfo is None:
+                    hb = hb.replace(tzinfo=timezone.utc)
+                if hb and (now - hb).total_seconds() < settings.node_heartbeat_timeout_seconds:
+                    online_hosts.add(node["_id"])
         session_status_by_shell: dict[str, str] = {}
         if shells:
             names = [s.name for s in shells]
@@ -596,6 +799,10 @@ class ShellService:
 
         out: list[dict] = []
         for shell in shells:
+            if self._shell_is_remote(shell):
+                connectivity_state = "online" if shell.host in online_hosts else "unreachable"
+            else:
+                connectivity_state = "local"
             la = shell.last_activity_at
             if la.tzinfo is None:
                 la = la.replace(tzinfo=timezone.utc)
@@ -628,12 +835,19 @@ class ShellService:
 
             if idle_seconds < idle_threshold:
                 activity_state = "working"
+                state_evidence = f"meaningful activity {idle_seconds}s ago"
             elif session_status_by_shell.get(shell.name) in ("completed", "failed", "stopped"):
                 activity_state = "done"
+                state_evidence = f"coding session is {session_status_by_shell[shell.name]}"
             elif awaiting:
                 activity_state = "blocked"
+                state_evidence = "idle threshold crossed and last output matches a prompt"
             else:
                 activity_state = "idle"
+                state_evidence = f"no meaningful activity for {idle_seconds}s"
+            state_confidence = "low" if connectivity_state == "unreachable" else (
+                "high" if activity_state in {"blocked", "done"} else "medium"
+            )
 
             out.append(
                 {
@@ -641,10 +855,14 @@ class ShellService:
                     "short_name": shell.short_name,
                     "status": shell.status,
                     "activity_state": activity_state,
+                    "state_evidence": state_evidence,
+                    "state_confidence": state_confidence,
                     "host": shell.host,
+                    "connectivity_state": connectivity_state,
                     "project_dir": shell.project_dir,
                     "line_count": shell.line_count,
                     "last_activity_at": la,
+                    "last_seen_at": shell.last_seen_at,
                     "idle_seconds": idle_seconds,
                     "awaiting_input": awaiting,
                     "prompt_line": prompt_line,

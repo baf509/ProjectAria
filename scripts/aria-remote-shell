@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Corsair-side target for direct and Mac-forwarded ARIA coding shells.
+if (($# < 2)); then
+    echo "usage: aria-remote-shell WORKDIR claude|codex|pi [args...]" >&2
+    exit 2
+fi
+
+workdir=$1
+tool=$2
+shift 2
+
+# Placement flags belong to the ARIA wrapper, not the underlying coding tool.
+# Placement flags are consumed here, but never bypass the managed tmux shell.
+# Every supported interactive coding session remains visible to ARIA.
+forwarded_args=()
+for arg in "$@"; do
+    case "$arg" in
+        --local|--no-aria|--corsair|--remote) ;;
+        *) forwarded_args+=("$arg") ;;
+    esac
+done
+
+# Non-interactive SSH does not load Ben's shell profile. The launchers call the
+# agent binaries by basename, so supply the same user-local PATH explicitly.
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+case "$workdir" in
+    /home/ben/Development|/home/ben/Development/*) ;;
+    *) echo "refusing workdir outside /home/ben/Development: $workdir" >&2; exit 2 ;;
+esac
+if [[ ! -d "$workdir" ]]; then
+    echo "Corsair working directory does not exist: $workdir" >&2
+    exit 2
+fi
+
+case "$tool" in
+    claude) launcher=$HOME/.local/bin/aria-claude-launch ;;
+    codex)  launcher=$HOME/.local/bin/aria-codex-launch ;;
+    pi)     launcher=$HOME/.local/bin/aria-pi-launch ;;
+    *) echo "unsupported coding agent: $tool" >&2; exit 2 ;;
+esac
+
+base=$(basename "$workdir" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
+path_id=$(printf '%s' "$workdir" | cksum | awk '{print $1}' | tail -c 7)
+session="claude-${tool}-${base}-${path_id}"
+
+# Keep the machine-readable claude-* session prefix for ARIA capture while the
+# human-facing status line says what this actually is.
+tmux set-option -g status-left ' Aria Shells ' 2>/dev/null || true
+tmux set-option -g status-left-length 24 2>/dev/null || true
+tmux set-option -g status-right ' #W ' 2>/dev/null || true
+
+if tmux has-session -t "=$session" 2>/dev/null; then
+    dead=$(tmux list-panes -t "=$session" -F '#{pane_dead}' | head -1)
+    if [[ "$dead" == 0 ]]; then
+        attach_existing=1
+    else
+        tmux kill-session -t "=$session" 2>/dev/null || true
+    fi
+fi
+
+if [[ "${attach_existing:-0}" != 1 ]]; then
+    tmux new-session -d -s "$session" -c "$workdir" -x 200 -y 50 \
+        "$launcher" "${forwarded_args[@]}"
+fi
+
+# Do not exec here. Some full-screen agents query terminal capabilities as they
+# exit; keeping the remote pty alive briefly lets us discard late replies rather
+# than handing fragments such as `64;1;2...c` to the caller's prompt.
+rc=0
+tmux attach-session -t "=$session" || rc=$?
+if [[ -t 0 ]]; then
+    stty -echo 2>/dev/null || true
+    sleep 0.15
+    python3 -c 'import sys, termios; termios.tcflush(sys.stdin, termios.TCIFLUSH)' 2>/dev/null || true
+    stty sane 2>/dev/null || true
+fi
+exit "$rc"

@@ -1644,7 +1644,7 @@ def shells_new_cmd(name, workdir, no_claude):
     if workdir:
         tmux_args += ["-c", workdir]
     if not no_claude:
-        tmux_args.append("claude --dangerously-skip-permissions")
+        tmux_args.append("claude --permission-mode auto")
     console.print(f"[cyan]starting tmux session:[/cyan] {session}")
     os.execvp("tmux", tmux_args)
 
@@ -1665,11 +1665,15 @@ def shells_attach_cmd(name):
 @shells.command("list")
 @click.option("--status", help="Filter by status (active,idle,stopped)")
 def shells_list_cmd(status):
-    """List watched shells."""
+    """List the host-aware watched-shell fleet."""
     try:
         client = AriaClient()
         params = {"status": status} if status else {}
-        resp = client.request("GET", "/shells", params=params)
+        # The overview is the fleet truth: it combines registry identity with
+        # node reachability and semantic activity. Explicit status filters keep
+        # the archival /shells path so stopped records remain queryable.
+        path = "/shells" if status else "/shells/overview"
+        resp = client.request("GET", path, params=params)
         data = resp.json()
         shells = data.get("shells", [])
         if not shells:
@@ -1677,14 +1681,25 @@ def shells_list_cmd(status):
             return
         table = Table(title="Watched Shells")
         table.add_column("Name", style="cyan")
-        table.add_column("Status")
+        table.add_column("State")
+        table.add_column("Host")
         table.add_column("Project")
         table.add_column("Lines", justify="right")
         table.add_column("Last Activity")
         for s in shells:
+            lifecycle = s.get("status", "")
+            activity = s.get("activity_state")
+            connectivity = s.get("connectivity_state")
+            if connectivity == "unreachable":
+                state = "unreachable"
+            elif activity:
+                state = f"{lifecycle}/{activity}"
+            else:
+                state = lifecycle
             table.add_row(
-                s.get("short_name") or s.get("name", ""),
-                s.get("status", ""),
+                s.get("name", ""),
+                state,
+                s.get("host", "") or "local",
                 s.get("project_dir", "") or "-",
                 str(s.get("line_count", 0)),
                 s.get("last_activity_at", "")[:19],
@@ -1809,7 +1824,14 @@ def shells_rm_cmd(name, purge):
     session = name if name.startswith("claude-") else f"claude-{name}"
     try:
         client = AriaClient()
-        client.request("DELETE", f"/shells/{session}", params={"purge": str(purge).lower()})
+        response = client.request("DELETE", f"/shells/{session}", params={"purge": str(purge).lower()})
+        result = response.json() if getattr(response, "content", b"") else {}
+        if result.get("status") == "pending":
+            console.print(
+                f"[yellow]queued[/yellow] {session} on {result.get('host')} "
+                f"(command {result.get('command_id')})"
+            )
+            return
         if purge:
             console.print(f"[green]✓[/green] purged {session} (row, events, snapshots)")
         else:

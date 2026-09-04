@@ -187,6 +187,12 @@ class RelayWatchdog:
                 needs_human=False,
                 dedup_key="relay|recovered",
             )
+            # The dead-state inbox is a generated status surface. Leaving its
+            # warning in place after the heartbeat recovers makes a healthy
+            # relay look broken indefinitely, so refresh it in the same
+            # recovery transaction with the still-pending human alerts.
+            pending = await self._pending_alerts()
+            await self.write_inbox(pending)
         self._last = {
             "checked_at": now,
             "reason": "heartbeat",
@@ -319,6 +325,34 @@ class RelayWatchdog:
         except Exception as exc:
             logger.warning("relay watchdog: pending-alert read failed: %s", exc)
             return []
+
+    async def refresh_inbox(self) -> Optional[str]:
+        """Refresh the generated inbox after the alert queue changes.
+
+        Alert decisions and acknowledgements happen through API routes, not the
+        watchdog timer.  Without an explicit refresh here, Mongo is correct but
+        the vault can continue advertising already-closed alerts indefinitely.
+        Preserve the relay-down warning when the persisted liveness state still
+        describes a real outage.
+        """
+        pending = await self._pending_alerts()
+        dead_detail = ""
+        try:
+            state = await self.db.app_state.find_one({"_id": RELAY_STATE_ID}) or {}
+            last_beat = _aware(state.get("last_heartbeat_at"))
+            if _aware(state.get("dead_since")) is not None and last_beat is not None:
+                age = self._now() - last_beat
+                if age > self.timeout:
+                    dead_detail = (
+                        f"No Signal relay heartbeat for {age.total_seconds() / 60:.0f}m "
+                        f"(last {last_beat.isoformat()}); "
+                        f"{len(pending)} alert(s) awaiting a human"
+                    )
+        except Exception as exc:
+            # The alert mutation has already succeeded.  A fallback-status
+            # refresh must never turn that success into an API failure.
+            logger.warning("relay watchdog: liveness read during inbox refresh failed: %s", exc)
+        return await self.write_inbox(pending, dead_detail=dead_detail)
 
     def inbox_path(self) -> Path:
         return Path(settings.obsidian_vault_path).joinpath(*INBOX_RELATIVE_PATH)

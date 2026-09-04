@@ -34,7 +34,14 @@ class NodeInfo(BaseModel):
     last_heartbeat_at: Optional[datetime] = None
 
 
+class NodeHeartbeatRequest(BaseModel):
+    # None means liveness-only. An explicit list is a complete authoritative
+    # inventory captured by the node and is used for reconnect reconciliation.
+    live_shells: Optional[list[str]] = None
+
+
 class ShellEventIn(BaseModel):
+    event_id: Optional[str] = None
     kind: str = "output"
     text_raw: str = ""
     text_clean: Optional[str] = None
@@ -44,6 +51,7 @@ class ShellEventIn(BaseModel):
 class EventBatchIn(BaseModel):
     """A batch of captured lines for one shell, pushed by a node."""
     shell_name: str
+    batch_id: Optional[str] = None
     project_dir: str = ""
     events: list[ShellEventIn] = Field(default_factory=list)
     stopped: bool = False  # node signals the shell's tmux session ended

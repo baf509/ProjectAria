@@ -103,6 +103,11 @@ aria-documents/
 # .env backups — these hold live API keys, same as .env itself
 .env.bak-*
 
+# Operator-local safety copies created during live service reconciliation.
+# These remain on disk for rollback but are never source artifacts.
+/.local-backups/
+*.bak-*
+
 # scratch screenshots dropped in from phone/desktop
 # ⚠️ ANCHORED. This was a bare `inbox/`, which git matches at ANY depth — so it
 # silently ignored ui/src/app/inbox/ and ui/src/features/inbox/ as well, i.e. the

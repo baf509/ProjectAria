@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from aria.api.deps import get_db, get_notification_service, get_shell_service
 from aria.config import settings
 from aria.notifications.service import NotificationService
-from aria.shells.service import ShellService
+from aria.shells.service import ShellNameAmbiguousError, ShellService
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +198,22 @@ async def nudge_shell(
     The two "no" answers that are about the caller rather than the shell keep
     their status codes — 404 unknown shell, 409 stop engaged — so the existing
     contract is unchanged."""
+    try:
+        canonical_name = await shell_service.resolve_shell_name(name)
+    except ShellNameAmbiguousError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ambiguous_shell_name",
+                "identifier": exc.alias,
+                "matches": exc.matches,
+            },
+        ) from exc
+    if canonical_name is None:
+        raise HTTPException(status_code=404, detail=f"No shell '{name}'")
+
     result = await nudge_shell_once(
-        name,
+        canonical_name,
         db=db,
         shell_service=shell_service,
         notifier=notifier,

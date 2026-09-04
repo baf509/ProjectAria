@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Literal, Optional
@@ -93,6 +94,17 @@ class ServiceSpec:
     system_unit: Optional[str] = None  # system-wide systemd unit (e.g. smbd)
     container_name: Optional[str] = None  # `docker ps` name
 
+    # Native macOS control-plane addressing.  The compatibility fields above
+    # remain the Linux deployment description; when ARIA runs on Darwin these
+    # take precedence so health never asks systemd/docker about launchd jobs.
+    darwin_label: Optional[str] = None  # system LaunchDaemon label
+    darwin_process: Optional[str] = None  # exact process name (pgrep -x)
+    # Some Mac services are containers inside a Lima VM. A launchd label only
+    # reports the VM wrapper and cannot distinguish two containers in the same
+    # guest (mongod and mongot are exactly that case).
+    darwin_lima_instance: Optional[str] = None
+    darwin_lima_container: Optional[str] = None
+
     # Where it listens, when it listens anywhere. Used by the operator view and
     # by the disjointness test against the model-server registry.
     port: Optional[int] = None
@@ -140,11 +152,16 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongod",
+        darwin_label="com.ben.devbox.lima-mongot",
+        darwin_lima_instance="mongot",
+        darwin_lima_container="devbox-mongod",
         port=27017,
         compose_file="infrastructure/docker-compose.yml",
         service_name="mongod",
+        manageable=False,
         notes="Bound 127.0.0.1 only. Shared with AgentBenchPlatform — stopping "
-        "it breaks both projects.",
+        "it breaks both projects. The Lima VM is shared with mongot, but this "
+        "row probes the devbox-mongod container itself.",
     ),
     ServiceSpec(
         slug="shared-mongot",
@@ -152,6 +169,9 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongot",
+        darwin_label="com.ben.devbox.lima-mongot",
+        darwin_lima_instance="mongot",
+        darwin_lima_container="devbox-mongot",
         compose_file="infrastructure/docker-compose.yml",
         service_name="mongot",
         depends_on=("shared-mongod",),
@@ -160,8 +180,9 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         "`search` retrieval capability (memory/capabilities.py): with that "
         "switch off, recall degrades to a mongod-native scan and health stops "
         "probing this row, so a stopped container is not an incident. "
-        "SWITCHED OFF 2026-08-15 (container still running; shared with "
-        "AgentBenchPlatform). See docs/ops/RETRIEVAL_CAPABILITIES.md.",
+        "SWITCHED OFF 2026-09-03 and the devbox-mongot container is stopped. "
+        "The Lima VM stays up because devbox-mongod shares it. See "
+        "docs/ops/RETRIEVAL_CAPABILITIES.md.",
     ),
     ServiceSpec(
         slug="shared-embeddings",
@@ -169,6 +190,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="service",
         container_name="shared-embeddings",
+        darwin_label="com.ben.devbox.embeddings",
         port=8001,
         health_path="/health",
         compose_file="infrastructure/docker-compose.yml",
@@ -185,15 +207,16 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     # --- ARIA itself. ---
     ServiceSpec(
         slug="aria-api",
-        description="ARIA FastAPI backend (native systemd user service) on :8200.",
+        description="ARIA FastAPI backend on :8200 (launchd on the Mac control plane).",
         expected_state="always_up",
         kind="app",
         user_unit="aria-api.service",
+        darwin_label="com.ben.devbox.aria-api",
         port=8200,
         health_path="/health",
         manageable=False,
         notes="Not manageable from here — it would be restarting itself from "
-        "inside its own request handler. Use systemctl --user.",
+        "inside its own request handler. Use the host service manager.",
     ),
     ServiceSpec(
         slug="aria-tmux",
@@ -201,6 +224,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         user_unit="aria-tmux.service",
+        darwin_process="tmux",
         manageable=False,
         notes="LOAD-BEARING: if this dies and aria-api respawns the tmux "
         "server, the server lands in aria-api's cgroup and the next "
@@ -214,6 +238,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         container_name="aria-ui",
+        darwin_label="com.ben.devbox.aria-ui",
         port=3000,
         compose_file="ProjectAria/docker-compose.yml",
         service_name="ui",
@@ -224,6 +249,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="service",
         container_name="shared-tts",
+        darwin_label="com.ben.devbox.tts",
         port=8002,
         health_path="/health",
         compose_file="ProjectAria/docker-compose.yml",
@@ -253,6 +279,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="app",
         user_unit="hermes-gateway.service",
+        darwin_label="com.ben.devbox.hermes-gateway",
         depends_on=("aria-api",),
         notes="Hosts the aria MCP connection. Restart after editing mcp/server.py.",
     ),
@@ -276,6 +303,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="integration",
         user_unit="signal-cli.service",
+        darwin_label="com.ben.devbox.signal-cli",
         port=8090,
         notes="Alert triage and the Signal→Linear capture path both die quietly "
         "without this.",
@@ -283,10 +311,11 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     # --- Proxies to other machines. ---
     ServiceSpec(
         slug="ridge-llama-proxy",
-        description="corsair → Ridge LLM proxy on :8092 (WoL wake + OpenAI passthrough).",
+        description="Mac → Ridge LLM proxy on :8092 (WoL wake + OpenAI passthrough).",
         expected_state="always_up",
         kind="proxy",
         user_unit="ridge-llama-proxy.service",
+        darwin_label="com.ben.devbox.ridge-proxy",
         port=8092,
         notes="Bound on the TAILNET IP ONLY — localhost:8092 is "
         "connection-refused even though `ss` shows a listener. Repeatedly "
@@ -294,10 +323,11 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     ),
     ServiceSpec(
         slug="red-proxy",
-        description="corsair → RED inference proxy, game-facing OpenAI endpoint on :8094.",
+        description="Mac → RED inference proxy, game-facing OpenAI endpoint on :8094.",
         expected_state="on_demand",
         kind="proxy",
         user_unit="red-proxy.service",
+        darwin_label="com.ben.devbox.red-proxy",
         port=8094,
         needs_review=True,
         notes="Running as of 2026-08-07, but whether it is meant to be "
@@ -309,6 +339,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="on_demand",
         kind="proxy",
         user_unit="ridge-waker.service",
+        darwin_label="com.ben.devbox.wake-relay",
         needs_review=True,
     ),
     # --- Integrations and side services. ---
@@ -327,6 +358,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         expected_state="always_up",
         kind="integration",
         container_name="obsidian-livesync-bridge-bridge-1",
+        darwin_label="com.ben.devbox.obsidian-bridge",
         needs_review=False,
         notes="Carries Ben's approval/autonomy edits back to ARIA (D10), so a "
         "stop is an incident. ⚠️ Container state is NOT sufficient evidence "
@@ -456,7 +488,148 @@ async def _container_state(name: str) -> str:
     return "running" if status == "running" else status or "unknown"
 
 
+async def _launchd_state(label: str) -> str:
+    """Return a launchd system job's state in the registry vocabulary."""
+    rc, out, err = await _run("launchctl", "print", f"system/{label}")
+    if rc != 0:
+        lowered = (err or out).lower()
+        if "could not find service" in lowered or "not found" in lowered:
+            return "not_created"
+        return "unknown"
+
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line.startswith("state ="):
+            continue
+        state = line.split("=", 1)[1].strip()
+        if state == "running":
+            return "running"
+        if state in ("waiting", "exited"):
+            return "stopped"
+        return state or "unknown"
+    # A loaded launchd job without a state line is present but not executing.
+    return "stopped"
+
+
+async def _process_state(name: str) -> str:
+    rc, out, _ = await _run("pgrep", "-x", name)
+    if rc == 0 and out.strip():
+        return "running"
+    if rc == 1:
+        return "stopped"
+    return "unknown"
+
+
+async def _lima_container_state(instance: str, name: str) -> str:
+    """Return one container's state without conflating it with its Lima VM."""
+    limactl = "/opt/homebrew/bin/limactl"
+    rc, out, _ = await _run(limactl, "list", instance, "--format", "{{.Status}}")
+    if rc != 0:
+        return "unknown"
+    if out.strip().lower() != "running":
+        return "stopped"
+    rc, out, err = await _run(
+        limactl,
+        "shell",
+        instance,
+        "docker",
+        "inspect",
+        "--format",
+        "{{.State.Status}}",
+        name,
+    )
+    if rc != 0:
+        lowered = (err or out).lower()
+        if "no such object" in lowered or "no such container" in lowered:
+            return "not_created"
+        return "unknown"
+    status = out.strip()
+    return "running" if status == "running" else status or "unknown"
+
+
+async def _darwin_fleet_states(specs: tuple[ServiceSpec, ...]) -> dict[str, str]:
+    """Read launchd once and each Lima guest once for the full Mac roster."""
+    states = {
+        spec.slug: "not_applicable"
+        for spec in specs
+        if not (spec.darwin_label or spec.darwin_process)
+    }
+
+    launchd_specs = [
+        spec for spec in specs
+        if spec.darwin_label and not spec.darwin_lima_container
+    ]
+    labels = {spec.darwin_label for spec in launchd_specs}
+    rc, out, _ = await _run("launchctl", "print", "system")
+    if rc == 0:
+        by_label: dict[str, str] = {}
+        for line in out.splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and fields[-1] in labels and fields[0].isdigit():
+                by_label[fields[-1]] = "running" if int(fields[0]) > 0 else "stopped"
+        for spec in launchd_specs:
+            states[spec.slug] = by_label.get(spec.darwin_label or "", "not_created")
+    else:
+        fallback = await asyncio.gather(
+            *(_launchd_state(spec.darwin_label or "") for spec in launchd_specs)
+        )
+        states.update({spec.slug: state for spec, state in zip(launchd_specs, fallback)})
+
+    process_specs = [spec for spec in specs if spec.darwin_process]
+    process_states = await asyncio.gather(
+        *(_process_state(spec.darwin_process or "") for spec in process_specs)
+    )
+    states.update({spec.slug: state for spec, state in zip(process_specs, process_states)})
+
+    lima_groups: dict[str, list[ServiceSpec]] = {}
+    for spec in specs:
+        if spec.darwin_lima_instance and spec.darwin_lima_container:
+            lima_groups.setdefault(spec.darwin_lima_instance, []).append(spec)
+    for instance, group in lima_groups.items():
+        limactl = "/opt/homebrew/bin/limactl"
+        rc, out, _ = await _run(limactl, "list", instance, "--format", "{{.Status}}")
+        if rc != 0:
+            states.update({spec.slug: "unknown" for spec in group})
+            continue
+        if out.strip().lower() != "running":
+            states.update({spec.slug: "stopped" for spec in group})
+            continue
+        names = [spec.darwin_lima_container or "" for spec in group]
+        rc, out, err = await _run(
+            limactl, "shell", instance, "docker", "inspect", "--format",
+            "{{.Name}} {{.State.Status}}", *names,
+        )
+        by_name: dict[str, str] = {}
+        for line in out.splitlines():
+            name, _, state = line.strip().partition(" ")
+            if name and state:
+                by_name[name.removeprefix("/")] = state
+        for spec in group:
+            name = spec.darwin_lima_container or ""
+            if name in by_name:
+                state = by_name[name]
+                states[spec.slug] = "running" if state == "running" else state
+            else:
+                lowered = (err or "").lower()
+                states[spec.slug] = (
+                    "not_created" if rc != 0 and "no such" in lowered else "unknown"
+                )
+    return states
+
+
 async def _state_of(spec: ServiceSpec) -> str:
+    if sys.platform == "darwin":
+        if spec.darwin_lima_instance and spec.darwin_lima_container:
+            return await _lima_container_state(
+                spec.darwin_lima_instance, spec.darwin_lima_container
+            )
+        if spec.darwin_label:
+            return await _launchd_state(spec.darwin_label)
+        if spec.darwin_process:
+            return await _process_state(spec.darwin_process)
+        # Linux-only compatibility and historical project services are not
+        # incidents on the Mac control plane.
+        return "not_applicable"
     if spec.user_unit:
         return await _unit_state(spec.user_unit, user=True)
     if spec.system_unit:
@@ -475,9 +648,27 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
     """
     if state in _LIVE_STATES:
         return True
+    if state == "not_applicable":
+        return True
     if expected == "on_demand":
         return state != "failed"
     return False
+
+
+def _effective_expected_state(spec: ServiceSpec) -> ExpectedState:
+    """Let retrieval service expectations follow their runtime switches."""
+    if spec.slug not in {"shared-mongot", "shared-embeddings"}:
+        return spec.expected_state
+    # Lazy import avoids making the infrastructure registry part of memory's
+    # import graph. The singleton is loaded from Mongo during API startup.
+    from aria.memory.capabilities import retrieval_capabilities
+
+    enabled = (
+        retrieval_capabilities.search_enabled
+        if spec.slug == "shared-mongot"
+        else retrieval_capabilities.embeddings_enabled
+    )
+    return "always_up" if enabled else "on_demand"
 
 
 # ---------------------------------------------------------------------------
@@ -488,22 +679,38 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
 def _row_for(spec: ServiceSpec, state: str) -> dict:
     """One service's status row. Shared by the full status() sweep and the
     single-spec get() so the two views cannot drift."""
+    darwin = sys.platform == "darwin"
+    if darwin:
+        if spec.darwin_lima_instance and spec.darwin_lima_container:
+            handle = f"lima:{spec.darwin_lima_instance}/{spec.darwin_lima_container}"
+        else:
+            handle = spec.darwin_label or (
+                f"process:{spec.darwin_process}" if spec.darwin_process else None
+            )
+    else:
+        handle = spec.user_unit or spec.system_unit
+
+    expected_state = _effective_expected_state(spec)
     return {
         "slug": spec.slug,
         "description": spec.description,
         "kind": spec.kind,
         "state": state,
-        "expected_state": spec.expected_state,
-        "healthy": is_healthy(state, spec.expected_state),
+        "expected_state": expected_state,
+        "healthy": is_healthy(state, expected_state),
         "port": spec.port,
-        "manageable": spec.manageable,
+        # Plain launchd mutation is intentionally not implemented here. Lima
+        # guest containers have a precise non-root lifecycle handle.
+        "manageable": spec.manageable and (
+            not darwin or bool(spec.darwin_lima_instance and spec.darwin_lima_container)
+        ),
         "needs_review": spec.needs_review,
         "notes": spec.notes,
         "depends_on": list(spec.depends_on),
-        "unit": spec.user_unit or spec.system_unit,
-        "container": spec.container_name,
-        "compose_file": spec.compose_file,
-        "service_name": spec.service_name,
+        "unit": handle,
+        "container": None if darwin else spec.container_name,
+        "compose_file": None if darwin else spec.compose_file,
+        "service_name": None if darwin else spec.service_name,
     }
 
 
@@ -521,7 +728,11 @@ class ServiceManager:
 
     async def status(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
         """Every registered service with its live state and health verdict."""
-        states = await asyncio.gather(*(_state_of(spec) for spec in REGISTRY))
+        if sys.platform == "darwin":
+            state_by_slug = await _darwin_fleet_states(REGISTRY)
+            states = [state_by_slug[spec.slug] for spec in REGISTRY]
+        else:
+            states = await asyncio.gather(*(_state_of(spec) for spec in REGISTRY))
         results = [_row_for(spec, state) for spec, state in zip(REGISTRY, states)]
         if db is not None:
             await self._record(db, results)
@@ -531,7 +742,7 @@ class ServiceManager:
         """Persist last-observed state so the ontology can project services
         without shelling out, and so a restart doesn't lose the roster."""
         now = datetime.now(timezone.utc)
-        for entry in results:
+        async def persist(entry: dict) -> None:
             try:
                 await db[STATE_COLLECTION].update_one(
                     {"_id": entry["slug"]},
@@ -546,6 +757,11 @@ class ServiceManager:
                 )
             except Exception as exc:  # noqa: BLE001 — persistence is advisory
                 logger.debug("service state persist failed for %s: %s", entry["slug"], exc)
+
+        # Each row is independent and Mongo's pool is deliberately wider than
+        # this registry. Serial upserts added one network round trip per service
+        # to the most-polled dashboard endpoint (~5s on the Mac under load).
+        await asyncio.gather(*(persist(entry) for entry in results))
 
     async def get(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
         """One service's live state — probing ONLY that spec.
@@ -583,7 +799,18 @@ class ServiceManager:
             if action == "stop" and state not in _LIVE_STATES:
                 return {"slug": slug, "state": state, "action": "noop"}
 
-            if spec.user_unit:
+            if sys.platform == "darwin" and (
+                spec.darwin_lima_instance and spec.darwin_lima_container
+            ):
+                rc, out, err = await _run(
+                    "/opt/homebrew/bin/limactl",
+                    "shell",
+                    spec.darwin_lima_instance,
+                    "docker",
+                    action,
+                    spec.darwin_lima_container,
+                )
+            elif spec.user_unit:
                 rc, out, err = await _run("systemctl", "--user", action, spec.user_unit)
             elif spec.container_name:
                 rc, out, err = await _run("docker", action, spec.container_name)

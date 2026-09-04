@@ -25,7 +25,7 @@ import { Button, Field, Input, Select, Sheet, Textarea } from '@/components/ui/c
 const CODING_AGENTS: Array<{ key: string; label: string; backend?: string; subagent_profile?: string }> = [
   { key: 'claude_code', label: 'Claude Code', backend: 'claude_code' },
   { key: 'pi-coding', label: 'Pi Coding Agent', subagent_profile: 'pi-coding' },
-  { key: 'pi-coding-ridge', label: 'Pi Coding Agent (Ridge)', subagent_profile: 'pi-coding-ridge' },
+  { key: 'pi-coding-ridge', label: 'Pi Coding Agent (Flash Next)', subagent_profile: 'pi-coding-ridge' },
   { key: 'codex', label: 'Codex', backend: 'codex' },
 ]
 

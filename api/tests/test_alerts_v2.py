@@ -836,11 +836,27 @@ async def test_decide_apply_records_decision_and_acks(alerts_client):
 async def test_decide_ignore_marks_false_raise(alerts_client):
     doc = _alert_doc()
     alerts_client.db.alerts.docs.append(doc)
+    watchdog = MagicMock()
+    watchdog.refresh_inbox = AsyncMock(return_value="/vault/STEWARD_INBOX.md")
+    alerts_client._transport.app.state.relay_watchdog = watchdog
     resp = await alerts_client.post(
         f"/api/v1/alerts/{doc['_id']}/decide", json={"action": "IGNORE", "by": "ben"}
     )
     assert resp.status_code == 200
     assert alerts_client.db.alerts.docs[0]["false_raise"] is True
+    watchdog.refresh_inbox.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_ack_refreshes_steward_inbox(alerts_client):
+    doc = _alert_doc()
+    alerts_client.db.alerts.docs.append(doc)
+    watchdog = MagicMock()
+    watchdog.refresh_inbox = AsyncMock(return_value="/vault/STEWARD_INBOX.md")
+    alerts_client._transport.app.state.relay_watchdog = watchdog
+    resp = await alerts_client.post(f"/api/v1/alerts/{doc['_id']}/ack")
+    assert resp.status_code == 200
+    watchdog.refresh_inbox.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -1037,7 +1053,14 @@ async def test_heartbeat_after_death_raises_recovery(tmp_path):
         }
     )
     wd = _watchdog(db, tmp_path, lambda: now)
-    state = await wd.record_heartbeat("hermes")
+    inbox = tmp_path / "ProjectAria" / "Planning" / "STEWARD_INBOX.md"
+    inbox.parent.mkdir(parents=True)
+    inbox.write_text(
+        "> [!warning] Signal relay is not delivering\n",
+        encoding="utf-8",
+    )
+    with patch.object(settings, "obsidian_vault_path", str(tmp_path)):
+        state = await wd.record_heartbeat("hermes")
     assert state["recovered"] is True
     kwargs = wd.notifier.notify.await_args.kwargs
     assert kwargs["event_type"] == "recovered"
@@ -1045,6 +1068,9 @@ async def test_heartbeat_after_death_raises_recovery(tmp_path):
     assert kwargs["needs_human"] is False
     assert db.app_state.docs[0]["dead_since"] is None
     assert wd.status()["dead"] is False
+    refreshed = inbox.read_text(encoding="utf-8")
+    assert "Signal relay is not delivering" not in refreshed
+    assert "No alerts are waiting on a human." in refreshed
 
 
 @pytest.mark.asyncio
@@ -1054,6 +1080,26 @@ async def test_heartbeat_without_prior_death_is_quiet(tmp_path):
     wd = _watchdog(db, tmp_path, lambda: now)
     await wd.record_heartbeat("hermes")
     wd.notifier.notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_queue_refresh_preserves_active_relay_warning(tmp_path):
+    db = FakeDB()
+    now = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+    db.app_state.docs.append(
+        {
+            "_id": RELAY_STATE_ID,
+            "last_heartbeat_at": now - timedelta(minutes=45),
+            "dead_since": now - timedelta(minutes=20),
+        }
+    )
+    db.alerts.docs.append(_alert_doc(detail="still waiting"))
+    wd = _watchdog(db, tmp_path, lambda: now)
+    with patch.object(settings, "obsidian_vault_path", str(tmp_path)):
+        await wd.refresh_inbox()
+    text = (tmp_path / "ProjectAria" / "Planning" / "STEWARD_INBOX.md").read_text()
+    assert "Signal relay is not delivering" in text
+    assert "still waiting" in text
 
 
 @pytest.mark.asyncio

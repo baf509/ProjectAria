@@ -42,9 +42,13 @@ Callers that want a *specific* model can still address its port directly.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 import json
 import logging
-from typing import Any, Optional
+import re
+import time
+from typing import Any, AsyncIterator, Callable, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -53,6 +57,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.api.deps import get_db, get_model_server_manager
 from aria.config import settings
+from aria.db.usage import UsageRepo
 from aria.infrastructure.model_servers import ModelServerManager
 from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
@@ -116,8 +121,340 @@ async def close_client() -> None:
 _STRIP = {
     "host", "content-length", "connection", "keep-alive", "transfer-encoding",
     "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer",
-    "accept-encoding",
+    "accept-encoding", "x-aria-caller",
 }
+
+_CALLER_SAFE = re.compile(r"[^a-zA-Z0-9_.:@/-]+")
+
+# Caller labels are QoS hints, never authorization. A forged label can affect
+# queue order but cannot grant a scope or bypass the API key middleware.
+_BACKGROUND_CALLER_MARKERS = (
+    "background", "benchmark", "eval", "cron", "worker", "steward",
+    "maintenance", "probe", "auxiliary", "compaction",
+)
+
+
+def _caller_priority(caller: str) -> int:
+    """0=human conversation, 1=foreground coding, 2=background work."""
+    normalized = caller.casefold()
+    if normalized == "hermes" or normalized.startswith("hermes-"):
+        return 0
+    if any(marker in normalized for marker in _BACKGROUND_CALLER_MARKERS):
+        return 2
+    return 1
+
+
+@dataclass(frozen=True)
+class _AdmissionStats:
+    controlled: bool
+    priority: int
+    queue_wait_ms: float = 0.0
+    queue_depth_at_arrival: int = 0
+
+
+@dataclass
+class _QueuedRequest:
+    future: asyncio.Future[None]
+    priority: int
+    sequence: int
+    enqueued_at: float
+
+
+class _PriorityAdmission:
+    """Cancellation-safe, aging priority queue for one physical model slot."""
+
+    def __init__(
+        self,
+        aging_seconds: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._aging_seconds = max(0.001, float(aging_seconds))
+        self._clock = clock
+        self._lock = asyncio.Lock()
+        self._active = False
+        self._waiters: list[_QueuedRequest] = []
+        self._sequence = 0
+
+    def _effective_priority(self, item: _QueuedRequest, now: float) -> int:
+        tiers = int(max(0.0, now - item.enqueued_at) / self._aging_seconds)
+        return max(0, item.priority - tiers)
+
+    async def acquire(self, priority: int) -> _AdmissionStats:
+        enqueued_at = self._clock()
+        async with self._lock:
+            self._waiters = [item for item in self._waiters if not item.future.done()]
+            depth = len(self._waiters) + (1 if self._active else 0)
+            if not self._active and not self._waiters:
+                self._active = True
+                return _AdmissionStats(True, priority, 0.0, depth)
+            future = asyncio.get_running_loop().create_future()
+            item = _QueuedRequest(future, priority, self._sequence, enqueued_at)
+            self._sequence += 1
+            self._waiters.append(item)
+
+        try:
+            await future
+        except BaseException:
+            # Cancellation can race with release() granting this request. If it
+            # was granted, pass the slot onward; if it was still queued, remove
+            # it so a disconnected client cannot consume future capacity.
+            granted = future.done() and not future.cancelled()
+            if granted:
+                await asyncio.shield(self.release())
+            else:
+                async with self._lock:
+                    self._waiters = [queued for queued in self._waiters if queued is not item]
+            raise
+        return _AdmissionStats(
+            True,
+            priority,
+            round((self._clock() - enqueued_at) * 1000, 2),
+            depth,
+        )
+
+    async def release(self) -> None:
+        async with self._lock:
+            self._active = False
+            while self._waiters:
+                now = self._clock()
+                item = min(
+                    self._waiters,
+                    key=lambda queued: (
+                        self._effective_priority(queued, now), queued.sequence
+                    ),
+                )
+                self._waiters.remove(item)
+                if item.future.done():
+                    continue
+                self._active = True
+                try:
+                    item.future.set_result(None)
+                except asyncio.InvalidStateError:
+                    self._active = False
+                    continue
+                break
+
+    async def snapshot(self) -> dict[str, Any]:
+        async with self._lock:
+            pending = [item for item in self._waiters if not item.future.done()]
+            counts = {"interactive": 0, "foreground": 0, "background": 0}
+            labels = ("interactive", "foreground", "background")
+            for item in pending:
+                counts[labels[min(2, max(0, item.priority))]] += 1
+            return {
+                "active": self._active,
+                "queued": len(pending),
+                "queued_by_priority": counts,
+            }
+
+
+_admissions: dict[str, _PriorityAdmission] = {}
+
+
+def _route_slots(route: "_Route") -> Optional[int]:
+    for server in route.servers:
+        if server.get("slug") != route.slug:
+            continue
+        value = server.get("slots")
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None
+
+
+def _admission_for(route: "_Route") -> Optional[_PriorityAdmission]:
+    if (
+        not settings.llm_proxy_admission_enabled
+        or _route_slots(route) != 1
+        or not route.base_url
+    ):
+        return None
+    admission = _admissions.get(route.base_url)
+    if admission is None:
+        admission = _PriorityAdmission(settings.llm_proxy_queue_aging_seconds)
+        _admissions[route.base_url] = admission
+    return admission
+
+
+@asynccontextmanager
+async def _admit(route: "_Route", caller: str) -> AsyncIterator[_AdmissionStats]:
+    priority = _caller_priority(caller)
+    admission = _admission_for(route)
+    if admission is None:
+        yield _AdmissionStats(False, priority)
+        return
+    stats = await admission.acquire(priority)
+    try:
+        yield stats
+    finally:
+        # A cancelled stream still must hand the only model slot onward.
+        await asyncio.shield(admission.release())
+
+
+async def _admission_snapshot(route: "_Route") -> dict[str, Any]:
+    slots = _route_slots(route)
+    admission = _admission_for(route)
+    state = await admission.snapshot() if admission is not None else {
+        "active": False,
+        "queued": 0,
+        "queued_by_priority": {
+            "interactive": 0, "foreground": 0, "background": 0,
+        },
+    }
+    return {
+        "controlled": admission is not None,
+        "slots": slots,
+        "aging_seconds": (
+            settings.llm_proxy_queue_aging_seconds if admission is not None else None
+        ),
+        **state,
+    }
+
+
+def _gateway_caller(request: Request) -> tuple[str, str, str]:
+    """Return a bounded attribution label plus diagnostic network identity.
+
+    Known clients set X-Aria-Caller. It is attribution, not authorization, so
+    it is deliberately never used for access control. Unknown clients still
+    get a stable caller based on their peer and user-agent instead of dropping
+    an unqueryable usage row.
+    """
+    host = request.client.host if request.client else "unknown"
+    user_agent = (request.headers.get("user-agent") or "unknown")[:160]
+    declared = (request.headers.get("x-aria-caller") or "").strip()[:80]
+    if declared:
+        caller = _CALLER_SAFE.sub("_", declared).strip("_") or "unknown"
+    else:
+        agent = _CALLER_SAFE.sub("_", user_agent.split(" ", 1)[0]).strip("_")
+        caller = f"{host}:{agent or 'unknown'}"
+    return caller[:120], host[:120], user_agent
+
+
+def _usage_counts(payload: Optional[dict]) -> tuple[int, int, int, int]:
+    """Fresh input, output, cache-read, and raw prompt token counts.
+
+    OpenAI's prompt_tokens includes cached input. UsageRepo's cache-hit formula
+    expects input_tokens to mean fresh input, so subtract cached tokens once.
+    llama.cpp also exposes timings.cache_n as a fallback for older responses.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage.get("prompt_tokens_details"), dict)
+        else {}
+    )
+    timings = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+
+    def count(value: Any) -> int:
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    prompt = count(usage.get("prompt_tokens")) or count(timings.get("prompt_n"))
+    output = count(usage.get("completion_tokens")) or count(timings.get("predicted_n"))
+    cached = count(details.get("cached_tokens")) or count(timings.get("cache_n"))
+    cached = min(cached, prompt) if prompt else cached
+    return max(0, prompt - cached), output, cached, prompt
+
+
+async def _record_gateway_usage(
+    db: AsyncIOMotorDatabase,
+    *,
+    request: Request,
+    route: Optional["_Route"],
+    requested_model: Optional[str],
+    backend_model_id: Optional[str],
+    path: str,
+    identify: bool,
+    started: float,
+    status_code: int,
+    response_payload: Optional[dict] = None,
+    streamed: bool = False,
+    error: Optional[str] = None,
+    admission: Optional[_AdmissionStats] = None,
+) -> None:
+    """Persist one gateway request without ever storing prompt/response text.
+
+    Accounting is best-effort: a Mongo outage must not replace a successful
+    model response with a gateway error.
+    """
+    try:
+        caller, client_host, user_agent = _gateway_caller(request)
+        fresh_input, output, cache_read, prompt = _usage_counts(response_payload)
+        slug = route.slug if route and route.slug else None
+        await UsageRepo(db).record(
+            model=slug or backend_model_id or requested_model or "unknown",
+            source="llm-gateway",
+            backend="local",
+            caller=caller,
+            input_tokens=fresh_input,
+            output_tokens=output,
+            cache_read_tokens=cache_read,
+            metadata={
+                "path": path,
+                "identified": identify,
+                "streamed": streamed,
+                "status_code": status_code,
+                "outcome": "ok" if 200 <= status_code < 400 and not error else "error",
+                "error": error,
+                "requested_model": requested_model,
+                "resolved_slug": slug,
+                "backend_model_id": backend_model_id,
+                "route_reason": route.reason if route else None,
+                "latency_ms": round((time.monotonic() - started) * 1000, 2),
+                "admission_controlled": bool(admission and admission.controlled),
+                "queue_priority": admission.priority if admission else None,
+                "queue_wait_ms": admission.queue_wait_ms if admission else 0.0,
+                "queue_depth_at_arrival": (
+                    admission.queue_depth_at_arrival if admission else 0
+                ),
+                "prompt_tokens_reported": prompt,
+                "client_host": client_host,
+                "user_agent": user_agent,
+            },
+        )
+    except Exception:
+        logger.warning("llm-proxy: failed to persist gateway usage", exc_info=True)
+
+
+class _StreamUsage:
+    """Incrementally retain only SSE usage metadata, never generated text."""
+
+    def __init__(self) -> None:
+        self._buffer = b""
+        self.payload: dict = {}
+
+    def feed(self, chunk: bytes) -> None:
+        self._buffer += chunk
+        lines = self._buffer.split(b"\n")
+        self._buffer = lines.pop()
+        # A malformed/non-SSE backend must not make us retain an unbounded body.
+        if len(self._buffer) > 1024 * 1024:
+            self._buffer = self._buffer[-1024 * 1024:]
+        for line in lines:
+            self._line(line)
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._line(self._buffer)
+        self._buffer = b""
+
+    def _line(self, line: bytes) -> None:
+        line = line.strip()
+        if not line.startswith(b"data:"):
+            return
+        raw = line[5:].strip()
+        if not raw or raw == b"[DONE]":
+            return
+        try:
+            item = json.loads(raw)
+        except (ValueError, TypeError):
+            return
+        if not isinstance(item, dict):
+            return
+        if isinstance(item.get("usage"), dict):
+            self.payload["usage"] = item["usage"]
+        if isinstance(item.get("timings"), dict):
+            self.payload["timings"] = item["timings"]
 
 
 class _Route:
@@ -145,12 +482,41 @@ async def _pick_backend(
     and their relative footprint. The full view is still available to the
     display endpoints, which poll rather than sit on the request path.
     """
-    servers = await manager.running_summary(db)
+    servers = await _running_summary_cached(manager, db)
     pin = await read_pin(db)
     chosen, reason, unavailable = select(servers, requested=requested, pin=pin)
     if chosen is None:
         return _Route(None, None, reason, servers, unavailable)
     return _Route(chosen.get("slug"), base_url_for(chosen), reason, servers)
+
+
+# In forward mode `running_summary()` probes every forwarded endpoint with a
+# full HTTP /health round trip through the Corsair SSH tunnel (each bounded by
+# sub-second timeouts that stack when a tunnel is stale), so answering every
+# request from a fresh summary made the gateway 2-4s slower than the backend
+# it fronts. Cache the summary briefly instead: routing only ranks footprint
+# magnitudes and reads start/stop states, which change rarely. The autostart
+# path forces its own fresh, uncached status() and drops this cache.
+_SUMMARY_TTL_SECONDS = 3.0
+_summary_cache: Optional[tuple[float, list[dict]]] = None
+
+
+def _drop_summary_cache() -> None:
+    global _summary_cache
+    _summary_cache = None
+
+
+async def _running_summary_cached(
+    manager: ModelServerManager,
+    db: AsyncIOMotorDatabase,
+) -> list[dict]:
+    global _summary_cache
+    now = time.monotonic()
+    if _summary_cache is not None and now - _summary_cache[0] < _SUMMARY_TTL_SECONDS:
+        return _summary_cache[1]
+    servers = await manager.running_summary(db)
+    _summary_cache = (now, servers)
+    return servers
 
 
 def _unavailable(route: _Route) -> HTTPException:
@@ -302,6 +668,7 @@ async def current_backend(
         "base_url": route.base_url,
         "reason": route.reason,
         "pinned": await read_pin(db),
+        "admission": await _admission_snapshot(route),
         "running": [
             {"slug": s["slug"], "resident_gib": s.get("resident_gib_estimate")}
             for s in route.servers if s.get("state") == "running" and s.get("onbox")
@@ -402,6 +769,26 @@ def _norm_slug(value: Optional[str]) -> str:
     return (value or "").strip().casefold().removesuffix(".gguf")
 
 
+# A backend's ground-truth model id only changes when that process loads a
+# different model, but fetching it is a tunnel round trip on every request.
+# A short cache is invisible next to a model swap: the swap restarts the
+# backend, which voids its prompt cache anyway.
+_BACKEND_MODEL_ID_TTL_SECONDS = 30.0
+_backend_model_id_cache: dict[str, tuple[float, Optional[str]]] = {}
+
+
+async def _backend_model_id_cached(base: str) -> Optional[str]:
+    if not base:
+        return None
+    hit = _backend_model_id_cache.get(base)
+    now = time.monotonic()
+    if hit is not None and now - hit[0] < _BACKEND_MODEL_ID_TTL_SECONDS:
+        return hit[1]
+    model_id = await _backend_model_id(base)
+    _backend_model_id_cache[base] = (now, model_id)
+    return model_id
+
+
 def _names_a_model(requested: Optional[str]) -> bool:
     """Did the caller name a concrete model, rather than the auto alias?
 
@@ -455,10 +842,12 @@ def _inject_identity(body: dict, line: str) -> dict:
 
 async def _proxy(path: str, request: Request, manager: ModelServerManager,
                  db: AsyncIOMotorDatabase, identify: bool = False) -> Any:
+    started = time.monotonic()
     payload = await request.body()
     stream = False
     requested: Optional[str] = None
     body: Optional[dict] = None
+    model_id: Optional[str] = None
     try:
         body = json.loads(payload or b"{}")
         stream = bool(body.get("stream"))
@@ -474,55 +863,154 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     # never set for the auto alias.
     if route.unavailable and requested and settings.llm_proxy_autostart:
         if await _autostart(manager, db, requested):
+            _drop_summary_cache()
             route = await _pick_backend(manager, db, requested=requested)
 
     if not route.base_url:
-        raise _unavailable(route)
+        exc = _unavailable(route)
+        await _record_gateway_usage(
+            db,
+            request=request,
+            route=route,
+            requested_model=requested,
+            backend_model_id=None,
+            path=path,
+            identify=identify,
+            started=started,
+            status_code=exc.status_code,
+            error="backend unavailable",
+        )
+        raise exc
     slug, base = route.slug, route.base_url
+    caller = _gateway_caller(request)[0]
 
-    # Inject only when the caller could NOT have known the model — i.e. it used
-    # the auto alias. When it named a concrete model it already knows what it is,
-    # and a line telling it so is redundant tokens on every single turn.
-    if identify and isinstance(body, dict) and not _names_a_model(requested):
-        # Ground truth from the backend, falling back to the registry slug.
-        model_id = await _backend_model_id(base)
+    # ARIA model names are routing identifiers, not necessarily the id exposed
+    # by the selected OpenAI-compatible backend.  vLLM rejects an unknown model
+    # instead of ignoring it, so resolve the backend's ground-truth id and
+    # rewrite the forwarded request after routing.
+    if isinstance(body, dict):
+        model_id = await _backend_model_id_cached(base)
         try:
-            payload = json.dumps(_inject_identity(body, _identity_line(route, model_id))).encode()
-        except (TypeError, ValueError):
-            logger.warning("llm-proxy: identity injection failed; forwarding verbatim")
+            forwarded = dict(body)
+            if model_id:
+                forwarded["model"] = model_id
 
-    # The body is forwarded verbatim, `model` included: llama.cpp ignores the
-    # field and serves whatever it has loaded, so rewriting it would buy
-    # nothing — and the response already carries the backend's own model id.
+            # Inject only when the caller could NOT have known the model — i.e.
+            # it used the auto alias.  A concrete ARIA model name is already an
+            # explicit declaration and does not need a repeated system line.
+            if identify and not _names_a_model(requested):
+                forwarded = _inject_identity(
+                    forwarded, _identity_line(route, model_id)
+                )
+            payload = json.dumps(forwarded).encode()
+        except (TypeError, ValueError):
+            logger.warning("llm-proxy: model rewrite failed; forwarding verbatim")
+
     url = f"{base}/{path}"
     headers = _forward_headers(request)
 
     if not stream:
+        admission_stats: Optional[_AdmissionStats] = None
         try:
-            resp = await _client().post(url, content=payload, headers=headers)
+            async with _admit(route, caller) as admission_stats:
+                resp = await _client().post(url, content=payload, headers=headers)
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: %s failed against %s: %s", path, slug, exc)
+            await _record_gateway_usage(
+                db,
+                request=request,
+                route=route,
+                requested_model=requested,
+                backend_model_id=model_id,
+                path=path,
+                identify=identify,
+                started=started,
+                status_code=502,
+                error=type(exc).__name__,
+                admission=admission_stats,
+            )
             raise HTTPException(
                 status_code=502,
                 detail={"error": f"backend {slug} unreachable", "backend": base},
             ) from exc
-        return JSONResponse(
-            content=resp.json() if resp.headers.get("content-type", "").startswith("application/json")
-            else {"raw": resp.text},
+
+        response_payload: Optional[dict] = None
+        if resp.headers.get("content-type", "").startswith("application/json"):
+            try:
+                decoded = resp.json()
+            except ValueError:
+                decoded = {"raw": resp.text}
+            if isinstance(decoded, dict):
+                response_payload = decoded
+            content = decoded
+        else:
+            content = {"raw": resp.text}
+        await _record_gateway_usage(
+            db,
+            request=request,
+            route=route,
+            requested_model=requested,
+            backend_model_id=model_id,
+            path=path,
+            identify=identify,
+            started=started,
             status_code=resp.status_code,
+            response_payload=response_payload,
+            admission=admission_stats,
+        )
+        return JSONResponse(
+            content=content,
+            status_code=resp.status_code,
+            headers={
+                "X-Aria-Backend": slug or "unknown",
+                "X-Aria-Queue-Ms": str(admission_stats.queue_wait_ms),
+            },
         )
 
     # Streaming: the shared client is held open for the life of the upstream
     # response; the connection returns to the pool when the stream ends.
     async def relay():
+        usage = _StreamUsage()
+        status_code = 200
+        error: Optional[str] = None
+        admission_stats: Optional[_AdmissionStats] = None
         try:
-            client = _client()
-            async with client.stream("POST", url, content=payload, headers=headers) as resp:
-                async for chunk in resp.aiter_raw():
-                    yield chunk
+            async with _admit(route, caller) as admission_stats:
+                client = _client()
+                async with client.stream("POST", url, content=payload, headers=headers) as resp:
+                    status_code = resp.status_code
+                    async for chunk in resp.aiter_raw():
+                        usage.feed(chunk)
+                        yield chunk
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: stream to %s failed: %s", slug, exc)
+            status_code = 502
+            error = type(exc).__name__
             yield b'data: {"error":"backend stream failed"}\n\n'
+        finally:
+            usage.finish()
+            # A client disconnect cancels the response generator. Shield the
+            # small Mongo write so interrupted streams still leave an audit row.
+            record_task = asyncio.create_task(_record_gateway_usage(
+                db,
+                request=request,
+                route=route,
+                requested_model=requested,
+                backend_model_id=model_id,
+                path=path,
+                identify=identify,
+                started=started,
+                status_code=status_code,
+                response_payload=usage.payload,
+                streamed=True,
+                error=error,
+                admission=admission_stats,
+            ))
+            try:
+                await asyncio.shield(record_task)
+            except asyncio.CancelledError:
+                # The shielded task remains live on the application event loop.
+                raise
 
     return StreamingResponse(
         relay(),

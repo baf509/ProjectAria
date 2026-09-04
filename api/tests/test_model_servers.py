@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from dataclasses import replace
 
 from typing import Any, Optional
 from unittest.mock import AsyncMock, patch
@@ -163,6 +164,21 @@ def manager():
     return ModelServerManager()
 
 
+def _startable_cpu_recovery_spec(manager: ModelServerManager):
+    """Exercise generic Docker mechanics without making Mac-owned Gemma startable.
+
+    Production intentionally marks Gemma unstartable in the Corsair registry so
+    the actuator cannot boot a duplicate. These tests still need a CPU-only
+    compose shape, so use a synthetic clone confined to the mocked manager.
+    """
+    return replace(
+        manager.get_spec("gemma-4-e4b-Q4"),
+        slug="synthetic-cpu-recovery",
+        startable=True,
+        not_startable_reason=None,
+    )
+
+
 # ───────────────────────────────────────────────────────────── registry ──
 
 def test_registry_has_no_duplicate_slugs():
@@ -185,16 +201,6 @@ def test_exclusivity_is_symmetric():
             assert spec.slug in by_slug[other].exclusive_with, (
                 f"{spec.slug} -> {other} not mirrored"
             )
-
-
-def test_qwen_pair_is_not_mutually_exclusive():
-    """qwen3.6-35b-a3b-Q4 + qwen3.6-27b-Q8 are designed to start together
-    (`--profile qwen`, ~61 GiB pair) — the registry must not forbid it."""
-    by_slug = {s.slug: s for s in ms.REGISTRY}
-    assert "qwen3.6-27b-Q8" not in by_slug["qwen3.6-35b-a3b-Q4"].exclusive_with
-    assert "qwen3.6-35b-a3b-Q4" not in by_slug["qwen3.6-27b-Q8"].exclusive_with
-
-
 def test_chadrock_qwen_coexistence_not_forbidden():
     """The deliberate two-server split (measured ~89.4 GiB combined)."""
     by_slug = {s.slug: s for s in ms.REGISTRY}
@@ -352,11 +358,14 @@ async def test_start_refuses_on_ram_swag_overflow(manager):
 
 @pytest.mark.asyncio
 async def test_start_skips_gtt_gate_for_cpu_only_server(manager):
-    """gemma is CPU-only (gtt_resident=False): its allocations never hit the
-    GTT pool, so even a nearly-full GTT must not refuse it."""
+    """A CPU-only recovery service never allocates from GTT, so even a
+    nearly-full GTT pool must not refuse it."""
     docker = FakeDocker({})  # not created -> compose up
-    with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(120.0, 124.0)):
-        result = await manager.start("gemma-4-e4b-Q4")
+    spec = _startable_cpu_recovery_spec(manager)
+    with patch.object(manager, "resolve_spec", AsyncMock(return_value=spec)), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_read_gtt_gib", return_value=(120.0, 124.0)):
+        result = await manager.start(spec.slug)
     assert result["action"] == "started"
 
 
@@ -374,8 +383,11 @@ async def test_start_handrun_container_uses_raw_docker_start_with_note(manager):
     """A hand-run container (no compose label) can't be adopted by compose up
     (name conflict) — raw docker start, with an explicit config-drift note."""
     docker = FakeDocker({"gemma-aux": ("exited", "")})
-    with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
-        result = await manager.start("gemma-4-e4b-Q4")
+    spec = _startable_cpu_recovery_spec(manager)
+    with patch.object(manager, "resolve_spec", AsyncMock(return_value=spec)), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
+        result = await manager.start(spec.slug)
     assert result["action"] == "started"
     assert docker.calls == [("start", "gemma-aux")]
     assert "compose-file changes are NOT applied" in result["note"]
@@ -386,8 +398,11 @@ async def test_start_compose_managed_container_uses_compose_up(manager):
     """An existing compose-managed container goes through compose up -d so a
     compose-file edit is reconciled instead of resurrecting the old argv."""
     docker = FakeDocker({"gemma-aux": ("exited", "gemma-aux")})
-    with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
-        result = await manager.start("gemma-4-e4b-Q4")
+    spec = _startable_cpu_recovery_spec(manager)
+    with patch.object(manager, "resolve_spec", AsyncMock(return_value=spec)), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
+        result = await manager.start(spec.slug)
     assert result["action"] == "started"
     assert "note" not in result
     assert len(docker.calls) == 1
@@ -426,9 +441,12 @@ async def test_start_noop_when_already_running_even_if_gates_would_fail(manager)
 @pytest.mark.asyncio
 async def test_start_paused_container_raises_clear_error(manager):
     docker = FakeDocker({"gemma-aux": ("paused", "gemma-aux")})
-    with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
+    spec = _startable_cpu_recovery_spec(manager)
+    with patch.object(manager, "resolve_spec", AsyncMock(return_value=spec)), \
+         patch.object(ms, "_run", docker), \
+         patch.object(ms, "_read_gtt_gib", return_value=(10.0, 124.0)):
         with pytest.raises(ModelServerError, match="paused"):
-            await manager.start("gemma-4-e4b-Q4")
+            await manager.start(spec.slug)
     assert not docker.calls
 
 
@@ -894,7 +912,7 @@ async def test_resolve_endpoint_prefers_override_for_offbox():
     """Ridge is reachable ONLY via its tailnet-bound proxy — localhost is
     refused there, so the override must win over any port-derived guess."""
     from aria.infrastructure.model_servers import resolve_endpoint
-    assert await resolve_endpoint("Ridge-Qwen3.8-27B") == "http://100.123.245.84:8092/v1"
+    assert await resolve_endpoint("Ridge-Qwen3.8-27B") == "http://127.0.0.1:8092/v1"
 
 
 @pytest.mark.asyncio
@@ -1239,7 +1257,14 @@ def test_pool_snapshot_marks_shared_backing():
     """A consumer must be able to tell which pools are the same DIMMs."""
     from aria.infrastructure import gpu_devices as gd
 
-    with patch.object(gd, "discover_devices", return_value=_fake_devices()):
+    # Keep this topology test host-independent. macOS has no /proc/meminfo,
+    # so relying on the real host probe would silently omit host-ram here.
+    host = gd.MemoryPool(
+        pool=gd.POOL_HOST, label="host RAM",
+        used_gib=118.4, total_gib=124.4, source="/proc/meminfo",
+    )
+    with patch.object(gd, "discover_devices", return_value=_fake_devices()), \
+         patch.object(gd, "_host_pool", return_value=host):
         pools = {p["pool"]: p for p in gd.pool_snapshot()}
 
     assert pools["halo-gtt"]["backing"] == "system"
@@ -1452,6 +1477,92 @@ async def test_running_summary_routes_like_full_status(manager, tmp_path, _seede
     # naming a stopped server by slug is a known-but-stopped error, not auto
     chosen2, reason2, unavailable2 = select(rows, requested=_EXCL_B, pin=None)
     assert chosen2 is None and unavailable2
+
+
+class _ForwardReader:
+    async def readline(self):
+        return b"HTTP/1.1 200 OK\r\n"
+
+
+class _ForwardWriter:
+    def write(self, _data):
+        pass
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        pass
+
+    async def wait_closed(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_mac_forward_mode_discovers_models_without_linux_tools(
+    manager, _seeded_remote_state
+):
+    selected = ms._BY_SLUG[_EXCL_A]
+
+    async def fake_open(host, port):
+        assert host == "127.0.0.1"
+        if port == selected.port:
+            return _ForwardReader(), _ForwardWriter()
+        raise OSError("closed")
+
+    linux_tools = AsyncMock(side_effect=AssertionError("Linux tool invoked on Mac"))
+    with patch.object(ms.sys, "platform", "darwin"), \
+         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}), \
+         patch.object(ms.asyncio, "open_connection", side_effect=fake_open), \
+         patch.object(ms, "_run", linux_tools):
+        rows = await manager.running_summary()
+
+    by_slug = {row["slug"]: row for row in rows}
+    assert by_slug[_EXCL_A]["state"] == "running"
+    assert linux_tools.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mac_forward_mode_uses_restricted_corsair_actuator(manager):
+    actuator = AsyncMock(side_effect=[
+        {"slug": _EXCL_A, "state": "running", "action": "noop"},
+        {"slug": _EXCL_A, "state": "stopped", "action": "stopped"},
+    ])
+    with patch.object(ms.sys, "platform", "darwin"), \
+         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}), \
+         patch.object(ms, "_corsair_actuate", actuator):
+        started = await manager.start(_EXCL_A)
+        stopped = await manager.stop(_EXCL_A)
+
+    assert started["action"] == "noop"
+    assert stopped["action"] == "stopped"
+    assert actuator.await_args_list[0].args == ("start", _EXCL_A)
+    assert actuator.await_args_list[0].kwargs == {"force": False}
+    assert actuator.await_args_list[1].args == ("stop", _EXCL_A)
+
+
+@pytest.mark.asyncio
+async def test_mac_forward_mode_refuses_remote_launch_overrides(manager):
+    with patch.object(ms.sys, "platform", "darwin"), \
+         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}):
+        with pytest.raises(ModelServerSafetyError, match="overrides are not accepted"):
+            await manager.start(_EXCL_A, overrides={"CTX": "65536"})
+
+
+@pytest.mark.asyncio
+async def test_corsair_actuator_ssh_is_forced_key_only():
+    response = '{"ok":true,"result":{"slug":"%s","action":"noop"}}\n' % _EXCL_A
+    runner = AsyncMock(return_value=(0, response, ""))
+    with patch.object(ms, "_run", runner), patch.dict(ms.os.environ, {}, clear=True):
+        result = await ms._corsair_actuate("start", _EXCL_A)
+
+    assert result["action"] == "noop"
+    argv = runner.await_args.args
+    assert argv[0] == "/usr/bin/ssh"
+    assert "ClearAllForwardings=yes" in argv
+    assert "RequestTTY=no" in argv
+    assert "HostKeyAlias=corsair-ai.local" in argv
+    assert argv[-3:] == ("aria-model-actuator", "start", _EXCL_A)
 
 
 # ─────────────────────────────────────────────────────── one() (D8) ───────

@@ -32,6 +32,7 @@ class UsageRepo:
         agent_slug: Optional[str] = None,
         conversation_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        caller: Optional[str] = None,
         backend: Optional[str] = None,
         metadata: Optional[dict] = None,
     ) -> str:
@@ -53,6 +54,10 @@ class UsageRepo:
             "agent_slug": agent_slug,
             "conversation_id": conversation_id,
             "session_id": session_id,
+            # The gateway has callers that are not ARIA agents/conversations
+            # (Hermes, Pi, eval harnesses). Keep their declared/fallback
+            # identity queryable without overloading agent_slug.
+            "caller": caller,
             "metadata": metadata,
             "timestamp": datetime.now(timezone.utc),
         }

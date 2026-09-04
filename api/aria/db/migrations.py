@@ -21,9 +21,21 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     """Run startup migrations."""
     await _ensure_schema_validation(db)
     await _ensure_standard_indexes(db)
-    await _ensure_search_indexes(db)
+    search_enabled = bool(settings.search_enabled)
+    try:
+        capability_doc = await db.capabilities.find_one({"_id": "retrieval"})
+        persisted = (capability_doc or {}).get("search")
+        if isinstance(persisted, dict) and "enabled" in persisted:
+            search_enabled = bool(persisted["enabled"])
+    except Exception as exc:  # standard migrations still proceed
+        logger.debug("Could not read persisted search capability: %s", exc)
+    if search_enabled:
+        await _ensure_search_indexes(db)
+    else:
+        logger.info("Search capability disabled; skipping mongot index migration")
     await _seed_pi_coding_agent(db)
     await _seed_pi_coding_ridge_agent(db)
+    await _reconcile_pi_coding_profiles(db)
     await _seed_search_agent(db)
     await _normalize_project_status(db)
 
@@ -170,6 +182,7 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     )
     await _safe_create_index(db.usage, "model", name="usage_model")
     await _safe_create_index(db.usage, "source", name="usage_source")
+    await _safe_create_index(db.usage, "caller", name="usage_caller")
     await _safe_create_index(db.usage, "agent_slug", name="usage_agent_slug")
     await _safe_create_index(db.usage, "conversation_id", name="usage_conversation_id")
     await _safe_create_index(db.signal_contacts, "sender", name="signal_contact_sender", unique=True)
@@ -231,6 +244,16 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
         db.shell_events,
         [("shell_name", 1), ("line_number", 1)],
         name="shell_events_name_line",
+    )
+    await _safe_create_index(
+        db.shell_events,
+        [("shell_name", 1), ("event_id", 1)],
+        name="shell_events_node_event_id",
+        unique=True,
+        # A sparse compound index still contains legacy documents because
+        # shell_name exists, representing the missing event_id as null. Use a
+        # partial index so only node-spool events participate in uniqueness.
+        partialFilterExpression={"event_id": {"$type": "string"}},
     )
     await _safe_create_index(
         db.shell_events,
@@ -479,11 +502,10 @@ did not run.
 
 
 async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
-    """Ensure the Ridge-backed Pi Coding Agent exists (idempotent).
+    """Keep the old slug as a Flash-Next compatibility profile.
 
-    Deliberately distinct from `pi-coding`: both launch the real Pi executable,
-    but this profile selects Ridge's 3090 through the wake-on-demand proxy while
-    `pi-coding` selects the local Chadrockv2 server.
+    Pi inference is restricted to Corsair's two Qwen deployments through ARIA;
+    the historical Ridge route is no longer a valid Pi provider.
     """
     existing = await db.agents.find_one({"slug": "pi-coding-ridge"})
     if existing:
@@ -491,31 +513,22 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
 
     now = datetime.now(timezone.utc)
     agent = {
-        "name": "Pi Coding Agent (Ridge)",
+        "name": "Pi Coding Agent (Flash Next via ARIA)",
         "slug": "pi-coding-ridge",
         "description": (
-            "Hands-on coding agent: inference on Ridge's RTX 3090 "
-            "(Qwen3.6-35B-A3B via NInfer), tools execute locally on corsair-ai. "
-            "Wakes Ridge on demand; the real Pi CLI runs locally in an ARIA shell."
+            "Hands-on coding agent using Qwen3.8 Flash Next on Corsair through "
+            "ARIA's inference gateway. The real Pi CLI runs in an ARIA shell."
         ),
-        "system_prompt": _PI_CODING_RIDGE_SYSTEM_PROMPT,
+        "system_prompt": _PI_CODING_SYSTEM_PROMPT,
         "mode_category": "coding",
-        "greeting": "Pi Coding (Ridge) ready — thinking on the 3090, writing on corsair. What are we building?",
+        "greeting": "Pi Coding (Flash Next via ARIA) ready. What are we building?",
         "context_instructions": None,
         "llm": {
-            "backend": "ridge",
-            "model": "qwen3.6-35b-a3b",
-            # Reasoning is verbose on this model (~1k tokens before content); a
-            # small budget returns an EMPTY content with finish_reason=length.
-            "temperature": 0.3,
-            "max_tokens": 8192,
-            # Measured on Ridge's 24 GiB card (2026-07-27). 147456 comes from
-            # running with CUDA graphs disabled, which costs only ~2% throughput
-            # (~259 vs 265 tok/s) but buys 57% more context. Disabling MTP too
-            # would reach 172032 at 141 tok/s — rejected. Keep in step with
-            # --max-context in D:\ninfer\run-ninfer.bat, which carries the
-            # full measurement table.
-            "max_context_tokens": 147456,
+            "backend": "aria",
+            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "temperature": 0.0,
+            "max_tokens": 32768,
+            "max_context_tokens": 262144,
             "force_non_streaming": False,
         },
         "fallback_chain": [],
@@ -527,7 +540,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_metadata": {
             "icon": "code",
             "color": "#f97316",
-            "keywords": ["ridge", "3090", "qwen", "code", "coding", "local-gpu"],
+            "keywords": ["flash-next", "aria", "qwen", "code", "coding", "local-gpu"],
             "keyboard_shortcut": None,
         },
         "memory_config": {
@@ -545,7 +558,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
     }
 
     await db.agents.insert_one(agent)
-    logger.info("Seeded Pi Coding Agent (Ridge) (slug=pi-coding-ridge, backend=ridge)")
+    logger.info("Seeded Pi Coding Agent Flash compatibility profile through ARIA")
 
 
 async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
@@ -563,14 +576,14 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "mode_category": "coding",
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
-        # This legacy db.agents row is now a launch profile for the external Pi
-        # CLI, selecting the dedicated local Chadrockv2 server.
+        # This legacy db.agents row is a launch profile for the external Pi CLI.
+        # Pi carries the three approved Corsair Qwen profiles through ARIA.
         "llm": {
-            "backend": "agentic",
-            "model": "chadrockv2-qwen36-27b-fp6",
-            "temperature": 0.4,
-            "max_tokens": 4096,
-            "max_context_tokens": 258048,
+            "backend": "aria",
+            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "temperature": 0.0,
+            "max_tokens": 32768,
+            "max_context_tokens": 262144,
             "force_non_streaming": False,
         },
         "fallback_chain": [],
@@ -599,6 +612,35 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
 
     await db.agents.insert_one(agent)
     logger.info("Seeded Pi Coding Agent (slug=pi-coding, backend=llamacpp)")
+
+
+async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
+    """Keep ARIA's legacy Pi launch profiles aligned with managed Pi clients.
+
+    These rows choose the provider/model passed to the external Pi process;
+    they are not independent model registrations.  Updating existing rows is
+    necessary because the seed functions intentionally preserve user-authored
+    prompt and tool fields.
+    """
+    result = await db.agents.update_many(
+        {"slug": {"$in": ["pi-coding", "pi-coding-ridge"]}},
+        {
+            "$set": {
+                "llm.backend": "aria",
+                "llm.model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+                "llm.temperature": 0.0,
+                "llm.max_tokens": 32768,
+                "llm.max_context_tokens": 262144,
+                "llm.force_non_streaming": False,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    if result.modified_count:
+        logger.info(
+            "Reconciled %d Pi coding launch profile(s) to hybrid Flash Next",
+            result.modified_count,
+        )
 
 
 _SEARCH_AGENT_SYSTEM_PROMPT = """You are ARIA's Search Agent.

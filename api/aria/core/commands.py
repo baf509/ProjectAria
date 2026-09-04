@@ -229,7 +229,6 @@ class CommandRouter:
         "llamacpp": "default",
         "agentic": "default",
         "ridge": "qwen3.6-35b-a3b",
-        "fireworks": "accounts/fireworks/models/glm-5p2",
         "openrouter": "deepseek/deepseek-v4-pro",
         "anthropic": "claude-sonnet-4-20250514",
         "openai": "gpt-4o",
@@ -248,8 +247,6 @@ class CommandRouter:
         backends.append(f"  local (llamacpp/qwen-chat) — {self._BACKEND_DEFAULTS['llamacpp']}")
         backends.append(f"  agentic (qwen-agentic) — {self._BACKEND_DEFAULTS['agentic']}")
         backends.append(f"  ridge (Qwen3.6-35B-A3B on the 3090, wakes on demand) — {self._BACKEND_DEFAULTS['ridge']}")
-        if settings.fireworks_api_key:
-            backends.append(f"  fireworks (GLM 5.2) — {self._BACKEND_DEFAULTS['fireworks']}")
         if settings.openrouter_api_key:
             backends.append(f"  openrouter — {self._BACKEND_DEFAULTS['openrouter']}")
         if settings.anthropic_api_key:
@@ -279,8 +276,6 @@ class CommandRouter:
         "ridge": "ridge",
         "3090": "ridge",
         "ninfer": "ridge",
-        "fireworks": "fireworks",
-        "glm": "fireworks",
         "openrouter": "openrouter",
         "anthropic": "anthropic",
         "claude": "anthropic",
@@ -346,7 +341,7 @@ class CommandRouter:
             return CommandResult(assistant_content="Unpinned — back to the agent default model.")
 
         # "<backend> [<model-id>]" — split on first whitespace so model ids that
-        # contain '/' (fireworks/openrouter) are preserved verbatim.
+        # contain '/' (for example OpenRouter models) are preserved verbatim.
         parts = arg.split(maxsplit=1)
         alias = parts[0].lower()
         backend = self._BACKEND_ALIASES.get(alias)
@@ -374,7 +369,7 @@ class CommandRouter:
             return CommandResult(assistant_content="Usage: /route <describe the task> — picks and pins a model.")
 
         from aria.core.router import suggest_backend
-        backend, why = suggest_backend(hint, has_fireworks=bool(settings.fireworks_api_key))
+        backend, why = suggest_backend(hint)
         model = self._BACKEND_DEFAULTS.get(backend, "default")
         await self._pin_override(conversation_id, backend, model)
         return CommandResult(

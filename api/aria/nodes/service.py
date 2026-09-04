@@ -53,10 +53,19 @@ class NodeService:
         )
         return await self.get_node(req.node_id)  # type: ignore[return-value]
 
-    async def heartbeat(self, node_id: str) -> bool:
+    async def heartbeat(self, node_id: str, *, live_shells: Optional[list[str]] = None) -> bool:
         res = await self.nodes.update_one(
             {"_id": node_id}, {"$set": {"last_heartbeat_at": _now()}}
         )
+        if res.matched_count > 0 and live_shells is not None:
+            live = set(live_shells)
+            for name in sorted(live):
+                await self.shell_service.register_shell(name, host=node_id)
+            cursor = self.db.shells.find({"host": node_id, "status": {"$in": ["active", "idle"]}})
+            async for shell in cursor:
+                name = shell.get("name")
+                if name and name not in live:
+                    await self.shell_service.mark_stopped(name)
         return res.matched_count > 0
 
     def _online(self, doc: dict) -> bool:
@@ -121,6 +130,16 @@ class NodeService:
     async def complete_command(
         self, cmd_id: str, *, result: Optional[dict] = None, error: Optional[str] = None
     ) -> bool:
-        return await commands.complete_command(
+        command = await self.db.shell_commands.find_one({"_id": cmd_id})
+        completed = await commands.complete_command(
             self.db, cmd_id, result=result, error=error
         )
+        if completed and not error and isinstance(command, dict) and command.get("kind") == "stop":
+            args = command.get("args") or {}
+            name = args.get("name")
+            if name:
+                if args.get("purge"):
+                    await self.shell_service.delete_shell_history(name)
+                else:
+                    await self.shell_service.mark_stopped(name)
+        return completed

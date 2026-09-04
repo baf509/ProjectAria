@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""End-to-end, idempotent ARIA/Hermes boot readiness canary."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import random
+import subprocess
+import sys
+import time
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+DEFAULT_URL = os.environ.get("ARIA_API_URL", "http://127.0.0.1:8200").rstrip("/")
+
+
+def _scoped_key() -> str:
+    if os.environ.get("ARIA_API_KEY"):
+        return os.environ["ARIA_API_KEY"]
+    env_file = Path("~/.config/aria/env").expanduser()
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("ARIA_API_KEY="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
+def _request(base: str, method: str, path: str, *, body: dict | None = None) -> tuple[int, dict]:
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Accept": "application/json"}
+    key = _scoped_key()
+    if key:
+        headers["X-API-Key"] = key
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = Request(base + path, data=data, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw = response.read()
+            return response.status, json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        raw = exc.read()
+        try:
+            payload = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            payload = {"detail": raw.decode(errors="replace")[:300]}
+        return exc.code, payload
+
+
+def _wait_ready(base: str, timeout: float) -> tuple[bool, dict, float]:
+    started = time.monotonic()
+    deadline = started + timeout
+    last: dict = {"detail": "not attempted"}
+    delay = 0.5
+    while True:
+        try:
+            status, last = _request(base, "GET", "/api/v1/health/ready")
+            if status == 200:
+                return True, last, time.monotonic() - started
+        except (URLError, TimeoutError, OSError) as exc:
+            last = {"detail": str(exc)}
+        if time.monotonic() >= deadline:
+            return False, last, time.monotonic() - started
+        time.sleep(min(delay + random.uniform(0, delay / 4), max(deadline - time.monotonic(), 0)))
+        delay = min(delay * 1.7, 8.0)
+
+
+def _launchd_running(label: str) -> bool:
+    completed = subprocess.run(
+        ["launchctl", "print", f"system/{label}"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    return completed.returncode == 0 and "state = running" in completed.stdout
+
+
+def _mcp_contract(path: Path) -> dict:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+
+def _harmless_shell_canary(base: str) -> dict:
+    name = f"boot-canary-{os.getpid()}-{int(time.time())}"
+    status, created = _request(
+        base,
+        "POST",
+        "/api/v1/shells",
+        body={"name": name, "profile": "shell", "launch_claude": False},
+    )
+    if status != 201:
+        return {"ok": False, "create_status": status, "detail": created}
+    canonical = created.get("name", name)
+    delete_status, detail = _request(
+        base, "DELETE", f"/api/v1/shells/{canonical}?purge=true"
+    )
+    return {
+        "ok": delete_status in {200, 202, 204},
+        "canonical_name": canonical,
+        "delete_status": delete_status,
+        "pending": delete_status == 202,
+        "detail": detail,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--api-url", default=DEFAULT_URL)
+    parser.add_argument("--wait", type=float, default=0)
+    parser.add_argument("--canary-shell", action="store_true")
+    parser.add_argument(
+        "--mcp-source",
+        default="/Users/ben/Services/apps/aria-mcp/server.py",
+    )
+    args = parser.parse_args(argv)
+
+    ready, readiness, wait_seconds = _wait_ready(args.api_url, args.wait)
+    report = {
+        "ok": ready,
+        "checked_at": time.time(),
+        "time_to_aria_ready_from_check_seconds": round(wait_seconds, 3),
+        "aria_readiness": readiness,
+        "launchd": {
+            "aria_api": _launchd_running("com.ben.devbox.aria-api"),
+            "hermes_gateway": _launchd_running("com.ben.devbox.hermes-gateway"),
+            "signal_cli": _launchd_running("com.ben.devbox.signal-cli"),
+        },
+        "mcp_contract": _mcp_contract(Path(args.mcp_source)),
+    }
+    if ready:
+        status, nodes = _request(args.api_url, "GET", "/api/v1/nodes")
+        report["nodes"] = {"ok": status == 200, "items": nodes if status == 200 else []}
+        if args.canary_shell:
+            report["managed_shell_canary"] = _harmless_shell_canary(args.api_url)
+            report["ok"] = report["ok"] and report["managed_shell_canary"]["ok"]
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

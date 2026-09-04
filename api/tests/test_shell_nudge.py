@@ -47,6 +47,11 @@ class _FakeShellService:
     async def get_shell(self, name):
         return self.shell if name == "claude-x" else None
 
+    async def resolve_shell_name(self, name):
+        if name in {"claude-x", "x"}:
+            return "claude-x"
+        return None
+
     async def fleet_overview(self, **kw):
         return [self.row] if self.row else []
 
@@ -91,6 +96,14 @@ async def nudge_client():
 async def test_nudge_unknown_shell_404(nudge_client):
     resp = await nudge_client.post("/api/v1/shells/claude-nope/nudge", json={})
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_nudge_accepts_displayed_short_name(nudge_client):
+    resp = await nudge_client.post("/api/v1/shells/x/nudge", json={})
+    assert resp.status_code == 200
+    assert resp.json()["nudged"] is True
+    assert nudge_client.shells.send_input.await_args.args[0] == "claude-x"
 
 
 @pytest.mark.asyncio

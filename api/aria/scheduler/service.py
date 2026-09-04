@@ -196,8 +196,8 @@ class SchedulerService:
             goal = params.get("goal", "")
             if goal:
                 mode = params.get("mode", "safe")
-                backend = params.get("backend", "fireworks")
-                model = params.get("model", "") or "accounts/fireworks/models/glm-5p2"
+                backend = params.get("backend", "llamacpp")
+                model = params.get("model", "") or "default"
                 context = params.get("context", "")
 
                 async def _run_autopilot():

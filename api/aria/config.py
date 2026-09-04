@@ -8,6 +8,8 @@ Related Spec Sections:
 - Section 10.2: Pydantic Settings
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -62,6 +64,15 @@ class Settings(BaseSettings):
     # request is forwarded anyway so the caller sees the backend's own error
     # rather than a silent hang. Hermes' gateway_timeout is 1800s.
     llm_proxy_autostart_timeout: float = 300.0
+    # A one-slot llama.cpp backend cannot safely run concurrent Qwen4exp MTP
+    # requests. Queue them here, where interactive Hermes traffic can move
+    # ahead of background/evaluation work and the wait is observable, instead
+    # of leaving scheduling to an opaque FIFO inside the backend.
+    llm_proxy_admission_enabled: bool = True
+    # Every interval a queued request gains one priority tier. This preserves
+    # Hermes responsiveness without allowing sustained interactive traffic to
+    # starve an evaluation or maintenance job indefinitely.
+    llm_proxy_queue_aging_seconds: float = 30.0
     llamacpp_api_key: str = ""
     # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
     # busy/half-open local server wedge a caller for ~10min; a hang never raises
@@ -77,15 +88,15 @@ class Settings(BaseSettings):
     agentic_api_key: str = ""
 
     # Ridge (RTX 3090) — NInfer serving Qwen3.6-35B-A3B, reached over the tailnet
-    # via corsair's ridge-llama-proxy (:8092). The proxy sends Wake-on-LAN and
+    # via the Mac-native ridge-llama-proxy (:8092). The proxy sends Wake-on-LAN and
     # HOLDS the request while the box boots and loads 20.8 GiB of weights, so a
     # cold call legitimately takes ~90s before the first byte — hence a timeout
     # far larger than llamacpp's. Inference is remote; the agent's tools still
-    # run locally on corsair.
+    # run locally on the agent host.
     #
     # NOTE: NInfer serves ONE request at a time (no continuous batching), so
     # concurrent callers queue. Keep the number of ridge-backed workers small.
-    ridge_url: str = "http://100.123.245.84:8092/v1"
+    ridge_url: str = "http://127.0.0.1:8092/v1"
     ridge_api_key: str = ""
     ridge_timeout_seconds: int = 420
 
@@ -108,10 +119,6 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     openrouter_api_key: str = ""
-
-    # Fireworks AI (Firepass) — OpenAI-compatible; hosts GLM 5.2.
-    fireworks_api_key: str = ""
-    fireworks_base_url: str = "https://api.fireworks.ai/inference/v1"
 
     # Spend circuit-breaker: if >0, the rate-limit watchdog trips the global
     # emergency stop when the last hour's priced usage exceeds this many USD.
@@ -143,11 +150,18 @@ class Settings(BaseSettings):
     # interactive TUI in a watched tmux shell; it does not reimplement
     # Pi's agent loop. Provider names correspond to ~/.pi/agent/models.json.
     pi_coding_binary: str = "pi"
-    pi_coding_provider_llamacpp: str = "llama-cpp"
-    pi_coding_provider_agentic: str = "agentic"
-    pi_coding_provider_ridge: str = "ridge"
+    # Every legacy profile label converges on Pi's single inference-only ARIA
+    # provider. Pi's models.json scopes that provider to the three Corsair Qwen
+    # deployments; it must never carry direct node URLs or cloud providers.
+    pi_coding_provider_llamacpp: str = "aria"
+    pi_coding_provider_agentic: str = "aria"
+    pi_coding_provider_ridge: str = "aria"
     coding_default_backend: str = "codex"
-    coding_default_workspace: str = "/home/ben/Development/aria-projects"
+    coding_default_workspace: str = "/Users/ben/Development/AgentWorkspaces/aria-projects"
+    # Optional fleet node for unattended coding sessions. Empty preserves
+    # local execution; the Mac deployment points this at the `mac-agents`
+    # logical capability node. It is not an account or sandbox boundary.
+    coding_default_host: str = ""
     coding_output_lines: int = 500
     # Run ARIA-spawned coding sessions on the watched-shell substrate (a tmux
     # session that auto-adopts + captures to shell_events), so a sub-agent IS a
@@ -345,7 +359,7 @@ class Settings(BaseSettings):
     #   search_enabled=False     -> never emit $vectorSearch/$search; recall
     #     degrades to the mongod-native fallback scan.
     embeddings_enabled: bool = True
-    search_enabled: bool = True
+    search_enabled: bool = False
 
     # Backfill worker: drains embedding_pending memories + un-embedded ontology
     # entities. Runs on a timer and is woken immediately when embeddings are
@@ -365,6 +379,10 @@ class Settings(BaseSettings):
     api_port: int = 8200
     api_auth_enabled: bool = True
     api_key: str = "aria-local-admin-key"
+    # Inference-only credential for OpenAI-compatible gateway consumers.  This
+    # key is deliberately invalid for every ARIA control-plane route, so it is
+    # safe to provision to coding-agent hosts without distributing api_key.
+    llm_gateway_api_key: str = ""
     cors_origins: list[str] = [
         "http://localhost:3000",
         "http://localhost:8200",
@@ -561,7 +579,9 @@ class Settings(BaseSettings):
     # Uses subscription tokens instead of API tokens for heavy lifting
     use_claude_runner: bool = True       # set False to use API tokens for all tasks
     claude_runner_timeout_seconds: int = 120  # default timeout for non-dream tasks
-    claude_runner_skip_permissions: bool = True  # allow background tasks full tool access
+    # Retained for environment compatibility only. Background runners always
+    # use Claude Code's sandboxed auto mode; bypass is intentionally ignored.
+    claude_runner_skip_permissions: bool = False
 
     # Deep Think — delegate reasoning to Claude Opus via CLI
     # The orchestrator model handles routing/memory, Claude does the thinking
@@ -631,10 +651,8 @@ class Settings(BaseSettings):
     shells_retention_days: int = 0  # 0 = keep forever
     shells_auto_archive_days: int = 7
     # Command spawned inside a new shell when launch_claude=True.
-    # --dangerously-skip-permissions matches the long-running ARIA workflow
-    # where the user has already approved the agent for filesystem/shell use;
-    # override via env var SHELLS_CLAUDE_LAUNCH_COMMAND if you need different
-    # flags or a different binary entirely.
+    # The launcher uses Claude Code's sandboxed auto mode. Managed settings on
+    # the agent account also disable the permission-bypass mode.
     #
     # Wrapped in `bash -lc` so the login shell sources ~/.profile / ~/.bashrc
     # and PATH includes ~/.local/bin (or wherever the user installed claude).
@@ -716,7 +734,11 @@ class Settings(BaseSettings):
     shells_adopt_interval_seconds: int = 15
     # pipe-pane shim the reconciler starts capture with (writes the pidfile the
     # capture process is tracked by). Matches scripts/aria-shell-capture.
-    shells_capture_shim: str = "/home/ben/.local/bin/aria-shell-capture"
+    # This API runs on both the Mac control plane and Corsair. A Linux-specific
+    # absolute path made the Mac reconciler launch a nonexistent command every
+    # 15 seconds, so capture never stayed attached and the shell registry
+    # churned continuously.
+    shells_capture_shim: str = str(Path.home() / ".local/bin/aria-shell-capture")
 
     # Project registry harvester — derives the projects collection from git
     # repos + Claude/pi sessions + live shells. Never hand-maintained.
@@ -908,12 +930,12 @@ class Settings(BaseSettings):
     # --- Charters / steward -------------------------------------------------
     steward_enabled: bool = False
     steward_interval_minutes: int = 30
-    # Explicit slug, never the /llm/v1 "largest resident" auto-route: that
-    # resolves to DS4, which is pi's single slot, and every steward tick would
-    # evict a coding agent's warm prefix (4.2 s warm vs 39.5 s cold).
+    # Explicit slug through ARIA's identified gateway, never the /llm/v1
+    # "largest resident" auto-route: that could select a coding model and evict
+    # its warm prefix. The gateway preserves identity, policy and observability.
     steward_backend: str = "llamacpp"
     steward_model: str = "qwen3.8-27b-rocmfp4-r9700"
-    steward_endpoint: str = "http://127.0.0.1:8080/v1"
+    steward_endpoint: str = "http://127.0.0.1:8200/llm/v1-identified"
     steward_max_actions_per_tick: int = 2
     # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before
     # `content`, so a tight token budget returns finish_reason="length" with an

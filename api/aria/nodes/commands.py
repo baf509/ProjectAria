@@ -28,11 +28,33 @@ def _now() -> datetime:
 
 
 async def enqueue_command(
-    db, node_id: str, kind: str, args: dict, *, ttl_seconds: Optional[int] = None
+    db,
+    node_id: str,
+    kind: str,
+    args: dict,
+    *,
+    ttl_seconds: Optional[int] = None,
+    idempotency_key: Optional[str] = None,
 ) -> str:
-    """Insert a pending command for `node_id`; returns its id."""
+    """Insert a pending command for `node_id`; returns its id.
+
+    A supplied idempotency key reuses an unexpired pending/claimed/done command.
+    This lets lifecycle requests safely survive an offline node and client
+    retries without enqueuing duplicate destructive operations.
+    """
     ttl = ttl_seconds if ttl_seconds is not None else settings.node_command_ttl_seconds
     now = _now()
+    if idempotency_key:
+        existing = await db.shell_commands.find_one(
+            {
+                "node_id": node_id,
+                "idempotency_key": idempotency_key,
+                "status": {"$in": ["pending", "claimed", "done"]},
+                "expires_at": {"$gt": now},
+            }
+        )
+        if existing:
+            return existing["_id"]
     cmd_id = str(uuid4())
     await db.shell_commands.insert_one(
         {
@@ -43,6 +65,7 @@ async def enqueue_command(
             "status": "pending",
             "result": None,
             "error": None,
+            "idempotency_key": idempotency_key,
             "created_at": now,
             "claimed_at": None,
             "done_at": None,

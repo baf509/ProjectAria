@@ -87,7 +87,7 @@ class Orchestrator:
             local_config = {**agent["llm"], "backend": "llamacpp"}
             return [(local_config, False)]
 
-        # Conversation-level override is an explicit PIN (e.g. /model fireworks …
+        # Conversation-level override is an explicit PIN (e.g. /model openrouter
         # or "use openrouter") — honor it strictly with NO fallback, so a problem
         # the user wants handled a specific way stays on that model.
         override = (conversation or {}).get("llm_config_override")

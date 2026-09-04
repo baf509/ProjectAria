@@ -23,6 +23,7 @@ from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from aria.config import settings
 from aria.shells.ansi import strip_ansi
 
 logger = logging.getLogger("aria.shells.capture")
@@ -80,7 +81,10 @@ async def _run_capture(shell_name: str) -> None:
                     "$setOnInsert": {
                         "short_name": shell_name.split("-", 1)[-1] if "-" in shell_name else shell_name,
                         "project_dir": os.environ.get("SHELLS_CAPTURE_PROJECT_DIR", ""),
-                        "host": os.uname().nodename if hasattr(os, "uname") else "",
+                        # The configured logical node id is the fleet identity;
+                        # the OS hostname is only descriptive and may include a
+                        # .local suffix that makes this process look remote.
+                        "host": settings.local_node_id or (os.uname().nodename if hasattr(os, "uname") else ""),
                         "created_at": now_utc,
                         "status": "active",
                         "tags": [],
@@ -111,16 +115,18 @@ async def _run_capture(shell_name: str) -> None:
     try:
         while not stop.is_set():
             try:
-                line = await asyncio.wait_for(reader.readline(), timeout=flush_interval)
+                # A terminal is a byte stream, not a line protocol. TUIs often
+                # redraw more than asyncio's 64 KiB StreamReader line limit
+                # without emitting a newline; readline() then raises
+                # LimitOverrunError and tmux closes the pipe. Bounded reads
+                # preserve the exact stream while making huge redraws safe.
+                chunk = await asyncio.wait_for(reader.read(64 * 1024), timeout=flush_interval)
             except asyncio.TimeoutError:
-                line = b""
-            if line:
-                # Preserve the trailing newline that pipe-pane delivered.
-                # xterm.js and the TUI process the byte stream as-is;
-                # stripping the LF here would force every consumer to re-inject
-                # one, and that injection breaks Claude Code's cursor-positioning
-                # redraws (which often end mid-escape, not on a newline).
-                raw = line.decode("utf-8", errors="replace")
+                chunk = b""
+            if chunk:
+                # Preserve bytes as delivered by pipe-pane. xterm.js and the TUI
+                # process the stream as-is; chunks may end mid-line or mid-escape.
+                raw = chunk.decode("utf-8", errors="replace")
                 pending.append(
                     {
                         "shell_name": shell_name,

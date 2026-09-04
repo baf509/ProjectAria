@@ -1,112 +1,39 @@
 # ARIA Web UI
 
-Modern web interface for ARIA built with Next.js 14 and TypeScript.
+Next.js 14/React 18 operator interface for ARIA. It is an operations cockpit,
+not ARIA's conversational identity.
 
-## Features
+## Surfaces
 
-- **Real-time Chat** - Streaming responses from AI agents
-- **Conversation Management** - Create, view, and switch between conversations
-- **Responsive Design** - Works on desktop and mobile
-- **Dark Mode** - Automatic dark mode support
-- **Type-safe** - Full TypeScript support with proper typing
+- Inbox and approval decisions
+- Supervision of projects and watched shells
+- Fleet services, model servers, and benchmarks
+- Memories, agents, research, tasks, usage, and workflows
+- Autonomy controls
+- Explicit conversations with enabled non-default agents
 
-## Tech Stack
-
-- **Next.js 14** - React framework with App Router
-- **TypeScript** - Type-safe development
-- **Tailwind CSS** - Utility-first CSS framework
-- **Lucide React** - Icon library
-- **Axios** - HTTP client for API communication
+The root redirects to `/inbox`. ARIA's default `aria` chat agent is disabled by
+design; Hermes over Signal is the human conversational front door.
 
 ## Development
 
-### Prerequisites
-
-- Node.js 20+
-- npm or yarn
-
-### Setup
-
 ```bash
-# Install dependencies
 npm install
-
-# Run development server
 npm run dev
+npm run typecheck
+npm run build
+npm run gate
+npm run test:e2e
 ```
 
-The UI will be available at http://localhost:3000
+The development server defaults to `http://127.0.0.1:3000`. Use a spare port if
+the production Mac service is already listening there.
 
-### Environment Variables
+The browser calls the same-origin `/api/v1/*` route handler. Set `ARIA_API_URL`
+for the server-side upstream when needed; never expose ARIA credentials through
+`NEXT_PUBLIC_API_KEY`, a browser bundle, or a URL query parameter.
 
-Create a `.env.local` file:
-
-```bash
-NEXT_PUBLIC_API_URL=http://localhost:8200
-```
-
-## Docker
-
-### Build
-
-```bash
-docker build -t aria-ui .
-```
-
-### Run
-
-```bash
-docker run -p 3000:3000 -e NEXT_PUBLIC_API_URL=http://localhost:8200 aria-ui
-```
-
-Or use docker-compose from the project root:
-
-```bash
-docker compose up ui
-```
-
-## Project Structure
-
-```
-ui/
-├── src/
-│   ├── app/           # Next.js app router pages
-│   │   ├── page.tsx   # Home page (redirects to chat)
-│   │   └── chat/
-│   │       └── page.tsx  # Main chat interface
-│   ├── components/    # Reusable React components (future)
-│   ├── lib/
-│   │   └── api-client.ts  # ARIA API client
-│   └── types/
-│       └── index.ts   # TypeScript type definitions
-├── public/            # Static assets
-├── package.json
-├── tsconfig.json
-├── tailwind.config.js
-└── next.config.js
-```
-
-## API Client
-
-The `apiClient` in `src/lib/api-client.ts` provides type-safe methods for all ARIA API endpoints:
-
-- **Health**: `checkHealth()`, `checkLLMHealth()`
-- **Conversations**: `listConversations()`, `getConversation()`, `createConversation()`, `streamMessage()`
-- **Agents**: `listAgents()`, `getAgent()`, `createAgent()`, `updateAgent()`
-- **Memories**: `listMemories()`, `searchMemories()`, `createMemory()`
-- **Tools**: `listTools()`, `getTool()`, `executeTool()`
-- **MCP**: `listMCPServers()`, `addMCPServer()`, `removeMCPServer()`
-
-## Future Enhancements
-
-- Agent management UI
-- Memory browser/viewer
-- Tool execution visualization
-- Settings/configuration page
-- Multi-agent support
-- File upload for document chat
-- Voice input/output
-
-## License
-
-Part of the ARIA project.
+Production deployment details are in `docs/ops/WEB_UI.md`. Production runs from
+`/Users/ben/Services/apps/ProjectAria/ui` under the Mac
+`com.ben.devbox.aria-ui` LaunchDaemon, loopback-bound on `:3000` and privately
+published over the tailnet.

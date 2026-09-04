@@ -243,7 +243,9 @@ class ResearchPlanner:
         # 39.5 s cold). Research runs on Qwen slot 2 or it does not run.
         self.backend = _setting("steward_backend", "llamacpp")
         self.model = _setting("steward_model", "qwen3.8-27b-rocmfp4-r9700")
-        self.endpoint = _setting("steward_endpoint", "http://127.0.0.1:8080/v1")
+        self.endpoint = _setting(
+            "steward_endpoint", "http://127.0.0.1:8200/llm/v1-identified"
+        )
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
         # Minutes since the last sign of Hermes activity, refreshed once per
@@ -1204,11 +1206,11 @@ class ResearchPlanner:
         return await self.planning.get_project_by_ident(str(project))
 
     async def _complete(self, prompt: str, *, max_tokens: int, temperature: float = 0.4) -> str:
-        """One local completion, pinned to the steward endpoint.
+        """One local completion, pinned through ARIA's identified gateway.
 
-        `base_url` is passed explicitly: without it `llm_manager` hands back the
-        /llm/v1 proxy adapter, which auto-routes to the largest resident model
-        (DS4 — pi's slot). An empty answer raises, because Qwen3.8's reasoning
+        `base_url` is passed explicitly: it selects the steward model without
+        using the /llm/v1 largest-resident auto-route while retaining gateway
+        identity, policy and observability. An empty answer raises, because Qwen3.8's reasoning
         tokens are emitted before content and a truncated reply is an empty
         string, not a short one.
         """
