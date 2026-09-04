@@ -142,7 +142,9 @@ Hermes also declares both Flash Next variants at 262,144 tokens and reserves a
 32,768-token output budget. Its absolute 95K compression cap remains the
 latency-control threshold; it is intentionally much earlier than capacity
 pressure. Radiance remains declared at 245,760 tokens to retain explicit output
-headroom beneath its 262,144-token server limit.
+headroom beneath its 262,144-token server limit. Hermes control-plane work uses
+the authenticated ARIA MCP bridge; a bare `curl` to `:8200` is expected to fail
+and must not be used as a fallback when a deferred MCP tool needs loading.
 
 ## Gateway accounting
 

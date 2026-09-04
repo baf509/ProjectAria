@@ -12,6 +12,10 @@
 - Corrected Hermes's Halo-only metadata to 262,144 tokens and reserved a 32,768-
   token response budget. Its 95K compression threshold remains the routine
   latency boundary.
+- Tightened Hermes's ARIA tool guidance after a live turn tried an unauthenticated
+  raw HTTP call. The configured MCP bridge was independently verified healthy
+  with all 91 tools, so Hermes now explicitly loads ARIA tools through tool
+  search and treats direct API-auth attempts as a bridge-path error.
 - Reconciled the repository agent guide with the hybrid-default three-model Pi
   topology and the current total-context semantics.
 
