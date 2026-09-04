@@ -16,6 +16,9 @@
   50.9 tok/s decode, 65.4% MTP acceptance, and 95.2% prompt-token reuse. Clocks
   remained steady; peak observed temperatures were 70 C on R9700 memory and
   60 C on Halo, with no throttling or runtime errors.
+- Made Next.js build IDs deterministic when `BUILD_SHA` is supplied. Identical
+  source/deployment builds now produce the same service-worker cache version
+  instead of dirtying the tracked worker with a random ID on every deploy.
 
 ## 2026-09-03 — Caller-aware single-slot admission and fast-band compaction
 

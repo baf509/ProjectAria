@@ -1,6 +1,12 @@
+const buildSha = process.env.BUILD_SHA
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Keep production artifacts and the generated service-worker cache version
+  // reproducible across source and deployed clones. `next build` otherwise
+  // creates a fresh random ID even when every input is identical.
+  ...(buildSha ? { generateBuildId: async () => buildSha } : {}),
   // Standalone only for the container image (the Dockerfile sets this). Locally
   // it would break `next start`, which the responsive gate uses to serve the
   // production build — and a gate that cannot serve real CSS silently passes an
