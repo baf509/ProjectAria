@@ -962,9 +962,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         kv_kib_per_token=33.0,
         overhead_gib=3.0,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K"),
-        consumers_note="Pi-selectable through ARIA on :8120; "
-        "Radiance (:8080) stays up on the R9700 as ARIA's steward/LLAMACPP_URL target and the "
-        "fast conversation fallback. Gemma remains CPU-only.",
+        consumers_note="Pi-selectable through ARIA on :8120 as the Halo half of the "
+        "dual-resident rollback loadout. Hybrid Flash Next on :8121 is the boot-default "
+        "ARIA/Hermes/Pi route; selecting it replaces both rollback servers.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
@@ -1053,14 +1053,15 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 name="spec_draft_n_max", env="SPEC_DRAFT_N_MAX", label="MTP draft depth",
                 kind="enum", default="3",
                 choices=(("3", "qualified Corsair winner; about 11% faster decode"),
-                         ("2", "slower rollback profile")),
+                         ("2", "slower rollback profile"),
+                         ("0", "disable MTP for a sequential diagnostic control")),
             ),
             LaunchParam(
                 name="reasoning_effort", env="REASONING_EFFORT",
                 label="Default reasoning", kind="enum", default="medium",
                 choices=(("medium", "balanced default for Hermes and generic callers"),
                          ("low", "lower latency"),
-                         ("high", "mapped to xhigh by the embedded template"),
+                         ("high", "higher deliberation"),
                          ("xhigh", "maximum deliberation"),
                          ("none", "disable reasoning unless a request overrides it")),
                 description="Server fallback when a client omits template controls. Pi's "
@@ -1179,9 +1180,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "output token-identical to unspeculated decoding on 8/8 prompts); the same "
         "test FAILED on the llama.cpp ROCmFPX build (6/8 diverged mid-content), which "
         "is why speculation must stay OFF on any llama.cpp path. Serves BOTH aliases "
-        "`qwen3.8-27b-r9700` (Hermes main provider) and `qwen3.8-27b-rocmfp4-r9700` "
-        "(Hermes auxiliary roles + ARIA config.steward_model) — the second is a "
-        "historical misnomer kept so the cutover broke nothing. Multimodal (vision "
+        "`qwen3.8-27b-r9700` and `qwen3.8-27b-rocmfp4-r9700` — the second is a "
+        "historical compatibility alias. Hybrid Flash Next is now the default route; "
+        "Radiance is retained for the dual-resident rollback loadout. Multimodal (vision "
         "tower kept, LMONLY=0).",
         runtime_repo="https://codeberg.org/StillDeadcode/vllm-radiance",
         runtime_ref="docker.io/stilldeadcode/vllm-radiance:0.5.8 (image built "
@@ -1255,11 +1256,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=31.1,
         weights_gib=17.93,
         exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-Radiance"),
-        consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 (declared "
-        "245760 since 2026-08-18, compaction at 184,320); Hermes auxiliary roles "
-        "(compression, skills_hub, ...) -> the same port via the "
-        "'qwen3.8-27b-rocmfp4-r9700' alias; ARIA config.steward_model uses that alias "
-        "too. DS4 on :8108 remains the coding-agent (pi) model.",
+        consumers_note="Dual-resident rollback option on :8080. Hermes and Pi advertise "
+        "245760 tokens to preserve 16384 tokens of output headroom beneath the server's "
+        "262144-token limit. Hybrid Flash Next is the boot-default ARIA/Hermes/Pi route.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-R9700-Radiance-G64",
