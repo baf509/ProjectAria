@@ -968,14 +968,16 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
-        bench_decode_tok_s=54.10,
-        bench_prefill_tok_s=1183.4,
-        bench_at="2026-09-03",
+        bench_decode_tok_s=52.49,
+        bench_prefill_tok_s=1105.4,
+        bench_at="2026-09-04",
         bench_note="Production 1x262K layout-0 qualification with q8_0 K/V and MTP3. "
-        "Decode is the median of three fixed-seed 512-token code/prose/structured "
-        "generations (54.10 tok/s; no-MTP control 32.57). Prefill is the cold 4K "
-        "probe; cold 32K/64K/128K/245K probes measured 853.1/607.4/383.7/235.2 "
-        "tok/s. Retrieval needles passed at 32K, 128K, and 245K.",
+        "Cold 4K/32K/64K/128K/245K prefill measured "
+        "1105.4/864.3/609.1/384.8/235.2 tok/s; matching sustained 384-token "
+        "decode measured 52.49/46.57/44.07/38.70/29.32 tok/s. All five output "
+        "checks passed through 245K. The untouched runtime measured 50.48 tok/s "
+        "on the identical 4K control. Repeated 8.2K prompts reused 8,197/8,201 "
+        "tokens and returned in about 0.205 seconds.",
         description="Qwen3.8-Flash-Next UD-Q4_K_XL split across both Corsair GPUs. "
         "The dense trunk, KV cache, and shared Q8_0 MTP head live on the R9700; "
         "routed experts from the selected layer boundary onward live on the Strix "
@@ -984,10 +986,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "the boot-default whole-machine loadout: it replaces, rather than co-resides "
         "with, the separate Radiance + Halo-only servers.",
         runtime_repo="https://github.com/sixvolts/llama-halo-hybrid.git",
-        runtime_ref="Pinned 210b94ab8490790c28a5800c2cdcfb0d6b3dc986 (2026-09-02), "
-        "ROCm build for gfx1151 + gfx1201. Includes device-resident recurrent "
-        "rollback, cached Halo intermediates, deep-context QSA gather, MTP fixes, "
-        "and two-lane hybrid prefill.",
+        runtime_ref="Base 210b94ab8490790c28a5800c2cdcfb0d6b3dc986 plus the "
+        "2026-09-04 merged loader-memory fix and qwen4exp GDN normalization "
+        "correction; ROCm build for gfx1151 + gfx1201. Includes device-resident "
+        "recurrent rollback, cached Halo intermediates, deep-context QSA gather, "
+        "MTP fixes, and two-lane hybrid prefill.",
         runtime_family="llamacpp",
         backend_device="ROCm0 (R9700 dense/KV/MTP) + ROCm1 (Strix Halo routed experts)",
         devices=("Radeon AI PRO R9700 (ROCm0)", "Strix Halo iGPU (ROCm1)"),
