@@ -30,10 +30,20 @@ set -uo pipefail
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 
 # Termius does not advertise synchronized-output support, so full-screen frame
-# updates are visibly painted line by line. Keep ARIA's Codex TUI inline and
-# disable its decorative animations; both settings are scoped to managed
-# shells and still preserve normal terminal scrollback.
-TUI_ARGS=(--no-alt-screen -c tui.animations=false)
+# updates are visibly painted line by line. Keep ARIA's Codex TUI inline,
+# disable its decorative animations, and bound resize reflow. Codex otherwise
+# clears terminal scrollback and replays up to 1,000 rendered rows whenever a
+# mobile viewport changes size. The smaller replay remains configurable for a
+# client that can paint synchronized frames efficiently.
+RESIZE_REFLOW_MAX_ROWS="${ARIA_CODEX_RESIZE_REFLOW_MAX_ROWS:-250}"
+case "$RESIZE_REFLOW_MAX_ROWS" in
+    ''|*[!0-9]*) RESIZE_REFLOW_MAX_ROWS=250 ;;
+esac
+TUI_ARGS=(
+    --no-alt-screen
+    -c tui.animations=false
+    -c "tui.terminal_resize_reflow_max_rows=$RESIZE_REFLOW_MAX_ROWS"
+)
 
 # Detached sessions cannot answer approval prompts. Keep them autonomous but
 # fail closed outside the workspace by default. An explicit caller request for

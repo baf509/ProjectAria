@@ -20,6 +20,7 @@ import urllib.request
 SHELL_PREFIX = "claude-"
 DEFAULT_API_URL = "http://127.0.0.1:8200"
 RETRYABLE_HTTP_CODES = {502, 503, 504}
+DEFAULT_TMUX_HISTORY_LIMIT = 50_000
 
 
 def _canonical_shell_name(name: str) -> str:
@@ -27,22 +28,47 @@ def _canonical_shell_name(name: str) -> str:
     return name if name.startswith(SHELL_PREFIX) else f"{SHELL_PREFIX}{name}"
 
 
-def _stabilize_window_size(name: str) -> None:
-    """Keep multiple attached clients from repeatedly resizing a TUI.
+def _configure_tmux_session(name: str) -> None:
+    """Make an ARIA shell stable and scrollable across terminal clients.
 
     tmux defaults to ``window-size latest``.  An ARIA shell is often attached
     from both a desktop terminal and a narrower SSH client, so focus changes
     otherwise send SIGWINCH and make Codex repaint its entire transcript.
     ``smallest`` keeps every attached client usable without focus-driven size
-    changes.  This is best-effort because a just-stopped shell may disappear
-    between registration and attachment.
+    changes.
+
+    A newly attached terminal only owns the output it received after attach;
+    older output lives in tmux's history.  Enabling mouse reporting gives
+    Termius's wheel gesture to tmux, whose default WheelUpPane binding enters
+    copy mode.  Keep enough history for long coding sessions rather than
+    tmux's small 2,000-line default.  Every option is best-effort because a
+    just-stopped shell may disappear between registration and attachment.
     """
-    subprocess.run(
-        ["tmux", "set-option", "-w", "-t", f"{name}:", "window-size", "smallest"],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    history_limit = os.environ.get(
+        "ARIA_TMUX_HISTORY_LIMIT", str(DEFAULT_TMUX_HISTORY_LIMIT)
     )
+    if not history_limit.isdigit() or int(history_limit) < 2_000:
+        history_limit = str(DEFAULT_TMUX_HISTORY_LIMIT)
+    commands = (
+        ["tmux", "set-option", "-t", name, "mouse", "on"],
+        [
+            "tmux",
+            "set-option",
+            "-w",
+            "-t",
+            f"{name}:",
+            "history-limit",
+            history_limit,
+        ],
+        ["tmux", "set-option", "-w", "-t", f"{name}:", "window-size", "smallest"],
+    )
+    for command in commands:
+        subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
 
 
 def _load_key() -> str:
@@ -196,7 +222,7 @@ def main() -> int:
         return 1
     full_name = shell.get("name", full_name)
 
-    _stabilize_window_size(full_name)
+    _configure_tmux_session(full_name)
     action = "switch-client" if os.environ.get("TMUX") else "attach-session"
     return subprocess.call(["tmux", action, "-t", f"={full_name}"])
 

@@ -1055,6 +1055,17 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 choices=(("3", "qualified Corsair winner; about 11% faster decode"),
                          ("2", "slower rollback profile")),
             ),
+            LaunchParam(
+                name="reasoning_effort", env="REASONING_EFFORT",
+                label="Default reasoning", kind="enum", default="medium",
+                choices=(("medium", "balanced default for Hermes and generic callers"),
+                         ("low", "lower latency"),
+                         ("high", "mapped to xhigh by the embedded template"),
+                         ("xhigh", "maximum deliberation"),
+                         ("none", "disable reasoning unless a request overrides it")),
+                description="Server fallback when a client omits template controls. Pi's "
+                            "chat_template_kwargs continue to override this per request.",
+            ),
             _PARAM_PORT,
         ),
         ctx_param="ctx",

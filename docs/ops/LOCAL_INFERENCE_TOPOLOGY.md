@@ -45,7 +45,9 @@ The production profile is 1 x 256K with layout 0: every routed expert lives on
 the Halo, leaving the R9700 room for the dense trunk, shared MTP head and the
 262,144-token q8_0 KV cache. Unified KV and idle-slot caching are forced
 explicitly, with a 16 GiB host-RAM prompt cache sized for roughly two complete
-q8 context prefixes.
+q8 context prefixes. The server fallback reasoning effort is `medium`, avoiding
+the embedded template's `xhigh` fallback for clients that omit template kwargs;
+Pi's explicit per-request controls still override it.
 Live qualification on 2026-09-03 reported `n_ctx=262144`, about 29.4 GiB R9700
 VRAM used, 73.0 GiB Halo GTT used, and about 40.7 GiB MemAvailable after load.
 An identical second gateway request reused 57 of 61 prompt tokens.
@@ -135,6 +137,12 @@ sessions stay out of the measured deep-context latency band. ARIA's legacy
 `pi-coding` and `pi-coding-ridge` database rows are compatibility launch
 profiles, not additional Pi installations; startup reconciliation pins both to
 the same hybrid model rather than maintaining a second source of routing truth.
+
+Hermes also declares both Flash Next variants at 262,144 tokens and reserves a
+32,768-token output budget. Its absolute 95K compression cap remains the
+latency-control threshold; it is intentionally much earlier than capacity
+pressure. Radiance remains declared at 245,760 tokens to retain explicit output
+headroom beneath its 262,144-token server limit.
 
 ## Gateway accounting
 

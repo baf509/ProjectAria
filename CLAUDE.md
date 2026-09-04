@@ -3,7 +3,7 @@
 This file is the repository-local operating guide for coding agents. It does not
 override the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-08-29**.
+Last reconciled: **2026-09-04**.
 
 ## Read first
 
@@ -77,8 +77,9 @@ remain subject to the charter's unresolved cloud-exception rule.
 
 | Deployment | Host/device | Listener | Role |
 |---|---|---|---|
-| `Qwen3.8-27B-R9700-Radiance` | Corsair R9700 | `127.0.0.1:8080` | resident general model and Pi option |
-| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | Corsair Strix Halo | `127.0.0.1:8120` | resident long-context Pi option; live geometry is 1 × 256K |
+| `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` | Corsair R9700 + Strix Halo | `127.0.0.1:8121` | boot-default 1 × 256K model for ARIA, Hermes, and Pi |
+| `Qwen3.8-27B-R9700-Radiance` | Corsair R9700 | `127.0.0.1:8080` | dual-resident rollback and Pi option |
+| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | Corsair Strix Halo | `127.0.0.1:8120` | dual-resident rollback and Pi option; live geometry is 1 × 256K |
 | Gemma 4 E4B Q4 | Mac | `127.0.0.1:8104` | auxiliary workers |
 
 DeepSeek V4 weights/runtimes may remain on Corsair for rollback, testing, and
@@ -97,7 +98,9 @@ Hardware constraints:
   can pressure host-wide memory.
 - On Corsair, DRM `card0` is the R9700 and `card1` is the Halo.
 - Runtime-specific Vulkan/ROCm device numbering must be verified, never copied.
-- llama.cpp `-c` is per sequence; total KV scales with `-c × -np`.
+- In the qualified llama.cpp lineage, `-c` is the total context pool; multiple
+  slots divide it. The hybrid remains one slot because upstream #28286 can
+  contaminate Qwen4exp recurrent MTP state across parallel slots.
 
 The Flash registry compatibility slug still says `2x256K`; correct its static
 geometry/runtime metadata before treating the label as literal.
@@ -110,11 +113,12 @@ installation has exactly:
 - provider `aria`;
 - model `Qwen3.8-27B-R9700-Radiance`;
 - model `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`;
+- model `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default);
 - base URL `/llm/v1-identified` on the Mac;
 - an inference-only scoped credential.
 
-No Fireworks provider, raw Corsair endpoint, cloud fallback, or third Pi model is
-permitted. The legacy `pi-coding-ridge` profile name is retained only as a
+No Fireworks provider, raw Corsair endpoint, cloud fallback, or additional Pi
+model is permitted. The legacy `pi-coding-ridge` profile name is retained only as a
 compatibility selector for Flash Next. ARIA owns the shell, worktree selection,
 capture, concurrency, watchdog, review, and Ralph loop; Pi owns its transcript
 and coding tools.
@@ -197,8 +201,8 @@ sudo launchctl print system/com.ben.devbox.aria-ui
 
 # Corsair observed data plane
 systemctl --user is-active aria-node.service
-systemctl --user is-active qwen3.8-radiance.service qwen3.8-flash-next.service
-ss -ltn | rg '127.0.0.1:(8080|8120)'
+systemctl --user is-active qwen3.8-flash-next-hybrid.service
+ss -ltn | rg '127.0.0.1:(8080|8120|8121)'
 ```
 
 Authenticated ARIA registry/service/health responses should be compared with

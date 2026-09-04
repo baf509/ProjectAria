@@ -1,5 +1,33 @@
 # ARIA Changelog
 
+## 2026-09-04 — Consumer context and reasoning defaults reconciled
+
+- Re-audited the live hybrid deployment, Hermes, and both managed Pi installs
+  against the architecture charter. The qualified hybrid remains one 262,144-
+  token slot with q8_0 K/V, unified KV, idle-slot reuse, a 16 GiB prompt cache,
+  4096/2048 batch geometry, and depth-3 MTP.
+- Added an explicit `medium` server reasoning fallback so callers without chat
+  template controls no longer inherit Qwen's `xhigh` template default. Pi keeps
+  its explicit off/low/medium/high per-request mapping.
+- Corrected Hermes's Halo-only metadata to 262,144 tokens and reserved a 32,768-
+  token response budget. Its 95K compression threshold remains the routine
+  latency boundary.
+- Reconciled the repository agent guide with the hybrid-default three-model Pi
+  topology and the current total-context semantics.
+
+## 2026-09-04 — Termius scrollback and bounded Codex redraws
+
+- ARIA-managed tmux shells now enable mouse mode so Termius wheel gestures
+  enter tmux copy mode, where the pre-attachment and post-reconnect transcript
+  actually lives. Their history limit is raised from 2,000 to 50,000 lines.
+- Codex remains in inline mode, but resize reflow is capped at 250 rendered
+  rows for managed shells. This bounds the visible character-by-character
+  repaint on terminals without synchronized-output support when a mobile
+  viewport or software keyboard changes size.
+- The Mac and Corsair attach paths both enforce stable `window-size smallest`
+  geometry plus the scrollback settings instead of depending on a global tmux
+  configuration having been loaded.
+
 ## 2026-09-04 — Privacy-safe inference traces and prefix drift
 
 - Added a unique trace ID to every OpenAI-gateway request and response. Usage

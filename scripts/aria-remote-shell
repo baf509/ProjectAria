@@ -66,6 +66,21 @@ if [[ "${attach_existing:-0}" != 1 ]]; then
         "$launcher" "${forwarded_args[@]}"
 fi
 
+# Termius attaches to history owned by tmux, not to an ordinary terminal
+# scrollback buffer. Mouse mode lets its wheel enter tmux copy mode. Stable
+# geometry avoids focus-driven TUI reflows, and a larger history limit keeps a
+# useful transcript available after reconnecting.
+history_limit="${ARIA_TMUX_HISTORY_LIMIT:-50000}"
+case "$history_limit" in
+    ''|*[!0-9]*) history_limit=50000 ;;
+esac
+if (( 10#$history_limit < 2000 )); then
+    history_limit=50000
+fi
+tmux set-option -t "$session" mouse on 2>/dev/null || true
+tmux set-option -w -t "$session:" history-limit "$history_limit" 2>/dev/null || true
+tmux set-option -w -t "$session:" window-size smallest 2>/dev/null || true
+
 # Do not exec here. Some full-screen agents query terminal capabilities as they
 # exit; keeping the remote pty alive briefly lets us discard late replies rather
 # than handing fragments such as `64;1;2...c` to the caller's prompt.

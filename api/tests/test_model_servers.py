@@ -722,6 +722,7 @@ def test_flash_next_hybrid_claims_both_gpu_pools_and_conflicts_with_dual_residen
     assert defaults["cache_ram_mib"] == "16384"
     assert defaults["kv_type_k"] == defaults["kv_type_v"] == "q8_0"
     assert defaults["spec_draft_n_max"] == "3"
+    assert defaults["reasoning_effort"] == "medium"
 
 
 # model_servers/model_pulls now live on the base FakeDB; alias kept for the

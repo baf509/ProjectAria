@@ -96,6 +96,16 @@ def test_repeat_launch_reattaches_to_existing_shell(
 
     assert main() == 0
     assert option_calls == [
+        ["tmux", "set-option", "-t", expected_target[1:], "mouse", "on"],
+        [
+            "tmux",
+            "set-option",
+            "-w",
+            "-t",
+            f"{expected_target[1:]}:",
+            "history-limit",
+            "50000",
+        ],
         [
             "tmux",
             "set-option",
@@ -227,7 +237,10 @@ def test_codex_launch_shim_makes_auto_resume_opt_in_and_keeps_fresh_fallback():
     # shell in its directory slow while Codex replays it.
     assert "ARIA_CODEX_RESUME_MAX_BYTES" in source
     assert 'ARIA_CODEX_RESUME_MAX_BYTES:-0' in source
-    assert "TUI_ARGS=(--no-alt-screen -c tui.animations=false)" in source
+    assert "ARIA_CODEX_RESIZE_REFLOW_MAX_ROWS" in source
+    assert "tui.terminal_resize_reflow_max_rows=$RESIZE_REFLOW_MAX_ROWS" in source
+    assert "--no-alt-screen" in source
+    assert "tui.animations=false" in source
     assert "codex resume --last" in source
     # A failed resume must always fall back to a fresh session rather than
     # leave a dead pane, however long the failure took.
