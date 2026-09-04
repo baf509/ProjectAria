@@ -70,6 +70,7 @@ export const K = {
   tasks: '/tasks',
   usage: (days = 7) => `/usage/summary?days=${days}`,
   usageByModel: (days = 7) => `/usage/by-model?days=${days}`,
+  usageByCaller: (days = 7) => `/usage/by-caller?days=${days}`,
   benchRuns: (limit = 25) => `/benchmarks/runs?limit=${limit}`,
   benchSuites: '/benchmarks/suites',
   benchTargets: '/benchmarks/targets',

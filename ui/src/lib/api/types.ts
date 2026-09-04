@@ -816,6 +816,11 @@ export type UtilServer = {
   served_ctx?: number | null
   kv_cache_usage_pct?: number | null
   prefix_cache_hit_rate?: number | null
+  prompt_tokens_cached_total?: number | null
+  speculative_draft_tokens_total?: number | null
+  speculative_accepted_tokens_total?: number | null
+  speculative_acceptance_rate?: number | null
+  max_observed_context_tokens?: number | null
   prompt_cache_kind?: string | null
   prompt_cache_capacity?: string | null
   prompt_cache_used?: string | null

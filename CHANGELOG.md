@@ -1,5 +1,22 @@
 # ARIA Changelog
 
+## 2026-09-03 — Hybrid runtime effectiveness telemetry
+
+- Extended llama.cpp utilization parsing with cumulative prompt-cache tokens,
+  speculative draft/accept counters, and maximum observed context. Aria now
+  reports lifetime cache-hit and MTP-acceptance rates for the active process
+  alongside its existing live prefill/decode throughput.
+- Added these measurements to the model-server detail view and fixed hybrid
+  prompt-cache capacity discovery: current profiles call the launch parameter
+  `cache_ram_mib`, while the probe previously recognized only `cache_ram`.
+- Added `/usage/by-caller` and a dashboard table so Hermes, Pi, and background
+  cache effectiveness can be compared instead of inferred from a blended
+  server-wide ratio.
+- Re-qualified the live R9700 + Strix Halo path with a forced 4,096-token soak:
+  50.9 tok/s decode, 65.4% MTP acceptance, and 95.2% prompt-token reuse. Clocks
+  remained steady; peak observed temperatures were 70 C on R9700 memory and
+  60 C on Halo, with no throttling or runtime errors.
+
 ## 2026-09-03 — Caller-aware single-slot admission and fast-band compaction
 
 - Added cancellation-safe priority admission to the OpenAI gateway for

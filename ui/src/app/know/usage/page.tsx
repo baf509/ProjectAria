@@ -24,7 +24,7 @@ const DAYS = 7
 function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }) {
   return (
     <ScrollX>
-      <table className="w-full min-w-[36rem] border-collapse text-label">
+      <table className="w-full min-w-[42rem] border-collapse text-label">
         <thead>
           <tr className="border-b border-line text-left text-micro uppercase tracking-[0.08em] text-ink-faint">
             <th className="whitespace-nowrap py-1.5 pr-3 font-medium">{nameLabel}</th>
@@ -33,6 +33,7 @@ function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }
             <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">In</th>
             <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Out</th>
             <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Total</th>
+            <th className="whitespace-nowrap py-1.5 pr-3 text-right font-medium">Cache</th>
             <th className="whitespace-nowrap py-1.5 text-right font-medium">Cost</th>
           </tr>
         </thead>
@@ -47,6 +48,9 @@ function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }
               <td className="tnum py-1.5 pr-3 text-right">{count(row.input_tokens)}</td>
               <td className="tnum py-1.5 pr-3 text-right">{count(row.output_tokens)}</td>
               <td className="tnum py-1.5 pr-3 text-right">{count(row.total_tokens)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">
+                {row.cache_hit_rate !== undefined ? pct(row.cache_hit_rate) : '—'}
+              </td>
               <td className="tnum py-1.5 text-right">{row.cost !== undefined ? usd(row.cost) : '$0.00'}</td>
             </tr>
           ))}
@@ -60,6 +64,7 @@ export default function UsagePage() {
   const summary = useResource<UsageSummary>(K.usage(DAYS), { tier: 'lazy' })
   const byModel = useResource<UsageRow[]>(K.usageByModel(DAYS), { tier: 'lazy' })
   const byAgent = useResource<UsageRow[]>(K.usageByAgent(DAYS), { tier: 'lazy' })
+  const byCaller = useResource<UsageRow[]>(K.usageByCaller(DAYS), { tier: 'lazy' })
 
   const totalCost = (byModel.data ?? []).reduce((acc, r) => acc + (r.cost ?? 0), 0)
 
@@ -97,6 +102,12 @@ export default function UsagePage() {
       <Card title="By agent">
         <Async r={byAgent} skeletonRows={3} isEmpty={(d) => d.length === 0} empty="No usage recorded in this window.">
           {(rows) => <UsageTable rows={rows} nameLabel="Agent" />}
+        </Async>
+      </Card>
+
+      <Card title="By gateway caller">
+        <Async r={byCaller} skeletonRows={3} isEmpty={(d) => d.length === 0} empty="No attributed gateway usage in this window.">
+          {(rows) => <UsageTable rows={rows} nameLabel="Caller" />}
         </Async>
       </Card>
     </Stack>

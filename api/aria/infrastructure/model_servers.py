@@ -2902,7 +2902,27 @@ _METRIC_FIELDS = {
     "llamacpp:predicted_tokens_seconds": "predicted_tokens_per_second",
     "llamacpp:n_busy_slots_per_decode": "avg_busy_slots_per_decode",
     "llamacpp:n_decode_total": "decode_calls_total",
+    # Newer llama.cpp builds expose enough cumulative counters to measure the
+    # two optimisations that matter most for the shared Hermes/Pi deployment.
+    "llamacpp:prompt_tokens_cached_total": "prompt_tokens_cached_total",
+    "llamacpp:spec_decode_num_draft_tokens_total": "speculative_draft_tokens_total",
+    "llamacpp:spec_decode_num_accepted_tokens_total": "speculative_accepted_tokens_total",
+    "llamacpp:n_tokens_max": "max_observed_context_tokens",
 }
+
+
+def _llamacpp_derived(raw: dict) -> dict:
+    """Derive lifetime cache/speculation ratios from llama.cpp counters."""
+    out = dict(raw)
+    fresh = raw.get("prompt_tokens_total")
+    cached = raw.get("prompt_tokens_cached_total")
+    if fresh is not None and cached is not None and fresh + cached > 0:
+        out["prefix_cache_hit_rate"] = round(cached / (fresh + cached), 4)
+    drafted = raw.get("speculative_draft_tokens_total")
+    accepted = raw.get("speculative_accepted_tokens_total")
+    if drafted:
+        out["speculative_acceptance_rate"] = round((accepted or 0) / drafted, 4)
+    return out
 
 
 @dataclass(frozen=True)
@@ -2931,14 +2951,17 @@ class RuntimeStats:
     # a real occupancy fraction rather than a guess. llama.cpp allocates lazily
     # and has no equivalent.
     kv_cache_usage_pct: Optional[float] = None
-    # vLLM-only. The number that says whether prompt caching is actually paying
-    # off; llama.cpp exposes no equivalent and DwarfStar reports its own per
-    # response (prompt_tokens_details.cached_tokens) rather than as a gauge.
+    # Lifetime cache effectiveness. vLLM and modern llama.cpp expose cumulative
+    # counters; DwarfStar derives the equivalent from per-request log lines.
     prefix_cache_hit_rate: Optional[float] = None
-    # vLLM-only: cumulative prompt tokens served FROM cache. The absolute saving
-    # alongside the ratio — and the direct analogue of the per-response
-    # prompt_tokens_details.cached_tokens that DwarfStar reports.
+    # Cumulative prompt tokens served FROM cache.
     prompt_tokens_cached_total: Optional[float] = None
+    # llama.cpp speculative-decode counters. These are lifetime values scoped
+    # to the running process, just like the throughput and prompt counters.
+    speculative_draft_tokens_total: Optional[float] = None
+    speculative_accepted_tokens_total: Optional[float] = None
+    speculative_acceptance_rate: Optional[float] = None
+    max_observed_context_tokens: Optional[float] = None
     # --- prompt-cache capacity (2026-08-17) --------------------------------
     # "Where does the prompt cache live and how big can it get" had no answer in
     # this API: only current usage was exposed, and only for one backend. Each
@@ -3053,7 +3076,9 @@ async def _probe_llamacpp(spec, root: str, timeout: float) -> Optional[RuntimeSt
                     slots_data = None
             if isinstance(metrics_resp, httpx.Response):
                 if metrics_resp.status_code == 200:
-                    metrics = _parse_prometheus(metrics_resp.text, _METRIC_FIELDS)
+                    metrics = _llamacpp_derived(
+                        _parse_prometheus(metrics_resp.text, _METRIC_FIELDS)
+                    )
                     metrics_available = True
                 elif metrics_resp.status_code == 501:
                     metrics_hint = (
@@ -3075,12 +3100,14 @@ async def _probe_llamacpp(spec, root: str, timeout: float) -> Optional[RuntimeSt
         ctxs = [s.get("n_ctx") for s in slots_data if isinstance(s, dict) and s.get("n_ctx")]
         ctx_per_slot = ctxs[0] if ctxs else None
 
-    # llama.cpp keeps its prompt cache in HOST RAM, bounded by --cache-ram (MB).
-    # Unlike the other two it is neither persistent nor introspectable: the server
-    # exposes no "how full is it" number, so capacity is reported and usage is
-    # honestly left unknown rather than guessed at.
+    # llama.cpp keeps its parked prompt cache in HOST RAM, bounded by --cache-ram
+    # (MB). Modern builds expose reuse counters, but not cache occupancy; report
+    # capacity and effectiveness while leaving current fullness unknown.
     cache_cap = None
-    cache_ram = _effective_param_value(spec, "cache_ram")
+    cache_ram = (
+        _effective_param_value(spec, "cache_ram")
+        or _effective_param_value(spec, "cache_ram_mib")
+    )
     if cache_ram:
         cache_cap = f"{cache_ram} MB in host RAM (--cache-ram)"
 

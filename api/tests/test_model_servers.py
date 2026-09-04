@@ -1085,6 +1085,27 @@ def test_parse_prometheus_picks_known_gauges_only():
     assert parsed == {"requests_deferred": 3.0, "predicted_tokens_per_second": 15.9067}
 
 
+def test_llamacpp_derived_reports_cache_speculation_and_context():
+    text = (
+        "llamacpp:prompt_tokens_total 31016\n"
+        "llamacpp:prompt_tokens_cached_total 42358\n"
+        "llamacpp:spec_decode_num_draft_tokens_total 61792\n"
+        "llamacpp:spec_decode_num_accepted_tokens_total 35081\n"
+        "llamacpp:n_tokens_max 25904\n"
+    )
+    parsed = ms._llamacpp_derived(ms._parse_prometheus(text))
+    assert parsed["prefix_cache_hit_rate"] == 0.5773
+    assert parsed["speculative_acceptance_rate"] == 0.5677
+    assert parsed["speculative_draft_tokens_total"] == 61792.0
+    assert parsed["speculative_accepted_tokens_total"] == 35081.0
+    assert parsed["max_observed_context_tokens"] == 25904.0
+
+
+def test_hybrid_prompt_cache_capacity_uses_mib_parameter():
+    spec = ms._BY_SLUG["Qwen3.8-Flash-Next-Hybrid-R9700-Halo"]
+    assert ms._effective_param_value(spec, "cache_ram_mib") == "16384"
+
+
 def test_runtime_stats_derived_fields():
     stats = ms.RuntimeStats(total_slots=6, busy_slots=2, requests_deferred=0.0)
     assert stats.free_slots == 4

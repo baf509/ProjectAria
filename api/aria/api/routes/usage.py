@@ -86,6 +86,41 @@ async def usage_by_model(
     return rows
 
 
+@router.get("/usage/by-caller")
+async def usage_by_caller(
+    days: int = 7,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Gateway token and cache totals grouped by declared/fallback caller."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    pipeline = [
+        {
+            "$match": {
+                "timestamp": {"$gte": cutoff},
+                "caller": {"$nin": [None, ""]},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$caller",
+                "backend": {"$first": "$backend"},
+                "input_tokens": {"$sum": "$input_tokens"},
+                "output_tokens": {"$sum": "$output_tokens"},
+                "total_tokens": {"$sum": "$total_tokens"},
+                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+                "requests": {"$sum": 1},
+            }
+        },
+        {"$sort": {"total_tokens": -1}},
+    ]
+    rows = await db.usage.aggregate(pipeline).to_list(length=200)
+    for row in rows:
+        cached = row.get("cache_read_tokens", 0) or 0
+        fresh = row.get("input_tokens", 0) or 0
+        row["cache_hit_rate"] = round(cached / (cached + fresh), 4) if cached + fresh else 0.0
+    return rows
+
+
 @router.get("/usage/cost")
 async def usage_cost(
     days: int = 7,

@@ -5,6 +5,7 @@ Tests for aria.db.usage.UsageRepo.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+from aria.api.routes.usage import usage_by_caller
 from aria.db.usage import UsageRepo
 from tests.conftest import make_mock_db
 
@@ -56,6 +57,25 @@ class TestUsageRepo:
         assert UsageRepo._hit_rate(900, 100) == 0.9
         assert UsageRepo._hit_rate(0, 0) == 0.0
         assert UsageRepo._hit_rate(0, 100) == 0.0
+
+    @pytest.mark.asyncio
+    async def test_by_caller_reports_weighted_cache_effectiveness(self):
+        db = make_mock_db()
+        db.usage.aggregate.return_value.to_list = AsyncMock(return_value=[{
+            "_id": "pi-coding/mac",
+            "backend": "llamacpp",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "total_tokens": 120,
+            "cache_read_tokens": 900,
+            "requests": 4,
+        }])
+
+        rows = await usage_by_caller(days=7, db=db)
+
+        assert rows[0]["cache_hit_rate"] == 0.9
+        pipeline = db.usage.aggregate.call_args.args[0]
+        assert pipeline[0]["$match"]["caller"] == {"$nin": [None, ""]}
 
     @pytest.mark.asyncio
     async def test_record_total_tokens_computed(self):

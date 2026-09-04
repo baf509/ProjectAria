@@ -436,9 +436,13 @@ async def model_server_utilization(
             "served_ctx": stats.served_ctx,
             # vLLM-only: it preallocates its KV pool, so this is true occupancy.
             "kv_cache_usage_pct": stats.kv_cache_usage_pct,
-            # vLLM-only: whether prompt caching is actually paying off.
+            # Lifetime prompt-cache effectiveness where the runtime exposes it.
             "prefix_cache_hit_rate": stats.prefix_cache_hit_rate,
             "prompt_tokens_cached_total": stats.prompt_tokens_cached_total,
+            "speculative_draft_tokens_total": stats.speculative_draft_tokens_total,
+            "speculative_accepted_tokens_total": stats.speculative_accepted_tokens_total,
+            "speculative_acceptance_rate": stats.speculative_acceptance_rate,
+            "max_observed_context_tokens": stats.max_observed_context_tokens,
             # --- prompt-cache capacity: where it lives, how big it can get ---
             "prompt_cache_kind": stats.prompt_cache_kind,
             "prompt_cache_capacity": stats.prompt_cache_capacity,

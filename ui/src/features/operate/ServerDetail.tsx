@@ -231,6 +231,18 @@ function SlotsPanel({ u, cpu }: { u: UtilServer; cpu: boolean }) {
             {u.prompt_cache_kind} cache
             {u.prompt_cache_used ? ` · ${u.prompt_cache_used} used` : ''}
             {u.prompt_cache_capacity ? ` of ${u.prompt_cache_capacity}` : ''}
+            {u.prefix_cache_hit_rate != null ? ` · ${(u.prefix_cache_hit_rate * 100).toFixed(1)}% token reuse` : ''}
+          </p>
+        )}
+        {u.speculative_acceptance_rate != null && (
+          <p className="m-0 text-micro text-ink-faint">
+            MTP acceptance {(u.speculative_acceptance_rate * 100).toFixed(1)}%
+            {u.speculative_accepted_tokens_total != null && u.speculative_draft_tokens_total != null
+              ? ` · ${Math.round(u.speculative_accepted_tokens_total).toLocaleString()} / ${Math.round(u.speculative_draft_tokens_total).toLocaleString()} drafts`
+              : ''}
+            {u.max_observed_context_tokens != null
+              ? ` · max context ${Math.round(u.max_observed_context_tokens).toLocaleString()}`
+              : ''}
           </p>
         )}
       </Stack>
