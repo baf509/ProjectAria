@@ -20,6 +20,7 @@ test that unsets it.
 import dataclasses
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -556,12 +557,25 @@ class TestSandboxPrefix:
         argv = self.build(layout, tmp_path)
         assert os.path.expanduser("~/.ssh") in flag_targets(argv, "--tmpfs")
 
-    def test_vault_and_credential_stores_are_masked(self, layout, tmp_path):
+    def test_vault_and_credential_stores_are_masked(self, layout, tmp_path, monkeypatch):
+        mirror = pathlib.Path(os.path.expanduser("~/git-safe"))
+        real_mask_kind = guard_sandbox._mask_kind
+        monkeypatch.setattr(
+            guard_sandbox,
+            "_mask_kind",
+            lambda path: "dir" if pathlib.Path(path) == mirror else real_mask_kind(path),
+        )
         masked = flag_targets(self.build(layout, tmp_path), "--tmpfs")
         for path in ("~/Obsidian", "~/.hermes", "~/.aria", "~/git-safe", "~/.config/gh"):
             assert os.path.expanduser(path) in masked
 
-    def test_docker_socket_is_masked(self, layout, tmp_path):
+    def test_docker_socket_is_masked(self, layout, tmp_path, monkeypatch):
+        real_exists = guard_sandbox.os.path.exists
+        monkeypatch.setattr(
+            guard_sandbox.os.path,
+            "exists",
+            lambda path: True if path == "/run/docker.sock" else real_exists(path),
+        )
         assert has_triple(self.build(layout, tmp_path),
                           "--ro-bind", "/dev/null", "/run/docker.sock")
 
@@ -673,8 +687,9 @@ class TestSandboxPrefix:
     def test_the_accepted_policy_record_is_masked(self, layout, tmp_path):
         """A session that can edit the acceptance file can re-arm
         trust-on-first-use — the other half of the G2 attack."""
-        argv = self.build(layout, tmp_path)
         state_dir = os.path.dirname(guard_policy.guard_state_path())
+        os.makedirs(state_dir, exist_ok=True)
+        argv = self.build(layout, tmp_path)
         masked = flag_targets(argv, "--tmpfs")
         assert any(
             state_dir == m or state_dir.startswith(m.rstrip("/") + "/") for m in masked
@@ -725,6 +740,11 @@ class TestPreflight:
         that is not its own exit code.
         """
         monkeypatch.setattr(settings, "guard_sandbox_enabled", True)
+        monkeypatch.setattr(
+            guard_sandbox.shutil,
+            "which",
+            lambda name: "/usr/bin/bwrap" if name == settings.shell_sandbox_binary else None,
+        )
         monkeypatch.setattr(
             guard_sandbox, "sandbox_canary",
             lambda **_: {"ok": False, "detail": "Can't mkdir /home/ben/.git-credentials"},

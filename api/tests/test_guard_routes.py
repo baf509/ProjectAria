@@ -304,7 +304,10 @@ class TestRouteWiring:
         """A router nobody includes is a safety surface that does not exist."""
         from aria.main import app
 
-        paths = {route.path for route in app.routes}
+        # Current FastAPI keeps included routers lazy as `_IncludedRouter`
+        # entries with no `.path`; OpenAPI expansion is the stable public view
+        # of the routes the real application actually exposes.
+        paths = set(app.openapi()["paths"])
         assert "/api/v1/guard/status" in paths
         assert "/api/v1/guard/sessions/{session_id}/merge" in paths
 

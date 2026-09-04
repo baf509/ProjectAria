@@ -37,7 +37,7 @@ ui-check:
 	@echo "--- starting the built UI on :3100 for the responsive gate ---"
 	@cd $(UI) && (nohup ./e2e/serve.sh > /tmp/aria-ui-gate.log 2>&1 & echo $$! > /tmp/aria-ui-gate.pid); \
 		sleep 8; \
-		npm --prefix $(UI) run gate; status=$$?; \
+		npm run gate; status=$$?; \
 		kill $$(cat /tmp/aria-ui-gate.pid) 2>/dev/null || true; \
 		exit $$status
 

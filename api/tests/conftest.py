@@ -26,6 +26,11 @@ def isolate_machine_deployment_policy(monkeypatch):
 
     monkeypatch.setattr(settings, "coding_default_host", "")
     monkeypatch.setattr(settings, "guard_sandbox_enabled", False)
+    monkeypatch.setattr(settings, "shell_sandbox_enabled", False)
+    # The deployed Mac enables this process-wide. Leaving it set makes model
+    # server unit tests bypass their mocked local Docker/systemd paths and try
+    # the real Corsair actuator instead. Forward-mode tests opt in explicitly.
+    monkeypatch.delenv("ARIA_CORSAIR_MODEL_FORWARDS", raising=False)
 
 from aria.llm.base import LLMAdapter, Message, StreamChunk, Tool, ToolCall
 from aria.tools.base import BaseTool, ToolDefinition, ToolParameter, ToolResult, ToolStatus, ToolType

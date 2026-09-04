@@ -403,7 +403,7 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
                 "slug": "pi-coding-ridge",
                 "llm": {
                     "backend": "aria",
-                    "model": "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+                    "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
                 },
                 "system_prompt": "Use Flash Next through ARIA.",
             }
@@ -433,7 +433,7 @@ async def test_start_session_subagent_profile_llm_backend_not_confused_with_sess
     mock_launch.assert_awaited_once()
     command = mock_launch.call_args.args[1]
     assert command.argv[1:5] == [
-        "--provider", "aria", "--model", "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+        "--provider", "aria", "--model", "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     ]
     inserted = db.coding_sessions.insert_one.call_args.args[0]
     assert inserted["backend"] == "pi-code"

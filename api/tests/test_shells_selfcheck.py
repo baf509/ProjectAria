@@ -90,7 +90,9 @@ def _pools(halo_pct=82, vram_pct=93, spilling=False):
 
 def test_a_card_full_of_its_own_model_is_not_an_alert():
     """93% VRAM is what "the model is loaded" looks like on a 32 GiB card."""
-    with patch.object(selfcheck.gpu_devices, "pool_snapshot", lambda: _pools()):
+    with patch.object(selfcheck.sys, "platform", "linux"), patch.object(
+        selfcheck.gpu_devices, "pool_snapshot", lambda: _pools()
+    ):
         ok, detail = selfcheck._check_gtt()
     assert ok is True, f"paged on the designed state: {detail}"
     # The numbers still travel, as context rather than as an incident.
@@ -100,7 +102,11 @@ def test_a_card_full_of_its_own_model_is_not_an_alert():
 def test_even_a_completely_full_pool_is_not_by_itself_an_alert():
     """Headroom is enforced by the start gate, which refuses a launch that will
     not fit — and does so while the operator is trying to do something."""
-    with patch.object(selfcheck.gpu_devices, "pool_snapshot", lambda: _pools(halo_pct=99, vram_pct=99)):
+    with patch.object(selfcheck.sys, "platform", "linux"), patch.object(
+        selfcheck.gpu_devices,
+        "pool_snapshot",
+        lambda: _pools(halo_pct=99, vram_pct=99),
+    ):
         ok, _ = selfcheck._check_gtt()
     assert ok is True
 
@@ -108,7 +114,9 @@ def test_even_a_completely_full_pool_is_not_by_itself_an_alert():
 def test_spilling_is_the_condition_that_pages():
     """A dGPU model consuming system RAM is the one documented coupling between
     the two pools — and unlike a full card, it is actionable."""
-    with patch.object(selfcheck.gpu_devices, "pool_snapshot", lambda: _pools(spilling=True)):
+    with patch.object(selfcheck.sys, "platform", "linux"), patch.object(
+        selfcheck.gpu_devices, "pool_snapshot", lambda: _pools(spilling=True)
+    ):
         ok, detail = selfcheck._check_gtt()
     assert ok is False
     assert "SPILLING" in detail
@@ -116,7 +124,9 @@ def test_spilling_is_the_condition_that_pages():
 
 
 def test_unreadable_pools_still_fail():
-    with patch.object(selfcheck.gpu_devices, "pool_snapshot", lambda: []):
+    with patch.object(selfcheck.sys, "platform", "linux"), patch.object(
+        selfcheck.gpu_devices, "pool_snapshot", lambda: []
+    ):
         ok, detail = selfcheck._check_gtt()
     assert ok is False
     assert "unreadable" in detail

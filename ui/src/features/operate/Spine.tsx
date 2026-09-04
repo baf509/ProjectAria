@@ -30,9 +30,27 @@ import { Button, Toasts } from '@/components/ui/controls'
 import { Async } from '@/components/ui/Async'
 import { Cluster, Row, Stack } from '@/components/layout'
 import { useAction, type Resource } from '@/lib/swr'
-import { serviceAction, setLlmRoute } from '@/lib/api/endpoints'
+import { modelServerAction, serviceAction, setLlmRoute } from '@/lib/api/endpoints'
+import { api, ApiError } from '@/lib/http'
 import { gib, middleTruncate, pct } from '@/lib/format'
 import { STATE_WORD, dotState, isResident, serverState, sortServices, useToasts, utilFor } from './lib'
+
+const RADIANCE = 'Qwen3.8-27B-R9700-Radiance'
+const FLASH_HALO = 'Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K'
+const FLASH_HYBRID = 'Qwen3.8-Flash-Next-Hybrid-R9700-Halo'
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function waitForModel(slug: string, running: boolean, timeoutMs = 20 * 60_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const server = await api<{ state?: string }>(`/infrastructure/model-servers/${encodeURIComponent(slug)}`)
+    if ((server.state === 'running') === running) return
+    if (server.state === 'dead') throw new Error(`${slug} failed while loading`)
+    await delay(5_000)
+  }
+  throw new Error(`${slug} did not become ${running ? 'ready' : 'stopped'} within 20 minutes`)
+}
 
 /* ------------------------------------------------------------------ alarms */
 
@@ -93,6 +111,8 @@ export function Spine({
   const { toasts, push, dismiss } = useToasts()
   const run = useAction()
   const [routeBusy, setRouteBusy] = useState<string | null>(null)
+  const [loadoutBusy, setLoadoutBusy] = useState<'dual' | 'hybrid' | null>(null)
+  const [loadoutProgress, setLoadoutProgress] = useState<string | null>(null)
   // Action errors live apart from poll errors: a successful background poll
   // must not wipe the reason a start was refused off the screen.
   const [actionError, setActionError] = useState<string | null>(null)
@@ -110,6 +130,51 @@ export function Spine({
     if (ok !== undefined) {
       setActionError(null)
       push('ok', slug ? `Pinned ${slug}` : 'Route set to auto')
+    }
+  }
+
+  async function activateLoadout(loadout: 'dual' | 'hybrid') {
+    setLoadoutBusy(loadout)
+    setActionError(null)
+    try {
+      if (loadout === 'dual') {
+        setLoadoutProgress('Stopping the hybrid server…')
+        await modelServerAction(FLASH_HYBRID, 'stop')
+        await waitForModel(FLASH_HYBRID, false)
+
+        setLoadoutProgress('Loading Qwen3.8 on the R9700…')
+        await modelServerAction(RADIANCE, 'start')
+        await waitForModel(RADIANCE, true)
+
+        setLoadoutProgress('Radiance is ready; loading Flash Next on the Halo…')
+        await modelServerAction(FLASH_HALO, 'start')
+        await waitForModel(FLASH_HALO, true)
+      } else {
+        setLoadoutProgress('Unloading the Halo-only server…')
+        await modelServerAction(FLASH_HALO, 'stop')
+        await waitForModel(FLASH_HALO, false)
+
+        setLoadoutProgress('Unloading Radiance from the R9700…')
+        await modelServerAction(RADIANCE, 'stop')
+        await waitForModel(RADIANCE, false)
+
+        setLoadoutProgress('Loading Flash Next across the R9700 and Halo…')
+        await modelServerAction(FLASH_HYBRID, 'start')
+        await waitForModel(FLASH_HYBRID, true)
+      }
+
+      // A remembered pin to the previous loadout would force every request
+      // through fallback selection. Auto follows the newly selected residents.
+      await setLlmRoute(null)
+      await Promise.all([fleet.refresh(), route.refresh(), devices.refresh(), utilization.refresh()])
+      push('ok', loadout === 'dual' ? 'Dual-resident Qwen loadout is ready' : 'Hybrid Flash Next is ready')
+      setLoadoutProgress(null)
+    } catch (err) {
+      const message = err instanceof ApiError || err instanceof Error ? err.message : String(err)
+      setActionError(`loadout: ${message}`)
+      setLoadoutProgress(null)
+    } finally {
+      setLoadoutBusy(null)
     }
   }
 
@@ -140,6 +205,39 @@ export function Spine({
         devices={devices}
         residents={(fleet.data?.servers ?? []).filter((srv) => isResident(srv))}
       />
+
+      <Card title="Model loadout" hint="one safe switch for both GPUs">
+        <Stack gap="sm">
+          <Cluster>
+            <Button
+              variant="primary"
+              busy={loadoutBusy === 'dual'}
+              disabled={loadoutBusy !== null}
+              aria-pressed={
+                (fleet.data?.servers ?? []).some((s) => s.slug === RADIANCE && isResident(s)) &&
+                (fleet.data?.servers ?? []).some((s) => s.slug === FLASH_HALO && isResident(s))
+              }
+              onClick={() => activateLoadout('dual')}
+            >
+              Load Qwen dual resident
+            </Button>
+            <Button
+              variant="primary"
+              busy={loadoutBusy === 'hybrid'}
+              disabled={loadoutBusy !== null}
+              aria-pressed={(fleet.data?.servers ?? []).some((s) => s.slug === FLASH_HYBRID && isResident(s))}
+              onClick={() => activateLoadout('hybrid')}
+            >
+              Load Flash Next hybrid
+            </Button>
+          </Cluster>
+          <Text>
+            Dual resident starts Radiance on the R9700, waits for readiness, then starts Flash Next on the Halo.
+            Hybrid unloads both and runs one tuned Flash Next process across both GPUs.
+          </Text>
+          {loadoutProgress && <Notice tone="info">{loadoutProgress}</Notice>}
+        </Stack>
+      </Card>
 
       <Card title="Local model route" hint="ARIA + Hermes follow this">
         <Async r={route} skeletonRows={2}>

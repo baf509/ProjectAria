@@ -3,17 +3,36 @@
 Only open, current work belongs here. Shipped work lives in `CHANGELOG.md`;
 desired architecture lives in the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-08-29**.
+Last reconciled: **2026-09-03**.
 
 ## Architecture reconciliation
 
-- Add gateway passthrough usage records (caller identity, resolved model, tokens,
-  latency, result) to Mongo.
 - Move or make redundant Corsair's transitional vault Git-history writer, and
   eliminate unique active/unpushed general-project work from the data plane.
 
 Closed 2026-08-29: Flash registry metadata, Hermes/Pi/steward gateway bypasses,
 the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
+
+## Inference scheduling
+
+- Add a Jobs view over gateway usage/admission telemetry: caller class,
+  requested model, selected deployment/node, queue time, run time, token counts,
+  cache hit rate, and outcome. Include a cheap deterministic route canary from
+  the dashboard. Do not store prompts or generated text.
+- Add explicit `available` / `draining` / `reserved` node intent. New work must
+  avoid a drained node without treating normal sleep, gaming, or interactive
+  GPU use as a service failure.
+- When the exact same model is independently resident on at least two nodes,
+  add eligibility filtering (health, model identity, free slots, GPU pressure)
+  and least-loaded placement. Prefer an already-warm model/prefix when safe;
+  use declared memory pools and estimated prompt/output size rather than only a
+  coarse GPU-utilization average. Keep aging as the starvation bound. Pin each
+  request to one node for its full lifetime; the Corsair hybrid process is one
+  deployment, not two nodes.
+
+Closed 2026-09-03: single-slot priority admission, cancellation-safe release,
+30-second starvation-preventing aging, live queue diagnostics, per-request
+queue accounting, and background labeling for Aria-owned inference.
 
 ## UI publication and deployment
 

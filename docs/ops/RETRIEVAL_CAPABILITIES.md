@@ -3,7 +3,7 @@
 Runbook for mongot search and the embeddings service. Production lives on the
 Mac control plane; old Corsair container commands are historical.
 
-Last verified: **2026-08-29**.
+Last verified: **2026-09-03**.
 
 ## Current state
 
@@ -11,10 +11,10 @@ Authenticated `GET /api/v1/capabilities/retrieval` reported:
 
 | Capability | State |
 |---|---|
-| search/mongot | enabled; `shared-mongot` running |
+| search/mongot | disabled; Lima container `devbox-mongot` stopped |
 | embeddings | enabled; `shared-embeddings` running |
-| retrieval mode | `hybrid` |
-| backfill | running; 0 pending memories and 0 pending entities |
+| retrieval mode | `fallback` (mongod-native scan) |
+| backfill | embeddings remain enabled; inspect the endpoint for current counts |
 
 Never copy a backlog count forward. The endpoint is the authority.
 

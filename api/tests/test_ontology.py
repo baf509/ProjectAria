@@ -172,9 +172,10 @@ def test_equal_length_roots_tie_break_deterministically():
     assert PathProjectIndex(list(reversed(entries))).owner("/x/y") == "project:alpha"
 
 
-def test_norm_path_expands_home():
-    assert _norm_path("~/Development").endswith("/Development")
-    assert not _norm_path("~/Development").startswith("~")
+def test_norm_path_canonicalizes_home_across_nodes():
+    assert _norm_path("~/Development") == "~/Development"
+    assert _norm_path("/Users/ben/Development") == "~/Development"
+    assert _norm_path("/home/ben/Development") == "~/Development"
 
 
 def test_norm_path_strips_trailing_slash():

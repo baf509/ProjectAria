@@ -9,10 +9,11 @@
 #
 # Codex replays the entire prior rollout when it resumes, so a very large
 # session used to keep every new shell in that directory slow for minutes.
-# Before resuming, look at the newest rollout for this cwd and skip
-# auto-resume when it exceeds ARIA_CODEX_RESUME_MAX_BYTES (default 10 MiB;
-# 0 disables auto-resume entirely). An oversized session starts fresh with a
-# notice, and `codex resume` still opens it on demand.
+# Auto-resume is disabled by default because even a moderate rollout is visibly
+# replayed through tmux and its capture pipeline. Set
+# ARIA_CODEX_RESUME_MAX_BYTES to a positive byte limit to opt in; candidates
+# above that limit still start fresh. `codex resume` remains available on
+# demand.
 #
 # Unlike Claude Code, Codex gives no cheap way to ask "is there history for
 # this cwd?" (session cwd lives inside ~/.codex/sessions rollout files), so
@@ -27,6 +28,12 @@ set -uo pipefail
 # global PATH with a system-only PATH. Keep the launch shim self-contained so
 # the standalone Codex binary is available regardless of who created it.
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+
+# Termius does not advertise synchronized-output support, so full-screen frame
+# updates are visibly painted line by line. Keep ARIA's Codex TUI inline and
+# disable its decorative animations; both settings are scoped to managed
+# shells and still preserve normal terminal scrollback.
+TUI_ARGS=(--no-alt-screen -c tui.animations=false)
 
 # Detached sessions cannot answer approval prompts. Keep them autonomous but
 # fail closed outside the workspace by default. An explicit caller request for
@@ -74,9 +81,9 @@ print(best_size)
 PY
 }
 
-RESUME_MAX_BYTES="${ARIA_CODEX_RESUME_MAX_BYTES:-10485760}"
+RESUME_MAX_BYTES="${ARIA_CODEX_RESUME_MAX_BYTES:-0}"
 case "$RESUME_MAX_BYTES" in
-    ''|*[!0-9]*) RESUME_MAX_BYTES=10485760 ;;
+    ''|*[!0-9]*) RESUME_MAX_BYTES=0 ;;
 esac
 
 attempt_resume=1
@@ -100,9 +107,9 @@ fi
 
 if (( attempt_resume )); then
     if (( BYPASS_DEFAULTS )); then
-        codex resume --last "$@"
+        codex resume --last "${TUI_ARGS[@]}" "$@"
     else
-        codex resume --last "${CODEX_ARGS[@]}" "$@"
+        codex resume --last "${TUI_ARGS[@]}" "${CODEX_ARGS[@]}" "$@"
     fi
     rc=$?
     # A non-zero exit means resume could not start (no session for this cwd,
@@ -115,6 +122,6 @@ if (( attempt_resume )); then
     echo "aria: codex resume --last failed (exit $rc) — starting a fresh session" >&2
 fi
 if (( BYPASS_DEFAULTS )); then
-    exec codex "$@"
+    exec codex "${TUI_ARGS[@]}" "$@"
 fi
-exec codex "${CODEX_ARGS[@]}" "$@"
+exec codex "${TUI_ARGS[@]}" "${CODEX_ARGS[@]}" "$@"

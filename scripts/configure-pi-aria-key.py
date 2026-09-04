@@ -3,7 +3,7 @@
 
 The credential is read from stdin or a dotenv file and is never printed.  The
 script refuses to touch a Pi inventory that contains any provider/model outside
-the two entries approved by the architecture charter.
+the three entries in the current managed deployment policy.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ APPROVED_BASE_URL = "http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1-ident
 APPROVED_MODELS = {
     "Qwen3.8-27B-R9700-Radiance",
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+    "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
 }
 
 
@@ -75,8 +76,8 @@ def main() -> int:
     model_ids = {
         item.get("id") for item in provider.get("models", []) if isinstance(item, dict)
     }
-    if model_ids != APPROVED_MODELS or len(provider.get("models", [])) != 2:
-        raise SystemExit("refusing Pi config: model inventory is not the approved two-model set")
+    if model_ids != APPROVED_MODELS or len(provider.get("models", [])) != 3:
+        raise SystemExit("refusing Pi config: model inventory is not the approved three-model set")
 
     provider["apiKey"] = _load_key(args)
     prior_mode = args.models.stat().st_mode & 0o777
@@ -89,7 +90,7 @@ def main() -> int:
     os.chmod(temporary, prior_mode or 0o600)
     os.replace(temporary, args.models)
     os.chmod(args.models, prior_mode or 0o600)
-    print("Pi ARIA inference credential installed; provider=aria models=2")
+    print("Pi ARIA inference credential installed; provider=aria models=3")
     return 0
 
 

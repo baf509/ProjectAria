@@ -4,7 +4,7 @@ The ARIA UI is a Next.js 14 application in `ui/`. Production runs natively on
 the MacBook Pro as `ben`; the old Corsair Docker and Tailscale Serve deployment
 is retired.
 
-Last verified: **2026-08-30**.
+Last verified: **2026-09-03**.
 
 ## Current topology
 
@@ -55,6 +55,13 @@ Source and deployment are separate. A source build does not update production.
 ARIA's default chat agent is disabled; `/converse` is retained for explicit
 non-default agents and existing conversation records, not as the primary human
 front door.
+
+`/operate` has two whole-machine loadout controls. Hybrid is the boot default.
+“Load Qwen dual resident” starts Radiance on the R9700, waits for readiness,
+then starts Halo-only Flash Next as a rollback profile. “Load Flash Next hybrid”
+unloads both and starts the registered R9700 + Halo split on `:8121`. The
+controls clear a stale operator route pin after a successful switch so normal
+model-aware routing can select the new residents.
 
 ## Build and verification
 

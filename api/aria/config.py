@@ -8,6 +8,8 @@ Related Spec Sections:
 - Section 10.2: Pydantic Settings
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 
 
@@ -62,6 +64,15 @@ class Settings(BaseSettings):
     # request is forwarded anyway so the caller sees the backend's own error
     # rather than a silent hang. Hermes' gateway_timeout is 1800s.
     llm_proxy_autostart_timeout: float = 300.0
+    # A one-slot llama.cpp backend cannot safely run concurrent Qwen4exp MTP
+    # requests. Queue them here, where interactive Hermes traffic can move
+    # ahead of background/evaluation work and the wait is observable, instead
+    # of leaving scheduling to an opaque FIFO inside the backend.
+    llm_proxy_admission_enabled: bool = True
+    # Every interval a queued request gains one priority tier. This preserves
+    # Hermes responsiveness without allowing sustained interactive traffic to
+    # starve an evaluation or maintenance job indefinitely.
+    llm_proxy_queue_aging_seconds: float = 30.0
     llamacpp_api_key: str = ""
     # Hard wall-clock cap on a single LLM call. The SDK default (600s) lets a
     # busy/half-open local server wedge a caller for ~10min; a hang never raises
@@ -140,7 +151,7 @@ class Settings(BaseSettings):
     # Pi's agent loop. Provider names correspond to ~/.pi/agent/models.json.
     pi_coding_binary: str = "pi"
     # Every legacy profile label converges on Pi's single inference-only ARIA
-    # provider.  Pi's models.json scopes that provider to the two Corsair Qwen
+    # provider. Pi's models.json scopes that provider to the three Corsair Qwen
     # deployments; it must never carry direct node URLs or cloud providers.
     pi_coding_provider_llamacpp: str = "aria"
     pi_coding_provider_agentic: str = "aria"
@@ -348,7 +359,7 @@ class Settings(BaseSettings):
     #   search_enabled=False     -> never emit $vectorSearch/$search; recall
     #     degrades to the mongod-native fallback scan.
     embeddings_enabled: bool = True
-    search_enabled: bool = True
+    search_enabled: bool = False
 
     # Backfill worker: drains embedding_pending memories + un-embedded ontology
     # entities. Runs on a timer and is woken immediately when embeddings are
@@ -723,7 +734,11 @@ class Settings(BaseSettings):
     shells_adopt_interval_seconds: int = 15
     # pipe-pane shim the reconciler starts capture with (writes the pidfile the
     # capture process is tracked by). Matches scripts/aria-shell-capture.
-    shells_capture_shim: str = "/home/ben/.local/bin/aria-shell-capture"
+    # This API runs on both the Mac control plane and Corsair. A Linux-specific
+    # absolute path made the Mac reconciler launch a nonexistent command every
+    # 15 seconds, so capture never stayed attached and the shell registry
+    # churned continuously.
+    shells_capture_shim: str = str(Path.home() / ".local/bin/aria-shell-capture")
 
     # Project registry harvester — derives the projects collection from git
     # repos + Claude/pi sessions + live shells. Never hand-maintained.

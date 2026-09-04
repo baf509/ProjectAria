@@ -17,6 +17,24 @@ def manager():
     return LLMManager()
 
 
+def test_llamacpp_adapter_labels_aria_owned_calls_as_background():
+    from aria.llm import llamacpp
+
+    with (
+        patch.object(llamacpp, "OPENAI_AVAILABLE", True),
+        patch.object(llamacpp, "AsyncOpenAI", create=True) as client,
+    ):
+        llamacpp.LlamaCppAdapter(
+            base_url="http://localhost:8200/llm/v1",
+            model="aria-resident",
+            api_key="test",
+        )
+
+    assert client.call_args.kwargs["default_headers"] == {
+        "X-Aria-Caller": "aria-background"
+    }
+
+
 # ---------------------------------------------------------------------------
 # Circuit breaker tests
 # ---------------------------------------------------------------------------

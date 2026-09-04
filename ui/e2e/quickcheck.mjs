@@ -5,7 +5,7 @@
  *
  * Usage: node e2e/quickcheck.mjs /inbox /operate  [--base http://localhost:3100]
  */
-import { chromium } from '/home/ben/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs'
+import { chromium } from 'playwright'
 
 const args = process.argv.slice(2)
 const baseIdx = args.indexOf('--base')

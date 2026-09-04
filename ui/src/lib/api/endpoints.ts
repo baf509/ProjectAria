@@ -132,7 +132,7 @@ export const startModelServer = (slug: string, force = false) =>
 export const stopModelServer = (slug: string) =>
   api(`/infrastructure/model-servers/${slug}/stop`, { method: 'POST' })
 export const setLlmRoute = (pinned: string | null) =>
-  api<LlmRoute>('/infrastructure/llm-route', { method: 'PUT', body: { pinned } })
+  api<LlmRoute>('/infrastructure/llm-route', { method: 'PUT', body: { slug: pinned } })
 export const startService = (slug: string) =>
   api(`/infrastructure/services/${slug}/start`, { method: 'POST' })
 export const stopService = (slug: string) =>

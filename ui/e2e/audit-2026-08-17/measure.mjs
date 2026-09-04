@@ -1,7 +1,7 @@
 // Responsive audit harness for the ARIA web UI.
 // Usage: node measure.mjs [baseUrl]
 // Writes shots/<route>__<viewport>.png and audit.json.
-import { chromium } from '/home/ben/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs'
+import { chromium } from 'playwright'
 import fs from 'node:fs'
 import path from 'node:path'
 

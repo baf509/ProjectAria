@@ -204,7 +204,7 @@ def test_unknown_slug_raises():
         get_spec("no-such-service")
 
 
-@pytest.mark.parametrize("slug", ["aria-api", "aria-tmux", "samba"])
+@pytest.mark.parametrize("slug", ["shared-mongod", "aria-api", "aria-tmux", "samba"])
 async def test_unmanageable_services_refuse_start_and_stop(slug):
     """aria-api would be restarting itself from inside its own request handler;
     aria-tmux owns the tmux server whose death takes every watched session with
@@ -221,6 +221,87 @@ def test_aria_tmux_is_not_manageable():
     aria-api's cgroup, and the next aria-api restart then kills every watched
     claude-* session. Documented in CLAUDE.md as a critical gotcha."""
     assert get_spec("aria-tmux").manageable is False
+
+
+@pytest.mark.asyncio
+async def test_darwin_lima_services_probe_the_container_not_the_shared_vm():
+    from aria.infrastructure import services
+
+    spec = get_spec("shared-mongot")
+    calls = []
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args)
+        if args[1] == "list":
+            return 0, "Running\n", ""
+        return 0, "exited\n", ""
+
+    with patch.object(services.sys, "platform", "darwin"), patch.object(
+        services, "_run", fake_run
+    ):
+        state = await services._state_of(spec)
+        row = services._row_for(spec, state)
+
+    assert state == "exited"
+    assert calls == [
+        ("/opt/homebrew/bin/limactl", "list", "mongot", "--format", "{{.Status}}"),
+        (
+            "/opt/homebrew/bin/limactl", "shell", "mongot", "docker", "inspect",
+            "--format", "{{.State.Status}}", "devbox-mongot",
+        ),
+    ]
+    assert row["unit"] == "lima:mongot/devbox-mongot"
+    assert row["manageable"] is True
+
+
+@pytest.mark.asyncio
+async def test_darwin_lima_stop_targets_only_the_requested_container():
+    from aria.infrastructure import services
+
+    manager = ServiceManager()
+    calls = []
+
+    async def fake_state(spec):
+        return "running" if not calls else "exited"
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args)
+        return 0, "devbox-mongot\n", ""
+
+    with patch.object(services.sys, "platform", "darwin"), patch.object(
+        services, "_state_of", fake_state
+    ), patch.object(services, "_run", fake_run):
+        result = await manager.stop("shared-mongot")
+
+    assert result["state"] == "exited"
+    assert calls == [
+        (
+            "/opt/homebrew/bin/limactl", "shell", "mongot", "docker", "stop",
+            "devbox-mongot",
+        )
+    ]
+
+
+def test_disabled_retrieval_service_is_healthy_on_demand(monkeypatch):
+    from aria.infrastructure import services
+    from aria.memory.capabilities import retrieval_capabilities
+
+    monkeypatch.setattr(retrieval_capabilities._search, "enabled", False)
+    row = services._row_for(get_spec("shared-mongot"), "exited")
+
+    assert row["expected_state"] == "on_demand"
+    assert row["healthy"] is True
+
+
+def test_enabled_retrieval_service_still_alarms_when_stopped(monkeypatch):
+    from aria.infrastructure import services
+    from aria.memory.capabilities import retrieval_capabilities
+
+    monkeypatch.setattr(retrieval_capabilities._search, "enabled", True)
+    row = services._row_for(get_spec("shared-mongot"), "exited")
+
+    assert row["expected_state"] == "always_up"
+    assert row["healthy"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +328,7 @@ async def test_get_probes_only_the_requested_service():
     target = REGISTRY[0].slug
     states = {spec.slug: "running" for spec in REGISTRY}
     p, calls = _counting_state_of(states)
-    with p:
+    with p, patch("aria.infrastructure.services.sys.platform", "linux"):
         manager = ServiceManager()
         entry = await manager.get(target)
         assert calls == [target], f"get() probed {calls}, expected only {target}"
@@ -259,6 +340,39 @@ async def test_get_probes_only_the_requested_service():
     assert entry["state"] == "running"
     full_row = next(r for r in full if r["slug"] == target)
     assert entry.keys() == full_row.keys()
+
+
+@pytest.mark.asyncio
+async def test_darwin_status_uses_one_launchd_snapshot_and_one_lima_shell():
+    from aria.infrastructure import services
+
+    calls = []
+
+    async def fake_run(*args, **kwargs):
+        calls.append(args)
+        if args[:3] == ("launchctl", "print", "system"):
+            lines = [f"123 0 {spec.darwin_label}" for spec in REGISTRY if spec.darwin_label]
+            return 0, "\n".join(lines), ""
+        if args[:2] == ("pgrep", "-x"):
+            return 0, "123\n", ""
+        if args[:2] == ("/opt/homebrew/bin/limactl", "list"):
+            return 0, "Running\n", ""
+        if args[:4] == ("/opt/homebrew/bin/limactl", "shell", "mongot", "docker"):
+            return 0, "/devbox-mongod running\n/devbox-mongot exited\n", ""
+        raise AssertionError(args)
+
+    with patch.object(services.sys, "platform", "darwin"), patch.object(
+        services, "_run", fake_run
+    ):
+        rows = await ServiceManager().status()
+
+    assert len([c for c in calls if c[:3] == ("launchctl", "print", "system")]) == 1
+    assert len([c for c in calls if c[:4] == (
+        "/opt/homebrew/bin/limactl", "shell", "mongot", "docker"
+    )]) == 1
+    by_slug = {row["slug"]: row for row in rows}
+    assert by_slug["shared-mongod"]["state"] == "running"
+    assert by_slug["shared-mongot"]["state"] == "exited"
 
 
 @pytest.mark.asyncio

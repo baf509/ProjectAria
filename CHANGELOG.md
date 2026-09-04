@@ -1,5 +1,44 @@
 # ARIA Changelog
 
+## 2026-09-03 — Caller-aware single-slot admission and fast-band compaction
+
+- Added cancellation-safe priority admission to the OpenAI gateway for
+  deployments that report exactly one execution slot. Hermes traffic has
+  interactive priority, Pi is foreground, and labeled benchmark/background
+  work is lower priority; 30-second tier aging prevents starvation.
+- Added queue state to `/llm/v1/backend` and queue priority/wait/depth to the
+  existing privacy-preserving gateway usage records. This adopts the useful
+  job-placement observability of NVIDIA PAIR without adding another proxy or
+  pretending the two-device hybrid process is two schedulable nodes.
+- Labeled Aria-owned llama.cpp adapter traffic `aria-background`; live queue
+  telemetry had exposed two minute-long internal generations under the generic
+  `AsyncOpenAI/Python` identity, where they were previously treated as
+  foreground work.
+- Set Hermes's absolute compression cap to 95,000 tokens so its sessions, like
+  Pi's, compact before entering Flash Next's measured deep-context slow band.
+- Made project-path ownership host-independent (`/Users/<user>`,
+  `/home/<user>`, and `~`) and made CPU-server RSS measurement portable through
+  psutil; the full macOS suite exposed both stale Linux-only assumptions.
+
+## 2026-09-03 — Hybrid Flash Next production qualification and upstream audit
+
+- Qualified the boot-default R9700 + Strix Halo deployment at its native
+  262,144-token context with q8 K/V, unified KV, a 16 GiB host prompt cache,
+  and MTP depth 3. Retrieval passed with needles at 10/50/90% through 245K;
+  the homogeneous thinking-off EvalPlus run scored 160/164 HumanEval and
+  157/164 HumanEval+.
+- Verified the pinned sixvolts runtime already contains upstream llama.cpp's
+  merged Qwen4exp correctness and long-context work through #28040. Chained
+  n-gram + MTP reduced matched median decode 61.02 → 53.64 tok/s, so plain MTP
+  remains production. The open EOG-tail cache bug did not reproduce locally.
+- Closed the now-unsafe multi-slot MTP control: upstream #28286 reports
+  cross-request content contamination with parallel Qwen4exp MTP. The launcher
+  rejects MTP with more than one slot, and ARIA exposes only the qualified
+  single-slot geometry.
+- Reconciled both legacy ARIA Pi launch profiles to the hybrid default at
+  262,144 context / 32,768 output tokens, preserving their prompt/tool fields;
+  the dashboard label and benchmark metadata now match the deployed model.
+
 ## 2026-09-03 — Gateway per-request routing overhead removed
 
 - The LLM gateway (`/llm/v1`, `/llm/v1-identified`) re-resolved routing on

@@ -21,9 +21,21 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     """Run startup migrations."""
     await _ensure_schema_validation(db)
     await _ensure_standard_indexes(db)
-    await _ensure_search_indexes(db)
+    search_enabled = bool(settings.search_enabled)
+    try:
+        capability_doc = await db.capabilities.find_one({"_id": "retrieval"})
+        persisted = (capability_doc or {}).get("search")
+        if isinstance(persisted, dict) and "enabled" in persisted:
+            search_enabled = bool(persisted["enabled"])
+    except Exception as exc:  # standard migrations still proceed
+        logger.debug("Could not read persisted search capability: %s", exc)
+    if search_enabled:
+        await _ensure_search_indexes(db)
+    else:
+        logger.info("Search capability disabled; skipping mongot index migration")
     await _seed_pi_coding_agent(db)
     await _seed_pi_coding_ridge_agent(db)
+    await _reconcile_pi_coding_profiles(db)
     await _seed_search_agent(db)
     await _normalize_project_status(db)
 
@@ -170,6 +182,7 @@ async def _ensure_standard_indexes(db: AsyncIOMotorDatabase) -> None:
     )
     await _safe_create_index(db.usage, "model", name="usage_model")
     await _safe_create_index(db.usage, "source", name="usage_source")
+    await _safe_create_index(db.usage, "caller", name="usage_caller")
     await _safe_create_index(db.usage, "agent_slug", name="usage_agent_slug")
     await _safe_create_index(db.usage, "conversation_id", name="usage_conversation_id")
     await _safe_create_index(db.signal_contacts, "sender", name="signal_contact_sender", unique=True)
@@ -512,10 +525,10 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         "context_instructions": None,
         "llm": {
             "backend": "aria",
-            "model": "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
-            "temperature": 0.3,
-            "max_tokens": 8192,
-            "max_context_tokens": 253952,
+            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "temperature": 0.0,
+            "max_tokens": 32768,
+            "max_context_tokens": 262144,
             "force_non_streaming": False,
         },
         "fallback_chain": [],
@@ -564,13 +577,13 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
         # This legacy db.agents row is a launch profile for the external Pi CLI.
-        # Pi carries only the two Corsair Qwen models, both through ARIA.
+        # Pi carries the three approved Corsair Qwen profiles through ARIA.
         "llm": {
             "backend": "aria",
-            "model": "Qwen3.8-27B-R9700-Radiance",
-            "temperature": 0.4,
-            "max_tokens": 4096,
-            "max_context_tokens": 245760,
+            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "temperature": 0.0,
+            "max_tokens": 32768,
+            "max_context_tokens": 262144,
             "force_non_streaming": False,
         },
         "fallback_chain": [],
@@ -599,6 +612,35 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
 
     await db.agents.insert_one(agent)
     logger.info("Seeded Pi Coding Agent (slug=pi-coding, backend=llamacpp)")
+
+
+async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
+    """Keep ARIA's legacy Pi launch profiles aligned with managed Pi clients.
+
+    These rows choose the provider/model passed to the external Pi process;
+    they are not independent model registrations.  Updating existing rows is
+    necessary because the seed functions intentionally preserve user-authored
+    prompt and tool fields.
+    """
+    result = await db.agents.update_many(
+        {"slug": {"$in": ["pi-coding", "pi-coding-ridge"]}},
+        {
+            "$set": {
+                "llm.backend": "aria",
+                "llm.model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+                "llm.temperature": 0.0,
+                "llm.max_tokens": 32768,
+                "llm.max_context_tokens": 262144,
+                "llm.force_non_streaming": False,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    if result.modified_count:
+        logger.info(
+            "Reconciled %d Pi coding launch profile(s) to hybrid Flash Next",
+            result.modified_count,
+        )
 
 
 _SEARCH_AGENT_SYSTEM_PROMPT = """You are ARIA's Search Agent.

@@ -1,4 +1,4 @@
-import { chromium } from '/home/ben/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs'
+import { chromium } from 'playwright'
 const b = await chromium.launch()
 const ctx = await b.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
 const p = await ctx.newPage()

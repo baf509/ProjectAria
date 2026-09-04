@@ -11,7 +11,7 @@ Last reconciled against the live deployment: **2026-09-02**.
 
 | Owner | Current responsibility |
 |---|---|
-| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB/mongot, Hermes/Signal, embeddings, TTS, Mac-native Gemma, canonical general projects, watched shells, credentials, and operational state |
+| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB, Hermes/Signal, embeddings, TTS, Mac-native Gemma, canonical general projects, watched shells, credentials, and operational state; mongot search is currently disabled/stopped |
 | Corsair (`corsair-ai`) | Qwen3.8 Radiance and Qwen3.8 Flash Next weights/runtimes, GPU tooling, benchmarks, restricted model actuation, and the thin `aria-node` compatibility runtime |
 | `red`, `ridge` | Registered on-demand GPU nodes reached through Mac-managed proxies |
 | NAS | CouchDB LiveSync hub and recovery repositories |
@@ -37,15 +37,16 @@ jobs. The old `devboxsvc` and `devboxagent` paths and identities are historical.
 | ARIA API and inference gateway | loopback `:8200`, tailnet-published `:8200` | `com.ben.devbox.aria-api` |
 | ARIA UI | loopback `:3000`, tailnet-published `:3000` | `com.ben.devbox.aria-ui` |
 | Hermes and Signal | private gateway and `:8090` | Mac launchd services |
-| MongoDB/mongot, embeddings, TTS, Gemma | private/loopback | Mac launchd plus the Linux compatibility layer required by mongot |
+| MongoDB, embeddings, TTS, Gemma | private/loopback | Mac launchd plus the Lima guest used by MongoDB |
 | Corsair node agent | outbound to the Mac API | `aria-node.service` on Corsair |
 
 Verified model data plane:
 
 | Model | Corsair listener | Use |
 |---|---|---|
-| `Qwen3.8-27B-R9700-Radiance` | `127.0.0.1:8080` | general workhorse and Pi model |
-| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | `127.0.0.1:8120` | long-context Pi model; live geometry is 1 × 256K despite the retained legacy slug |
+| `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` | `127.0.0.1:8121` | boot-default 256K model for ARIA, Hermes, and Pi |
+| `Qwen3.8-27B-R9700-Radiance` | `127.0.0.1:8080` | dual-resident rollback option |
+| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | `127.0.0.1:8120` | dual-resident long-context rollback option; live geometry is 1 × 256K despite the retained legacy slug |
 
 DeepSeek V4 weights and experiments may remain on Corsair for rollback and model
 engineering, but no DeepSeek listener is part of the default topology.
@@ -87,10 +88,11 @@ working.
 
 ## Pi Coding policy
 
-Every managed Pi installation has one provider, `aria`, and exactly two models:
+Every managed Pi installation has one provider, `aria`, and exactly three models:
 
 - `Qwen3.8-27B-R9700-Radiance`
 - `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`
+- `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default)
 
 Both use the Mac `/llm/v1-identified` gateway with an inference-only credential.
 No Fireworks provider, cloud fallback, raw Corsair URL, or additional registered

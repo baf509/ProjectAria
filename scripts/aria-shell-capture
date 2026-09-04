@@ -27,10 +27,36 @@ if [[ -f "$HOME/.aria-env" ]]; then
   set +a
 fi
 
+# The Mac control plane keeps the production environment with the deployed
+# application rather than in /etc or ~/.aria-env. Capture needs only Mongo's
+# URI and database. Do not source the whole file: some Pydantic list settings
+# use launchd/shell syntax that is not JSON and make this small subprocess die
+# while importing ARIA.
+if [[ "$(uname -s)" == "Darwin" && -f "$HOME/Services/apps/ProjectAria/.env" ]]; then
+  while IFS= read -r env_line; do
+    case "$env_line" in
+      MONGODB_URI=*|MONGODB_DATABASE=*)
+        env_key="${env_line%%=*}"
+        env_value="${env_line#*=}"
+        if [[ "$env_value" == \"*\" || "$env_value" == \'*\' ]]; then
+          env_value="${env_value:1:${#env_value}-2}"
+        fi
+        export "$env_key=$env_value"
+        ;;
+    esac
+  done < "$HOME/Services/apps/ProjectAria/.env"
+fi
+
 cleanup() { rm -f "$pidfile" 2>/dev/null || true; }
 trap cleanup EXIT
 
-ARIA_PYTHON="${ARIA_PYTHON:-/home/ben/Development/ProjectAria/api/.venv/bin/python3}"
-ARIA_API_DIR="${ARIA_API_DIR:-/home/ben/Development/ProjectAria/api}"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  default_api_dir="$HOME/Services/apps/ProjectAria/api"
+else
+  default_api_dir="$HOME/Development/ProjectAria/api"
+fi
+ARIA_API_DIR="${ARIA_API_DIR:-$default_api_dir}"
+ARIA_PYTHON="${ARIA_PYTHON:-$ARIA_API_DIR/.venv/bin/python3}"
 cd "$ARIA_API_DIR"
-exec "$ARIA_PYTHON" -m aria.shells.capture "$name"
+capture_log="${ARIA_CAPTURE_LOG_FILE:-/tmp/aria-shell-capture-${name}.log}"
+exec "$ARIA_PYTHON" -m aria.shells.capture "$name" >>"$capture_log" 2>&1

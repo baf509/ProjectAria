@@ -31,7 +31,10 @@ from pymongo import MongoClient
 
 
 PIDFILE_TEMPLATE = "/tmp/aria-shell-capture-{name}.pid"
-CAPTURE_SHIM = os.environ.get("ARIA_SHELL_CAPTURE_BIN", "/home/ben/.local/bin/aria-shell-capture")
+CAPTURE_SHIM = os.environ.get(
+    "ARIA_SHELL_CAPTURE_BIN",
+    os.path.join(os.path.expanduser("~"), ".local", "bin", "aria-shell-capture"),
+)
 LOGFILE = os.environ.get("ARIA_SHELL_REGISTER_LOG", "/tmp/aria-shell-register.log")
 # Short, because a tmux hook waits on this. The default 30s makes every
 # attach hang for half a minute while Mongo is down.

@@ -11,7 +11,7 @@
  * an RSC navigation is a fetch for the SAME url whose response is a Flight
  * payload, not HTML, so a url-keyed cache would happily serve one for the other.
  */
-const VERSION = "SwWRhyIGwKrXxMiQckP5V"
+const VERSION = "bk2wJSvM45XPBWBvK9rdW"
 const SHELL_CACHE = 'aria-shell-' + VERSION
 const STATIC_CACHE = 'aria-static-' + VERSION
 const OFFLINE_URL = '/offline'

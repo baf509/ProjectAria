@@ -82,13 +82,30 @@ def test_repeat_launch_reattaches_to_existing_shell(
     )
 
     calls = []
+    option_calls = []
     monkeypatch.setattr(globals_["subprocess"], "call", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(
+        globals_["subprocess"],
+        "run",
+        lambda argv, **_kwargs: option_calls.append(argv),
+    )
     if tmux_env:
         monkeypatch.setenv("TMUX", tmux_env)
     else:
         monkeypatch.delenv("TMUX", raising=False)
 
     assert main() == 0
+    assert option_calls == [
+        [
+            "tmux",
+            "set-option",
+            "-w",
+            "-t",
+            f"{expected_target[1:]}:",
+            "window-size",
+            "smallest",
+        ]
+    ]
     assert calls == [["tmux", expected_action, "-t", expected_target]]
 
 
@@ -184,33 +201,35 @@ def test_readiness_timeout_never_launches_tmux(monkeypatch):
 def test_remote_wrapper_consumes_aria_placement_flags():
     source = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "--no-aria|--corsair|--remote) ;;" in source
+    assert "--local|--no-aria|--corsair|--remote) ;;" in source
     assert '"$launcher" "${forwarded_args[@]}"' in source
 
 
-def test_remote_wrapper_local_flag_launches_untracked():
+def test_remote_wrapper_local_flag_stays_managed():
     source = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "--local) local_mode=1" in source
-    assert 'exec "$tool" "${forwarded_args[@]}"' in source
+    assert "local_mode" not in source
+    assert 'exec "$tool" "${forwarded_args[@]}"' not in source
 
 
-def test_mac_wrapper_local_flags_are_a_real_direct_launch_escape_hatch():
+def test_mac_wrapper_local_flags_remain_registered_compatibility_aliases():
     source = MAC_ROUTER.read_text(encoding="utf-8")
 
-    assert "--local|--no-aria) bypass_aria=1" in source
-    assert "if (( bypass_aria )); then" in source
-    assert 'command "$tool" "${forwarded_args[@]}"' in source
+    assert "--local|--no-aria) ;;" in source
+    assert "bypass_aria" not in source
+    assert '"$HOME/.config/aria/aria-local-shell" "$tool"' in source
 
 
-def test_codex_launch_shim_guards_auto_resume_and_fresh_fallback():
+def test_codex_launch_shim_makes_auto_resume_opt_in_and_keeps_fresh_fallback():
     source = CODEX_LAUNCH.read_text(encoding="utf-8")
 
-    # Auto-resume is bounded: a huge rollout must not make every new shell
-    # in its directory slow while codex replays it.
+    # Auto-resume is opt-in and bounded: a rollout must not make every new
+    # shell in its directory slow while Codex replays it.
     assert "ARIA_CODEX_RESUME_MAX_BYTES" in source
+    assert 'ARIA_CODEX_RESUME_MAX_BYTES:-0' in source
+    assert "TUI_ARGS=(--no-alt-screen -c tui.animations=false)" in source
     assert "codex resume --last" in source
     # A failed resume must always fall back to a fresh session rather than
     # leave a dead pane, however long the failure took.
     assert "starting a fresh session" in source
-    assert 'exec codex "${CODEX_ARGS[@]}" "$@"' in source
+    assert 'exec codex "${TUI_ARGS[@]}" "${CODEX_ARGS[@]}" "$@"' in source

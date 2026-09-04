@@ -146,7 +146,14 @@ def _is_ignored(path: str) -> bool:
     """True if this path is inventory, not a project (HARVEST_IGNORE)."""
     p = os.path.normpath(path)
     for pattern in HARVEST_IGNORE:
-        if fnmatch.fnmatchcase(p, os.path.expanduser(pattern)):
+        expanded = [os.path.expanduser(pattern)]
+        # ARIA harvests Mac-local and Corsair-reported paths in the same
+        # process. A bare `~` only expands for the Mac service account, which
+        # previously let Corsair's /home/ben inbox directories become projects.
+        if pattern.startswith("~/"):
+            suffix = pattern[2:]
+            expanded.extend(f"{home}/{suffix}" for home in ("/Users/ben", "/home/ben"))
+        if any(fnmatch.fnmatchcase(p, candidate) for candidate in expanded):
             return True
     name = os.path.basename(p)
     return any(fnmatch.fnmatchcase(name, pat) for pat in HARVEST_IGNORE_NAMES)

@@ -44,14 +44,15 @@ def reset_capabilities():
 # ---------------------------------------------------------------------------
 
 class TestRetrievalCapabilities:
-    def test_defaults_are_on(self):
+    def test_search_defaults_off(self):
         caps = RetrievalCapabilities()
         assert caps.embeddings_enabled is True
-        assert caps.search_enabled is True
-        assert caps.retrieval_mode() == "hybrid"
+        assert caps.search_enabled is False
+        assert caps.retrieval_mode() == "fallback"
 
     def test_retrieval_mode_matrix(self):
         caps = RetrievalCapabilities()
+        caps._search.enabled = True
         caps._embeddings.enabled = False
         assert caps.retrieval_mode() == "lexical"
         assert caps.vector_search_enabled is False

@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 # Rough chars→tokens ratio. Scrollback is mostly ASCII; ~4 chars/token is a
 # safe overestimate (keeps slightly more than the nominal token budget).
 CHARS_PER_TOKEN = 4
+# Bound each server-side scan so one giant historical shell cannot monopolize
+# Mongo's only Lima vCPU for ten seconds at a time.
+SCAN_PAGE_EVENTS = 25_000
 
 
 async def prune_shell_events(
@@ -74,34 +77,67 @@ async def prune_shell_events(
             if seen_at is not None and line_counts.get(name, 0) <= seen_at:
                 results[name] = 0
                 continue
-        # Find the highest line_number whose cumulative (newest→oldest) text
-        # length has already exceeded the budget; everything <= that line is
-        # older than the budget window and eligible for deletion.
-        pipeline = [
-            {"$match": {"shell_name": name}},
-            {
-                "$setWindowFields": {
-                    "partitionBy": "$shell_name",
-                    "sortBy": {"line_number": -1},
-                    "output": {
-                        "cum": {
-                            # Computed inline, NOT via a preceding $project:
-                            # projecting first was measured 2.4x SLOWER on the
-                            # multi-million-event shells (21.2s vs 8.8s on
-                            # claude-infrastructure, 2026-08-18).
-                            "$sum": {"$strLenCP": {"$ifNull": ["$text_clean", ""]}},
-                            "window": {"documents": ["unbounded", "current"]},
-                        }
-                    },
-                }
-            },
-            {"$match": {"cum": {"$gt": budget_chars}}},
-            {"$group": {"_id": None, "cutoff": {"$max": "$line_number"}}},
-        ]
-
+        # Walk the existing (shell_name, line_number) index newest-first in
+        # bounded SERVER-SIDE pages. The previous $setWindowFields plan always
+        # examined every event in the shell: 6.2M docs / 10 CPU-seconds / 1.1
+        # GiB read for one shell. A first indexed-cursor fix stopped at 175K
+        # docs, but streaming those tiny redraw fragments into Python still
+        # pegged ARIA + Mongo. Here Mongo returns one sum per 25K rows; only the
+        # final crossing page pays a bounded window calculation.
         cutoff: Optional[int] = None
-        async for d in db.shell_events.aggregate(pipeline, allowDiskUse=True):
-            cutoff = d.get("cutoff")
+        remaining = budget_chars
+        before_line: Optional[int] = None
+        while cutoff is None:
+            match: dict = {"shell_name": name}
+            if before_line is not None:
+                match["line_number"] = {"$lt": before_line}
+            prefix = [
+                {"$match": match},
+                {"$sort": {"line_number": -1}},
+                {"$limit": SCAN_PAGE_EVENTS},
+            ]
+            meta_pipeline = prefix + [{
+                "$group": {
+                    "_id": None,
+                    "chars": {"$sum": {"$strLenCP": {"$ifNull": ["$text_clean", ""]}}},
+                    "oldest": {"$min": "$line_number"},
+                    "count": {"$sum": 1},
+                }
+            }]
+            page = await db.shell_events.aggregate(meta_pipeline).to_list(length=1)
+            if not page:
+                break
+            meta = page[0]
+            page_chars = int(meta.get("chars") or 0)
+            page_count = int(meta.get("count") or 0)
+            oldest = int(meta.get("oldest") or 0)
+            if page_chars <= remaining:
+                remaining -= page_chars
+                if page_count < SCAN_PAGE_EVENTS or oldest <= 0:
+                    break
+                before_line = oldest
+                continue
+
+            crossing_pipeline = prefix + [
+                {
+                    "$setWindowFields": {
+                        "sortBy": {"line_number": -1},
+                        "output": {
+                            "cum": {
+                                "$sum": {"$strLenCP": {"$ifNull": ["$text_clean", ""]}},
+                                "window": {"documents": ["unbounded", "current"]},
+                            }
+                        },
+                    }
+                },
+                {"$match": {"cum": {"$gt": remaining}}},
+                {"$limit": 1},
+                {"$project": {"_id": 0, "cutoff": "$line_number"}},
+            ]
+            crossing = await db.shell_events.aggregate(crossing_pipeline).to_list(length=1)
+            if crossing:
+                cutoff = int(crossing[0].get("cutoff") or 0)
+            break
 
         if cutoff is None:  # shell is within budget; nothing to prune
             if within_budget is not None:

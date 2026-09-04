@@ -63,6 +63,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+import psutil
 import yaml
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -420,6 +421,7 @@ def _pairs_between(
 _HALO_BIG = (
     "DS4-0731-Q8Protected-Halo-DwarfStar",
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+    "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -447,15 +449,19 @@ _R9700_RESIDENT = (
     "Qwen3.8-27B-ROCmFP4-R9700-Vulkan",
 )
 
+_BOTH_GPU_RESIDENT = (
+    "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
+    "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+)
+
 _EXCLUSIVE_PAIRS = (
     _EXCLUSIVE_PAIRS
     + _pairs_within(_HALO_BIG)
     + _pairs_within(_R9700_RESIDENT)
-    # The hybrid split is the one deployment that spans both cards: 80% of its
-    # layers on the Halo, the rest plus the drafter in the R9700's VRAM. So it
-    # is the single member of the Halo group that ALSO conflicts with every
-    # dGPU resident.
-    + _pairs_between(("DS4-0731-IQ3_S-Hybrid-ROCm-Dual",), _R9700_RESIDENT)
+    # These hybrid splits span both cards: most experts live on the Halo while
+    # the dense trunk/drafter or a layer subset occupies the R9700. They also
+    # conflict with every dGPU resident despite belonging to the Halo group.
+    + _pairs_between(_BOTH_GPU_RESIDENT, _R9700_RESIDENT)
 )
 
 
@@ -847,15 +853,16 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
         runtime_family="llamacpp",
-        bench_decode_tok_s=47.22,
-        bench_prefill_tok_s=453.0,
-        bench_at="2026-08-29",
-        bench_note="UD-Q4_K_XL on the Halo, 1 x 256K, llama.cpp 8148b062e with "
-        "--spec-type draft-mtp,ngram-mod. Mean decode improved 18.78 -> 47.22 tok/s "
-        "with the PPL check neutral at 0.14 sigma. Depth probes: decode 21.0 / 19.70 / "
-        "17.57 / 14.18 and prefill 407 / 453 / 365 / 285 tok/s at 1K / 8K / 32K / "
-        "64K. Dual-GPU remains rejected because it consumes the R9700 reserved for "
-        "Qwen3.8-27B Radiance.",
+        bench_decode_tok_s=53.01,
+        bench_prefill_tok_s=396.0,
+        bench_at="2026-09-01",
+        bench_note="UD-Q4_K_XL on the Halo, 1 x 256K, llama.cpp Build F 5cad3181a "
+        "with --spec-type draft-mtp,ngram-mod, depth 3, f16 KV and -b/-ub 2048. "
+        "The Build F interleaved workload mean was 53.01 tok/s after the recurrent "
+        "rollback fix (Build D: 48.26); realistic ~4.2K-code-prompt prefill was "
+        "396 tok/s with ubatch 2048. These figures belong to the Halo-only loadout; "
+        "the separately registered hybrid profile consumes the R9700 and replaces "
+        "Radiance while active.",
         description="Qwen3.8-Flash-Next — Qwen's Qwen4-architecture preview "
         "(general.architecture=qwen4exp): 125B/6B-active MoE, 512 experts top-10 + shared, "
         "36 Gated-DeltaNet + 12 Qwen-Sparse-Attention layers, a 51B n-gram (PLE) embedding "
@@ -871,10 +878,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "Vision is served via mmproj-F16. Speculative decoding combines the local Q8_0 "
         "MTP head with ngram-mod; the model remains selected by its compatibility slug.",
         runtime_repo="https://github.com/ggml-org/llama.cpp (qwen4exp merged upstream)",
-        runtime_ref="Pinned commit 8148b062e in infrastructure/llamacpp-worktrees/"
-        "flash-next-buildA-20260828-210313/build-hip-A. Includes lazy PLE/engram handling "
-        "and Qwen4exp NextN/MTP draft-head support. serve.sh accepts the older 280e76452 "
-        "only when speculation is explicitly disabled.",
+        runtime_ref="Pinned production Build F commit 5cad3181a in infrastructure/"
+        "llamacpp-worktrees/flash-next-buildF-20260901-021804/build-hip-F. Includes "
+        "lazy PLE/engram handling, detached Qwen4exp NextN/MTP support, indexer-head "
+        "strided reduction, and recurrent-state rollback. serve.sh retains Build D "
+        "569159f28 as the on-disk rollback runtime.",
         backend_device="ROCm1 (Strix Halo iGPU, gfx1151), llama.cpp HIP — selected with -dev, "
         "HIP_VISIBLE_DEVICES deliberately unset",
         devices=("Strix Halo iGPU (ROCm1)",),
@@ -896,10 +904,25 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 description="The qualified speculative deployment uses one native-context slot.",
             ),
             LaunchParam(
-                name="ubatch", env="UBATCH", label="Batch / micro-batch", kind="int",
-                default="1024",
-                description="1024 is the validated memory/prefill balance. 2048 doubles the "
-                            "context-scaled QSA scratch and does not fit safely at 2x256K.",
+                name="ubatch", env="UBATCH", label="Micro-batch", kind="int",
+                default="2048",
+                description="Live one-slot profile. Measured +11.7% prefill on realistic "
+                            "code prompts versus 1024, with decode unchanged.",
+            ),
+            LaunchParam(
+                name="batch", env="BATCH", label="Logical batch", kind="int",
+                default="2048",
+                description="The live launcher keeps logical and physical batches equal.",
+            ),
+            LaunchParam(
+                name="kv_type_k", env="KV_TYPE_K", label="K cache", kind="enum",
+                default="f16", choices=(("f16", "qualified production cache"),
+                                        ("q8_0", "smaller; requires a fresh quality gate")),
+            ),
+            LaunchParam(
+                name="kv_type_v", env="KV_TYPE_V", label="V cache", kind="enum",
+                default="f16", choices=(("f16", "qualified production cache"),
+                                        ("q8_0", "smaller; requires a fresh quality gate")),
             ),
             LaunchParam(
                 name="cache_ram_mib", env="CACHE_RAM_MIB", label="Host prompt cache MiB",
@@ -921,6 +944,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                          ("ngram-mod", "ngram only"),
                          ("none", "disable speculative decoding")),
             ),
+            LaunchParam(
+                name="spec_draft_n_max", env="SPEC_DRAFT_N_MAX", label="MTP draft depth",
+                kind="enum", default="3",
+                choices=(("3", "qualified production depth"),
+                         ("2", "shallower diagnostic profile")),
+            ),
             _PARAM_PORT,
         ),
         ctx_param="ctx",
@@ -936,6 +965,109 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         consumers_note="Pi-selectable through ARIA on :8120; "
         "Radiance (:8080) stays up on the R9700 as ARIA's steward/LLAMACPP_URL target and the "
         "fast conversation fallback. Gemma remains CPU-only.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+        bench_decode_tok_s=54.10,
+        bench_prefill_tok_s=1183.4,
+        bench_at="2026-09-03",
+        bench_note="Production 1x262K layout-0 qualification with q8_0 K/V and MTP3. "
+        "Decode is the median of three fixed-seed 512-token code/prose/structured "
+        "generations (54.10 tok/s; no-MTP control 32.57). Prefill is the cold 4K "
+        "probe; cold 32K/64K/128K/245K probes measured 853.1/607.4/383.7/235.2 "
+        "tok/s. Retrieval needles passed at 32K, 128K, and 245K.",
+        description="Qwen3.8-Flash-Next UD-Q4_K_XL split across both Corsair GPUs. "
+        "The dense trunk, KV cache, and shared Q8_0 MTP head live on the R9700; "
+        "routed experts from the selected layer boundary onward live on the Strix "
+        "Halo, and the PLE table is gathered from host memory. Uses the all-AMD "
+        "hybrid runtime from https://github.com/sixvolts/llama-halo-hybrid. This is "
+        "the boot-default whole-machine loadout: it replaces, rather than co-resides "
+        "with, the separate Radiance + Halo-only servers.",
+        runtime_repo="https://github.com/sixvolts/llama-halo-hybrid.git",
+        runtime_ref="Pinned 210b94ab8490790c28a5800c2cdcfb0d6b3dc986 (2026-09-02), "
+        "ROCm build for gfx1151 + gfx1201. Includes device-resident recurrent "
+        "rollback, cached Halo intermediates, deep-context QSA gather, MTP fixes, "
+        "and two-lane hybrid prefill.",
+        runtime_family="llamacpp",
+        backend_device="ROCm0 (R9700 dense/KV/MTP) + ROCm1 (Strix Halo routed experts)",
+        devices=("Radeon AI PRO R9700 (ROCm0)", "Strix Halo iGPU (ROCm1)"),
+        memory_pool=POOL_HALO,
+        also_uses=(POOL_R9700,),
+        deployment="qwen3.8-flash-next-hybrid",
+        model_file="models/llm/Qwen3.8-Flash-Next-UD-Q4_K_XL-GGUF/"
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+        port=8121,
+        systemd_unit="qwen3.8-flash-next-hybrid.service",
+        launch_script="qwen3.8-flash-next-hybrid/serve.sh",
+        parameters=(
+            LaunchParam(
+                name="ctx", env="CTX", label="Total context", kind="int", default="262144",
+                description="Native 256K context in the single production slot. This requires "
+                            "layout 0 so the q8 KV cache fits on the R9700.",
+            ),
+            LaunchParam(
+                name="slots", env="SLOTS", label="Slots", kind="enum", default="1",
+                choices=(("1", "one 256K request stream; required while MTP slot isolation is unresolved"),),
+                description="Qwen4exp recurrent MTP can contaminate state across parallel slots "
+                            "(upstream llama.cpp #28286). Keep one slot; concurrency queues at ARIA.",
+            ),
+            LaunchParam(
+                name="layout", env="LAYOUT", label="Expert boundary", kind="enum", default="0",
+                choices=(
+                    ("0", "hybrid-0: all routed experts on Halo; required for 256K"),
+                    ("10", "hybrid-10: faster 64K short-context profile"),
+                    ("12", "hybrid-12: use through 16K context"),
+                    ("14", "hybrid-14: maximum dGPU experts at 8K context"),
+                ),
+                description="First layer whose routed experts move to the Halo. Lower values "
+                            "leave more R9700 room for KV and compute buffers.",
+            ),
+            LaunchParam(
+                name="ubatch", env="UBATCH", label="Micro-batch", kind="int", default="2048",
+                description="2048 is the measured 64K hybrid-10 winner. Two-lane prefill "
+                            "requires batch to be at least twice this value.",
+            ),
+            LaunchParam(
+                name="batch", env="BATCH", label="Logical batch", kind="int", default="4096",
+                description="Must be at least two times micro-batch for two-lane prefill.",
+            ),
+            LaunchParam(
+                name="cache_ram_mib", env="CACHE_RAM_MIB", label="Prompt cache MiB",
+                kind="int", default="16384",
+                description="Host-RAM prompt cache. Explicitly enabled at 16 GiB so roughly "
+                            "two full-context q8 prefixes can survive slot reuse. The launcher "
+                            "also forces unified KV and idle-slot caching.",
+            ),
+            LaunchParam(
+                name="kv_type_k", env="KV_TYPE_K", label="K cache", kind="enum", default="q8_0",
+                choices=(("q8_0", "measured quality/performance choice"),
+                         ("f16", "larger reference cache")),
+            ),
+            LaunchParam(
+                name="kv_type_v", env="KV_TYPE_V", label="V cache", kind="enum", default="q8_0",
+                choices=(("q8_0", "measured quality/performance choice"),
+                         ("q4_0", "smaller cache; modest quality tradeoff"),
+                         ("f16", "larger reference cache")),
+            ),
+            LaunchParam(
+                name="spec_draft_n_max", env="SPEC_DRAFT_N_MAX", label="MTP draft depth",
+                kind="enum", default="3",
+                choices=(("3", "qualified Corsair winner; about 11% faster decode"),
+                         ("2", "slower rollback profile")),
+            ),
+            _PARAM_PORT,
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        ctx_is_total=True,
+        # Split across two independent device pools plus host-resident PLE. The
+        # exclusivity graph, unit Conflicts=, and launcher's MemAvailable guard
+        # are the authoritative fit checks; this estimate is for the fleet UI.
+        resident_gib=82,
+        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Hybrid-R9700-Halo"),
+        consumers_note="Boot-default high-throughput whole-machine profile on :8121 for "
+        "ARIA, Hermes, and Pi. Use the Operate loadout button to select the dual-resident "
+        "rollback profile.",
     ),
     ModelServerSpec(
         slug="DS4-0731-REAP150B-MXFP4",
@@ -2112,13 +2244,9 @@ def _rss_bytes_for_pid(pid: int) -> Optional[int]:
     """Resident host memory for one process. Used for CPU-only servers, whose
     allocations never appear in the GTT pool."""
     try:
-        with open(f"/proc/{pid}/status") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1]) * 1024
-    except Exception:
+        return int(psutil.Process(pid).memory_info().rss)
+    except (psutil.Error, OSError, ValueError):
         return None
-    return None
 
 
 # --------------------------------------------------------------------------
@@ -3668,20 +3796,38 @@ def _endpoints_for(spec: "ModelServerSpec") -> dict:
     }
 
 
-async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
-    """Return whether Corsair answers health through its loopback forward.
+def _runtime_family_from_models(payload: object) -> Optional[str]:
+    """Normalize an OpenAI model listing to the serving runtime family."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return None
+    owners = {
+        str(item.get("owned_by", "")).strip().casefold()
+        for item in payload["data"]
+        if isinstance(item, dict)
+    }
+    if any("vllm" in owner for owner in owners):
+        return "vllm"
+    if any(owner in {"llamacpp", "llama.cpp", "llama-cpp"} for owner in owners):
+        return "llamacpp"
+    return None
+
+
+async def _forwarded_endpoint_status(
+    port: int, *, identify_runtime: bool = False
+) -> tuple[bool, Optional[str]]:
+    """Probe one forwarded port and, when needed, identify its runtime.
 
     A TCP connect alone is insufficient because ssh owns the local listener
-    even when the remote model process is down.
+    even when the remote model process is down. Runtime identity matters when
+    a retired deployment and its replacement deliberately share a port: port
+    health alone must not make both registry entries look resident.
     """
-    if not spec.port:
-        return False
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", spec.port), timeout=0.75
+            asyncio.open_connection("127.0.0.1", port), timeout=0.75
         )
     except (OSError, asyncio.TimeoutError):
-        return False
+        return False, None
     try:
         writer.write(
             b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
@@ -3696,7 +3842,62 @@ async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
         await writer.wait_closed()
     except OSError:
         pass
-    return healthy
+    if not healthy or not identify_runtime:
+        return healthy, None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(0.75)) as client:
+            response = await client.get(f"http://127.0.0.1:{port}/v1/models")
+            response.raise_for_status()
+            family = _runtime_family_from_models(response.json())
+    except (httpx.HTTPError, ValueError, OSError):
+        family = None
+    return True, family
+
+
+async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
+    if not spec.port:
+        return False
+    families = {
+        candidate.runtime_family
+        for candidate in REGISTRY
+        if candidate.onbox and candidate.port == spec.port
+    }
+    ambiguous = len(families) > 1
+    healthy, family = await _forwarded_endpoint_status(
+        spec.port, identify_runtime=ambiguous
+    )
+    return healthy and (not ambiguous or family == spec.runtime_family)
+
+
+async def _forwarded_fleet_states(
+    specs: list["ModelServerSpec"],
+) -> dict[str, str]:
+    """Probe each forwarded TCP port once and map the answer back to specs."""
+    forwarded = [spec for spec in specs if spec.onbox]
+    by_port: dict[int, list[ModelServerSpec]] = {}
+    for spec in forwarded:
+        if spec.port:
+            by_port.setdefault(spec.port, []).append(spec)
+    ports = list(by_port)
+    probes = await asyncio.gather(*(
+        _forwarded_endpoint_status(
+            port,
+            identify_runtime=len({s.runtime_family for s in by_port[port]}) > 1,
+        )
+        for port in ports
+    ))
+    port_states = dict(zip(ports, probes))
+
+    states: dict[str, str] = {}
+    for spec in forwarded:
+        if not spec.port:
+            states[spec.slug] = "unwired"
+            continue
+        healthy, family = port_states[spec.port]
+        families = {s.runtime_family for s in by_port[spec.port]}
+        identified = len(families) == 1 or family == spec.runtime_family
+        states[spec.slug] = "running" if healthy and identified else "exited"
+    return states
 
 
 def _server_row(
@@ -3925,19 +4126,27 @@ class ModelServerManager:
         # One read per pool, shared by every row, through the same seam the
         # start-time gate uses. The Halo figure is also kept under the
         # historical gtt_* keys so existing consumers keep working.
-        pools = {
-            name: _read_gtt_gib(name)
-            for name in (POOL_HALO, POOL_R9700, POOL_HOST)
-        }
-        gtt = pools.get(POOL_HALO)
-        # A discrete card holding GTT is serving out of system RAM — at which
-        # point it is no longer an independent pool and a co-resident Halo
-        # model is at risk. Read separately because the (used, total) seam
-        # above deliberately carries only the two numbers the gate projects on.
-        spilling = {
-            name: bool(live and live.spilling)
-            for name, live in ((n, read_pool(n)) for n in (POOL_HALO, POOL_R9700))
-        }
+        if _corsair_forward_mode():
+            # The Mac has no Linux DRM sysfs and is not the GPU host. Corsair's
+            # node observations own pool truth; probing /sys here only emits
+            # several warnings per dashboard poll and can never return data.
+            pools = {name: None for name in (POOL_HALO, POOL_R9700, POOL_HOST)}
+            gtt = None
+            spilling = {POOL_HALO: False, POOL_R9700: False}
+        else:
+            pools = {
+                name: _read_gtt_gib(name)
+                for name in (POOL_HALO, POOL_R9700, POOL_HOST)
+            }
+            gtt = pools.get(POOL_HALO)
+            # A discrete card holding GTT is serving out of system RAM — at which
+            # point it is no longer an independent pool and a co-resident Halo
+            # model is at risk. Read separately because the (used, total) seam
+            # above deliberately carries only the two numbers the gate projects on.
+            spilling = {
+                name: bool(live and live.spilling)
+                for name, live in ((n, read_pool(n)) for n in (POOL_HALO, POOL_R9700))
+            }
         bindings: dict[str, list[str]] = {}
         dynamic_specs: list[ModelServerSpec] = []
         if db is not None:
@@ -3971,9 +4180,15 @@ class ModelServerManager:
                 # instead of a stale declaration.
                 self._last_measured[sp.slug] = val
 
+        forwarded_states = (
+            await _forwarded_fleet_states(all_specs) if _corsair_forward_mode() else {}
+        )
         results = []
         for spec in all_specs:
-            state, _ = await self._inspect(spec)
+            if spec.onbox and _corsair_forward_mode():
+                state = forwarded_states[spec.slug]
+            else:
+                state, _ = await self._inspect(spec)
             results.append(
                 _server_row(
                     spec, state, read_launch_geometry(spec),
@@ -4041,14 +4256,7 @@ class ModelServerManager:
 
         forwarded_states: dict[str, str] = {}
         if _corsair_forward_mode():
-            forwarded_specs = [spec for spec in specs if spec.onbox]
-            probes = await asyncio.gather(
-                *(_forwarded_endpoint_open(spec) for spec in forwarded_specs)
-            )
-            forwarded_states = {
-                spec.slug: ("running" if open_ else ("exited" if spec.port else "unwired"))
-                for spec, open_ in zip(forwarded_specs, probes)
-            }
+            forwarded_states = await _forwarded_fleet_states(specs)
 
         unit_active: set[str] = set()
         if not _corsair_forward_mode() and any(s.onbox and unit_name(s) for s in specs):
@@ -4072,6 +4280,7 @@ class ModelServerManager:
 
         results = []
         for spec in specs:
+            geometry = read_launch_geometry(spec)
             if spec.onbox:
                 if _corsair_forward_mode():
                     state = forwarded_states[spec.slug]
@@ -4099,6 +4308,15 @@ class ModelServerManager:
                 "endpoints": _endpoints_for(spec),
                 "resident_gib_estimate": (
                     measured if measured is not None else effective_resident_gib(spec)
+                ),
+                # Admission control needs the declared execution capacity, but
+                # not the expensive live telemetry used by status(). Reading
+                # launch geometry is cached file/config work and keeps the
+                # routing summary honest without adding a network probe.
+                "slots": geometry.slots,
+                "deployment": spec.deployment,
+                "host_machine": spec.host_machine or (
+                    "machine:corsair-ai" if spec.onbox else None
                 ),
                 # The 503 hint lists what a caller could start instead —
                 # routing needs the flag even though it never acts on it.

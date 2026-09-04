@@ -702,6 +702,28 @@ from aria.infrastructure.model_pull import (  # noqa: E402
 from aria.infrastructure.model_servers import REGISTRY  # noqa: E402
 
 
+def test_flash_next_hybrid_claims_both_gpu_pools_and_conflicts_with_dual_residents():
+    by_slug = {spec.slug: spec for spec in REGISTRY}
+    hybrid = by_slug["Qwen3.8-Flash-Next-Hybrid-R9700-Halo"]
+
+    assert hybrid.memory_pool == ms.POOL_HALO
+    assert hybrid.also_uses == (ms.POOL_R9700,)
+    assert hybrid.systemd_unit == "qwen3.8-flash-next-hybrid.service"
+    assert "Qwen3.8-27B-R9700-Radiance" in hybrid.exclusive_with
+    assert "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K" in hybrid.exclusive_with
+    assert hybrid.slug in by_slug["Qwen3.8-27B-R9700-Radiance"].exclusive_with
+    assert hybrid.slug in by_slug["Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K"].exclusive_with
+    defaults = {param.name: param.default for param in hybrid.parameters}
+    assert defaults["ctx"] == "262144"
+    assert defaults["slots"] == "1"
+    assert defaults["layout"] == "0"
+    assert defaults["ubatch"] == "2048"
+    assert defaults["batch"] == "4096"
+    assert defaults["cache_ram_mib"] == "16384"
+    assert defaults["kv_type_k"] == defaults["kv_type_v"] == "q8_0"
+    assert defaults["spec_draft_n_max"] == "3"
+
+
 # model_servers/model_pulls now live on the base FakeDB; alias kept for the
 # dynamic-entry tests' readability.
 FakeDBWithServers = FakeDB
@@ -1520,6 +1542,36 @@ async def test_mac_forward_mode_discovers_models_without_linux_tools(
     by_slug = {row["slug"]: row for row in rows}
     assert by_slug[_EXCL_A]["state"] == "running"
     assert linux_tools.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_mac_forward_mode_disambiguates_reused_port_by_runtime_family(
+    manager, _seeded_remote_state
+):
+    radiance = ms._BY_SLUG["Qwen3.8-27B-R9700-Radiance"]
+    retired = ms._BY_SLUG["Qwen3.8-27B-R9700-HIP"]
+    assert radiance.port == retired.port
+
+    async def fake_probe(port, *, identify_runtime=False):
+        if port == radiance.port:
+            assert identify_runtime is True
+            return True, "vllm"
+        return False, None
+
+    with patch.object(ms.sys, "platform", "darwin"), \
+         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}), \
+         patch.object(ms, "_forwarded_endpoint_status", side_effect=fake_probe):
+        rows = await manager.running_summary()
+
+    by_slug = {row["slug"]: row for row in rows}
+    assert by_slug[radiance.slug]["state"] == "running"
+    assert by_slug[retired.slug]["state"] == "exited"
+
+
+def test_runtime_family_is_read_from_backend_model_ownership():
+    assert ms._runtime_family_from_models({"data": [{"owned_by": "vllm"}]}) == "vllm"
+    assert ms._runtime_family_from_models({"data": [{"owned_by": "llamacpp"}]}) == "llamacpp"
+    assert ms._runtime_family_from_models({"data": [{"owned_by": "unknown"}]}) is None
 
 
 @pytest.mark.asyncio

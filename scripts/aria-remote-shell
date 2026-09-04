@@ -12,17 +12,12 @@ tool=$2
 shift 2
 
 # Placement flags belong to the ARIA wrapper, not the underlying coding tool.
-# `--local` is the untracked escape hatch on either host: run the tool
-# directly in the workdir with no tmux session and no ARIA launcher, so an
-# ARIA problem can never block or slow it down. A shell invoked directly on
-# Corsair is already local to Corsair, while the Mac wrapper has already
-# selected Corsair before reaching this script.
+# Placement flags are consumed here, but never bypass the managed tmux shell.
+# Every supported interactive coding session remains visible to ARIA.
 forwarded_args=()
-local_mode=0
 for arg in "$@"; do
     case "$arg" in
-        --local) local_mode=1 ;;
-        --no-aria|--corsair|--remote) ;;
+        --local|--no-aria|--corsair|--remote) ;;
         *) forwarded_args+=("$arg") ;;
     esac
 done
@@ -46,11 +41,6 @@ case "$tool" in
     pi)     launcher=$HOME/.local/bin/aria-pi-launch ;;
     *) echo "unsupported coding agent: $tool" >&2; exit 2 ;;
 esac
-
-if (( local_mode )); then
-    cd "$workdir"
-    exec "$tool" "${forwarded_args[@]}"
-fi
 
 base=$(basename "$workdir" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g')
 path_id=$(printf '%s' "$workdir" | cksum | awk '{print $1}' | tail -c 7)

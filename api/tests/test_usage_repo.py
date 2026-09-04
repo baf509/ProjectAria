@@ -23,6 +23,7 @@ class TestUsageRepo:
             output_tokens=50,
             agent_slug="aria",
             conversation_id="conv-1",
+            caller="hermes",
         )
 
         db.usage.insert_one.assert_called_once()
@@ -33,6 +34,7 @@ class TestUsageRepo:
         assert doc["output_tokens"] == 50
         assert doc["agent_slug"] == "aria"
         assert doc["conversation_id"] == "conv-1"
+        assert doc["caller"] == "hermes"
         assert doc["timestamp"] is not None
         assert result_id == "mock-id"
 
