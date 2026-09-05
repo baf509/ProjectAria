@@ -1174,6 +1174,15 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 description="Requires operator and full-model qualification before promotion.",
             ),
             LaunchParam(
+                name="qsa_min_kv", env="FLASHNEXT_QSA_MIN_KV",
+                label="Indexed QSA minimum KV depth", kind="enum", default="32768",
+                choices=(("0", "always-on indexed prefill control"), ("8192", "8K active KV cells"),
+                         ("16384", "16K active KV cells"), ("32768", "32K active KV cells"),
+                         ("65536", "64K active KV cells")),
+                description="Requires indexed QSA. Gates on the active KV tensor extent, not allocated context. "
+                            "Below this depth, and during decode/MTP verification, retain native attention.",
+            ),
+            LaunchParam(
                 name="qsa_head_fast", env="FLASHNEXT_QSA_HEAD_FAST",
                 label="Indexed QSA head ordering", kind="enum", default="0",
                 choices=(("0", "query-first control"), ("1", "head-first scheduling experiment")),

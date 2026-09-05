@@ -15,6 +15,14 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
 
 ## Inference scheduling
 
+- Qualify the gateway's concurrent fleet-read coalescing and shorter idle pool
+  expiry against mixed Hermes/Pi-shaped traffic. The production control showed
+  intermittent 503 routing failures and a dropped stream without a model
+  restart; the candidate also saw a 502 before receiving response headers.
+  Five targeted regressions cover the new cache/pool behavior, but passing
+  unit tests is not live reliability evidence. Activate the reviewed API change
+  only between benchmark windows, then repeat the reference soak before
+  judging the experimental engine. Never retry an accepted generation silently.
 - Finish qualification and measured optimization of the original R9700 + Strix
   Halo engine in the sibling `CorsairModelHost/flashnext-engine` project.
   The updated source review is in
@@ -61,6 +69,13 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   graph-boundary bytes, sustained behavior and overlap before scheduler changes.
   Evidence: `infrastructure/Analysis/2026-09-05 Flash Next Hardware Roofline and Original Expert Kernel Checkpoint.md`.
   Latest: `infrastructure/Analysis/2026-09-05 Flash Next Measured Transport Limits and Native MMQ Routing.md`.
+  The depth-gated combined screen now recovers 4K/8K prefill and improves 64K
+  prefill by about 35%; one 32K gateway failure leaves the comparison incomplete.
+  Seven short full-model correctness checks pass, not a deep-context qualification.
+  Before more expensive engine gates, activate the staged gateway fix and validate
+  the reference protocol soak. Also compare Halo-only and hybrid with identical
+  runtime/settings: improvements over the old hybrid do not establish OCuLink's
+  net benefit. Production is restored; the experiment is stopped.
   Remote experimental parameter views currently show
   declared defaults; expose observed unit/process overrides without treating
   defaults as runtime evidence. This test's actual flags are recorded from

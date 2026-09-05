@@ -1,5 +1,26 @@
 # ARIA Changelog
 
+## 2026-09-05 — Depth-gated engine screen and gateway reliability findings
+
+- Added the experimental indexed-attention minimum-depth parameter, default
+  32768 active KV cells. Native short-prefill/decode paths remain available;
+  experimental features remain off by default and Hermes/Pi defaults are unchanged.
+- The combined depth-policy/linear-routing screen recovers short-context
+  prefill and reaches about 773 versus 570 tok/s at 64K. This is three-sample
+  A-then-B screening evidence, not promotion or Halo-only comparison. One 32K
+  cell failed at the gateway and remains failed; the overall comparison is incomplete.
+- Added single-flight gateway fleet refresh, invalidation protection, and
+  two-second idle connection expiry after the production protocol control
+  exposed intermittent availability and transport errors. Five new regressions
+  pass; 65 targeted API tests pass. The reviewed gateway file is staged with a
+  recoverable backup, but activation requires Ben's administrator API restart.
+  No generation retries were added and live reliability is not yet established.
+- The engine passes 107 Python tests, CPU/HIP CTest 3/3 and 4/4, and seven
+  combined arithmetic/tool/4K cache-branch checks. Full quality, deep-context,
+  mixed-agent and independent repeated-performance gates remain open.
+  Production was restored and identified through the gateway; the experiment
+  and bounded hardware sampler are stopped.
+
 ## 2026-09-05 — Measured hybrid transport and original route preparation
 
 - Canonical experimental registry declarations now expose modes 5/6 for original

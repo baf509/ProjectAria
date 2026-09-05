@@ -99,15 +99,17 @@ _TIMEOUT = httpx.Timeout(connect=5.0, read=1800.0, write=60.0, pool=5.0)
 # One client for the process lifetime. Every request used to open a fresh
 # httpx.AsyncClient — a new TCP handshake to the local model server on every
 # LLM call, no keep-alive. httpx pools connections per host, so a shared
-# client keeps the sockets warm across requests; a restarted backend is
-# reconnected transparently (the connect timeout bounds the wait).
+# client keeps the sockets warm across requests. Retire idle sockets before
+# llama.cpp/httplib's five-second keep-alive boundary. Equal five-second client
+# and server expiry can race; never replay a generation to conceal a failure.
+_POOL_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=2.0)
 _shared_client: Optional[httpx.AsyncClient] = None
 
 
 def _client() -> httpx.AsyncClient:
     global _shared_client
     if _shared_client is None or _shared_client.is_closed:
-        _shared_client = httpx.AsyncClient(timeout=_TIMEOUT)
+        _shared_client = httpx.AsyncClient(timeout=_TIMEOUT, limits=_POOL_LIMITS)
     return _shared_client
 
 
@@ -568,11 +570,14 @@ async def _pick_backend(
 # path forces its own fresh, uncached status() and drops this cache.
 _SUMMARY_TTL_SECONDS = 3.0
 _summary_cache: Optional[tuple[float, list[dict]]] = None
+_summary_lock = asyncio.Lock()
+_summary_generation = 0
 
 
 def _drop_summary_cache() -> None:
-    global _summary_cache
+    global _summary_cache, _summary_generation
     _summary_cache = None
+    _summary_generation += 1
 
 
 async def _running_summary_cached(
@@ -583,9 +588,19 @@ async def _running_summary_cached(
     now = time.monotonic()
     if _summary_cache is not None and now - _summary_cache[0] < _SUMMARY_TTL_SECONDS:
         return _summary_cache[1]
-    servers = await manager.running_summary(db)
-    _summary_cache = (now, servers)
-    return servers
+    # Concurrent Hermes/Pi requests otherwise launch duplicate fleet probes on
+    # each TTL boundary. Apart from wasted work, the probes compete for HTTP
+    # workers with inference and may disagree about the same live deployment.
+    async with _summary_lock:
+        if _summary_cache is not None and time.monotonic() - _summary_cache[0] < _SUMMARY_TTL_SECONDS:
+            return _summary_cache[1]
+        generation = _summary_generation
+        servers = await manager.running_summary(db)
+        if generation == _summary_generation:
+            # Measure freshness from completion, not before a slow fleet read.
+            # A start/stop invalidation must not be undone by an older probe.
+            _summary_cache = (time.monotonic(), servers)
+        return servers
 
 
 def _unavailable(route: _Route) -> HTTPException:

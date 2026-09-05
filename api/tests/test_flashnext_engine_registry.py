@@ -63,6 +63,12 @@ def test_experimental_feature_flags_are_off_and_validate_allowed_cells():
     assert params["qsa_indexed_prefill"].default == "0"
     assert params["gdn_chunked_prefill"].default == "0"
     assert params["moe_prefill"].default == "0"
+    assert params["qsa_min_kv"].default == "32768"
+    for value in ("0", "8192", "16384", "32768", "65536"):
+        assert ms.validate_overrides(engine, {"qsa_min_kv": value})["FLASHNEXT_QSA_MIN_KV"] == value
+    for value in ("032768", "-1", "1", "1000000000"):
+        with pytest.raises(ms.ModelServerSafetyError):
+            ms.validate_overrides(engine, {"qsa_min_kv": value})
     for value in ("0", "1", "2", "3", "4", "5", "6"):
         assert ms.validate_overrides(engine, {"moe_prefill": value})["FLASHNEXT_MOE_PREFILL"] == value
     for value in ("7", "01", "-1", "yes"):
