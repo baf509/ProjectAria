@@ -43,10 +43,12 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   and establish transfer dependencies before attempting scheduling overlap.
   A single-cell 64K improvement is encouraging but not promotion evidence.
   Original GPU-routed Q4_K/Q5_1 expert kernels now compile for both AMD targets
-  and pass the numerical replay suite, but their first two implementations fail
+  and pass the numerical replay suite, but their first four implementations fail
   the operator speed gate. `moe_prefill` remains opt-in/off; preserve native
-  serving. Continue with packed activations and larger reuse tiles, recording
-  correctness and interleaved controls. Hardware topology is verified end-to-end:
+  serving. Packed F16 and Q8 activations improved the custom paths but did not
+  beat interleaved native controls. The Q8 candidate passes 320 numerical cases
+  across both GPUs; full-model quality remains unqualified. Profile its matrix
+  loop and operand preparation before further changes. Hardware topology is verified end-to-end:
   the upstream external link is Gen4 x4 despite the GPU endpoint's Gen5 x16 report.
   Published local bandwidth is not effective transfer bandwidth; measure actual
   graph-boundary bytes and sustained transfer limits before scheduler changes.

@@ -63,9 +63,9 @@ def test_experimental_feature_flags_are_off_and_validate_allowed_cells():
     assert params["qsa_indexed_prefill"].default == "0"
     assert params["gdn_chunked_prefill"].default == "0"
     assert params["moe_prefill"].default == "0"
-    for value in ("0", "1", "2", "3"):
+    for value in ("0", "1", "2", "3", "4"):
         assert ms.validate_overrides(engine, {"moe_prefill": value})["FLASHNEXT_MOE_PREFILL"] == value
-    for value in ("4", "01", "-1", "yes"):
+    for value in ("5", "01", "-1", "yes"):
         with pytest.raises(ms.ModelServerSafetyError):
             ms.validate_overrides(engine, {"moe_prefill": value})
     for name, key in (("qsa_head_fast", "FLASHNEXT_QSA_HEAD_FAST"),

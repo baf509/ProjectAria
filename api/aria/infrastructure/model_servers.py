@@ -1206,10 +1206,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 name="moe_prefill", env="FLASHNEXT_MOE_PREFILL",
                 label="Original routed-expert prefill", kind="enum", default="0",
                 choices=(("0", "native control"), ("1", "32-row WMMA tiles"),
-                         ("2", "64-row WMMA tiles"), ("3", "packed F16 activations, 128x64 WMMA tiles")),
+                         ("2", "64-row WMMA tiles"), ("3", "packed F16 activations, 128x64 WMMA tiles"),
+                         ("4", "packed Q8 activations, INT8 WMMA with FP32 scaled sums")),
                 description="Opt-in GPU work queue and tiled Q4_K/Q5_1 unpacking for AMD. "
-                            "FP16 operands with FP32 accumulation; unsupported shapes retain native kernels. "
-                            "Packed mode adds at most 256 MiB activation scratch. "
+                            "F16 or Q8 operands with FP32 accumulated output; unsupported shapes retain native kernels. "
+                            "Packed modes add at most 256 MiB activation scratch. Q8 mode changes activation precision. "
                             "Unqualified experiment, not an automatic production optimization.",
             ),
             LaunchParam(
