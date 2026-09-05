@@ -1,5 +1,26 @@
 # ARIA Changelog
 
+## 2026-09-05 — Gateway short reference passes; Halo placement fits
+
+- The second administrator API restart activated fresh upstream sockets and
+  bounded failure-stage diagnostics. The repeated 180-second production control
+  passed 37 streamed requests in 184.49 seconds, with no retries. The earlier
+  failure remains evidence; root cause and extended reliability are not proven.
+- The same-runtime Halo text placement loaded with the unchanged 256K context,
+  one q8 unified KV slot, MTP3 and 16 GiB host-cache budget. All 11 arithmetic,
+  tool and 4K/32K cache-branch checks passed. The unused vision projector still
+  allocates R9700 memory; this is not a physical GPU-removed performance test.
+- Production was restored and passed 7 post-restore checks. The experiment,
+  window sampler and rollback timer are stopped. A separate two-hour synthetic
+  production-reference soak started at 19:34:58 UTC; its outcome is pending.
+  Actual Hermes/Pi executors and the experimental engine remain unqualified.
+- The sibling harness now permits narrowly scoped draft-device placement
+  comparisons, rejects missing timing samples, reports ranges and supports
+  fail-fast quality gates that reject length-capped output. All 116 tests pass.
+  Reviewed community ROCm PR18 as isolated source candidates, not a wholesale
+  rebase: compact expert scheduling, prefetch and RDNA4 GDN reductions. Its
+  compact selector lacks our Q5_1 down-projection format; no new kernel was imported.
+
 ## 2026-09-05 — Gateway reference failure retained; matched placement prepared
 
 - Confirmed Ben's API restart activated the prior gateway fix. The production

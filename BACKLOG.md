@@ -25,10 +25,14 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   judging the experimental engine. Never retry an accepted generation silently.
   Post-restart follow-up: the 180-second production control failed at 93.9
   seconds after 12 correct requests (trace `2e6a44328ae0419cbd903d5bddb8d470`).
-  Fresh upstream connections and bounded transport-stage diagnostics are now
-  staged, not active; activate through the administrator API restart and repeat
-  the reference gate before longer inference work. 68 targeted tests pass;
-  root cause remains unresolved. Prior failures remain evidence, not retries.
+  The second administrator restart activated fresh upstream connections and
+  bounded transport-stage diagnostics. The repeated 180-second control passed
+  37 requests in 184.49 seconds without retries. Extended reliability remains
+  open, and root cause is unresolved. Prior failures remain evidence, not retries.
+  The separate two-hour production-reference protocol soak started at 19:34:58
+  UTC in `claude-flashnext-gateway-validation`, sibling results directory
+  `gateway-fresh-soak-2h-20260905`. Inspect its final summary; this is not an
+  experimental-candidate or actual-agent-executor qualification.
 - Finish qualification and measured optimization of the original R9700 + Strix
   Halo engine in the sibling `CorsairModelHost/flashnext-engine` project.
   The updated source review is in
@@ -78,16 +82,25 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   The depth-gated combined screen now recovers 4K/8K prefill and improves 64K
   prefill by about 35%; one 32K gateway failure leaves the comparison incomplete.
   Seven short full-model correctness checks pass, not a deep-context qualification.
-  Before more expensive engine gates, activate the staged gateway fix and validate
-  the reference protocol soak. Also compare Halo-only and hybrid with identical
+  The short reference protocol control now passes on the activated gateway.
+  Also compare Halo-only and hybrid with identical
   runtime/settings: improvements over the old hybrid do not establish OCuLink's
   net benefit. Production is restored; the experiment is stopped.
   The experimental `placement=halo-only` control is implemented and its
   launchers deployed, with original production commands unchanged by default.
   It must pass both-pool guards; do not shrink context/cache to force a fit and
   then call the comparison matched. Use the sibling comparator's
-  `--same-runtime --allow-change placement` identity gate. Runtime fit, warmed
-  ABBA measurements and full quality/soak remain outstanding.
+  `--same-runtime --allow-change placement --allow-change mtp.device` identity
+  gate; this does not permit different draft algorithms or depths. The initial
+  Halo text-model load and 11 arithmetic/tool/4K/32K cache-branch checks pass.
+  The retained vision projector still allocates R9700 memory, and two-lane
+  prefill is ignored with one target GPU. Full-cache/deep fit, warmed ABBA
+  measurements and full quality/soak remain outstanding.
+  Review community `halo-box/strix-llama.cpp` PR18 as isolated candidates:
+  compact Halo routed-MMQ tiles/prefetch, RDNA4 GDN reductions and fusion.
+  The current quant's Q5_1 expert down projection is not in their compact
+  selector. Do not import the entire fork, MTP state changes, or power settings
+  without matching local correctness/performance gates.
   Remote experimental parameter views currently show
   declared defaults; expose observed unit/process overrides without treating
   defaults as runtime evidence. This test's actual flags are recorded from
