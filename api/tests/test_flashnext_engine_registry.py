@@ -69,6 +69,12 @@ def test_experimental_feature_flags_are_off_and_validate_allowed_cells():
     assert params["qsa_indexed_prefill"].default == "0"
     assert params["gdn_chunked_prefill"].default == "0"
     assert params["moe_prefill"].default == "0"
+    assert params["moe_compact"].default == "0"
+    for value in ("0", "1", "16", "32", "48", "64", "128"):
+        assert ms.validate_overrides(engine, {"moe_compact": value})["FLASHNEXT_MOE_COMPACT"] == value
+    for value in ("2", "032", "-1", "yes"):
+        with pytest.raises(ms.ModelServerSafetyError):
+            ms.validate_overrides(engine, {"moe_compact": value})
     assert params["qsa_min_kv"].default == "32768"
     for value in ("0", "8192", "16384", "32768", "65536"):
         assert ms.validate_overrides(engine, {"qsa_min_kv": value})["FLASHNEXT_QSA_MIN_KV"] == value
@@ -81,6 +87,8 @@ def test_experimental_feature_flags_are_off_and_validate_allowed_cells():
         with pytest.raises(ms.ModelServerSafetyError):
             ms.validate_overrides(engine, {"moe_prefill": value})
     for name, key in (("qsa_head_fast", "FLASHNEXT_QSA_HEAD_FAST"),
+                      ("moe_prefetch", "FLASHNEXT_MOE_PREFETCH"),
+                      ("gdn_direct_reduce", "FLASHNEXT_GDN_DIRECT_REDUCE"),
                       ("qsa_wmma_prefill", "FLASHNEXT_QSA_WMMA_PREFILL"),
                       ("qsa_wmma_parallel_softmax", "FLASHNEXT_QSA_WMMA_PARALLEL_SOFTMAX")):
         assert params[name].default == "0"

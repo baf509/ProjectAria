@@ -65,6 +65,7 @@ from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
     base_url_for,
     is_servable,
+    match_requested,
     read_pin,
     select,
 )
@@ -574,6 +575,21 @@ async def _pick_backend(
     servers = await _running_summary_cached(manager, db)
     pin = await read_pin(db)
     chosen, reason, unavailable = select(servers, requested=requested, pin=pin)
+    explicitly_chosen, _ = match_requested(servers, requested)
+    confirm_name = requested if unavailable else pin if explicitly_chosen is None else None
+    if confirm_name:
+        # A subsecond fleet health timeout is not proof that a busy named model
+        # stopped. Confirm only that exact deployment, without starting it,
+        # retrying inference, falling back, or reviving a stale cache entry.
+        candidate, _ = match_requested([dict(row, state="running") for row in servers], confirm_name)
+        original = next((row for row in servers if candidate and row.get("slug") == candidate.get("slug")), None)
+        generation = _summary_generation
+        if candidate and original and not is_servable(original) and await manager.confirm_forwarded_resident(candidate["slug"], db):
+            if generation == _summary_generation:
+                confirmed = [dict(row, state="running") if row.get("slug") == candidate["slug"] else row for row in servers]
+                chosen, reason, unavailable = select(confirmed, requested=requested, pin=pin)
+                if chosen is not None:
+                    servers = confirmed
     if chosen is None:
         return _Route(None, None, reason, servers, unavailable)
     return _Route(chosen.get("slug"), base_url_for(chosen), reason, servers)

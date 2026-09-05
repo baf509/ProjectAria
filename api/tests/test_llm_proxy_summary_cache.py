@@ -96,3 +96,66 @@ def test_client_reuses_bounded_client_but_not_idle_upstream_sockets(monkeypatch)
     client.is_closed = True
     proxy._client()
     assert factory.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_negative_fleet_probe_is_confirmed_without_mutating_cache(monkeypatch):
+    rows = [{'slug': 'resident', 'state': 'exited', 'onbox': True, 'port': 8121,
+             'endpoints': {'local': 'http://127.0.0.1:8121/v1'}}]
+    monkeypatch.setattr(proxy, '_running_summary_cached', AsyncMock(return_value=rows))
+    monkeypatch.setattr(proxy, 'read_pin', AsyncMock(return_value=None))
+    manager = MagicMock(confirm_forwarded_resident=AsyncMock(return_value=True))
+    route = await proxy._pick_backend(manager, None, 'resident')
+    assert route.slug == 'resident'
+    assert route.base_url == 'http://127.0.0.1:8121/v1'
+    assert not route.unavailable
+    assert rows[0]['state'] == 'exited'
+    manager.confirm_forwarded_resident.assert_awaited_once_with('resident', None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('confirm,invalidated', [(False, False), (True, True)])
+async def test_negative_confirmation_and_lifecycle_invalidation_fail_closed(monkeypatch, confirm, invalidated):
+    rows = [{'slug': 'resident', 'state': 'exited', 'onbox': True, 'port': 8121,
+             'endpoints': {'local': 'http://127.0.0.1:8121/v1'}}]
+    monkeypatch.setattr(proxy, '_running_summary_cached', AsyncMock(return_value=rows))
+    monkeypatch.setattr(proxy, 'read_pin', AsyncMock(return_value=None))
+    async def confirmation(*_):
+        if invalidated:
+            proxy._drop_summary_cache()
+        return confirm
+    manager = MagicMock(confirm_forwarded_resident=AsyncMock(side_effect=confirmation))
+    route = await proxy._pick_backend(manager, None, 'resident')
+    assert route.base_url is None
+    assert route.unavailable
+
+
+@pytest.mark.asyncio
+async def test_positive_fleet_probe_does_not_add_confirm_request(monkeypatch):
+    rows = [{'slug': 'resident', 'state': 'running', 'onbox': True, 'port': 8121,
+             'endpoints': {'local': 'http://127.0.0.1:8121/v1'}}]
+    monkeypatch.setattr(proxy, '_running_summary_cached', AsyncMock(return_value=rows))
+    monkeypatch.setattr(proxy, 'read_pin', AsyncMock(return_value=None))
+    manager = MagicMock(confirm_forwarded_resident=AsyncMock())
+    route = await proxy._pick_backend(manager, None, 'resident')
+    assert route.slug == 'resident'
+    manager.confirm_forwarded_resident.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_alias_confirms_busy_pin_before_falling_back(monkeypatch):
+    rows = [{'slug': 'resident', 'state': 'exited', 'onbox': True, 'port': 8121,
+             'endpoints': {'local': 'http://127.0.0.1:8121/v1'}},
+            {'slug': 'small', 'state': 'running', 'onbox': True, 'port': 8104,
+             'endpoints': {'local': 'http://127.0.0.1:8104/v1'}}]
+    monkeypatch.setattr(proxy, '_running_summary_cached', AsyncMock(return_value=rows))
+    monkeypatch.setattr(proxy, 'read_pin', AsyncMock(return_value='resident'))
+    manager = MagicMock(confirm_forwarded_resident=AsyncMock(return_value=True))
+    route = await proxy._pick_backend(manager, None, 'aria-resident')
+    assert route.slug == 'resident'
+    assert 'pinned in ARIA' in route.reason
+    manager.confirm_forwarded_resident.assert_awaited_once_with('resident', None)
+    manager.confirm_forwarded_resident.reset_mock()
+    route = await proxy._pick_backend(manager, None, 'small')
+    assert route.slug == 'small'
+    manager.confirm_forwarded_resident.assert_not_awaited()

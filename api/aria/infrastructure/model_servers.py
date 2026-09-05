@@ -1237,6 +1237,28 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                             "Unqualified experiment, not an automatic production optimization.",
             ),
             LaunchParam(
+                name="moe_compact", env="FLASHNEXT_MOE_COMPACT",
+                label="Compact expert MMQ worklist", kind="enum", default="0",
+                choices=(("0", "native scheduling control"), ("1", "mean-route tile selection"),
+                         ("16", "16 columns"), ("32", "32 columns"), ("48", "48 columns"),
+                         ("64", "64 columns"), ("128", "128 columns")),
+                description="Unqualified Q4_K/Q5_1 GPU worklist using native quantized arithmetic. "
+                            "Requires MoE mode 0, 5 or 6; unsupported shapes retain native scheduling.",
+            ),
+            LaunchParam(
+                name="moe_prefetch", env="FLASHNEXT_MOE_PREFETCH",
+                label="Compact expert activation prefetch", kind="enum", default="0",
+                choices=(("0", "disabled"), ("1", "register lookahead experiment")),
+                description="Requires compact MMQ. Reuses native quantized arithmetic; unqualified.",
+            ),
+            LaunchParam(
+                name="gdn_direct_reduce", env="FLASHNEXT_GDN_DIRECT_REDUCE",
+                label="Direct-lane GDN reductions", kind="enum", default="0",
+                choices=(("0", "native shuffle control"), ("1", "RDNA direct-lane butterfly experiment")),
+                description="Scalar-gated recurrence on RDNA3.5/RDNA4; retains rollback slot writes. "
+                            "Requires independent recurrence and full-model qualification.",
+            ),
+            LaunchParam(
                 name="port", env="PORT", label="Port", kind="enum", default="8122",
                 choices=(("8122", "dedicated loopback experimental listener"),),
             ),
@@ -4021,7 +4043,7 @@ def _runtime_family_from_models(payload: object) -> Optional[str]:
 
 
 async def _forwarded_endpoint_status(
-    port: int, *, identify_runtime: bool = False
+    port: int, *, identify_runtime: bool = False, timeout: float = 0.75
 ) -> tuple[bool, Optional[str]]:
     """Probe one forwarded port and, when needed, identify its runtime.
 
@@ -4032,7 +4054,7 @@ async def _forwarded_endpoint_status(
     """
     try:
         reader, writer = await asyncio.wait_for(
-            asyncio.open_connection("127.0.0.1", port), timeout=0.75
+            asyncio.open_connection("127.0.0.1", port), timeout=timeout
         )
     except (OSError, asyncio.TimeoutError):
         return False, None
@@ -4040,20 +4062,21 @@ async def _forwarded_endpoint_status(
         writer.write(
             b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
         )
-        await asyncio.wait_for(writer.drain(), timeout=0.75)
-        status_line = await asyncio.wait_for(reader.readline(), timeout=0.75)
+        await asyncio.wait_for(writer.drain(), timeout=timeout)
+        status_line = await asyncio.wait_for(reader.readline(), timeout=timeout)
         healthy = status_line.startswith(b"HTTP/") and b" 200 " in status_line
     except (OSError, asyncio.TimeoutError):
         healthy = False
-    writer.close()
-    try:
-        await writer.wait_closed()
-    except OSError:
-        pass
+    finally:
+        writer.close()
+        try:
+            await asyncio.wait_for(writer.wait_closed(), timeout=min(timeout, 0.75))
+        except (OSError, asyncio.TimeoutError):
+            pass
     if not healthy or not identify_runtime:
         return healthy, None
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(0.75)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             response = await client.get(f"http://127.0.0.1:{port}/v1/models")
             response.raise_for_status()
             family = _runtime_family_from_models(response.json())
@@ -4265,6 +4288,31 @@ class ModelServerManager:
             if doc:
                 return self._spec_from_doc(doc)
         raise ModelServerNotFound(f"Unknown model server: {slug}")
+
+    async def confirm_forwarded_resident(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> bool:
+        """Confirm a negative fast fleet probe before refusing a named request.
+
+        This is a bounded health/identity read, not an inference retry or model
+        start. A loaded backend can briefly exceed the fleet's 750ms budget.
+        Never reuse an old successful observation or change another model's row.
+        """
+        if not _corsair_forward_mode():
+            return False
+        try:
+            spec = await self.resolve_spec(slug, db)
+        except ModelServerNotFound:
+            return False
+        if not spec.onbox or not spec.port:
+            return False
+        families = {candidate.runtime_family for candidate in REGISTRY
+                    if candidate.onbox and candidate.port == spec.port}
+        ambiguous = len(families) > 1
+        try:
+            healthy, family = await asyncio.wait_for(_forwarded_endpoint_status(
+                spec.port, identify_runtime=ambiguous, timeout=3.0), timeout=5.0)
+        except (OSError, asyncio.TimeoutError):
+            return False
+        return healthy and (not ambiguous or family == spec.runtime_family)
 
     async def _inspect(self, spec: ModelServerSpec) -> tuple[str, bool]:
         """(state, compose_managed) for a spec. Synthetic states for entries

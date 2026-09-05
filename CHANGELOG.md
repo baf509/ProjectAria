@@ -1,5 +1,24 @@
 # ARIA Changelog
 
+## 2026-09-05 — Exact-model health confirmation activated; compact engine screening
+
+- The two-hour production-reference soak failed after 845 responses and
+  3,472 seconds: a named Pi request received HTTP 503 while the same model
+  process continued serving. The failure is retained; the short control did
+  not establish extended reliability.
+- Added a bounded fresh health/identity confirmation when the fast fleet probe
+  classifies an explicitly requested or pinned forwarded model as unavailable.
+  It neither retries generation nor reuses stale positive state, and concurrent
+  lifecycle invalidation remains authoritative. Ben activated the staged API
+  files; the new process and source hashes were verified. Targeted tests pass
+  133, with one skipped. The two-hour reference must still be repeated.
+- Registered disabled-by-default experimental controls for original compact
+  expert MMQ, activation prefetch and direct-lane GDN. The sibling engine's
+  558-case operator screen passes, but those operator timings are not model
+  speed claims. Its compact-only full-model smoke passes 11/11 and the first
+  30-cell benchmark completes successfully; matched native controls are pending.
+  No experimental runtime or Hermes/Pi default has been promoted.
+
 ## 2026-09-05 — Gateway short reference passes; Halo placement fits
 
 - The second administrator API restart activated fresh upstream sockets and

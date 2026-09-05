@@ -1597,6 +1597,27 @@ def test_runtime_family_is_read_from_backend_model_ownership():
 
 
 @pytest.mark.asyncio
+async def test_negative_route_confirmation_is_bounded_and_preserves_runtime_identity(manager):
+    probe = AsyncMock(side_effect=[(True, "vllm"), (True, "llamacpp"), (False, None)])
+    with patch.object(ms, "_corsair_forward_mode", return_value=True), \
+         patch.object(ms, "_forwarded_endpoint_status", probe):
+        assert await manager.confirm_forwarded_resident("Qwen3.8-27B-R9700-Radiance")
+        assert not await manager.confirm_forwarded_resident("Qwen3.8-27B-R9700-Radiance")
+        assert not await manager.confirm_forwarded_resident("Qwen3.8-27B-R9700-Radiance")
+        assert not await manager.confirm_forwarded_resident("unknown-server")
+    assert probe.await_count == 3
+    assert all(call.kwargs == {"identify_runtime": True, "timeout": 3.0} for call in probe.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_route_confirmation_never_probes_local_linux_mode(manager):
+    with patch.object(ms, "_corsair_forward_mode", return_value=False), \
+         patch.object(ms, "_forwarded_endpoint_status", AsyncMock()) as probe:
+        assert not await manager.confirm_forwarded_resident("Qwen3.8-27B-R9700-Radiance")
+    probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_mac_forward_mode_uses_restricted_corsair_actuator(manager):
     actuator = AsyncMock(side_effect=[
         {"slug": _EXCL_A, "state": "running", "action": "noop"},
