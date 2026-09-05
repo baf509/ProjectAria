@@ -36,8 +36,13 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   Promotion still requires matched depth-ladder performance, model correctness,
   cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
   The first always-on WMMA screen fails short-context performance despite a
-  better 32K median. Profile the complete model and qualify depth gating before
-  considering promotion. Remote experimental parameter views currently show
+  better 32K median. Startup profiling is now captured without a policy change;
+  production is restored and the experiment is stopped. Findings and next tests:
+  `infrastructure/Analysis/2026-09-05 2026-09-05 Flash Next Whole Model Screen and Prefill Trace.md`.
+  Qualify depth gating, replay representative Halo Q4_K/Q5_1 expert matrix shapes,
+  and establish transfer dependencies before attempting scheduling overlap.
+  A single-cell 64K improvement is encouraging but not promotion evidence.
+  Remote experimental parameter views currently show
   declared defaults; expose observed unit/process overrides without treating
   defaults as runtime evidence. This test's actual flags are recorded from
   the server process and journal in the active task.

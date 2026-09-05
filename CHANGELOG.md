@@ -1,5 +1,23 @@
 # ARIA Changelog
 
+## 2026-09-05 — Prefill trace captured; production restored
+
+- Startup ROCm profiling succeeded without relaxing host policy. The experimental
+  unit is stopped; both temporary overrides were backed up, and the independent
+  rollback timer was disarmed after production identity/readiness verification.
+  Hermes/Pi defaults and automatic-routing eligibility remain unchanged.
+- A single cold 64K screen measured production at 554 prefill / 41 decode tok/s
+  and the candidate at 764 / 47. Different runtime lifecycles and one cell each
+  make this screening evidence only; the existing short-context regression still
+  blocks promotion.
+- A journal-bounded prefill trace highlights Halo quantized matrix work, the new
+  R9700 attention kernel, and inter-GPU transfers. Kernel, copy and host API
+  durations overlap and must not be added into claimed request time or speedup.
+- Corrected the sibling profiler's ROCm API-domain classification and preserved
+  application signal handlers after a controlled version-query fixture verified
+  clean SIGTERM handling with trace export. Full-model shutdown requalification
+  remains open. All 100 engine Python tests pass; model binaries are unchanged.
+
 ## 2026-09-05 — Experimental performance screen and startup profiling
 
 - Completed authenticated repeated control/candidate measurements at 4K/32K,
