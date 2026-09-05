@@ -35,6 +35,12 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   have an independent timed production rollback; live state is in the task.
   Promotion still requires matched depth-ladder performance, model correctness,
   cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
+  The first always-on WMMA screen fails short-context performance despite a
+  better 32K median. Profile the complete model and qualify depth gating before
+  considering promotion. Remote experimental parameter views currently show
+  declared defaults; expose observed unit/process overrides without treating
+  defaults as runtime evidence. This test's actual flags are recorded from
+  the server process and journal in the active task.
 - Add a Jobs view over gateway usage/admission telemetry: caller class,
   requested model, selected deployment/node, queue time, run time, token counts,
   cache hit rate, and outcome. Include a cheap deterministic route canary from

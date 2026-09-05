@@ -1,5 +1,22 @@
 # ARIA Changelog
 
+## 2026-09-05 — Experimental performance screen and startup profiling
+
+- Completed authenticated repeated control/candidate measurements at 4K/32K,
+  plus 8K prefix-cache pairs. The always-on indexed/WMMA candidate improves the
+  32K prefill median by about 10%, but regresses 8K prefill about 13%; it fails
+  the overall performance gate and is not promoted.
+- Both production and candidate pass the sibling harness's 11 synthetic
+  arithmetic, tool-roundtrip and 4K/32K A-A-B-A retrieval checks. These do not
+  substitute for full model quality, deep-context or mixed-agent soak gates.
+- Added optional startup-only profiling in the sibling model launcher after
+  live attach was denied by Corsair's existing ptrace policy. The normal
+  production command is unchanged; instrumentation requires the experimental
+  identity/task and remains inside the shared memory/process guard. Trace
+  collection is bounded, evidence is not overwritten, and the comparison
+  harness rejects instrumented-versus-uninstrumented comparisons. All 98
+  engine Python tests pass. No host security policy was relaxed.
+
 ## 2026-09-05 — Experimental gateway activated; qualification started
 
 - Verified Ben's API restart loaded the reviewed experimental registry/routing
