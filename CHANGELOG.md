@@ -1,5 +1,21 @@
 # ARIA Changelog
 
+## 2026-09-05 — Forward handoff and experimental prelaunch checks
+
+- Verified Ben's administrator restart and returned all model forwards to the
+  existing system launchd job. The temporary recovery SSH process is gone;
+  `:8122` remains loopback-only and the qualified hybrid route is healthy.
+- Staged the exact reviewed `be1103a` registry, routing and catalogue code in
+  the Mac service tree. Syntax checks pass; activation awaits an administrator
+  restart of `com.ben.devbox.aria-api`.
+- Deployed the committed experimental endpoint metadata and exact runtime
+  version parser to Corsair with digest checks and recoverable backups. The
+  experimental systemd unit is static and stopped. Its no-load check passes
+  source/build provenance and both GPU identities. Seven existing GGUF files
+  pass header/bounds preflight; this does not hash their tensor payloads.
+- No model was unloaded, no candidate inference was sent, and no consumer
+  default was changed during this preparation.
+
 ## 2026-09-05 — Approved experimental loopback forward
 
 - Under Ben's explicit approval, added only `127.0.0.1:8122` to the existing

@@ -28,8 +28,9 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   The experimental registry is not startable or auto-route eligible; full-model
   gateway qualification requires the restricted `:8122` forward. Ben approved
   that addition on 2026-09-05; its key restriction and loopback binding are
-  verified. Restore launchd ownership of the temporary recovery forward with
-  a Mac administrator restart before proceeding to live model qualification.
+  verified. Launchd ownership is restored and the temporary forward is gone.
+  The reviewed registry/routing files are staged in the live service tree;
+  activate them with a Mac administrator API restart before live qualification.
   Promotion still requires matched depth-ladder performance, model correctness,
   cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
 - Add a Jobs view over gateway usage/admission telemetry: caller class,
