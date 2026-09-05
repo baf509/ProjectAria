@@ -206,6 +206,10 @@ class ModelServerSpec:
     onbox: bool = True  # False = ARIA cannot start/stop it (e.g. Ridge)
     startable: bool = True  # False = no working runtime/compose service exists yet
     not_startable_reason: Optional[str] = None
+    # Eligibility for automatic resident ranking, independent of process
+    # readiness or whether routine lifecycle starts are permitted. Explicit
+    # model requests and deliberate operator pins remain available for tests.
+    auto_route: bool = True
     consumers_note: Optional[str] = None  # descriptive, e.g. "Hermes auxiliary tasks + cron"
     # Off-box only: command that suspends the remote machine.
     sleep_command: Optional[tuple[str, ...]] = None
@@ -422,6 +426,7 @@ _HALO_BIG = (
     "DS4-0731-Q8Protected-Halo-DwarfStar",
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+    "Qwen3.8-Flash-Next-Engine-R9700-Halo",
     "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -452,6 +457,7 @@ _R9700_RESIDENT = (
 _BOTH_GPU_RESIDENT = (
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+    "Qwen3.8-Flash-Next-Engine-R9700-Halo",
 )
 
 _EXCLUSIVE_PAIRS = (
@@ -462,6 +468,14 @@ _EXCLUSIVE_PAIRS = (
     # the dense trunk/drafter or a layer subset occupies the R9700. They also
     # conflict with every dGPU resident despite belonging to the Halo group.
     + _pairs_between(_BOTH_GPU_RESIDENT, _R9700_RESIDENT)
+    # Experimental scratch and host-memory peaks are not qualified yet. Its
+    # measurements require both Corsair GPUs without smaller Halo residents;
+    # Mac-owned auxiliary models and remote GPU nodes are unaffected.
+    + _pairs_between(
+        ("Qwen3.8-Flash-Next-Engine-R9700-Halo",),
+        ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8", "context1-Q4",
+         "Chadrock-ROCmFP6-qwen3.6-27b"),
+    )
 )
 
 
@@ -1083,6 +1097,126 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         consumers_note="Boot-default high-throughput whole-machine profile on :8121 for "
         "ARIA, Hermes, and Pi. Use the Operate loadout button to select the dual-resident "
         "rollback profile.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
+        description="Experimental Flash Next runtime for the Corsair R9700 and Strix Halo. "
+        "Reuses the production UD-Q4_K_XL shards and shared Q8_0 MTP head with "
+        "dense trunk/KV/MTP on the R9700, routed experts on Halo, and host PLE. "
+        "Adds independently implemented indexed sparse-attention and WMMA prefill "
+        "behind disabled-by-default feature flags. Generic chunked GDN is a correct "
+        "but slower reference and must remain off. Operator evidence is available; "
+        "full-model correctness, memory peaks, and throughput remain unqualified.",
+        runtime_repo="https://github.com/sixvolts/llama-halo-hybrid.git",
+        runtime_ref="Base 210b94ab8490790c28a5800c2cdcfb0d6b3dc986 plus the qualified "
+        "2026-09-04 loader/GDN normalization patch and original flashnext-engine "
+        "indexed-QSA/GDN-prefix patches. Source lock and build manifest live in "
+        "the flashnext-engine deployment; gfx1151 + gfx1201 HIP build.",
+        runtime_family="llamacpp",
+        backend_device="ROCm0 (R9700 dense/KV/MTP) + ROCm1 (Strix Halo routed experts)",
+        devices=("Radeon AI PRO R9700 (ROCm0)", "Strix Halo iGPU (ROCm1)"),
+        memory_pool=POOL_HALO,
+        also_uses=(POOL_R9700,),
+        deployment="flashnext-engine",
+        model_file="models/llm/Qwen3.8-Flash-Next-UD-Q4_K_XL-GGUF/"
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+        port=8122,
+        systemd_unit="flashnext-engine.service",
+        launch_script="flashnext-engine/serve.sh",
+        startable=False,
+        not_startable_reason="Experimental runtime awaiting hardware and model qualification",
+        auto_route=False,
+        parameters=(
+            # The experimental launcher fixes these values. Exposing other
+            # choices would advertise overrides that its exports ignore.
+            LaunchParam(
+                name="ctx", env="CTX", label="Total context", kind="enum", default="262144",
+                choices=(("262144", "single 256K context pool"),),
+            ),
+            LaunchParam(
+                name="slots", env="SLOTS", label="Slots", kind="enum", default="1",
+                choices=(("1", "single slot; recurrent MTP isolation remains unresolved"),),
+            ),
+            LaunchParam(
+                name="layout", env="LAYOUT", label="Expert boundary", kind="enum", default="0",
+                choices=(("0", "all routed experts on Halo; dense trunk/KV/MTP on R9700"),),
+            ),
+            LaunchParam(
+                name="batch", env="BATCH", label="Logical batch", kind="enum", default="4096",
+                choices=(("4096", "fixed qualification baseline"),),
+            ),
+            LaunchParam(
+                name="ubatch", env="UBATCH", label="Micro-batch", kind="enum", default="2048",
+                choices=(("2048", "two-lane prefill baseline"),),
+            ),
+            LaunchParam(
+                name="cache_ram_mib", env="CACHE_RAM_MIB", label="Prompt cache MiB",
+                kind="enum", default="16384", choices=(("16384", "16 GiB host prompt cache"),),
+                description="Unified q8 KV and idle-slot caching are inherited from the hybrid launcher.",
+            ),
+            LaunchParam(
+                name="kv_type_k", env="KV_TYPE_K", label="K cache", kind="enum", default="q8_0",
+                choices=(("q8_0", "fixed qualification baseline"),),
+            ),
+            LaunchParam(
+                name="kv_type_v", env="KV_TYPE_V", label="V cache", kind="enum", default="q8_0",
+                choices=(("q8_0", "fixed qualification baseline"),),
+            ),
+            LaunchParam(
+                name="spec_draft_n_max", env="SPEC_DRAFT_N_MAX", label="MTP draft depth",
+                kind="enum", default="3", choices=(("3", "fixed qualification baseline"),),
+            ),
+            LaunchParam(
+                name="qsa_indexed_prefill", env="FLASHNEXT_QSA_INDEXED_PREFILL",
+                label="Experimental indexed QSA prefill", kind="enum", default="0",
+                choices=(("0", "disabled; source-base attention path"),
+                         ("1", "enable original indexed sparse-attention prefill")),
+                description="Requires operator and full-model qualification before promotion.",
+            ),
+            LaunchParam(
+                name="qsa_head_fast", env="FLASHNEXT_QSA_HEAD_FAST",
+                label="Indexed QSA head ordering", kind="enum", default="0",
+                choices=(("0", "query-first control"), ("1", "head-first scheduling experiment")),
+                description="Requires indexed QSA. Does not change per-head arithmetic.",
+            ),
+            LaunchParam(
+                name="qsa_wmma_prefill", env="FLASHNEXT_QSA_WMMA_PREFILL",
+                label="Indexed QSA matrix units", kind="enum", default="0",
+                choices=(("0", "scalar indexed attention"), ("1", "D256/Q8/GQA12 WMMA experiment")),
+                description="Requires indexed QSA; unsupported shapes retain scalar attention. "
+                            "FP32 persistent accumulation with F16 local matrix operands.",
+            ),
+            LaunchParam(
+                name="qsa_wmma_parallel_softmax", env="FLASHNEXT_QSA_WMMA_PARALLEL_SOFTMAX",
+                label="WMMA parallel normalization", kind="enum", default="0",
+                choices=(("0", "serial normalization control"), ("1", "warp-parallel experiment")),
+                description="Requires both indexed QSA and WMMA; changes FP32 reduction order.",
+            ),
+            LaunchParam(
+                name="gdn_chunked_prefill", env="FLASHNEXT_GDN_CHUNKED_PREFILL",
+                label="Experimental GDN minimum prefill tokens", kind="enum", default="0",
+                choices=(("0", "disabled; source-base GDN prefix path"),
+                         ("128", "enable when prefill contains at least 128 tokens"),
+                         ("512", "enable when prefill contains at least 512 tokens")),
+                description="Minimum token threshold, not the chunk size. The algorithm uses "
+                            "64-token chunks and keeps the rollback tail recurrent. Changes floating-point "
+                            "accumulation; requires operator and full-model qualification.",
+            ),
+            LaunchParam(
+                name="port", env="PORT", label="Port", kind="enum", default="8122",
+                choices=(("8122", "dedicated loopback experimental listener"),),
+            ),
+        ),
+        ctx_param="ctx",
+        slots_param="slots",
+        ctx_is_total=True,
+        # Initial estimate from the identical production placement, not a new
+        # measurement or a per-device fit guarantee. Actual peaks are pending.
+        resident_gib=82,
+        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Engine-R9700-Halo"),
+        consumers_note="Operator-only registered experiment. Not a default loadout or an "
+        "additional Pi choice. Production hybrid remains the ARIA/Hermes/Pi default. "
+        "Requests for an authorized test use this exact registry slug through the ARIA gateway.",
     ),
     ModelServerSpec(
         slug="DS4-0731-REAP150B-MXFP4",
@@ -4006,6 +4140,7 @@ def _server_row(
         "onbox": spec.onbox,
         "startable": spec.startable,
         "not_startable_reason": spec.not_startable_reason,
+        "auto_route": spec.auto_route,
         "consumers_note": spec.consumers_note,
         "can_sleep": spec.sleep_command is not None,
         # Whether ARIA can wake/start/stop this remote's model service.
@@ -4075,6 +4210,7 @@ class ModelServerManager:
             profile=doc.get("profile"),
             resident_gib=doc.get("resident_gib"),
             gtt_resident=doc.get("gtt_resident", True),
+            auto_route=doc.get("auto_route", True),
             consumers_note=doc.get("consumers_note"),
             # Pulled models are provisioned onto a container runtime on the
             # iGPU today; the field exists so a future pull targeting the
@@ -4277,7 +4413,7 @@ class ModelServerManager:
         `status()` is the full view (geometry, pools, parameters, measured
         footprint) and it is expensive: one or two subprocesses per spec. But
         routing (llm_route.select) only needs slug, model_file, state, onbox,
-        port, endpoints and a footprint to compare magnitudes by — so this
+        port, endpoints, automatic-route eligibility and a footprint — so this
         answers with at most TWO subprocesses: one
         `systemctl --user list-units --state=active --type=service` answers
         every unit-based spec at once, one `docker ps --filter status=running`
@@ -4361,6 +4497,7 @@ class ModelServerManager:
                 # The 503 hint lists what a caller could start instead —
                 # routing needs the flag even though it never acts on it.
                 "startable": spec.startable,
+                "auto_route": spec.auto_route,
             })
         return results
 

@@ -642,7 +642,7 @@ async def list_models(
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ) -> Any:
-    """OpenAI /v1/models — every server that is loaded right now, plus `aria-resident`.
+    """OpenAI /v1/models — every loaded server and any available `aria-resident` route.
 
     Deliberately a catalogue rather than a passthrough of one backend's answer:
     more than one model can be resident, and a consumer can only *pick* between
@@ -651,10 +651,10 @@ async def list_models(
     to follow whatever ARIA has running rather than name a model.
     """
     route = await _pick_backend(manager, db)
-    if not route.base_url:
+    loaded = [s for s in route.servers if is_servable(s)]
+    if not loaded:
         raise _unavailable(route)
 
-    loaded = [s for s in route.servers if is_servable(s)]
     ctxs = await asyncio.gather(
         *(_context_length(base_url_for(s) or "") for s in loaded),
         return_exceptions=True,
@@ -664,7 +664,8 @@ async def list_models(
     smallest_ctx: Optional[int] = None
     for server, n_ctx in zip(loaded, ctxs):
         n_ctx = n_ctx if isinstance(n_ctx, int) else None
-        if n_ctx and (smallest_ctx is None or n_ctx < smallest_ctx):
+        alias_eligible = server.get("auto_route", True) or server["slug"] == route.slug
+        if alias_eligible and n_ctx and (smallest_ctx is None or n_ctx < smallest_ctx):
             smallest_ctx = n_ctx
         data.append({
             "id": server["slug"],
@@ -682,34 +683,37 @@ async def list_models(
             },
         })
 
-    # The auto entry advertises the SMALLEST resident context, not the current
-    # one: it can be served by any loaded model, so promising more than the
+    # The auto entry advertises the SMALLEST eligible resident context, not the current
+    # one: it can be served by any eligible model, so promising more than the
     # smallest would overflow the moment the auto pick moves.
     # `name`/`description` name the model this alias currently resolves to, so a
     # client that renders the catalogue shows the real model rather than the
     # routing alias. A consumer asked "what model are you?" otherwise reports
     # its config — "aria-resident on a custom provider" — which describes the
     # plumbing, not the model.
-    resolved = route.slug or "nothing"
-    data.insert(0, {
-        "id": "aria-resident",
-        "object": "model",
-        "owned_by": "aria",
-        "name": f"aria-resident → {resolved}",
-        "description": (
-            f"Routing alias, not a model. Currently resolves to {resolved}"
-            f" ({route.reason}). Ask /api/v1/infrastructure/llm-route for the"
-            f" loaded model id as the backend itself reports it."
-        ),
-        "aliases": sorted(a for a in ("auto", "aria") if a),
-        "meta": {
-            "n_ctx": smallest_ctx,
-            "context_length": smallest_ctx,
-            "serving": True,
-            "resolves_to": route.slug,
-            "reason": route.reason,
-        },
-    })
+    # A registered experiment can be explicitly servable while excluded from
+    # automatic routing. Keep it discoverable for qualification, but do not
+    # advertise an alias that would fail or silently select that experiment.
+    if route.base_url:
+        data.insert(0, {
+            "id": "aria-resident",
+            "object": "model",
+            "owned_by": "aria",
+            "name": f"aria-resident → {route.slug}",
+            "description": (
+                f"Routing alias, not a model. Currently resolves to {route.slug}"
+                f" ({route.reason}). Ask /api/v1/infrastructure/llm-route for the"
+                f" loaded model id as the backend itself reports it."
+            ),
+            "aliases": sorted(a for a in ("auto", "aria") if a),
+            "meta": {
+                "n_ctx": smallest_ctx,
+                "context_length": smallest_ctx,
+                "serving": True,
+                "resolves_to": route.slug,
+                "reason": route.reason,
+            },
+        })
 
     return JSONResponse({
         "object": "list",

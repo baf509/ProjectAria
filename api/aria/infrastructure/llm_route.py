@@ -102,8 +102,14 @@ def match_requested(servers: list[dict], requested: Optional[str]) -> tuple[Opti
 
 
 def rank_resident(servers: list[dict]) -> Optional[dict]:
-    """Auto pick: the largest resident footprint among servable servers."""
-    candidates = [s for s in servers if is_servable(s)]
+    """Auto pick the largest eligible resident; experiments require explicit selection.
+
+    Older summaries without this field keep their existing behavior. This is
+    deliberately independent of `startable`: a running retained deployment
+    can still serve even when its launcher has been disabled. Explicit model
+    requests and intentional pins are resolved before this fallback ranking.
+    """
+    candidates = [s for s in servers if is_servable(s) and s.get("auto_route", True)]
     if not candidates:
         return None
 

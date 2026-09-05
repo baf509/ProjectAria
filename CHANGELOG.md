@@ -1,5 +1,17 @@
 # ARIA Changelog
 
+## 2026-09-05 — Experimental engine registry (source only)
+
+- Added the explicit experimental R9700/Halo Flash Next deployment and its
+  symmetric GPU-exclusivity declarations. Routine startup is disabled pending
+  qualification; the production hybrid remains the default.
+- Added an independent automatic-routing eligibility flag. Loaded experiments
+  remain discoverable and explicitly selectable without becoming fallback
+  models or advertising an unavailable `aria-resident` alias.
+- Registry, routing, model catalogue and gateway regression checks pass
+  163 tests with one existing skip. These source changes are not yet deployed;
+  live qualification awaits approval for the restricted experimental forward.
+
 ## 2026-09-04 — Consumer context and reasoning defaults reconciled
 
 - Re-audited the live hybrid deployment, Hermes, and both managed Pi installs

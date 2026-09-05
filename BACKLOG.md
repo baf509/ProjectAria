@@ -3,7 +3,7 @@
 Only open, current work belongs here. Shipped work lives in `CHANGELOG.md`;
 desired architecture lives in the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-09-03**.
+Last reconciled: **2026-09-05**.
 
 ## Architecture reconciliation
 
@@ -15,6 +15,20 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
 
 ## Inference scheduling
 
+- Finish qualification and measured optimization of the original R9700 + Strix
+  Halo engine in the sibling `CorsairModelHost/flashnext-engine` project.
+  The updated source review is in
+  `infrastructure/Planning/2026-09-05 Flash Next R9700 Halo Implementation Review.md`;
+  it supersedes the original plan's technical assumptions and absolute speed targets.
+  Indexed sparse attention has independent CPU/both-GPU numerical evidence;
+  its original matrix-unit path remains opt-in. Generic chunked GDN is correct
+  but failed its performance gate and must remain disabled. Operator findings:
+  `infrastructure/Analysis/2026-09-05 Flash Next Original Engine Operator Qualification 015331.md`.
+  Preserve the qualified `:8121` deployment as control.
+  The experimental registry is not startable or auto-route eligible; full-model
+  gateway qualification needs an operator-approved restricted `:8122` forward.
+  Promotion still requires matched depth-ladder performance, model correctness,
+  cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
 - Add a Jobs view over gateway usage/admission telemetry: caller class,
   requested model, selected deployment/node, queue time, run time, token counts,
   cache hit rate, and outcome. Include a cheap deterministic route canary from
