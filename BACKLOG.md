@@ -47,12 +47,20 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   the operator speed gate. `moe_prefill` remains opt-in/off; preserve native
   serving. Packed F16 and Q8 activations improved the custom paths but did not
   beat interleaved native controls. The Q8 candidate passes 320 numerical cases
-  across both GPUs; full-model quality remains unqualified. Profile its matrix
-  loop and operand preparation before further changes. Hardware topology is verified end-to-end:
+  across both GPUs; full-model quality remains unqualified. Profiling confirms
+  its matrix loop remains slower than native. New modes 5/6 retain native MMQ
+  arithmetic while replacing route preparation; 240 numerical cases and 56
+  timing calls match native output fingerprints on both GPUs. Mode 5 has small
+  operator-only point gains; mode 6's small-group sorting adds no convincing
+  benefit. Keep both off until full-model qualification. Canonical parameter
+  declarations now accept 0..6, but these additions are not deployed to the API.
+  Hardware topology is verified end-to-end:
   the upstream external link is Gen4 x4 despite the GPU endpoint's Gen5 x16 report.
-  Published local bandwidth is not effective transfer bandwidth; measure actual
-  graph-boundary bytes and sustained transfer limits before scheduler changes.
+  A verified 40-cell synthetic probe measures about 605/236 GB/s local reads on
+  R9700/Halo, but only 7.02/6.72 GB/s peer payload transfers. Measure actual
+  graph-boundary bytes, sustained behavior and overlap before scheduler changes.
   Evidence: `infrastructure/Analysis/2026-09-05 Flash Next Hardware Roofline and Original Expert Kernel Checkpoint.md`.
+  Latest: `infrastructure/Analysis/2026-09-05 Flash Next Measured Transport Limits and Native MMQ Routing.md`.
   Remote experimental parameter views currently show
   declared defaults; expose observed unit/process overrides without treating
   defaults as runtime evidence. This test's actual flags are recorded from

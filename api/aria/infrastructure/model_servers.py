@@ -1207,10 +1207,13 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 label="Original routed-expert prefill", kind="enum", default="0",
                 choices=(("0", "native control"), ("1", "32-row WMMA tiles"),
                          ("2", "64-row WMMA tiles"), ("3", "packed F16 activations, 128x64 WMMA tiles"),
-                         ("4", "packed Q8 activations, INT8 WMMA with FP32 scaled sums")),
+                         ("4", "packed Q8 activations, INT8 WMMA with FP32 scaled sums"),
+                         ("5", "original linear routing with native MMQ arithmetic"),
+                         ("6", "linear routing with register-sorted small expert groups")),
                 description="Opt-in GPU work queue and tiled Q4_K/Q5_1 unpacking for AMD. "
                             "F16 or Q8 operands with FP32 accumulated output; unsupported shapes retain native kernels. "
                             "Packed modes add at most 256 MiB activation scratch. Q8 mode changes activation precision. "
+                            "Modes 5/6 change only native-MMQ route preparation, not operand quantization. "
                             "Unqualified experiment, not an automatic production optimization.",
             ),
             LaunchParam(

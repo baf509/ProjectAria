@@ -1,5 +1,25 @@
 # ARIA Changelog
 
+## 2026-09-05 — Measured hybrid transport and original route preparation
+
+- Canonical experimental registry declarations now expose modes 5/6 for original
+  linear route preparation feeding native MMQ, optionally sorting small expert
+  groups in registers. All experimental defaults remain off; these source-only
+  declarations are not deployed to the API and do not change Hermes/Pi routes.
+- The sibling engine's 240-case numerical replay and 56-call operator screen
+  match native output fingerprints. Linear routing has modest operator-only
+  point gains; sorting shows no convincing additional benefit. Neither is
+  full-model qualified, and the first four matrix implementations remain rejected
+  for serving because they are slower than native.
+- A checked 40-cell bandwidth probe measures about 605/236 GB/s local reads on
+  R9700/Halo versus 7.02/6.72 GB/s peer payload transfers. The initial fixture
+  synchronization failure and corrected run are both retained. These brief
+  measurements are not thermal steady-state limits or model throughput.
+- Production was restored and identified through ARIA after the bounded test
+  windows; no experimental model remains running. CPU/HIP CTest pass 3/3 and
+  4/4, the engine Python suite passes 101 tests, and selected ARIA tests pass 27.
+  Evidence: `infrastructure/Analysis/2026-09-05 Flash Next Measured Transport Limits and Native MMQ Routing.md`.
+
 ## 2026-09-05 — Prefill trace captured; production restored
 
 - Startup ROCm profiling succeeded without relaxing host policy. The experimental
