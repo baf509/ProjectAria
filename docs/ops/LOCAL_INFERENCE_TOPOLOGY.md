@@ -17,6 +17,19 @@ Consumers use:
 Raw Corsair model endpoints are loopback-only and reach the Mac through managed
 SSH forwards. Never publish them directly or configure clients to call them.
 
+The canonical Mac forwarding launcher is `scripts/macos/run-corsair-model-forwards`,
+deployed at `/Users/ben/Services/apps/bin/run-corsair-model-forwards`. Its existing
+system job is `com.ben.devbox.corsair-forwards`. Ben approved the additional
+experimental loopback `:8122` on 2026-09-05; the SSH key still denies shell access
+and unapproved destinations. This does not enable experiment auto-routing.
+
+Restart this system job with an administrator-authorized
+`sudo launchctl kickstart -k system/com.ben.devbox.corsair-forwards` after checking
+gateway admission for active/queued work. Do not terminate SSH expecting automatic
+restart: it exits zero on SIGTERM and the current job restarts only unsuccessful
+exits. A recovery forward must be explicitly handed back to launchd; don't leave
+two processes competing for the same local ports.
+
 | Deployment | Device/pool | Raw listener | Current role |
 |---|---|---|---|
 | Qwen3.8 Radiance | R9700, 32 GiB discrete VRAM | `127.0.0.1:8080` | dual-resident rollback option |

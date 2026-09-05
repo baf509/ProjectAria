@@ -1,0 +1,29 @@
+#!/bin/zsh
+set -euo pipefail
+
+readonly key=/Users/ben/Services/secrets/corsair_forward_ed25519
+readonly known_hosts=/Users/ben/Services/config/corsair-known-hosts
+
+# Ports 8002 (TTS) and 8104 (Gemma) are intentionally absent: those services
+# run natively on this Mac. Keep current Corsair model endpoints and STT.
+# Experimental port 8122 was explicitly approved by Ben on 2026-09-05 for
+# ARIA-only Flash Next qualification. This does not enable automatic routing.
+exec /usr/bin/ssh -N \
+  -p 2222 \
+  -i "$key" \
+  -o IdentitiesOnly=yes \
+  -o BatchMode=yes \
+  -o StrictHostKeyChecking=yes \
+  -o UserKnownHostsFile="$known_hosts" \
+  -o HostKeyAlias=corsair-ai.local \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8003:127.0.0.1:8003 \
+  -L 127.0.0.1:8080:127.0.0.1:8080 \
+  -L 127.0.0.1:8081:127.0.0.1:8081 \
+  -L 127.0.0.1:8107:127.0.0.1:8107 \
+  -L 127.0.0.1:8120:127.0.0.1:8120 \
+  -L 127.0.0.1:8121:127.0.0.1:8121 \
+  -L 127.0.0.1:8122:127.0.0.1:8122 \
+  ben@100.123.245.84

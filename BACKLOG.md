@@ -26,7 +26,10 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   `infrastructure/Analysis/2026-09-05 Flash Next Original Engine Operator Qualification 015331.md`.
   Preserve the qualified `:8121` deployment as control.
   The experimental registry is not startable or auto-route eligible; full-model
-  gateway qualification needs an operator-approved restricted `:8122` forward.
+  gateway qualification requires the restricted `:8122` forward. Ben approved
+  that addition on 2026-09-05; its key restriction and loopback binding are
+  verified. Restore launchd ownership of the temporary recovery forward with
+  a Mac administrator restart before proceeding to live model qualification.
   Promotion still requires matched depth-ladder performance, model correctness,
   cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
 - Add a Jobs view over gateway usage/admission telemetry: caller class,

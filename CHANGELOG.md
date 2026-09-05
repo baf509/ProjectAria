@@ -1,5 +1,20 @@
 # ARIA Changelog
 
+## 2026-09-05 — Approved experimental loopback forward
+
+- Under Ben's explicit approval, added only `127.0.0.1:8122` to the existing
+  restricted Corsair forwarding key and Mac forwarding launcher. Existing key
+  restrictions and all other key-file bytes were preserved; recoverable backups
+  were retained. A connection to 8122 reaches the absent listener, while 8123
+  remains administratively prohibited.
+- Added the canonical launcher under `scripts/macos/`. It matches the deployed
+  script and passes `zsh -n`.
+- The system launchd restart needs administrator access. Terminating SSH exited
+  successfully, so its `KeepAlive.SuccessfulExit=false` policy did not restart
+  it. Production connectivity was restored using a temporary process with the
+  exact approved launcher. Administrator handoff to the existing launchd job
+  remains outstanding; no model was unloaded or candidate started.
+
 ## 2026-09-05 — Experimental engine registry (source only)
 
 - Added the explicit experimental R9700/Halo Flash Next deployment and its
