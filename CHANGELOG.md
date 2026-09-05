@@ -1,5 +1,21 @@
 # ARIA Changelog
 
+## 2026-09-05 — Experimental gateway activated; qualification started
+
+- Verified Ben's API restart loaded the reviewed experimental registry/routing
+  changes. The candidate loaded with 262144 context, one slot and unified KV,
+  and exact-slug inference through the authenticated gateway succeeds.
+- The experiment remains excluded from automatic routing and routine startup;
+  no Hermes/Pi defaults changed. Exclusive-GPU tests are registered to task
+  `6a9b9412db2209986aed4cd4` and protected by timed production rollback.
+- Corrected a short-lived KFD probe-teardown race in the sibling launch guard.
+  A bounded recheck still requires a fresh, complete clear observation; no
+  occupancy is ignored. The engine suite passes 89 tests; ARIA's integration
+  regression selection passes 188 tests with one existing skip.
+- Initial whole-model timing is measurement evidence only. Performance,
+  generated-output correctness, deep-context and mixed-client soak gates remain
+  open; the experimental engine is not promoted.
+
 ## 2026-09-05 — Forward handoff and experimental prelaunch checks
 
 - Verified Ben's administrator restart and returned all model forwards to the
