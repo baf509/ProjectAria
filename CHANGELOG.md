@@ -1,5 +1,24 @@
 # ARIA Changelog
 
+## 2026-09-05 — Gateway reference failure retained; matched placement prepared
+
+- Confirmed Ben's API restart activated the prior gateway fix. The production
+  reference completed 12 valid streamed requests, then disconnected before
+  upstream response headers at 93.9 seconds. The failed 180-second control is
+  retained; neither gateway reliability nor engine qualification passed.
+- Staged fresh upstream sockets (one bounded shared client, no idle reuse or
+  automatic generation retries), plus privacy-bounded transport-stage error
+  diagnostics. Read-only model-list probes passed 100/100; fresh sockets cost
+  about 5 ms extra median latency in that probe. This is a proposed containment
+  measure, not an established root cause or live fix. Another administrator
+  API restart and a passing reference soak are required. 68 targeted tests pass,
+  including real TCP reuse/refusal and no-replay checks.
+- Added an operator-only Halo placement reference to the experimental engine
+  registry. It retains both-pool exclusion, exact runtime identity, full 256K
+  q8 unified KV, MTP3 and the 16 GiB host-cache budget. Sibling launchers are
+  deployed and syntax/hash checked; the 112-test engine suite passes. Halo-only
+  fit/performance remains unmeasured, and no production/Pi default changed.
+
 ## 2026-09-05 — Depth-gated engine screen and gateway reliability findings
 
 - Added the experimental indexed-attention minimum-depth parameter, default

@@ -1102,7 +1102,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
         description="Experimental Flash Next runtime for the Corsair R9700 and Strix Halo. "
         "Reuses the production UD-Q4_K_XL shards and shared Q8_0 MTP head with "
-        "dense trunk/KV/MTP on the R9700, routed experts on Halo, and host PLE. "
+        "dense trunk/KV/MTP on the R9700, routed experts on Halo, and host PLE by default. "
+        "An operator-only Halo placement reference uses the same runtime/settings and "
+        "still claims both hardware pools; its fit and performance are unqualified. "
         "Adds independently implemented indexed sparse-attention and WMMA prefill "
         "behind disabled-by-default feature flags. Generic chunked GDN is a correct "
         "but slower reference and must remain off. Operator evidence is available; "
@@ -1113,7 +1115,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "indexed-QSA/GDN-prefix patches. Source lock and build manifest live in "
         "the flashnext-engine deployment; gfx1151 + gfx1201 HIP build.",
         runtime_family="llamacpp",
-        backend_device="ROCm0 (R9700 dense/KV/MTP) + ROCm1 (Strix Halo routed experts)",
+        backend_device="Default: ROCm0 dense/KV/MTP + ROCm1 experts; optional Halo-only experiment reference",
         devices=("Radeon AI PRO R9700 (ROCm0)", "Strix Halo iGPU (ROCm1)"),
         memory_pool=POOL_HALO,
         also_uses=(POOL_R9700,),
@@ -1129,6 +1131,15 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         parameters=(
             # The experimental launcher fixes these values. Exposing other
             # choices would advertise overrides that its exports ignore.
+            LaunchParam(
+                name="placement", env="FLASHNEXT_PLACEMENT", label="Experimental placement",
+                kind="enum", default="hybrid",
+                choices=(("hybrid", "R9700 dense/KV/MTP + Halo experts"),
+                         ("halo-only", "matched Halo reference; retains exclusive claim on both pools")),
+                description="Operator qualification only. Same pinned runtime, 256K q8 unified KV, "
+                            "MTP3 and 16 GiB prompt-cache budget. Halo-only fit must pass memory guards; "
+                            "not the older selectable Halo production runtime and not a Pi option.",
+            ),
             LaunchParam(
                 name="ctx", env="CTX", label="Total context", kind="enum", default="262144",
                 choices=(("262144", "single 256K context pool"),),

@@ -97,13 +97,31 @@ identified_router = APIRouter(prefix="/llm/v1-identified", tags=["llm-proxy"])
 _TIMEOUT = httpx.Timeout(connect=5.0, read=1800.0, write=60.0, pool=5.0)
 
 # One client for the process lifetime. Every request used to open a fresh
-# httpx.AsyncClient — a new TCP handshake to the local model server on every
-# LLM call, no keep-alive. httpx pools connections per host, so a shared
-# client keeps the sockets warm across requests. Retire idle sockets before
-# llama.cpp/httplib's five-second keep-alive boundary. Equal five-second client
-# and server expiry can race; never replay a generation to conceal a failure.
-_POOL_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=2.0)
+# httpx.AsyncClient. Retain one bounded client, but do not reuse idle upstream
+# sockets: the live mixed-client control still lost a request before response
+# headers with a two-second idle expiry (2026-09-05, trace 2e6a44328ae0419cbd903d5bddb8d470).
+# Fresh connections are a containment measure pending root-cause/soak validation,
+# not proof that keep-alive caused that failure. The read-only forward probe
+# measured ~5 ms additional median handshake cost. Never replay a generation:
+# a transport disconnect does not prove the backend failed to accept it.
+_POOL_LIMITS = httpx.Limits(max_connections=100, max_keepalive_connections=0, keepalive_expiry=2.0)
 _shared_client: Optional[httpx.AsyncClient] = None
+
+
+class _UpstreamTrace:
+    """Bounded transport-stage evidence; never retain trace payloads/headers."""
+    _STAGES = frozenset({
+        "connection.connect_tcp.started", "connection.connect_tcp.complete",
+        "http11.send_request_headers.complete", "http11.send_request_body.complete",
+        "http11.receive_response_headers.complete", "http11.receive_response_body.complete",
+    })
+
+    def __init__(self) -> None:
+        self.stages: set[str] = set()
+
+    async def observe(self, event: str, info: dict) -> None:
+        if event in self._STAGES:
+            self.stages.add(event)
 
 
 def _client() -> httpx.AsyncClient:
@@ -1016,12 +1034,15 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     if not stream:
         admission_stats: Optional[_AdmissionStats] = None
         backend_started: Optional[float] = None
+        transport = _UpstreamTrace()
         try:
             async with _admit(route, caller) as admission_stats:
                 backend_started = time.monotonic()
-                resp = await _client().post(url, content=payload, headers=headers)
+                resp = await _client().post(url, content=payload, headers=headers,
+                                            extensions={"trace": transport.observe})
         except httpx.HTTPError as exc:
-            logger.warning("llm-proxy: %s failed against %s: %s", path, slug, exc)
+            logger.warning("llm-proxy: %s failed against %s: %s trace=%s stages=%s",
+                           path, slug, type(exc).__name__, trace_id, sorted(transport.stages))
             await _record_gateway_usage(
                 db,
                 request=request,
@@ -1098,11 +1119,13 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
         admission_stats: Optional[_AdmissionStats] = None
         backend_started: Optional[float] = None
         first_chunk_at: Optional[float] = None
+        transport = _UpstreamTrace()
         try:
             async with _admit(route, caller) as admission_stats:
                 client = _client()
                 backend_started = time.monotonic()
-                async with client.stream("POST", url, content=payload, headers=headers) as resp:
+                async with client.stream("POST", url, content=payload, headers=headers,
+                                         extensions={"trace": transport.observe}) as resp:
                     status_code = resp.status_code
                     async for chunk in resp.aiter_raw():
                         if first_chunk_at is None:
@@ -1110,7 +1133,8 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                         usage.feed(chunk)
                         yield chunk
         except httpx.HTTPError as exc:
-            logger.warning("llm-proxy: stream to %s failed: %s", slug, exc)
+            logger.warning("llm-proxy: stream to %s failed: %s trace=%s stages=%s",
+                           slug, type(exc).__name__, trace_id, sorted(transport.stages))
             status_code = 502
             error = type(exc).__name__
             yield b'data: {"error":"backend stream failed"}\n\n'

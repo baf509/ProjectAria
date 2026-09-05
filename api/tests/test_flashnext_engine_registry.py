@@ -44,6 +44,12 @@ def test_experimental_launcher_identity_and_fixed_geometry_are_explicit():
     assert engine.runtime_family == "llamacpp"
     assert engine.ctx_is_total is True
     params = {param.name: param for param in engine.parameters}
+    assert params['placement'].default == 'hybrid'
+    for placement in ('hybrid', 'halo-only'):
+        assert ms.validate_overrides(engine, {'placement': placement})['FLASHNEXT_PLACEMENT'] == placement
+    for placement in ('ROCm0', 'cpu', 'halo'):
+        with pytest.raises(ms.ModelServerSafetyError):
+            ms.validate_overrides(engine, {'placement': placement})
     expected = {"ctx": "262144", "slots": "1", "layout": "0", "batch": "4096",
                 "ubatch": "2048", "cache_ram_mib": "16384", "kv_type_k": "q8_0",
                 "kv_type_v": "q8_0", "spec_draft_n_max": "3", "port": "8122"}

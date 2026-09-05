@@ -23,6 +23,12 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   unit tests is not live reliability evidence. Activate the reviewed API change
   only between benchmark windows, then repeat the reference soak before
   judging the experimental engine. Never retry an accepted generation silently.
+  Post-restart follow-up: the 180-second production control failed at 93.9
+  seconds after 12 correct requests (trace `2e6a44328ae0419cbd903d5bddb8d470`).
+  Fresh upstream connections and bounded transport-stage diagnostics are now
+  staged, not active; activate through the administrator API restart and repeat
+  the reference gate before longer inference work. 68 targeted tests pass;
+  root cause remains unresolved. Prior failures remain evidence, not retries.
 - Finish qualification and measured optimization of the original R9700 + Strix
   Halo engine in the sibling `CorsairModelHost/flashnext-engine` project.
   The updated source review is in
@@ -76,6 +82,12 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
   the reference protocol soak. Also compare Halo-only and hybrid with identical
   runtime/settings: improvements over the old hybrid do not establish OCuLink's
   net benefit. Production is restored; the experiment is stopped.
+  The experimental `placement=halo-only` control is implemented and its
+  launchers deployed, with original production commands unchanged by default.
+  It must pass both-pool guards; do not shrink context/cache to force a fit and
+  then call the comparison matched. Use the sibling comparator's
+  `--same-runtime --allow-change placement` identity gate. Runtime fit, warmed
+  ABBA measurements and full quality/soak remain outstanding.
   Remote experimental parameter views currently show
   declared defaults; expose observed unit/process overrides without treating
   defaults as runtime evidence. This test's actual flags are recorded from

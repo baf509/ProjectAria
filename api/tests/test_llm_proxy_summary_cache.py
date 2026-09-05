@@ -81,7 +81,7 @@ async def test_cancelled_probe_does_not_block_next_client():
     assert await proxy._running_summary_cached(manager, None) == []
 
 
-def test_client_reuses_pool_but_retires_idle_sockets_before_backend_expiry(monkeypatch):
+def test_client_reuses_bounded_client_but_not_idle_upstream_sockets(monkeypatch):
     client = MagicMock(is_closed=False)
     factory = MagicMock(return_value=client)
     monkeypatch.setattr(proxy, '_shared_client', None)
@@ -92,7 +92,7 @@ def test_client_reuses_pool_but_retires_idle_sockets_before_backend_expiry(monke
     limits = factory.call_args.kwargs['limits']
     assert limits.keepalive_expiry == 2.0
     assert limits.max_connections == 100
-    assert limits.max_keepalive_connections == 20
+    assert limits.max_keepalive_connections == 0
     client.is_closed = True
     proxy._client()
     assert factory.call_count == 2
