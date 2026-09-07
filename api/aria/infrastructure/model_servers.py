@@ -2295,7 +2295,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         memory_pool=POOL_REMOTE,
         host_machine="machine:red",
         deployment="red-r9700",
-        launch_script="red-r9700/serve-linux.sh",
         container_name="red-qwen38-mxfp4",
         port=8094,
         remote_start_command=(
