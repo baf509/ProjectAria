@@ -323,15 +323,15 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     ),
     ServiceSpec(
         slug="red-proxy",
-        description="Mac → RED inference proxy, game-facing OpenAI endpoint on :8094.",
+        description="Mac SSH forward to Red's native Linux Radiance model on :8094.",
         expected_state="on_demand",
         kind="proxy",
         user_unit="red-proxy.service",
         darwin_label="com.ben.devbox.red-proxy",
         port=8094,
-        needs_review=True,
-        notes="Running as of 2026-08-07, but whether it is meant to be "
-        "continuously up is unconfirmed.",
+        notes="Restricted SSH forwards Mac loopback :8094 to Red loopback :8081. "
+        "Available in Linux boot mode; clients use the Aria gateway. "
+        "Backend health and model identity determine inference readiness.",
     ),
     ServiceSpec(
         slug="ridge-waker",

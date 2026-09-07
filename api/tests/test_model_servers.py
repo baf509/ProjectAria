@@ -521,7 +521,7 @@ async def test_remote_start_wakes_then_starts_then_verifies(manager):
     Readiness is what makes it 'ready'; a start command that 'succeeds' without
     the service coming up must NOT be reported as started. That exact shape was
     real on RED, whose scheduled task returned SUCCESS and did nothing."""
-    spec = manager.get_spec("Red-Qwen3.6-35B-A3B")
+    spec = manager.get_spec("Ridge-Qwen3.8-27B")
     assert spec.remotely_operable is True
 
     calls = []
@@ -538,12 +538,12 @@ async def test_remote_start_wakes_then_starts_then_verifies(manager):
          patch.object(ms, "_remote_health_ok", AsyncMock(side_effect=lambda s, timeout=5.0: next(health))), \
          patch.object(ms, "_remote_box_reachable", AsyncMock(side_effect=lambda s, timeout=6.0: next(reach))), \
          patch.object(ms.asyncio, "sleep", AsyncMock(return_value=None)):
-        res = await manager.start("Red-Qwen3.6-35B-A3B")
+        res = await manager.start("Ridge-Qwen3.8-27B")
 
     assert res["state"] == "ready"
     assert res["action"] == "started"
     assert res["woken"] is True
-    assert any("wake-red" in " ".join(c) for c in calls), calls
+    assert any("wake-ridge" in " ".join(c) for c in calls), calls
 
 
 @pytest.mark.asyncio
@@ -554,7 +554,7 @@ async def test_remote_start_not_ready_reports_starting_not_started(manager):
          patch.object(ms, "_remote_box_reachable", AsyncMock(return_value=True)), \
          patch.object(ms.asyncio, "sleep", AsyncMock(return_value=None)), \
          patch.object(ms.time, "monotonic", side_effect=[0.0] + [10_000.0] * 40):
-        res = await manager.start("Red-Qwen3.6-35B-A3B")
+        res = await manager.start("Ridge-Qwen3.8-27B")
     assert res["state"] == "starting"
     assert res["action"] == "start_requested"
 
@@ -621,11 +621,11 @@ async def test_remote_stop_does_not_suspend_the_box(manager):
     with patch.object(ms, "_run", fake_run), \
          patch.object(ms, "_remote_box_reachable", AsyncMock(return_value=True)), \
          patch.object(ms, "_remote_health_ok", AsyncMock(return_value=False)):
-        res = await manager.stop("Red-Qwen3.6-35B-A3B")
+        res = await manager.stop("Ridge-Qwen3.8-27B")
 
     assert res["state"] == "stopped"
     joined = [" ".join(c) for c in calls]
-    assert any("gateway-ctl.ps1" in c and "stop" in c for c in joined), joined
+    assert any("NInferServer" in c and "/end" in c for c in joined), joined
     assert not any("SetSuspendState" in c for c in joined), "stop() must not suspend"
 
 

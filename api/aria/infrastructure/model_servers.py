@@ -237,6 +237,8 @@ class ModelServerSpec:
     # remote start. Without this a remote start could only report "command
     # sent", which is the kind of unverified success this codebase avoids.
     remote_health_url: Optional[str] = None
+    # A successful health response must also identify this loaded model.
+    remote_model_id: Optional[str] = None
     # Which telemetry surface this server exposes. Added 2026-08-17, when the
     # utilization endpoint was found reporting `null` for TWO of the three live
     # models because it only ever spoke llama.cpp's `/slots` + `/metrics`.
@@ -2262,63 +2264,51 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Red-Qwen3.6-35B-A3B",
-        description="Qwen3.6-35B-A3B on RED's RTX 5090, reached through corsair's "
-        "red-proxy (:8094, Wake-on-LAN + fallback to corsair-local). The fastest "
-        "node in the house (~218 tok/s). Off-box but fully operable by ARIA as of "
-        "2026-08-15: wake, start, stop, sleep.",
-        runtime_repo="RedLlmGateway (RED's own gateway — load/unload backends)",
-        runtime_ref="remote",
-        backend_device="remote CUDA (RTX 5090, 32 GB)",
+        description="Retired: Red's RTX 5090 was replaced by two R9700s. "
+        "Use Red-Qwen3.8-27B-MXFP4 when the native Linux deployment is qualified.",
+        runtime_repo="RedLlmGateway (retired Windows CUDA deployment)",
+        runtime_ref="retired-2026-09-07",
+        backend_device="removed RTX 5090",
         onbox=False,
-        startable=True,
+        startable=False,
+        auto_route=False,
+        not_startable_reason="The required NVIDIA GPU has been removed.",
         memory_pool=POOL_REMOTE,
-        devices=("RED RTX 5090 (remote CUDA)",),
         host_machine="machine:red",
-        consumers_note="war-audio-game (via :8094), coding agents (T1)",
-        # Control goes through gateway-ctl.ps1 on RED, NOT the RedLlmGateway
-        # scheduled task. Three defects made the task unusable from here
-        # (all diagnosed 2026-08-15, all verified):
-        #   1. the task is `Logon Mode: Interactive only` / `At logon time`, so
-        #      `schtasks /run` over ssh returns "SUCCESS: Attempted to run" and
-        #      silently does nothing — the worst possible shape, a confident
-        #      wrong answer. It is also why RED can sit awake-but-not-serving.
-        #   2. its interpreter path `scoop\apps\python312\current\pythonw.exe`
-        #      no longer resolves (the scoop junction is stale); the real one is
-        #      `...\python312\3.12.10\pythonw.exe`.
-        #   3. anything launched with Start-Process over ssh lands in the ssh
-        #      session's job object and is killed when the connection closes,
-        #      so the gateway died seconds after "starting". gateway-ctl.ps1
-        #      uses Win32_Process.Create so it outlives the connection.
-        # The script is idempotent (already-running / not-running) and reports
-        # status, so ARIA's start/stop are safe to retry.
-        # `RedLlmGatewayResumeUnload` is a resume hook, not a lifecycle control
-        # — leave it alone; racing it reintroduces the post-resume CUDA wedge
-        # that red_proxy already handles via /gateway/unload.
-        wake_command=("/usr/local/bin/wake-red",),
+    ),
+    ModelServerSpec(
+        slug="Red-Qwen3.8-27B-MXFP4",
+        description="Qwen3.8-27B AMD AWQ MXFP4 on Red's two Radeon AI PRO R9700s. "
+        "Native Ubuntu on the Lexar disk; Windows remains on the Samsung. "
+        "TP2, W4A8, FP8 KV and DFlash2 depth 7 through ggz14 Radiance. "
+        "Qualification in progress; no throughput or cache capacity is claimed yet.",
+        runtime_repo="https://codeberg.org/ggz14/radiance-vllm-mxfp4",
+        runtime_ref="4f678afc2a9db5561b7e2b09e7cd70e041f69797; "
+        "stilldeadcode/vllm-radiance:0.9.3; libr4d b9e42ab-rx6",
+        runtime_family="vllm",
+        backend_device="2 x gfx1201 (Radeon AI PRO R9700, 32 GiB each)",
+        devices=("Red R9700 0000:03:00.0", "Red R9700 0000:06:00.0"),
+        onbox=False,
+        startable=False,
+        auto_route=False,
+        not_startable_reason="Native Linux deployment qualification in progress.",
+        memory_pool=POOL_REMOTE,
+        host_machine="machine:red",
+        deployment="red-r9700",
+        launch_script="red-r9700/serve-linux.sh",
+        container_name="red-qwen38-mxfp4",
+        port=8094,
         remote_start_command=(
-            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
-            "powershell -NoProfile -ExecutionPolicy Bypass -File "
-            "C:\\Users\\benja\\Development\\infrastructure\\gateway\\gateway-ctl.ps1 "
-            "-Action start",
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "start",
         ),
         remote_stop_command=(
-            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
-            "powershell -NoProfile -ExecutionPolicy Bypass -File "
-            "C:\\Users\\benja\\Development\\infrastructure\\gateway\\gateway-ctl.ps1 "
-            "-Action stop",
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "stop",
         ),
-        remote_health_url="http://100.120.162.100:8080/health",
-        # RED_WAKE_TIMEOUT is 180 in ~/.config/red-llama/env; allow headroom.
-        remote_wake_deadline=240.0,
-        remote_ready_deadline=300.0,
-        sleep_command=(
-            "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", "red",
-            "powershell -NoProfile -ExecutionPolicy Bypass -File "
-            "C:\\Windows\\Temp\\sleep-now.ps1",
-        ),
-        # Consumers point at the Mac-native red-proxy, not RED directly: the
-        # proxy owns wake-on-request and the Corsair-hosted fallback.
+        remote_health_url="http://127.0.0.1:8094/health",
+        remote_model_id="qwen3.8-27b",
+        remote_ready_deadline=900.0,
         endpoint_override="http://127.0.0.1:8094/v1",
+        consumers_note="Explicitly selected Red deployment. Available while Red boots Linux.",
     ),
 )
 
@@ -3798,7 +3788,21 @@ async def _remote_health_ok(spec: "ModelServerSpec", timeout: float = 5.0) -> bo
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(spec.remote_health_url)
-            return resp.status_code < 500
+            if not 200 <= resp.status_code < 300:
+                return False
+            if spec.remote_model_id is None:
+                return True
+            base = (spec.endpoint_override or "").rstrip("/")
+            if not base:
+                return False
+            models = await client.get(f"{base}/models")
+            if not 200 <= models.status_code < 300:
+                return False
+            data = models.json()
+            return isinstance(data, dict) and any(
+                isinstance(row, dict) and row.get("id") == spec.remote_model_id
+                for row in data.get("data", [])
+            )
     except Exception:
         return False
 
