@@ -264,7 +264,8 @@ export const modelServerAction = (
   api(`/infrastructure/model-servers/${encodeURIComponent(slug)}/${action}`, {
     method: 'POST',
     body,
-    timeoutMs: 180_000,
+    // Remote starts include waking the machine and the model readiness deadline.
+    timeoutMs: action === 'start' ? 1_200_000 : 180_000,
   })
 
 /** docker compose up of a cold container routinely exceeds 20s. */

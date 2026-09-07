@@ -2305,17 +2305,22 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         deployment="red-r9700",
         container_name="red-qwen38-mxfp4",
         port=8094,
+        wake_command=("/Users/ben/Services/apps/bin/wake-red-model",),
         remote_start_command=(
             "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "start",
         ),
         remote_stop_command=(
             "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "stop",
         ),
+        sleep_command=(
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "sleep",
+        ),
         remote_health_url="http://127.0.0.1:8094/health",
         remote_model_id="qwen3.8-27b",
         remote_ready_deadline=900.0,
         endpoint_override="http://127.0.0.1:8094/v1",
-        consumers_note="Explicitly selected Red deployment. Available while Red boots Linux.",
+        consumers_note="Explicitly selected Red deployment. Start wakes Linux through Corsair's LAN relay; "
+        "Sleep stops the model and suspends Red. Windows remains a separate boot mode.",
     ),
 )
 
@@ -4962,9 +4967,10 @@ class ModelServerManager:
             return {"slug": slug, "state": "stopped", "action": "stopped"}
 
     async def sleep(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
-        """Suspend an off-box machine (e.g. Ridge). Its wake path is separate
-        and automatic — the wake proxy WoLs it on the next inference request —
-        so ARIA only ever needs the sleep direction."""
+        """Suspend an off-box machine and verify it becomes unreachable.
+
+        Starting the remote model uses its declared wake command when needed.
+        """
         self.invalidate_status()  # a sleep changes what status() would answer
         spec = await self.resolve_spec(slug, db)
         if spec.sleep_command is None:
@@ -5002,16 +5008,14 @@ class ModelServerManager:
                     _remote_state_cache[slug] = (time.monotonic(), "asleep")
                     return {"slug": slug, "state": "asleep", "action": "slept",
                             "verified": True,
-                            "detail": "confirmed unreachable from corsair"}
+                            "detail": "confirmed unreachable from Aria"}
             _remote_state_cache.pop(slug, None)
             return {
                 "slug": slug, "state": "awake", "action": "sleep_failed",
                 "verified": False,
                 "detail": (
                     "suspend was issued but the box is still reachable after 90s. "
-                    "Check `powercfg /requests` for a held wakelock and "
-                    "WakeOnPattern on the NICs (a pattern-armed NIC is revived by "
-                    "the next Tailscale keepalive). "
+                    "Check the host's suspend logs, sleep inhibitors, and NIC wake settings. "
                     + ((err or out).strip()[-200:] or f"ssh exit {rc}")
                 ),
             }

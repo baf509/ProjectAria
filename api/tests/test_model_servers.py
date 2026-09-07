@@ -1181,7 +1181,7 @@ async def test_sleep_that_does_not_suspend_reports_failure(manager):
         res = await manager.sleep("Ridge-Qwen3.8-27B")
     assert res["action"] == "sleep_failed"
     assert res["verified"] is False
-    assert "WakeOnPattern" in res["detail"]
+    assert "NIC wake settings" in res["detail"]
 
 
 # ---------------------------------------------------------------------------

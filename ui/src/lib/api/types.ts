@@ -809,6 +809,7 @@ export type ModelServerFull = {
   not_startable_reason?: string | null
   consumers_note?: string | null
   can_sleep?: boolean
+  remotely_operable?: boolean
   bound_agents?: string[]
   endpoints?: { local?: string; tailnet?: string }
   gtt_used_gib?: number

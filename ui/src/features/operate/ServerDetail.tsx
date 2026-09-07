@@ -513,6 +513,7 @@ function Body({
 
   // Stop is two-tap when something depends on this server being up.
   const stopIsRisky = serving || pinned || (server.bound_agents?.length ?? 0) > 0 || !!server.consumers_note
+  const canOperate = server.onbox !== false || server.remotely_operable === true
 
   const endpoint = server.endpoints?.tailnet || server.endpoints?.local
 
@@ -566,7 +567,7 @@ function Body({
           <>
             <Button
               variant="primary"
-              disabled={running || server.startable === false || server.onbox === false}
+              disabled={running || server.startable === false || !canOperate}
               busy={busyKind === 'start'}
               onClick={() => act('start')}
             >
@@ -576,15 +577,15 @@ function Body({
               <ConfirmButton
                 label="Stop"
                 confirmLabel={serving || pinned ? 'Stop the serving model?' : 'Stop — consumers exist?'}
-                disabled={!running || server.onbox === false}
+                disabled={!running || !canOperate}
                 onConfirm={() => act('stop')}
               />
             ) : (
-              <Button disabled={!running || server.onbox === false} busy={busyKind === 'stop'} onClick={() => act('stop')}>
+              <Button disabled={!running || !canOperate} busy={busyKind === 'stop'} onClick={() => act('stop')}>
                 Stop
               </Button>
             )}
-            {server.onbox === false && server.can_sleep !== false && (
+            {server.onbox === false && server.can_sleep === true && (
               <ConfirmButton label="Sleep host" confirmLabel="Sleep the remote host?" onConfirm={() => act('sleep')} />
             )}
             {pinned ? (
