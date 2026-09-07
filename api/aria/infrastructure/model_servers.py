@@ -4198,6 +4198,10 @@ def _server_row(
         "systemd_unit": unit_name(spec),
         "exclusive_with": list(spec.exclusive_with),
         "onbox": spec.onbox,
+        "remote_identity_required": bool(spec.remote_model_id and spec.remotely_operable),
+        "remote_identity_verified": bool(
+            spec.remote_model_id and spec.remotely_operable and state == "running"
+        ),
         "startable": spec.startable,
         "not_startable_reason": spec.not_startable_reason,
         "auto_route": spec.auto_route,
@@ -4305,7 +4309,14 @@ class ModelServerManager:
             spec = await self.resolve_spec(slug, db)
         except ModelServerNotFound:
             return False
-        if not spec.onbox or not spec.port:
+        if not spec.onbox:
+            if not (spec.remotely_operable and spec.remote_model_id):
+                return False
+            try:
+                return await asyncio.wait_for(_remote_health_ok(spec, timeout=3.0), timeout=5.0)
+            except asyncio.TimeoutError:
+                return False
+        if not spec.port:
             return False
         families = {candidate.runtime_family for candidate in REGISTRY
                     if candidate.onbox and candidate.port == spec.port}
@@ -4565,6 +4576,10 @@ class ModelServerManager:
                 "model_file": spec.model_file,
                 "state": state,
                 "onbox": spec.onbox,
+                "remote_identity_required": bool(spec.remote_model_id and spec.remotely_operable),
+                "remote_identity_verified": bool(
+                    spec.remote_model_id and spec.remotely_operable and state == "running"
+                ),
                 "port": spec.port,
                 "endpoints": _endpoints_for(spec),
                 "resident_gib_estimate": (

@@ -581,12 +581,18 @@ async def _pick_backend(
         # A subsecond fleet health timeout is not proof that a busy named model
         # stopped. Confirm only that exact deployment, without starting it,
         # retrying inference, falling back, or reviving a stale cache entry.
-        candidate, _ = match_requested([dict(row, state="running") for row in servers], confirm_name)
+        def assumed_running(row):
+            # Used to locate a candidate first; routing receives this state only
+            # after the manager verifies its health and required model identity.
+            return dict(row, state="running",
+                        remote_identity_verified=bool(row.get("remote_identity_required")))
+
+        candidate, _ = match_requested([assumed_running(row) for row in servers], confirm_name)
         original = next((row for row in servers if candidate and row.get("slug") == candidate.get("slug")), None)
         generation = _summary_generation
         if candidate and original and not is_servable(original) and await manager.confirm_forwarded_resident(candidate["slug"], db):
             if generation == _summary_generation:
-                confirmed = [dict(row, state="running") if row.get("slug") == candidate["slug"] else row for row in servers]
+                confirmed = [assumed_running(row) if row.get("slug") == candidate["slug"] else row for row in servers]
                 chosen, reason, unavailable = select(confirmed, requested=requested, pin=pin)
                 if chosen is not None:
                     servers = confirmed

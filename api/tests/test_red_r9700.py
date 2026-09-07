@@ -1,8 +1,11 @@
 """Red's replacement hardware must never inherit a healthy legacy proxy identity."""
 import httpx
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
+from aria.api.routes import llm_proxy
 from aria.infrastructure import model_servers as ms
+from aria.infrastructure.llm_route import select
 
 
 @pytest.mark.asyncio
@@ -50,3 +53,30 @@ def test_red_runtime_is_exact_and_loopback_only():
     assert not spec.auto_route
     assert spec.remotely_operable
     assert ms.unit_name(spec) is None  # Lifecycle is remote; never run systemctl on the Mac.
+
+
+def test_only_identified_remote_is_explicitly_routable():
+    row = {"slug": "Red-Qwen3.8-27B-MXFP4", "state": "running", "onbox": False,
+           "port": 8094, "endpoints": {"local": "http://127.0.0.1:8094/v1"},
+           "remote_identity_verified": True, "auto_route": False}
+    assert select([row], requested=row["slug"])[0] == row
+    assert select([row])[0] is None
+    for overrides in [{"remote_identity_verified": False}, {"state": "stopped"}]:
+        assert select([{**row, **overrides}], requested=row["slug"])[0] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("healthy", [True, False])
+async def test_named_red_gets_fresh_identity_confirmation(monkeypatch, healthy):
+    row = {"slug": "Red-Qwen3.8-27B-MXFP4", "state": "stopped", "onbox": False,
+           "port": 8094, "endpoints": {"local": "http://127.0.0.1:8094/v1"},
+           "remote_identity_required": True, "remote_identity_verified": False,
+           "auto_route": False}
+    monkeypatch.setattr(llm_proxy, "_running_summary_cached", AsyncMock(return_value=[row]))
+    monkeypatch.setattr(llm_proxy, "read_pin", AsyncMock(return_value=None))
+    manager = MagicMock()
+    manager.confirm_forwarded_resident = AsyncMock(return_value=healthy)
+    route = await llm_proxy._pick_backend(manager, MagicMock(), requested=row["slug"])
+    manager.confirm_forwarded_resident.assert_awaited_once()
+    assert route.slug == (row["slug"] if healthy else None)
+    assert not row["remote_identity_verified"]  # No stale-positive cache mutation.

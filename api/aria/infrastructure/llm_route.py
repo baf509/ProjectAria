@@ -54,10 +54,10 @@ def _names_for(server: dict) -> set[str]:
 
 
 def is_servable(server: dict) -> bool:
-    """Running, on this box, and reachable — the bar for answering a request."""
+    """A running local backend or a remote backend with verified model identity."""
     return (
         server.get("state") == "running"
-        and bool(server.get("onbox"))
+        and bool(server.get("onbox") or server.get("remote_identity_verified"))
         and bool(server.get("port"))
         and bool(base_url_for(server))
     )
