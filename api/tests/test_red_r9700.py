@@ -80,3 +80,13 @@ async def test_named_red_gets_fresh_identity_confirmation(monkeypatch, healthy):
     manager.confirm_forwarded_resident.assert_awaited_once()
     assert route.slug == (row["slug"] if healthy else None)
     assert not row["remote_identity_verified"]  # No stale-positive cache mutation.
+
+
+@pytest.mark.asyncio
+async def test_catalogue_reads_vllm_context(monkeypatch):
+    response = MagicMock()
+    response.json.return_value = {"data": [{"id": "qwen3.8-27b", "max_model_len": 262144}]}
+    client = MagicMock()
+    client.get = AsyncMock(return_value=response)
+    monkeypatch.setattr(llm_proxy, "_client", lambda: client)
+    assert await llm_proxy._context_length("http://127.0.0.1:8094/v1") == 262144

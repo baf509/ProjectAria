@@ -2281,7 +2281,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         description="Qwen3.8-27B AMD AWQ MXFP4 on Red's two Radeon AI PRO R9700s. "
         "Native Ubuntu on the Lexar disk; Windows remains on the Samsung. "
         "TP2, W4A8, FP8 KV and DFlash2 depth 7 through ggz14 Radiance. "
-        "Qualification in progress; no throughput or cache capacity is claimed yet.",
+        "943,581-token aggregate cache pool, 262,144 max request context, eight sequences. "
+        "Long-context retrieval and concurrent serving passed through the Aria gateway.",
         runtime_repo="https://codeberg.org/ggz14/radiance-vllm-mxfp4",
         runtime_ref="4f678afc2a9db5561b7e2b09e7cd70e041f69797; "
         "stilldeadcode/vllm-radiance:0.9.3; libr4d b9e42ab-rx6",
@@ -2289,10 +2290,17 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         backend_device="2 x gfx1201 (Radeon AI PRO R9700, 32 GiB each)",
         devices=("Red R9700 0000:03:00.0", "Red R9700 0000:06:00.0"),
         onbox=False,
-        startable=False,
+        startable=True,
         auto_route=False,
-        not_startable_reason="Native Linux deployment qualification in progress.",
         memory_pool=POOL_REMOTE,
+        resident_gib=63.5,  # Combined observed device-memory allocation, including reserved KV.
+        bench_decode_tok_s=209.9,
+        bench_prefill_tok_s=5072.7,
+        bench_at="2026-09-07",
+        bench_note="BetterBench 0.4.0 via Aria+SSH: weighted c1 decode, 20 passes/category "
+        "across six categories, temp 0.7, default thinking and corpus output caps. "
+        "Prefill: 3 measured cold-cache passes at 47,054 actual prompt tokens. "
+        "Eight-client aggregate decode 515.3 tok/s; KV pool 943,581, TP2/DFlash2 spec7.",
         host_machine="machine:red",
         deployment="red-r9700",
         container_name="red-qwen38-mxfp4",

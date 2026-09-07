@@ -680,7 +680,7 @@ async def _context_length(base: str) -> Optional[int]:
     try:
         resp = await _client().get(f"{base}/models", timeout=5.0)
         for entry in (resp.json() or {}).get("data") or []:
-            n_ctx = (entry.get("meta") or {}).get("n_ctx")
+            n_ctx = (entry.get("meta") or {}).get("n_ctx") or entry.get("max_model_len")
             if isinstance(n_ctx, int) and n_ctx > 0:
                 return n_ctx
     except (httpx.HTTPError, ValueError, AttributeError, TypeError):
