@@ -60,7 +60,7 @@ export const isGpu = (s: ModelServerFull) =>
   !/cpu/i.test(s.backend_device || '') && (s.resident_gib_estimate ?? 0) > 0
 
 export const serverState = (s: ModelServerFull): ServerState =>
-  s.onbox === false ? 'external' : normalizeState(s.state)
+  s.onbox === false && !s.remotely_operable ? 'external' : normalizeState(s.state)
 
 /** Resident = actually holding (or filling) its memory pool. "ready" is NOT
  * resident — it is the registry's word for "startable, unit not created". */
