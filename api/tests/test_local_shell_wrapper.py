@@ -18,7 +18,9 @@ CODEX_LAUNCH = Path(__file__).parents[2] / "scripts" / "aria-codex-launch"
 
 
 def _load_script() -> dict:
-    return runpy.run_path(str(SCRIPT), run_name="aria_local_shell")
+    script = runpy.run_path(str(SCRIPT), run_name="aria_local_shell")
+    script["_load_api_modules"]()
+    return script
 
 
 @pytest.mark.parametrize(
@@ -291,3 +293,14 @@ def test_live_probe_checks_pane_not_only_session(monkeypatch, dead, expected):
         return SimpleNamespace(returncode=0, stdout=dead)
     monkeypatch.setattr(g["subprocess"], "run", run)
     assert probe("exact-name") is expected
+
+
+def test_http_imports_stay_off_fast_path(monkeypatch):
+    script = runpy.run_path(str(SCRIPT), run_name="aria_local_shell")
+    g = script["main"].__globals__
+    assert "urllib" not in g
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "codex"])
+    monkeypatch.setitem(g, "_session_is_live", lambda _: True)
+    monkeypatch.setitem(g, "_attach", lambda *_: 0)
+    assert script["main"]() == 0
+    assert "urllib" not in g

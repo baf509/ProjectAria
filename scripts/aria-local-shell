@@ -4,23 +4,29 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
-import random
 import shlex
 import subprocess
 import sys
-import time
-import urllib.error
-import urllib.request
 
 
 SHELL_PREFIX = "claude-"
 DEFAULT_API_URL = "http://127.0.0.1:8200"
 RETRYABLE_HTTP_CODES = {502, 503, 504}
 DEFAULT_TMUX_HISTORY_LIMIT = 50_000
+
+
+def _load_api_modules() -> None:
+    # HTTP/TLS imports are only needed to create a new session. Keep them off
+    # the latency-sensitive reconnect path (notably Python's SSL import).
+    global json, random, time, urllib
+    import json
+    import random
+    import time
+    import urllib.error
+    import urllib.request
 
 
 def _canonical_shell_name(name: str) -> str:
@@ -116,6 +122,7 @@ def _load_key() -> str:
 
 
 def _retry_delay(attempt: int) -> float:
+    _load_api_modules()
     initial = max(float(os.environ.get("ARIA_STARTUP_RETRY_INITIAL_SECONDS", "0.5")), 0.01)
     ceiling = max(float(os.environ.get("ARIA_STARTUP_RETRY_MAX_SECONDS", "5")), initial)
     base = min(ceiling, initial * (2 ** min(attempt, 6)))
@@ -124,6 +131,7 @@ def _retry_delay(attempt: int) -> float:
 
 def _wait_for_readiness(api_url: str, deadline: float) -> bool:
     """Wait for the local API to finish its post-login startup sequence."""
+    _load_api_modules()
     ready_url = f"{api_url.rstrip('/')}/api/v1/health/ready"
     attempt = 0
     last_notice = 0.0
@@ -171,6 +179,7 @@ def _wait_for_readiness(api_url: str, deadline: float) -> bool:
 
 def _register_shell(request: urllib.request.Request, deadline: float) -> tuple[bool, dict]:
     """POST a deterministic shell request, retrying only startup failures."""
+    _load_api_modules()
     attempt = 0
     while True:
         try:
@@ -241,6 +250,7 @@ def main() -> int:
         print("aria: no ARIA_API_KEY in ~/.config/aria/env", file=sys.stderr)
         return 1
 
+    _load_api_modules()
     body = json.dumps(
         {
             "name": request_name,
