@@ -142,3 +142,29 @@ def test_screen_socket_on_production_uvloop(monkeypatch):
                 notifier.close()
                 await hub.stop()
         uvloop.run(exercise())
+
+
+@pytest.mark.asyncio
+async def test_final_capture_flush_cannot_recreate_purged_shell():
+    from aria.shells.capture import persist_batch
+    shells = AsyncMock()
+    shells.find_one_and_update.return_value = None
+    events = AsyncMock()
+    await persist_batch(shells, events, 'removed', [{'text_raw': 'last output'}])
+    assert shells.find_one_and_update.call_args.kwargs['upsert'] is False
+    events.insert_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_capture_retry_keeps_line_numbers_and_tolerates_committed_duplicate():
+    from aria.shells.capture import persist_batch
+    from pymongo.errors import BulkWriteError
+    shells = AsyncMock()
+    shells.find_one_and_update.return_value = {'line_count': 12}
+    events = AsyncMock()
+    batch = [{'text_raw': 'last output'}]
+    await persist_batch(shells, events, 'shell', batch)
+    events.insert_many.side_effect = BulkWriteError({'writeErrors': [{'code': 11000}], 'writeConcernErrors': []})
+    await persist_batch(shells, events, 'shell', batch)
+    assert batch[0]['line_number'] == 12
+    shells.find_one_and_update.assert_awaited_once()

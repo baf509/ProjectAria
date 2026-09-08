@@ -1,8 +1,8 @@
 """
 ARIA - Watched Shells Capture
 
-Purpose: Entry point for a `tmux pipe-pane` subprocess. Reads stdin
-line-by-line, batches events, and writes them to MongoDB.
+Purpose: Drain a `tmux pipe-pane` byte stream independently of MongoDB
+writes and send nonblocking hints to active screen viewers.
 
 Invocation (from tmux hook):
     python3 -m aria.shells.capture <shell_name>
@@ -14,19 +14,18 @@ Reconnect to Mongo with backoff, buffer in memory, drop oldest on overflow.
 from __future__ import annotations
 
 import asyncio
+import codecs
+from collections import deque
 import logging
 import os
 import signal
 import sys
-import codecs
-from collections import deque
-from aria.shells.screen_stream import ScreenNotifier
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import BulkWriteError
 
-from aria.config import settings
 from aria.shells.ansi import strip_ansi
+from aria.shells.screen_stream import ScreenNotifier
 
 logger = logging.getLogger("aria.shells.capture")
 
@@ -77,6 +76,38 @@ async def drain_output(reader, buffer, shell_name, notifier):
             return
 
 
+async def persist_batch(shells, events, shell_name, batch):
+    if "line_number" not in batch[0]:
+        now_utc = _utcnow()
+        doc = await shells.find_one_and_update(
+            {"name": shell_name},
+            {
+                "$inc": {"line_count": len(batch)},
+                "$set": {"last_activity_at": now_utc, "last_output_at": now_utc},
+            },
+            upsert=False,
+            return_document=True,
+        )
+        # Registration belongs to the API/adopter. A final EOF flush after
+        # purge must not recreate the removed shell row.
+        if doc is None:
+            return
+        previous = int(doc.get("line_count", 0)) - len(batch)
+        start_line = max(previous, 0) + 1
+        for i, rec in enumerate(batch):
+            rec["line_number"] = start_line + i
+            rec["ts"] = now_utc
+    try:
+        await events.insert_many(batch, ordered=False)
+    except BulkWriteError as exc:
+        # Retried documents keep Mongo _ids and line numbers. Duplicates
+        # alone mean the preceding timed-out write actually succeeded.
+        if exc.details.get("writeConcernErrors") or any(
+            err.get("code") != 11000 for err in exc.details.get("writeErrors", [])
+        ):
+            raise
+
+
 async def _run_capture(shell_name: str) -> None:
     mongo_url = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0")
     client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
@@ -94,44 +125,6 @@ async def _run_capture(shell_name: str) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    async def persist(batch):
-        if "line_number" not in batch[0]:
-            now_utc = _utcnow()
-            doc = await shells.find_one_and_update(
-                {"name": shell_name},
-                {
-                    "$inc": {"line_count": len(batch)},
-                    "$set": {"last_activity_at": now_utc, "last_output_at": now_utc},
-                    "$setOnInsert": {
-                        "short_name": shell_name.split("-", 1)[-1] if "-" in shell_name else shell_name,
-                        "project_dir": os.environ.get("SHELLS_CAPTURE_PROJECT_DIR", ""),
-                        # The configured logical node id is the fleet identity;
-                        # the OS hostname is only descriptive and may include a
-                        # .local suffix that makes this process look remote.
-                        "host": settings.local_node_id or (os.uname().nodename if hasattr(os, "uname") else ""),
-                        "created_at": now_utc,
-                        "status": "active",
-                        "tags": [],
-                    },
-                },
-                upsert=True,
-                return_document=True,
-            )
-            previous = int(doc.get("line_count", 0)) - len(batch)
-            start_line = max(previous, 0) + 1
-            for i, rec in enumerate(batch):
-                rec["line_number"] = start_line + i
-                rec["ts"] = now_utc
-        try:
-            await events.insert_many(batch, ordered=False)
-        except BulkWriteError as exc:
-            # Retried documents keep Mongo _ids and line numbers. Duplicates
-            # alone mean the preceding timed-out write actually succeeded.
-            if exc.details.get("writeConcernErrors") or any(
-                err.get("code") != 11000 for err in exc.details.get("writeErrors", [])
-            ):
-                raise
-
     idle = asyncio.Event()
     idle.set()
 
@@ -147,7 +140,7 @@ async def _run_capture(shell_name: str) -> None:
             # Keep only one bounded batch in flight; input drains concurrently.
             while True:
                 try:
-                    await asyncio.wait_for(persist(batch), timeout=5)
+                    await asyncio.wait_for(persist_batch(shells, events, shell_name, batch), timeout=5)
                     backoff = 1.0
                     idle.set()
                     break
