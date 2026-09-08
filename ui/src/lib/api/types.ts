@@ -1037,6 +1037,9 @@ export type GpuDevice = {
   vram_total_gib?: number | null
   gtt_used_gib?: number | null
   gtt_total_gib?: number | null
+  utilization_pct?: number | null
+  temperature_c?: number | null
+  power_watts?: number | null
 }
 
 /**
@@ -1058,4 +1061,14 @@ export type DevicesResponse = {
   devices: GpuDevice[]
   pools: MemoryPool[]
   system?: SystemMemory | null
+  remote_hosts?: {
+    node: string
+    status: string
+    hardware?: {
+      observed_at?: string
+      devices: GpuDevice[]
+      pools: MemoryPool[]
+      system?: SystemMemory | null
+    } | null
+  }[]
 }

@@ -35,6 +35,7 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
         logger.info("Search capability disabled; skipping mongot index migration")
     await _seed_pi_coding_agent(db)
     await _seed_pi_coding_ridge_agent(db)
+    await _seed_pi_coding_red_agent(db)
     await _reconcile_pi_coding_profiles(db)
     await _seed_search_agent(db)
     await _normalize_project_status(db)
@@ -562,6 +563,63 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
 
     await db.agents.insert_one(agent)
     logger.info("Seeded Pi Coding Agent Flash compatibility profile through ARIA")
+
+
+async def _seed_pi_coding_red_agent(db: AsyncIOMotorDatabase) -> None:
+    """Seed the Red escalation profile without changing existing Pi defaults."""
+    existing = await db.agents.find_one({"slug": "pi-coding-red"})
+    if existing:
+        return
+
+    now = datetime.now(timezone.utc)
+    agent = {
+        "name": "Pi Coding Agent (Red Radiance via ARIA)",
+        "slug": "pi-coding-red",
+        "description": (
+            "Hands-on coding agent using Qwen3.8-27B Radiance on Red through "
+            "ARIA's inference gateway. The Pi CLI runs on the Mac; only inference runs on Red."
+        ),
+        "system_prompt": _PI_CODING_SYSTEM_PROMPT,
+        "mode_category": "coding",
+        "greeting": "Pi Coding (Red Radiance via ARIA) ready. What are we building?",
+        "context_instructions": None,
+        "llm": {
+            "backend": "aria",
+            "model": "Red-Qwen3.8-27B-MXFP4",
+            "temperature": 0.0,
+            "max_tokens": 16384,
+            "max_context_tokens": 262144,
+            "force_non_streaming": False,
+        },
+        "fallback_chain": [],
+        "capabilities": {
+            "memory_enabled": True,
+            "tools_enabled": True,
+            "computer_use_enabled": False,
+        },
+        "mode_metadata": {
+            "icon": "code",
+            "color": "#f97316",
+            "keywords": ["red", "radiance", "aria", "qwen", "code", "coding", "local-gpu"],
+            "keyboard_shortcut": None,
+        },
+        "memory_config": {
+            "auto_extract": True,
+            "short_term_messages": 20,
+            "long_term_results": 5,
+            "categories_filter": None,
+        },
+        # Legacy agent-schema fields retained for launch-profile compatibility;
+        # external Pi supplies its own tools rather than ARIA's ToolRouter.
+        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "is_default": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    agent["model_server"] = "Red-Qwen3.8-27B-MXFP4"
+    await db.agents.insert_one(agent)
+    logger.info("Seeded Pi Coding Agent Red Radiance profile through ARIA")
 
 
 async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:

@@ -341,7 +341,9 @@ class OntologyProjector:
             node_id = doc.get("_id") or doc.get("node_id")
             if not node_id:
                 continue
-            slug = entity_slug("machine", str(node_id))
+            machine_slug = doc.get("machine_slug")
+            slug = machine_slug if isinstance(machine_slug, str) and machine_slug.startswith("machine:") else entity_slug("machine", str(node_id))
+            existing = await self.store.get_entity(slug) if machine_slug else None
             attributes = {
                 k: v
                 for k, v in {
@@ -354,10 +356,17 @@ class OntologyProjector:
                 }.items()
                 if v is not None
             }
+            if machine_slug:
+                # Multiple boot identities describe one physical machine. Keep
+                # its inventory and record the observed OS separately.
+                attributes["active_os"] = attributes.pop("os", None)
+                attributes["node_id"] = str(node_id)
+                attributes["last_heartbeat_at"] = doc.get("last_heartbeat_at")
+                attributes = {**(existing or {}).get("attributes", {}), **attributes}
             await self.store.upsert_entity(
                 slug,
                 entity_type="machine",
-                name=str(node_id),
+                name=(existing or {}).get("name") or str(node_id),
                 attributes=attributes,
                 actor=ACTOR_NODE,
                 worker=True,

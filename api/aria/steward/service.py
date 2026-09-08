@@ -90,12 +90,12 @@ AUTONOMY_NAMES = {
 # from A2 only in who merges, and the guard — not this worker — merges.
 LOCAL_AUTONOMY_CAP = 2
 
-# tier -> (backend, subagent_profile). `red` has no launch profile on this box
-# yet, so a charter naming it gets a recorded skip rather than a silent
-# substitution onto some other machine's GPU.
+# tier -> (backend, subagent_profile). Red inference is remote; the coding
+# agent remains on the Mac and uses the identified Aria gateway.
 TIER_BACKENDS = {
     "local": ("pi-code", "pi-coding"),
     "ridge": ("pi-code", "pi-coding-ridge"),
+    "red": ("pi-code", "pi-coding-red"),
     "cloud": ("claude_code", None),
 }
 CLOUD_TIERS = {"cloud"}

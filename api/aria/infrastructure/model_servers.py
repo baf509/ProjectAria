@@ -2291,16 +2291,18 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         devices=("Red R9700 0000:03:00.0", "Red R9700 0000:06:00.0"),
         onbox=False,
         startable=True,
-        auto_route=False,
+        auto_route=True,
         memory_pool=POOL_REMOTE,
         resident_gib=63.5,  # Combined observed device-memory allocation, including reserved KV.
-        bench_decode_tok_s=209.9,
-        bench_prefill_tok_s=5072.7,
+        bench_decode_tok_s=195.6,
+        bench_prefill_tok_s=5108.3,
         bench_at="2026-09-07",
-        bench_note="BetterBench 0.4.0 via Aria+SSH: weighted c1 decode, 20 passes/category "
-        "across six categories, temp 0.7, default thinking and corpus output caps. "
-        "Prefill: 3 measured cold-cache passes at 47,054 actual prompt tokens. "
-        "Eight-client aggregate decode 515.3 tok/s; KV pool 943,581, TP2/DFlash2 spec7.",
+        bench_note="BetterBench 0.4.0 refresh at 2026-09-07 21:05 EDT via Aria+SSH: "
+        "160/160 single-stream requests across eight categories; six-category weighted median, "
+        "temp 0.7, default thinking; 134 requests reached corpus output caps. "
+        "Code 215.7, file editing 287.5 tok/s. Prefill: three cold-cache passes at 47,056 "
+        "input tokens, TTFT 9.21s; 94,064 tokens: 4479.4 tok/s, TTFT 21.00s. "
+        "KV pool 943,581; max request 262,144; TP2/DFlash2 spec7.",
         host_machine="machine:red",
         deployment="red-r9700",
         container_name="red-qwen38-mxfp4",
@@ -2319,7 +2321,8 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         remote_model_id="qwen3.8-27b",
         remote_ready_deadline=900.0,
         endpoint_override="http://127.0.0.1:8094/v1",
-        consumers_note="Explicitly selected Red deployment. Start wakes Linux through Corsair's LAN relay; "
+        consumers_note="Qualified automatic fallback and pi-coding-red profile; also selectable in Pi and Hermes. "
+        "Start wakes Linux through Corsair's LAN relay; "
         "Sleep stops the model and suspends Red. Windows remains a separate boot mode.",
     ),
 )
@@ -4480,7 +4483,8 @@ class ModelServerManager:
                     pools, gtt, spilling, bindings, measured,
                 )
             )
-        return results
+        from aria.infrastructure.red_observer import enrich
+        return await enrich(results, db)
 
     async def one(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> dict:
         """One server's full status row — probing ONLY that spec.
@@ -4511,10 +4515,12 @@ class ModelServerManager:
         measured[spec.slug] = val if isinstance(val, float) else None
         if isinstance(val, float):
             self._last_measured[spec.slug] = val
-        return _server_row(
+        from aria.infrastructure.red_observer import enrich
+        rows = await enrich([_server_row(
             spec, state, read_launch_geometry(spec),
             pools, gtt, spilling, bindings, measured,
-        )
+        )], db)
+        return rows[0]
 
     async def running_summary(self, db: Optional[AsyncIOMotorDatabase] = None) -> list[dict]:
         """Cheap answer to "which servers are running" — for routing.

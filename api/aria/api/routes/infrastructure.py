@@ -10,6 +10,7 @@ safety gates, and the provisioning pipeline.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -357,7 +358,7 @@ async def model_server_utilization(
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Live slot occupancy + throughput for every RUNNING on-box server.
+    """Live slot occupancy + throughput for every verified RUNNING server.
 
     Answers "how loaded is the local fleet right now", which the static
     `/model-servers` view cannot: that reports how many slots *should* exist,
@@ -380,7 +381,7 @@ async def model_server_utilization(
     except ModelServerError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 
-    running = [s for s in servers if s.get("state") == "running" and s.get("onbox")]
+    running = [s for s in servers if is_servable(s)]
     specs = [_BY_SLUG.get(s["slug"]) for s in running]
     probes = await asyncio.gather(
         *(probe_runtime(sp) for sp in specs if sp is not None),
@@ -405,6 +406,10 @@ async def model_server_utilization(
                 "benchmarked_at": _sp.bench_at if _sp else None,
             })
             continue
+        stats = replace(stats,
+                        total_slots=stats.total_slots if stats.total_slots is not None else server.get("slots"),
+                        served_ctx=stats.served_ctx or server.get("served_ctx"),
+                        ctx_per_slot=stats.ctx_per_slot or server.get("ctx_per_slot"))
         out.append({
             "slug": server["slug"],
             "reachable": True,
@@ -465,7 +470,17 @@ async def model_server_utilization(
 
 
 @router.get("/model-servers/devices")
-async def list_devices():
+async def list_devices(db: AsyncIOMotorDatabase = Depends(get_db)):
+    try:
+        hardware = await _local_devices()
+    except HTTPException as exc:
+        # One unreachable GPU host must not hide another host's telemetry.
+        hardware = {"node": "corsair-ai", "devices": [], "pools": [], "system": None,
+                    "telemetry_error": str(exc.detail)}
+    return await _with_red_hardware(hardware, db)
+
+
+async def _local_devices():
     """The physical GPUs on this box and the memory pools they own.
 
     Two GPUs with SEPARATE memory means "how full is the box" has two answers,
@@ -487,6 +502,15 @@ async def list_devices():
         "pools": pool_snapshot(),
         "system": system_memory_snapshot(),
     }
+
+
+async def _with_red_hardware(hardware, db):
+    from aria.infrastructure.red_observer import snapshot
+    red = await snapshot(db)
+    return {**hardware, "remote_hosts": [{
+        "node": "red-linux", "status": "online" if red else "offline",
+        "hardware": red.get("hardware") if red else None,
+    }]}
 
 
 @router.get("/model-servers/runtimes")

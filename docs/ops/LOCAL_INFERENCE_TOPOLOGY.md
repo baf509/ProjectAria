@@ -225,3 +225,36 @@ The Flash registry drift, duplicate Corsair Gemma listener, stale forward
 mappings, Hermes/Pi gateway bypasses, and the steward's direct `:8080` route
 were closed on 2026-08-29. The managed Mac forward job now carries only current
 ports.
+
+
+## Red fleet integration (2026-09-07)
+
+`machine:red` represents the dual-boot PC; `red-linux` is its Linux node identity,
+not a second physical machine. The seed records the X870 Taichi Creator, Ryzen
+7 9800X3D, 96 GB installed RAM, two R9700s, separate Linux/Windows disks and
+Tailscale identities. The node projection preserves that inventory.
+
+The Mac API polls Red's restricted SSH `status` every 15 seconds in a background
+observer. `/opt/red-r9700/status.py` verifies both GPU UUIDs and returns DRM
+memory/load/temperature readings and the active container's context/sequence
+limits. A failed read never renews the heartbeat. Expired observations are hidden
+from live telemetry, and observation never wakes Red. No general node command
+executor or Aria database/API credential is installed on Red.
+
+Operate includes both Red VRAM pools and vLLM utilization/cache telemetry.
+The aggregate 943,581-token cache is distinct from the 262,144 per-request limit
+and eight-sequence scheduler limit. GPU allocations include reserved cache and
+are not a measurement of active KV occupancy or process-exclusive memory.
+
+`pi-coding-red` is the Red coding/escalation profile, with provider `aria`,
+16,384 output tokens and 262,144 context. Coding still executes on the Mac.
+The profile is available to both the escalation ladder and steward red tier.
+Start Red through Operate before using it when asleep (global gateway autostart
+remains disabled). Existing Flash Next client choices remain registered.
+
+Qualified Red is eligible for automatic routing while resident. The stale
+Flash Next route pin is cleared to auto; the unqualified CUDA/Halo candidate
+remains excluded. Explicit model names still require their named backend.
+Registry benchmark metadata now refers to the 21:05 EDT BetterBench refresh:
+195.6 weighted decode, 5108.3 prefill at 47,056 input tokens. Full conditions and
+raw results live in CorsairModelHost/red-r9700/results/2026-09-07/.

@@ -252,6 +252,8 @@ async def lifespan(app: FastAPI):
             startup_logger.debug("remote probe warm-up skipped: %s", exc)
 
     spawn_bg(_warm_remote_probes(), name="infra.warm_remote_probes")
+    from aria.infrastructure.red_observer import run as observe_red
+    spawn_bg(observe_red(db), name="infra.red_observer")
 
     watchdog = await resolve_coding_watchdog(db, coding_manager)
     await watchdog.start()

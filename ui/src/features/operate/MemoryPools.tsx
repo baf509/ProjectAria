@@ -109,8 +109,8 @@ export function MemoryPools({
   residents?: MemoryClaimant[]
 }) {
   return (
-    <Card title="Memory" hint="two physical pools">
-      <Async r={devices} skeletonRows={3} isEmpty={(d) => !d.system && !(d.pools?.length ?? 0)} empty="No memory telemetry.">
+    <Card title="Memory" hint="GPU hosts">
+      <Async r={devices} skeletonRows={3} isEmpty={(d) => !d.system && !(d.pools?.length ?? 0) && !(d.remote_hosts?.length ?? 0)} empty="No memory telemetry.">
         {(d) => {
           const sys = d.system
           const vram = (d.pools ?? []).find((p) => p.pool === 'r9700-vram')
@@ -186,10 +186,27 @@ export function MemoryPools({
                 />
               )}
 
+              {d.remote_hosts?.map((host) => (
+                <Stack key={host.node} gap="gap">
+                  <p className="m-0 text-label text-ink">{host.node} · {host.status}</p>
+                  {!host.hardware && <p className="m-0 text-micro text-ink-dim">No current telemetry. The host may be asleep or unreachable.</p>}
+                  {host.hardware?.pools.map((p) => {
+                    const gpu = host.hardware?.devices.find((dev) => dev.pool === p.pool)
+                    return <StackedMeter
+                      key={p.pool} title={p.label} total={p.total_gib ?? 0}
+                      segments={[{ key: 'used', gib: p.used_gib ?? 0, color: 'bg-live', label: 'allocated' }]}
+                      free={p.free_gib ?? 0}
+                      note={`Dedicated VRAM${gpu?.utilization_pct != null ? ` · GPU ${gpu.utilization_pct}%` : ''}${gpu?.temperature_c != null ? ` · ${gpu.temperature_c} °C` : ''}. Allocation includes the reserved KV cache.`}
+                      warn={p.spilling ? 'GPU allocations are also consuming host RAM.' : undefined}
+                    />
+                  })}
+                </Stack>
+              ))}
+
               {selected && add > 0 && (
                 <p className="m-0 text-micro text-ink-dim">
                   <span className="text-ink">{selected.slug}</span> needs {gib(add)} from{' '}
-                  {addsToVram ? 'the card’s VRAM' : 'system memory'}
+                  {pool === 'remote' ? 'the remote host’s GPU memory' : addsToVram ? 'the card’s VRAM' : 'system memory'}
                   {selected.also_uses?.length ? ' (plus host RAM for its runtime)' : ''}.
                 </p>
               )}

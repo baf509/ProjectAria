@@ -694,9 +694,8 @@ def _tiers_from_charter(charter) -> list[str]:
 async def _profile_exists(db, slug: str) -> bool:
     """A ladder rung whose launch profile is not in db.agents is not a rung.
 
-    `pi-coding-red` in particular does not exist on this box today; escalating
-    into it would raise "subagent profile not found" out of start_session and
-    turn a recoverable stall into a hard failure.
+    Missing or disabled profiles must be skipped; escalating into one would
+    turn a recoverable stall into a hard launch failure.
     """
     if db is None:
         return False
