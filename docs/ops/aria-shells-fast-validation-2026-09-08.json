@@ -1,0 +1,62 @@
+{
+  "date": "2026-09-08",
+  "implementation_commits": [
+    "6aa61e0",
+    "dc8971d",
+    "b334d24",
+    "edd1850",
+    "56339d2"
+  ],
+  "screen_latency": {
+    "screens": [
+      {
+        "path": "api",
+        "samples": 25,
+        "first_screen_ms": 205.4,
+        "median_ms": 142.9,
+        "p95_ms": 347.0,
+        "max_ms": 581.7
+      },
+      {
+        "path": "web_bff",
+        "samples": 25,
+        "first_screen_ms": 237.6,
+        "median_ms": 144.1,
+        "p95_ms": 348.0,
+        "max_ms": 582.8
+      }
+    ],
+    "owners": [
+      "bens-macbook-pro",
+      "bens-macbook-pro",
+      "bens-macbook-pro",
+      "bens-macbook-pro",
+      "bens-macbook-pro",
+      "bens-macbook-pro"
+    ],
+    "original_panes_preserved": true
+  },
+  "controls": {
+    "view_preserved_geometry": true,
+    "takeover_detached_only_test_clients": true,
+    "agent_pid_preserved": true,
+    "fast_attach_pre_handoff_ms": {
+      "samples": 15,
+      "median": 396.8,
+      "max": 581.1
+    }
+  },
+  "browser": {
+    "real_screen_rendered": true,
+    "hidden_tab_no_reconnect": true,
+    "foreground_latest_screen": true,
+    "stream_requests": 2,
+    "console_errors": []
+  },
+  "validation": {
+    "backend_regression_suite": 104,
+    "tablet_desktop_contract_tests": 2,
+    "production_ui_build": "6aa61e0",
+    "remote_wrapper_sha256": "6b3f31d9fe24e5ac99a38634879b267825ef6916071cf41a93b91ee76084454a"
+  }
+}

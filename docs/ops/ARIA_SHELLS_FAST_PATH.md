@@ -76,3 +76,42 @@ IDs and allocated line numbers. EOF gets a bounded two-second drain period.
 These changes remove Aria startup waits and duplicated capture. Termius's
 interactive keystrokes still travel through SSH and tmux, so Wi-Fi latency,
 terminal rendering, and large agent redraws can still affect iPad responsiveness.
+
+## Rollout validation — 2026-09-08
+
+Deployed to the Mac API, both Mac node-worker roles, the production web UI, and
+installed local/Corsair attach wrappers. No coding agent or tmux pane was
+restarted. All nine pre-existing pane IDs and process IDs survived. The mobile
+clients changed height during the work; pane geometry follows attached clients
+unless view/takeover controls are used.
+
+| Measurement | Result |
+|---|---:|
+| Changed output → direct API stream, 25 updates | 142.9 ms median; 347.0 ms p95 |
+| Changed output → web BFF stream, 25 updates | 144.1 ms median; 348.0 ms p95 |
+| First web stream screen | 237.6 ms |
+| Local reconnect startup to tmux handoff, 15 runs | 396.8 ms median; 581.1 ms maximum |
+| Mac shell ownership, six samples over 12 seconds | Physical Mac owner throughout |
+| Recent local output writers, three-minute sample | Only `pipe-pane` (219 events) |
+
+The stream measurement used a disposable pane printing monotonic timestamps
+at 400 ms intervals, with two simultaneous subscribers through the API and web
+BFF. It excludes the initial pre-subscription timestamp. These are local Mac
+measurements, not iPad network/rendering measurements. The reconnect measurement
+includes fresh Python startup, exact pane liveness and batched options, with an
+unreachable API configured, stopping at the interactive tmux handoff. It does
+not measure the SSH connection or terminal first paint. The earlier 250 ms
+reconnect target was not met in this sample; the API dependency is removed and
+cold HTTP/TLS imports are avoided, but Mac process/command overhead remains.
+
+Validation passed: all 104 backend checks after the final capture fix; the
+production UI type/lint/build checks; tablet and desktop browser contract tests;
+and a real production tablet-sized browser exercise covering current output,
+hidden-tab disconnect, foreground resubscription, and no console errors.
+A real tmux PTY test verified read-only viewing preserved shared geometry and
+explicit takeover detached only the test session's other clients while keeping
+its process alive. Capture no longer upserts shell registrations, preventing
+its final EOF flush from recreating purged shell rows.
+
+Raw results: [aria-shells-fast-validation-2026-09-08.json](aria-shells-fast-validation-2026-09-08.json).
+The production UI build is `6aa61e0`; subsequent fixes affect backend/wrappers.
