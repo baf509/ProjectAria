@@ -90,11 +90,11 @@ working.
 
 Every managed Pi installation has one provider, `aria`, and exactly three models:
 
-- `Qwen3.8-27B-R9700-Radiance`
 - `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`
 - `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default)
+- `Red-Qwen3.8-27B-MXFP4` (Radiance on Red's two R9700s)
 
-Both use the Mac `/llm/v1-identified` gateway with an inference-only credential.
+All use the Mac `/llm/v1-identified` gateway with an inference-only credential.
 No Fireworks provider, cloud fallback, raw Corsair URL, or additional registered
 Pi model is allowed. ARIA owns the shell, capture, watchdog, review, and model
 awareness; Pi owns its coding transcript and tools.

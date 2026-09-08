@@ -111,9 +111,9 @@ Pi is an external coding harness, not an ARIA persona. Every managed Pi
 installation has exactly:
 
 - provider `aria`;
-- model `Qwen3.8-27B-R9700-Radiance`;
 - model `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`;
 - model `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default);
+- model `Red-Qwen3.8-27B-MXFP4` (Red's dual-R9700 Radiance instance);
 - base URL `/llm/v1-identified` on the Mac;
 - an inference-only scoped credential.
 

@@ -131,13 +131,25 @@ readiness identity before declaring reconciliation complete.
 
 ## Pi policy
 
-Pi has one provider (`aria`) and the Radiance, Halo-only Flash Next, and hybrid
-Flash Next model entries. Hybrid is the default. All go through the identified
-Mac gateway with an inference-only key. Fireworks, raw Corsair ports, and all
+Pi has one provider (`aria`) and three model entries: Halo-only Flash Next,
+hybrid Flash Next, and `Red-Qwen3.8-27B-MXFP4`. Hybrid is the default.
+All go through the identified Mac gateway with an inference-only key.
+Fireworks, raw Corsair ports, and all
 other models are forbidden in Pi configuration. The two physical managed Pi
 installations are the Mac (`mac-agents`) and Corsair (`corsair-ai`); both were
 live-tested against hybrid on 2026-09-03 and identify their gateway traffic as
 `pi-coding-mac` and `pi-coding-corsair` respectively.
+
+Ben selected Red's dual-R9700 Radiance instance as the only Qwen3.8-27B option
+on both installations on 2026-09-07, removing the old Corsair 27B entry from Pi.
+Its Pi entry declares the 262,144-token context and a 16,384-token
+generation budget, with Pi thinking controls mapped to the Qwen chat template.
+Open `/model` and select `aria/Red-Qwen3.8-27B-MXFP4`; Pi reloads the model file
+when the picker opens. The Flash Next default remains unchanged.
+The rerunnable installer is `scripts/configure-pi-red-radiance.py`, alongside
+`scripts/pi-red-radiance-model.json`. It retains credentials and Flash Next
+choices, backs up changed configs privately, removes other Qwen3.8-27B choices,
+and adds Red to enabled model cycling.
 
 Both Flash Next entries advertise the native 262,144-token window and a
 32,768-token generation budget. They declare reasoning support and map Pi's
@@ -154,7 +166,7 @@ the same hybrid model rather than maintaining a second source of routing truth.
 Hermes also declares both Flash Next variants at 262,144 tokens and reserves a
 32,768-token output budget. Its absolute 95K compression cap remains the
 latency-control threshold; it is intentionally much earlier than capacity
-pressure. Radiance remains declared at 245,760 tokens to retain explicit output
+pressure. Hermes's Corsair Radiance entry remains declared at 245,760 tokens to retain explicit output
 headroom beneath its 262,144-token server limit. Hermes control-plane work uses
 the authenticated ARIA MCP bridge; a bare `curl` to `:8200` is expected to fail
 and must not be used as a fallback when a deferred MCP tool needs loading.

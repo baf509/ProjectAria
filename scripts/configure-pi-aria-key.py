@@ -18,7 +18,7 @@ import tempfile
 APPROVED_PROVIDER = "aria"
 APPROVED_BASE_URL = "http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1-identified"
 APPROVED_MODELS = {
-    "Qwen3.8-27B-R9700-Radiance",
+    "Red-Qwen3.8-27B-MXFP4",
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
 }
@@ -76,7 +76,7 @@ def main() -> int:
     model_ids = {
         item.get("id") for item in provider.get("models", []) if isinstance(item, dict)
     }
-    if model_ids != APPROVED_MODELS or len(provider.get("models", [])) != 3:
+    if model_ids != APPROVED_MODELS or len(provider.get("models", [])) != len(APPROVED_MODELS):
         raise SystemExit("refusing Pi config: model inventory is not the approved three-model set")
 
     provider["apiKey"] = _load_key(args)
@@ -90,7 +90,7 @@ def main() -> int:
     os.chmod(temporary, prior_mode or 0o600)
     os.replace(temporary, args.models)
     os.chmod(args.models, prior_mode or 0o600)
-    print("Pi ARIA inference credential installed; provider=aria models=3")
+    print(f"Pi ARIA inference credential installed; provider=aria models={len(APPROVED_MODELS)}")
     return 0
 
 
