@@ -163,6 +163,12 @@ sessions stay out of the measured deep-context latency band. ARIA's legacy
 profiles, not additional Pi installations; startup reconciliation pins both to
 the same hybrid model rather than maintaining a second source of routing truth.
 
+Hermes's `aria` provider also offers `Red-Qwen3.8-27B-MXFP4` at 262,144 tokens.
+Select it with `/model Red-Qwen3.8-27B-MXFP4 --provider aria`; the model picker
+reloads the config from disk. Its runtime provider resolution and an actual
+completion were verified through `/llm/v1-identified` on 2026-09-07. Hybrid
+Flash Next remains Hermes's default, and its prior provider entries are retained.
+
 Hermes also declares both Flash Next variants at 262,144 tokens and reserves a
 32,768-token output budget. Its absolute 95K compression cap remains the
 latency-control threshold; it is intentionally much earlier than capacity
