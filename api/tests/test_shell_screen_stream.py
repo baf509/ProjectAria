@@ -120,3 +120,25 @@ async def test_screen_route_uses_one_local_capture_and_cleans_up(monkeypatch, tm
         await frames.aclose()
         assert not hub.watches
         await hub.stop()
+
+
+def test_screen_socket_on_production_uvloop(monkeypatch):
+    uvloop = pytest.importorskip('uvloop')
+    with tempfile.TemporaryDirectory(prefix='aria-uv-', dir='/tmp') as directory:
+        path = Path(directory) / 's.sock'
+        monkeypatch.setenv('ARIA_SHELL_SCREEN_SOCKET', str(path))
+        async def exercise():
+            hub = ScreenHub(path=path, interval=0.001, fallback=10)
+            fetch = AsyncMock(return_value='before')
+            notifier = ScreenNotifier()
+            try:
+                async with hub.subscribe('shell', fetch) as queue:
+                    await queue.get()
+                    assert hub.transport is not None
+                    fetch.return_value = 'after'
+                    notifier.notify('shell')
+                    assert (await asyncio.wait_for(queue.get(), 1))['screen'] == 'after'
+            finally:
+                notifier.close()
+                await hub.stop()
+        uvloop.run(exercise())

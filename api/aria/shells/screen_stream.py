@@ -72,20 +72,28 @@ class ScreenHub:
         async with self._start_lock:
             if self.transport is not None:
                 return
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            lock = self.path.with_suffix(".lock").open("a")
+            lock = None
+            sock = None
             try:
-                # A second API worker uses fallback captures; it must not steal
-                # the first worker's socket. A stale socket is safe under flock.
+                self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                lock = self.path.with_suffix(".lock").open("a")
+                # A second API worker must not steal the first worker's socket.
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.path.unlink(missing_ok=True)
-                transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-                    lambda: _Hints(self), family=socket.AF_UNIX, local_addr=str(self.path),
-                )
+                # Bind explicitly: uvloop's local_addr accepts IP tuples only.
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                sock.setblocking(False)
+                sock.bind(str(self.path))
                 os.chmod(self.path, 0o600)
+                transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+                    lambda: _Hints(self), sock=sock,
+                )
                 self.transport, self.lock = transport, lock
             except OSError:
-                lock.close()
+                if sock:
+                    sock.close()
+                if lock:
+                    lock.close()
                 logger.debug("screen hints unavailable; using shared fallback captures")
 
     def notify(self, name: str):
