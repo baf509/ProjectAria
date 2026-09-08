@@ -83,26 +83,37 @@ ARIA's model-omitted default route. Search/mongot and Mac Gemma remain off.
 
 ## Routine-start delivery boundary
 
-The exact release manifest is prepared and verifies on Corsair:
+The exact release manifest is active and verified on Corsair:
 `54f20c4c4af452d80bdfecbca3c6fee463fde09c2dea437ee488d94c9990574a`.
 Its separate operator-acceptance schema retains `production_qualified=false`
 and `two_hour_protocol_soak=false`. It cannot bypass the artifact, client,
 backend-authentication or lifecycle evidence checks.
 
-`activate_accepted.py --check` passes. Ben's command:
+Ben completed candidate-only activation at **23:34 UTC**. It installed the pinned
+normal-start wrapper and restarted ARIA API, preserving unrelated registry bytes,
+UI, routing/defaults and controller policy. Previous files are backed up.
 
-```bash
-bash /tmp/flashnext-activate-accepted-20260908.sh
-```
+One normal ARIA stop/start then passed, with both admission queues checked idle.
+The new service started at **23:42:13 UTC**, the model became ready at **23:45:58**,
+and ARIA readiness was verified at **23:46:06**. Service PID2151525/container
+`9afc0b321a1cd0ad3718957593adf5ca8813ae151ce7be80ecc7c066dc818aa6`
+is running in verified **serve-release** mode, not the former task-bound launch.
+The image, release pin, 256K/one-slot geometry and MTP settings are unchanged.
+Backend authentication/CORS checks passed again after restart.
 
-This updates only the candidate registry entries and the pinned normal-start
-wrapper, then briefly restarts the existing ARIA API. It does not restart the
-model, change UI/routing/defaults, enable boot autostart, or change controller
-policy. Other registry bytes are preserved; exact previous files are backed up.
+The installed Pi SDK also passed two bounded tool roundtrips/four identified
+requests on the restarted model, without fallback or retry. Turns took4.78s
+and2.02s and reused576/733 prompt-prefix tokens. This confirms basic client
+operation/cache reuse after restart, not sustained reliability or a new speed
+benchmark. Evidence: `accepted-routine-pi-executor-20260908/summary.json`.
 
-**Pending:** activation receipt and one controlled normal ARIA lifecycle check.
-Until verified, the live model is still the existing task-bound engineering
-launch and routine activation must not be called completed. No further soak.
+Evidence: `accepted-activation-z4h1cbx_.json`,
+`accepted-routine-lifecycle-20260908.json`,
+`container-jr4sudfp.json` and `accepted-routine-backend-auth-20260908.json`
+under the author runtime's `results/` directory.
+No further soak, boot autostart, automatic restart or route change was enabled.
+Git publication remains separate: GitHub authentication still returns401 and
+Hermes still needs a usable push repository URL.
 
 ## Source, evidence and documentation
 

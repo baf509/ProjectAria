@@ -1,7 +1,7 @@
 # Local inference topology
 
 Last reconciled: **2026-09-08**. See [current deployment and delivery status](CURRENT_DEPLOYMENT_20260908.md)
-for the exact release, client checks, performance scope and pending activation.
+for the exact release, client checks, performance scope and verified activation.
 Earlier R9700 benchmarks are historical evidence, not current launch instructions.
 
 ## Boundary and routing
@@ -45,11 +45,11 @@ or crash investigation is scheduled. The old R9700's 1000+tok/s prefill is not
 this deployment's measurement; current bounded samples are about443/57 at4K
 and462/56 at8K prefill/decode tok/s.
 
-Routine starts/stops use ARIA's restricted actuator. The prepared normal-start
-wrapper verifies the exact accepted release hash and artifacts. Its API
-activation and one routine lifecycle verification remain pending in the current
-delivery record. The existing model is still running from its registered
-engineering task. No boot-autostart, automatic fallback or global-route change
+Routine starts/stops use ARIA's restricted actuator. The active normal-start
+wrapper verifies the exact accepted release hash and artifacts. Ben's API
+activation and one normal ARIA stop/start are complete: the release-mode model
+was ready at23:45:58UTC on September8. Backend auth and a bounded installed-Pi
+tool-call check passed after restart. No boot-autostart, automatic fallback or global-route change
 is implied by the explicit client default. Do not rerun historical upgrade,
 stall-capture or experiment scripts.
 

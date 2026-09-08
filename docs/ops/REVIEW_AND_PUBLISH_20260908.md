@@ -62,10 +62,21 @@ vault and Corsair. The Mac desktop Obsidian application is closed and the new
 notes are not yet present in that projection; do not claim full-device sync.
 No sync/network settings or human approval policies were changed.
 
+The completed lifecycle follow-up was published as new collision-safe notes:
+
+- `ProjectAria/Design/2026-09-08 CURRENT_DEPLOYMENT_20260908 194930.md`
+- `Hermes/Design/2026-09-08 CURRENT_HERMES_FLASHNEXT_20260908 194930.md`
+
+Both Mac charters now link the newer ProjectAria note. Older published snapshots
+are retained, not silently overwritten with later results.
+
 ## Remaining delivery boundaries
 
-- Ben-run `bash /tmp/flashnext-activate-accepted-20260908.sh`, then one normal
-  ARIA lifecycle check. The current model remains running unchanged meanwhile.
+- Ben completed candidate-only API activation at23:34UTC. One normal ARIA
+  stop/start passed; the same accepted profile became ready at23:45:58UTC in
+  release mode. Ten backend auth/CORS checks and two installed-Pi tool
+  roundtrips/four identified requests passed after restart, with prefix reuse.
+  These bounded checks are not a new performance ladder or stability soak.
 - GitHub authentication is expired. Ben must refresh it before pushes can
   complete. Hermes also lacks a usable push remote; its obsolete local `safe`
   URL is not a publish destination. Do not invent a repository or force-push.
@@ -73,6 +84,10 @@ No sync/network settings or human approval policies were changed.
   Ben's confirmation. Its new GPU/runtime readiness has not been tested while
   asleep; the candidate-only activation does not deploy unrelated Ridge changes.
 - No additional MTP soak, crash investigation or microbatch experiment.
+
+The original source review was committed locally: ProjectAria `6ed0cba`,
+CorsairModelHost `79a5434`, Hermes `ab2af3e`. The lifecycle follow-up is a
+documentation/evidence reconciliation, not an engine or configuration change.
 
 Commits/pushes are not deployment receipts. Check Git and live activation
 evidence separately before claiming all work delivered.
