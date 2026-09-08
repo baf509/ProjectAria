@@ -1,0 +1,81 @@
+{
+  "review_date": "2026-09-07",
+  "shell": "claude-codex-development-eaa62f",
+  "active_list_ms": [
+    156.07,
+    16.95,
+    19.78,
+    25.48,
+    20.37,
+    11.09,
+    19.96,
+    17.74
+  ],
+  "screen_later_ms": [
+    65.17,
+    48.88,
+    167.77,
+    94.61,
+    157.37,
+    157.44,
+    142.59,
+    157.05
+  ],
+  "screen_later_bytes_range": [
+    3708,
+    25773
+  ],
+  "ipad_direct_ping_ms": [
+    14,
+    15,
+    41,
+    102,
+    73
+  ],
+  "ownership_samples": 24,
+  "ownership_interval_seconds": 0.4,
+  "ownership_transitions": 3,
+  "ownership_identities": [
+    "bens-macbook-pro",
+    "mac-agents"
+  ],
+  "tmux_capture_groups": [
+    {
+      "history_lines": 40,
+      "requests": 20,
+      "median_ms": 96.08,
+      "max_ms": 306.07,
+      "bytes": 4652
+    },
+    {
+      "history_lines": 400,
+      "requests": 20,
+      "median_ms": 123.19,
+      "max_ms": 251.4,
+      "bytes": 25409
+    },
+    {
+      "history_lines": 10000,
+      "requests": 20,
+      "median_ms": 32.24,
+      "max_ms": 46.46,
+      "bytes": 102039
+    }
+  ],
+  "development_three_minute_storage": {
+    "pipe_events": 39,
+    "pipe_event_bson_bytes": 29902,
+    "snapshots": 22,
+    "snapshot_bson_bytes": 935962
+  },
+  "web_screen_poll_ms": 5000,
+  "node_capture_sleep_ms": 2000,
+  "capture_flush_ms": 500,
+  "sse_database_poll_ms": 500,
+  "limitations": [
+    "Live system, small samples",
+    "No client-side keystroke-to-paint measurement",
+    "Earlier API samples overlapped UI build",
+    "No shell behavior changes deployed"
+  ]
+}
