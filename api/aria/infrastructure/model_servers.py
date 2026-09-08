@@ -69,10 +69,12 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
+from aria.infrastructure.backend_auth import backend_headers
 from aria.infrastructure.gpu_devices import (
     POOL_HALO,
     POOL_HOST,
     POOL_R9700,
+    POOL_NVIDIA,
     POOL_REMOTE,
     process_gpu_bytes,
     process_uses_gpu,
@@ -205,6 +207,7 @@ class ModelServerSpec:
     exclusive_with: tuple[str, ...] = ()
     onbox: bool = True  # False = ARIA cannot start/stop it (e.g. Ridge)
     startable: bool = True  # False = no working runtime/compose service exists yet
+    allow_force_start: bool = True  # False = force cannot override an unqualified startable=False entry
     not_startable_reason: Optional[str] = None
     # Eligibility for automatic resident ranking, independent of process
     # readiness or whether routine lifecycle starts are permitted. Explicit
@@ -304,6 +307,9 @@ class ModelServerSpec:
     # `parameters` declares; ARIA overrides them with a systemd drop-in rather
     # than by rewriting the script or building its own command line.
     launch_script: Optional[str] = None
+    # JSON-owned launchers cannot expose geometry through shell argv parsing.
+    # Read their validated, identity-matched profile, not duplicated constants.
+    launch_profile: Optional[str] = None
     parameters: tuple[LaunchParam, ...] = ()
     # Which declared parameter carries the served context / slot count. Set
     # these on script-launched entries so served_ctx and the KV projection
@@ -429,6 +435,7 @@ _HALO_BIG = (
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     "Qwen3.8-Flash-Next-Engine-R9700-Halo",
+    "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
     "DS4-0731-REAP150B-MXFP4",
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "DS4-0731-ROCmFPX-Affine-Quality",
@@ -460,6 +467,7 @@ _BOTH_GPU_RESIDENT = (
     "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     "Qwen3.8-Flash-Next-Engine-R9700-Halo",
+    "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
 )
 
 _EXCLUSIVE_PAIRS = (
@@ -474,7 +482,7 @@ _EXCLUSIVE_PAIRS = (
     # measurements require both Corsair GPUs without smaller Halo residents;
     # Mac-owned auxiliary models and remote GPU nodes are unaffected.
     + _pairs_between(
-        ("Qwen3.8-Flash-Next-Engine-R9700-Halo",),
+        ("Qwen3.8-Flash-Next-Engine-R9700-Halo", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
         ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8", "context1-Q4",
          "Chadrock-ROCmFP6-qwen3.6-27b"),
     )
@@ -868,6 +876,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+        startable=False,
+        allow_force_start=False,
+        auto_route=False,
+        not_startable_reason="Retired Corsair hardware loadout: this archive selects the former "
+        "ROCm1 Halo enumeration and is not qualified after the RTX 3090 swap. "
+        "Use the reviewed CUDA/Vulkan deployment, not the old dual-resident rollback.",
         runtime_family="llamacpp",
         bench_decode_tok_s=53.01,
         bench_prefill_tok_s=396.0,
@@ -978,12 +992,17 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         kv_kib_per_token=33.0,
         overhead_gib=3.0,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K"),
-        consumers_note="Pi-selectable through ARIA on :8120 as the Halo half of the "
-        "dual-resident rollback loadout. Hybrid Flash Next on :8121 is the boot-default "
-        "ARIA/Hermes/Pi route; selecting it replaces both rollback servers.",
+        consumers_note="Retired Halo half of the former Corsair R9700 dual-resident loadout. "
+        "Historical measurements are retained; this is not a current Pi choice or a "
+        "validated rollback on the RTX 3090 hardware layout.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+        startable=False,
+        allow_force_start=False,
+        auto_route=False,
+        not_startable_reason="Retired Corsair hardware: the R9700 was replaced by RTX 3090. "
+        "Use the qualified CUDA/Halo deployment when available; this archive is not a rollback.",
         bench_decode_tok_s=52.49,
         bench_prefill_tok_s=1105.4,
         bench_at="2026-09-04",
@@ -1096,9 +1115,49 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # are the authoritative fit checks; this estimate is for the fleet UI.
         resident_gib=82,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-Hybrid-R9700-Halo"),
-        consumers_note="Boot-default high-throughput whole-machine profile on :8121 for "
-        "ARIA, Hermes, and Pi. Use the Operate loadout button to select the dual-resident "
-        "rollback profile.",
+        consumers_note="Retired Corsair R9700 deployment; historical measurements only. "
+        "Boot unit disabled. Not a usable rollback on the installed RTX 3090.",
+    ),
+    ModelServerSpec(
+        slug="Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+        description="Operator-accepted deployment based on ucicelos/flashnext-hybrid on RTX 3090 CUDA "
+        "plus Strix Halo RADV Vulkan. CUDA dense trunk/KV and Q4_K_M MTP head at draft depth 3, "
+        "Halo experts, disk PLE, q8 K/V, Sharp template, 8 GiB prompt cache and 32 context checkpoints. "
+        "One 262144-token slot, batch 2048/microbatch 512; CUDA capture disabled, "
+        "graph reuse enabled, with hash-bound NVIDIA 610.43.02 driver libraries. "
+        "Docker adapts the author's Toolbox environment; local Top-K argsort fallback. "
+        "Ben accepted this exact MTP-on profile for routine use on September 8. "
+        "Intermittent CUDA faults remain unresolved; sustained reliability is not qualified.",
+        runtime_repo="https://github.com/ucicelos/flashnext-hybrid.git",
+        runtime_ref="e8bfdb53d32f2be8444b96e8b69add844acc2d26; CUDA sm_86 plus Vulkan; "
+        "Top-K argsort fallback; CUDA 13.3/GCC 15; pins and build manifest in flashnext-author-reproduction",
+        runtime_family="llamacpp",
+        backend_device="Identity-resolved RTX 3090 CUDA and Strix Halo RADV Vulkan",
+        devices=("RTX 3090 (CUDA, UUID/PCI binding required)", "Strix Halo (RADV Vulkan)"),
+        memory_pool=POOL_HALO,
+        # Separate device pool, not R9700 VRAM. The locked launcher performs
+        # the authoritative idle/identity check before allocating the model.
+        also_uses=(POOL_NVIDIA,),
+        deployment="flashnext-author-reproduction",
+        model_file="models/llm/Qwen3.8-Flash-Next-UD-Q4_K_XL-GGUF/"
+        "Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+        port=8131,
+        systemd_unit="flashnext-cuda-halo.service",
+        launch_script="flashnext-author-reproduction/serve-release.sh",
+        launch_profile="flashnext-author-reproduction/profile.json",
+        ctx_is_total=True,
+        # The systemd release wrapper verifies the exact accepted profile,
+        # artifact/evidence hashes and explicit known-risk acceptance at start.
+        startable=True,
+        allow_force_start=False,
+        auto_route=False,
+        parameters=(),
+        # Keep isolated speed samples out of fleet benchmark claims.
+        resident_gib=100,
+        exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
+        consumers_note="Explicit default for managed Hermes and Pi clients; 256K context, "
+        "32K output budget and compaction near 95K. No automatic fallback or Red default "
+        "change. Hash-pinned operator acceptance is not a passed reliability qualification.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
@@ -1349,6 +1408,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-R9700-Radiance",
+        startable=False,
+        allow_force_start=False,
+        auto_route=False,
+        not_startable_reason="Retired Corsair hardware: no R9700 is installed here. "
+        "The independent Red-Qwen3.8-27B-MXFP4 deployment is unaffected.",
         runtime_family="vllm",
         bench_decode_tok_s=54.4,
         bench_prefill_tok_s=1850.0,
@@ -2213,8 +2277,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Ridge-Qwen3.8-27B",
-        description="Qwen3.8-27B on Ridge's RTX 3090 (NInfer 0.6.0), reached through "
-        "corsair's ridge-llama-proxy (Wake-on-LAN, ~90s cold first byte). Off-box but "
+        description="Ridge now holds an RTX 5090, confirmed by Ben on 2026-09-08. "
+        "The retained Qwen3.8-27B/NInfer service contract below predates the swap; "
+        "new-card readiness and performance are unverified while Ridge sleeps. Reached through "
+        "the Mac's ridge-llama-proxy. Historical cold start was ~90s. Off-box but "
         "fully operable by ARIA since 2026-08-15: wake, start, stop, sleep. Serves ONE "
         "request at a time. Wire id is `qwen3.8-27b` at 114688 ctx — NInfer VALIDATES "
         "the request model against its --model-id, so callers still sending the "
@@ -2225,9 +2291,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         onbox=False,
         startable=True,
         memory_pool=POOL_REMOTE,
-        devices=("Ridge RTX 3090 (remote CUDA)",),
+        devices=("Ridge RTX 5090 (Ben-confirmed; runtime readiness unverified)",),
         host_machine="machine:ridge",
-        consumers_note="pi-coding-ridge",
+        consumers_note="Secondary inference; not the legacy pi-coding-ridge profile's current model. "
+        "Verify the retained launcher against RTX 5090 before claiming swap qualification.",
         # ── remote operate (2026-08-15) ───────────────────────────────────
         # Previously startable=False: the only way Ridge's model came up was a
         # user request happening to hit ridge-llama-proxy, which WoLs on demand.
@@ -2578,6 +2645,45 @@ def _compose_geometry(compose_file: str, service_name: Optional[str]) -> Optiona
 _GEOMETRY_CACHE: dict[str, tuple[float, LaunchGeometry]] = {}
 
 
+def _profile_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
+    """Read the CUDA/Halo launcher's JSON contract without executing it.
+
+    The launcher owns these values. Unknown schema, identity drift, paths
+    outside the infrastructure tree and malformed values stay unknown.
+    """
+    source = spec.launch_profile
+    if not isinstance(source, str) or not source or os.path.isabs(source) or ".." in source.split("/"):
+        return LaunchGeometry()
+    root = os.path.realpath(settings.infrastructure_root)
+    path = os.path.realpath(os.path.join(root, source))
+    if os.path.commonpath([root, path]) != root:
+        return LaunchGeometry()
+    try:
+        with open(path) as stream:
+            body = stream.read(65537)
+        if len(body) > 65536:
+            return LaunchGeometry()
+        profile = json.loads(body)
+    except (OSError, ValueError):
+        return LaunchGeometry()
+    if not isinstance(profile, dict) or (
+        profile.get("schema") != "flashnext-cuda-halo-profile-v1"
+        or profile.get("alias") != spec.slug.lower()
+        or profile.get("host") != "127.0.0.1"
+        or type(profile.get("proposed_port")) is not int
+        or profile["proposed_port"] != spec.port
+    ):
+        return LaunchGeometry()
+    n_ctx, slots = profile.get("context"), profile.get("slots")
+    if type(n_ctx) is not int or type(slots) is not int or not 0 < slots <= n_ctx:
+        return LaunchGeometry()
+    if spec.ctx_is_total:
+        if n_ctx % slots:
+            return LaunchGeometry()
+        n_ctx //= slots
+    return LaunchGeometry(n_ctx=n_ctx, slots=slots, source=source)
+
+
 def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
     """Served `-c`/`-np` for one server, read from its launch file.
 
@@ -2591,6 +2697,8 @@ def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
     environment — the value is taken from the effective launch parameters
     instead, so a script-launched server still reports what it will actually
     serve rather than "unknown"."""
+    if spec.launch_profile:
+        return _profile_geometry(spec)
     unit = unit_name(spec)
     geometry = LaunchGeometry()
 
@@ -3271,7 +3379,7 @@ async def _probe_llamacpp(spec, root: str, timeout: float) -> Optional[RuntimeSt
     metrics_available = False
     metrics_hint = None
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), headers=backend_headers(root)) as client:
             slots_resp, metrics_resp = await asyncio.gather(
                 client.get(f"{root}/slots"),
                 client.get(f"{root}/metrics"),
@@ -4096,7 +4204,8 @@ async def _forwarded_endpoint_status(
         return healthy, None
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-            response = await client.get(f"http://127.0.0.1:{port}/v1/models")
+            response = await client.get(f"http://127.0.0.1:{port}/v1/models",
+                                        headers=backend_headers(f"http://127.0.0.1:{port}/v1"))
             response.raise_for_status()
             family = _runtime_family_from_models(response.json())
     except (httpx.HTTPError, ValueError, OSError):
@@ -4205,6 +4314,13 @@ def _server_row(
             if pools.get(spec.memory_pool) else None
         ),
         "pool_spilling": spilling.get(spec.memory_pool, False),
+        "secondary_pools": {
+            pool: {
+                "used_gib": round(pools[pool][0], 1) if pools.get(pool) else None,
+                "total_gib": round(pools[pool][1], 1) if pools.get(pool) else None,
+            }
+            for pool in spec.also_uses
+        },
         # HOW it loads. `parameters` carries each knob's effective
         # value plus where that value came from, so an override ARIA
         # set is distinguishable from a drop-in Ben wrote by hand.
@@ -4219,6 +4335,7 @@ def _server_row(
             spec.remote_model_id and spec.remotely_operable and state == "running"
         ),
         "startable": spec.startable,
+        "allow_force_start": spec.allow_force_start,
         "not_startable_reason": spec.not_startable_reason,
         "auto_route": spec.auto_route,
         "consumers_note": spec.consumers_note,
@@ -4418,13 +4535,13 @@ class ModelServerManager:
             # The Mac has no Linux DRM sysfs and is not the GPU host. Corsair's
             # node observations own pool truth; probing /sys here only emits
             # several warnings per dashboard poll and can never return data.
-            pools = {name: None for name in (POOL_HALO, POOL_R9700, POOL_HOST)}
+            pools = {name: None for name in (POOL_HALO, POOL_R9700, POOL_NVIDIA, POOL_HOST)}
             gtt = None
             spilling = {POOL_HALO: False, POOL_R9700: False}
         else:
             pools = {
                 name: _read_gtt_gib(name)
-                for name in (POOL_HALO, POOL_R9700, POOL_HOST)
+                for name in (POOL_HALO, POOL_R9700, POOL_NVIDIA, POOL_HOST)
             }
             gtt = pools.get(POOL_HALO)
             # A discrete card holding GTT is serving out of system RAM — at which
@@ -4498,7 +4615,7 @@ class ModelServerManager:
         state, _ = await self._inspect(spec)
         pools = {
             name: _read_gtt_gib(name)
-            for name in (POOL_HALO, POOL_R9700, POOL_HOST)
+            for name in (POOL_HALO, POOL_R9700, POOL_NVIDIA, POOL_HOST)
         }
         gtt = pools.get(POOL_HALO)
         spilling = {
@@ -4616,6 +4733,7 @@ class ModelServerManager:
                 # The 503 hint lists what a caller could start instead —
                 # routing needs the flag even though it never acts on it.
                 "startable": spec.startable,
+                "allow_force_start": spec.allow_force_start,
                 "auto_route": spec.auto_route,
             })
         return results
@@ -4676,6 +4794,10 @@ class ModelServerManager:
         """
         self.invalidate_status()  # a start changes what status() would answer
         spec = await self.resolve_spec(slug, db)
+        if not spec.startable and not spec.allow_force_start:
+            raise ModelServerSafetyError(
+                spec.not_startable_reason or f"{slug} requires qualification before lifecycle starts."
+            )
         if _corsair_forward_mode() and spec.onbox:
             if overrides:
                 raise ModelServerSafetyError(

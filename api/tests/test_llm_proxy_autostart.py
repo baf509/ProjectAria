@@ -48,6 +48,26 @@ def _manager(servers):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("retired", [
+    "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+    "Qwen3.8-27B-R9700-Radiance",
+    "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+])
+async def test_retired_request_cannot_evict_current_cuda_halo_model(retired):
+    from aria.infrastructure.model_servers import _BY_SLUG
+    current = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    assert _BY_SLUG[retired].startable is False
+    assert current in _BY_SLUG[retired].exclusive_with
+    manager = _manager([
+        {"slug": retired, "state": "exited", "model_file": ""},
+        {"slug": current, "state": "running", "model_file": ""},
+    ])
+    assert await _autostart(manager, MagicMock(), retired) is False
+    manager.stop.assert_not_awaited()
+    manager.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_stops_exclusive_conflict_then_starts_without_force():
     """force=True would skip the live-GTT projection — the last gate against
     overcommitting the box. Conflicts must be freed by stopping them."""

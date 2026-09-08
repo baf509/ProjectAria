@@ -62,3 +62,16 @@ def test_tool_selection_scorer_checks_tool_arguments_and_forbidden_fallbacks():
     assert report["ok"] is True
     record["transcript"] = "I used tmux new-session instead."
     assert module.score([record], [cases[4]])["ok"] is False
+
+
+def test_scorer_follows_tool_search_to_the_executed_operation():
+    script = ROOT / "integrations/hermes/evaluate-tool-selection.py"
+    spec = importlib.util.spec_from_file_location("search_scorer", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = [{"name": "tool_search", "arguments": {"query": "fleet"}},
+             {"name": "tool_describe", "arguments": {"name": "mcp__aria__fleet_status"}},
+             {"name": "tool_call", "arguments": {"name": "mcp__aria__fleet_status", "arguments": {"awaiting_only": True}}}]
+    case = {"id": "fleet", "first_tool": "fleet_status", "arguments": {"awaiting_only": True}}
+    assert module.score([{"id": "fleet", "tool_calls": calls}], [case])["ok"]
+    assert not module.score([{"id": "fleet", "tool_calls": calls[:2]}], [case])["ok"]

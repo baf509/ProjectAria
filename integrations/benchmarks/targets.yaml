@@ -1,0 +1,20 @@
+# Mac-hosted benchmark clients; Aria owns model placement and lifecycle.
+# No lifecycle commands: a benchmark cannot start/stop another consumer's model.
+gpu_budget_gb: 0
+targets:
+  red-radiance:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: Red-Qwen3.8-27B-MXFP4
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, radiance, r9700]
+    notes: Two R9700 GPUs on Red; inference passes through Aria.
+  flash-next:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: Qwen3.8-Flash-Next-CUDA-Halo-Candidate
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, flash-next]
+    notes: Registered Flash Next deployment; benchmark only while idle.

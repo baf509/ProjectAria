@@ -1,0 +1,7 @@
+name: aria-readiness
+version: "0.1.0"
+description: "Observe Aria MCP discovery and model-visible tools; use Hermes's existing reconnect path."
+author: Project Aria
+hooks:
+  - pre_llm_call
+  - pre_api_request

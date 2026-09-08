@@ -1,0 +1,8 @@
+# Deterministic persistence for Ralph orchestration tests; no running Mongo needed.
+pytest>=8,<10
+pytest-asyncio>=0.24,<2
+mongomock-motor==0.0.36
+# Match the existing runtime range; adapter tests replace network calls only.
+openai>=1.54.0,<2.0.0
+# Exercise the standalone Aria bridge's real schemas and stdio consent protocol.
+mcp==1.26.0

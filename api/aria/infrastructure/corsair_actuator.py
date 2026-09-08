@@ -16,6 +16,9 @@ import os
 import shlex
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from aria.infrastructure import gpu_devices
 
 from aria.infrastructure.model_servers import (
     ModelServerError,
@@ -73,6 +76,17 @@ async def execute(request: ActuatorRequest, manager: ModelServerManager) -> dict
     return await manager.stop(request.slug)
 
 
+def hardware_snapshot() -> dict:
+    """Observed on the model host; no new SSH action or shell capability."""
+    return {
+        "devices": gpu_devices.device_snapshot(),
+        "pools": gpu_devices.pool_snapshot(),
+        "system": gpu_devices.system_memory_snapshot(),
+        "node": "corsair-ai",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _emit(payload: dict) -> None:
     # One compact JSON line makes the response unambiguous for the Mac client
     # and prevents log chatter from being mistaken for the operation result.
@@ -84,6 +98,8 @@ def main() -> int:
     try:
         request = parse_request(os.environ.get("SSH_ORIGINAL_COMMAND", ""), manager)
         result = asyncio.run(execute(request, manager))
+        if request.action == "status":
+            result["hardware"] = hardware_snapshot()
     except (ActuatorRequestError, ModelServerNotFound) as exc:
         _emit({"ok": False, "kind": "request", "error": str(exc)})
         return 64

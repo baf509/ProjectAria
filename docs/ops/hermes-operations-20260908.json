@@ -1,0 +1,197 @@
+{
+  "date": "2026-09-08",
+  "gateway_readiness": {
+    "pid": 47624,
+    "platform": "signal",
+    "updated_at": 1788881569.198522,
+    "configured": true,
+    "connection": "connected",
+    "connected": true,
+    "registered_count": 118,
+    "selected_count": 118,
+    "missing_required": [],
+    "ready": true
+  },
+  "deployment_sha256": {
+    "mcp/server.py": "6f88461228204c97fba9e3bd84cc3670d2474fc13f439a823e0ec28502cd74c2",
+    "mcp/operations.py": "15eb2e205fce60ee8c1d57da1871bd0b9448184f558900fa24091422a2918854",
+    "integrations/hermes/aria-readiness/__init__.py": "162475eba2605242207ecc88b2cfd3decb9eacbfa3dcacf494f626ec0736e394",
+    "api/aria/benchmarks/service.py": "ab8e49c0ea66458adebecf9ee72b7fddf5ab88daea2b644d1117574dff13309f",
+    "api/aria/benchmarks/runner.py": "a21e8462ccc231a8b6362a263ae7a342601e14e1a2092490acb46988717b4566",
+    "api/aria/api/routes/benchmarks.py": "d15d1845682d41925f0db0d2f2180ec5813cf09991d3e0bb721b3d27fee587f1"
+  },
+  "aria_ready": true,
+  "model_tool_routing": {
+    "ok": true,
+    "passed": 3,
+    "total": 3,
+    "missing": [],
+    "results": [
+      {
+        "id": "aria-discovery-fleet",
+        "model": "Red-Qwen3.8-27B-MXFP4",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "id": "inspect-ralph-run",
+        "model": "Red-Qwen3.8-27B-MXFP4",
+        "ok": true,
+        "errors": []
+      },
+      {
+        "id": "inspect-benchmark-options",
+        "model": "Red-Qwen3.8-27B-MXFP4",
+        "ok": true,
+        "errors": []
+      }
+    ]
+  },
+  "live_benchmark": {
+    "run_id": "aria-1788881151",
+    "status": "succeeded",
+    "timeout_seconds": 180,
+    "metrics": [
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "prefill_tps@128w",
+        "value": 1395.03,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "decode_tps@128w",
+        "value": 207.12,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "ttft_ms@128w",
+        "value": 118.99,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "prefill_tps@1024w",
+        "value": 4243.27,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "decode_tps@1024w",
+        "value": 225.09,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "ttft_ms@1024w",
+        "value": 250.51,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "prefill_tps@4096w",
+        "value": 5276.12,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "decode_tps@4096w",
+        "value": 180.86,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "ttft_ms@4096w",
+        "value": 783.72,
+        "n": 3,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "decode_tps",
+        "value": 207.12,
+        "n": null,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      },
+      {
+        "target": "red-radiance",
+        "benchmark": "throughput",
+        "metric": "prefill_tps",
+        "value": 5276.12,
+        "n": null,
+        "source": null,
+        "prompt_tokens": null,
+        "prefix_cache_hits": null
+      }
+    ]
+  },
+  "live_cancel": {
+    "run_id": "aria-1788881645",
+    "api_status": "cancelled",
+    "supervisor": {
+      "returncode": -15,
+      "status": "cancelled",
+      "finished_at": 1788881645.710619
+    }
+  },
+  "models_after_tests": [
+    {
+      "slug": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+      "reachable": true,
+      "busy_slots": 0,
+      "total_slots": 1
+    },
+    {
+      "slug": "Red-Qwen3.8-27B-MXFP4",
+      "reachable": true,
+      "busy_slots": 0,
+      "total_slots": 8
+    }
+  ],
+  "validation": {
+    "aria_and_hermes_test_cases": 87,
+    "harness_streaming_tests": 3,
+    "model_routing_scenarios": 3,
+    "signal_message_sent": false,
+    "production_ralph_mutations": false
+  }
+}

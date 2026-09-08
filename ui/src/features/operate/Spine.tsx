@@ -12,7 +12,7 @@
  * ONE system-memory bar (the Strix Halo iGPU has no memory of its own — its GTT
  * allocation is system RAM, so `halo-gtt` and `host-ram` are the same DIMMs and
  * host-ram's figure already contains the iGPU's) plus a separate bar for the
- * R9700's own VRAM, which the old overview omitted entirely.
+ * installed discrete GPU's own VRAM.
  */
 import Link from 'next/link'
 import { useState } from 'react'
@@ -35,9 +35,7 @@ import { api, ApiError } from '@/lib/http'
 import { gib, middleTruncate, pct } from '@/lib/format'
 import { STATE_WORD, dotState, isResident, serverState, sortServices, useToasts, utilFor } from './lib'
 
-const RADIANCE = 'Qwen3.8-27B-R9700-Radiance'
-const FLASH_HALO = 'Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K'
-const FLASH_HYBRID = 'Qwen3.8-Flash-Next-Hybrid-R9700-Halo'
+const FLASH_HYBRID = 'Qwen3.8-Flash-Next-CUDA-Halo-Candidate'
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -111,7 +109,7 @@ export function Spine({
   const { toasts, push, dismiss } = useToasts()
   const run = useAction()
   const [routeBusy, setRouteBusy] = useState<string | null>(null)
-  const [loadoutBusy, setLoadoutBusy] = useState<'dual' | 'hybrid' | null>(null)
+  const [loadoutBusy, setLoadoutBusy] = useState(false)
   const [loadoutProgress, setLoadoutProgress] = useState<string | null>(null)
   // Action errors live apart from poll errors: a successful background poll
   // must not wipe the reason a start was refused off the screen.
@@ -119,6 +117,7 @@ export function Spine({
 
   const unhealthy = (services.data?.services ?? []).filter((s) => !s.healthy)
   const saturated = (utilization.data?.servers ?? []).filter((u) => u.reachable && u.saturated)
+  const flash = fleet.data?.servers.find((s) => s.slug === FLASH_HYBRID)
 
   async function pin(slug: string | null) {
     setRouteBusy(slug ?? 'auto')
@@ -133,48 +132,30 @@ export function Spine({
     }
   }
 
-  async function activateLoadout(loadout: 'dual' | 'hybrid') {
-    setLoadoutBusy(loadout)
+  async function activateLoadout() {
+    // The API remains authoritative. Missing or engineering-only metadata
+    // must never turn this convenience button into a qualification bypass.
+    if (flash?.startable !== true) return
+    setLoadoutBusy(true)
     setActionError(null)
     try {
-      if (loadout === 'dual') {
-        setLoadoutProgress('Stopping the hybrid server…')
-        await modelServerAction(FLASH_HYBRID, 'stop')
-        await waitForModel(FLASH_HYBRID, false)
-
-        setLoadoutProgress('Loading Qwen3.8 on the R9700…')
-        await modelServerAction(RADIANCE, 'start')
-        await waitForModel(RADIANCE, true)
-
-        setLoadoutProgress('Radiance is ready; loading Flash Next on the Halo…')
-        await modelServerAction(FLASH_HALO, 'start')
-        await waitForModel(FLASH_HALO, true)
-      } else {
-        setLoadoutProgress('Unloading the Halo-only server…')
-        await modelServerAction(FLASH_HALO, 'stop')
-        await waitForModel(FLASH_HALO, false)
-
-        setLoadoutProgress('Unloading Radiance from the R9700…')
-        await modelServerAction(RADIANCE, 'stop')
-        await waitForModel(RADIANCE, false)
-
-        setLoadoutProgress('Loading Flash Next across the R9700 and Halo…')
+      if (!isResident(flash)) {
+        setLoadoutProgress('Loading Flash Next on RTX 3090 + Strix Halo…')
+        // No forced eviction or unrelated Red/auxiliary stop. A conflicting
+        // residency is refused by the normal model actuator for review.
         await modelServerAction(FLASH_HYBRID, 'start')
         await waitForModel(FLASH_HYBRID, true)
       }
-
-      // A remembered pin to the previous loadout would force every request
-      // through fallback selection. Auto follows the newly selected residents.
-      await setLlmRoute(null)
+      await setLlmRoute(FLASH_HYBRID)
       await Promise.all([fleet.refresh(), route.refresh(), devices.refresh(), utilization.refresh()])
-      push('ok', loadout === 'dual' ? 'Dual-resident Qwen loadout is ready' : 'Hybrid Flash Next is ready')
+      push('ok', 'RTX 3090 + Halo Flash Next is ready and selected')
       setLoadoutProgress(null)
     } catch (err) {
       const message = err instanceof ApiError || err instanceof Error ? err.message : String(err)
       setActionError(`loadout: ${message}`)
       setLoadoutProgress(null)
     } finally {
-      setLoadoutBusy(null)
+      setLoadoutBusy(false)
     }
   }
 
@@ -206,35 +187,26 @@ export function Spine({
         residents={(fleet.data?.servers ?? []).filter((srv) => isResident(srv))}
       />
 
-      <Card title="Model loadout" hint="one safe switch for both GPUs">
+      <Card title="Corsair model loadout" hint="RTX 3090 + Strix Halo">
         <Stack gap="sm">
           <Cluster>
             <Button
               variant="primary"
-              busy={loadoutBusy === 'dual'}
-              disabled={loadoutBusy !== null}
-              aria-pressed={
-                (fleet.data?.servers ?? []).some((s) => s.slug === RADIANCE && isResident(s)) &&
-                (fleet.data?.servers ?? []).some((s) => s.slug === FLASH_HALO && isResident(s))
-              }
-              onClick={() => activateLoadout('dual')}
+              busy={loadoutBusy}
+              disabled={loadoutBusy || flash?.startable !== true}
+              aria-pressed={Boolean(flash && isResident(flash) && route.data?.pinned === FLASH_HYBRID)}
+              onClick={activateLoadout}
             >
-              Load Qwen dual resident
-            </Button>
-            <Button
-              variant="primary"
-              busy={loadoutBusy === 'hybrid'}
-              disabled={loadoutBusy !== null}
-              aria-pressed={(fleet.data?.servers ?? []).some((s) => s.slug === FLASH_HYBRID && isResident(s))}
-              onClick={() => activateLoadout('hybrid')}
-            >
-              Load Flash Next hybrid
+              Load and select Flash Next hybrid
             </Button>
           </Cluster>
           <Text>
-            Dual resident starts Radiance on the R9700, waits for readiness, then starts Flash Next on the Halo.
-            Hybrid unloads both and runs one tuned Flash Next process across both GPUs.
+            CUDA runs the dense trunk and KV cache on the RTX 3090; Vulkan runs the experts on the Halo.
+            Red remains a separate model choice. The former Corsair R9700 loadouts are retired.
           </Text>
+          {flash?.startable !== true && (
+            <Notice tone="info">{flash?.not_startable_reason ?? 'Waiting for a qualified, registered Flash Next deployment.'}</Notice>
+          )}
           {loadoutProgress && <Notice tone="info">{loadoutProgress}</Notice>}
         </Stack>
       </Card>

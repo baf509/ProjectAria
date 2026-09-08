@@ -37,7 +37,10 @@ ProjectAria listens on :8200 after the cutover (it inherited aria-shells' port).
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -50,7 +53,19 @@ ARIA_KEY = os.environ.get("ARIA_API_KEY", "")
 TIMEOUT = float(os.environ.get("ARIA_HTTP_TIMEOUT", "20"))
 
 mcp = FastMCP("aria")
-TOOL_CONTRACT_VERSION = "2026-09-02.1"
+TOOL_CONTRACT_VERSION = "2026-09-08.2"
+_SOURCE_SHA256 = sha256(Path(__file__).read_bytes()).hexdigest()
+_READ_ONLY = {"readOnlyHint": True, "destructiveHint": False,
+              "idempotentHint": True, "openWorldHint": False}
+
+
+class AriaRequestError(RuntimeError):
+    """HTTP failure without echoing upstream bodies, credentials or transcripts."""
+
+    def __init__(self, method: str, path: str, status: int):
+        self.status_code = status
+        hint = " Check the configured ARIA credential; do not bypass auth." if status in (401, 403) else ""
+        super().__init__(f"ARIA {method} {path} -> {status}.{hint}")
 
 
 def _client() -> httpx.AsyncClient:
@@ -64,7 +79,7 @@ async def _request(method: str, path: str, **kw: Any) -> Any:
     async with _client() as c:
         r = await c.request(method, path, **kw)
         if r.status_code >= 400:
-            raise RuntimeError(f"ARIA {method} {path} -> {r.status_code}: {r.text[:500]}")
+            raise AriaRequestError(method, path, r.status_code)
         if not r.content:
             return None
         ctype = r.headers.get("content-type", "")
@@ -172,8 +187,149 @@ async def tool_contract_status() -> dict:
     contract Hermes loaded. Returns a human version and SHA-256 of this running
     bridge source; compare the hash with the deployed file when a parameter or
     description appears missing. This does not probe ARIA readiness."""
-    source = Path(__file__).read_bytes()
-    return {"version": TOOL_CONTRACT_VERSION, "sha256": sha256(source).hexdigest()}
+    return {"version": TOOL_CONTRACT_VERSION, "sha256": _SOURCE_SHA256,
+            "operations_sha256": _OPERATIONS_SHA256}
+
+
+def _bounded(value: int, name: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
+    return value
+
+
+def _path_id(value: str) -> str:
+    # These tools accept registry IDs, never caller-selected paths or URLs.
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", value):
+        raise ValueError("Expected a registry ID, not a path or URL")
+    return value
+
+
+async def _read_section(path: str, **kwargs: Any) -> dict:
+    """One independently timed read. A failed probe is unknown, not healthy."""
+    try:
+        async with asyncio.timeout(10):
+            data = await _request("GET", path, timeout=8.0, **kwargs)
+        return {"available": True, "data": data}
+    except (httpx.HTTPError, AriaRequestError, TimeoutError) as exc:
+        return {"available": False, "error_type": type(exc).__name__,
+                "status_code": getattr(exc, "status_code", None)}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def operator_snapshot(model: Optional[str] = None) -> dict:
+    """Read-only operator overview: API readiness, selected model/admission,
+    coding queue, retrieval switches and provider cooldown. Pass the exact
+    client model for routing; omitted means default route, NOT caller identity.
+    Sections are concurrent observations, not an atomic snapshot. Unavailable
+    is unknown; available only means the probe succeeded, not healthy/idle.
+    Never launches inference, wakes a model or changes policy."""
+    started = datetime.now(timezone.utc).isoformat()
+    names = ("readiness", "inference", "coding_queue", "retrieval", "coding_provider")
+    reads = await asyncio.gather(
+        _read_section("/api/v1/health/ready"),
+        _read_section("/llm/v1/backend", params={"model": model} if model else None),
+        _read_section("/api/v1/coding/sessions/concurrency"),
+        _read_section("/api/v1/capabilities/retrieval"),
+        _read_section("/api/v1/routing/availability"),
+    )
+    return {"started_at": started, "observed_at": datetime.now(timezone.utc).isoformat(),
+            "complete": all(row["available"] for row in reads),
+            "sections": dict(zip(names, reads))}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def inference_backend(model: Optional[str] = None) -> dict:
+    """Live route and admission queue for a named model.
+    Pass the exact client model. No generation or model start. Omit model for default
+    routing only. This cannot identify which model answered an earlier turn;
+    use inference_traces for recorded requests. No pin/client settings change."""
+    return await _request("GET", "/llm/v1/backend", params={"model": model} if model else None)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def inference_usage(
+    group_by: Literal["summary", "caller", "model"] = "caller", days: int = 1,
+) -> dict:
+    """Token totals and prompt-cache reuse over 1–30 days, overall or grouped
+    by declared caller (Hermes/Pi) or model. Caller labels are diagnostic, not
+    authenticated identities. Historical aggregates are NOT a controlled
+    benchmark; use inference_traces for context, latency and per-request rates."""
+    paths = {"summary": "summary", "caller": "by-caller", "model": "by-model"}
+    if group_by not in paths:
+        raise ValueError("group_by must be summary, caller or model")
+    days = _bounded(days, "days", 30)
+    data = await _request("GET", f"/api/v1/usage/{paths[group_by]}", params={"days": days})
+    return {"group_by": group_by, "days": days, "data": data}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def inference_traces(hours: int = 24, limit: int = 20, caller: Optional[str] = None) -> dict:
+    """Content-free recent request timelines: selected model, queue delay,
+    context/fresh/cached tokens, prefill/decode rates and MTP acceptance when
+    recorded. Missing is unknown, not zero. Compare like contexts/workloads;
+    warm-prefix rates are NOT cold-prefill performance. No prompts or replies."""
+    params: dict[str, Any] = {"hours": _bounded(hours, "hours", 720),
+                              "limit": _bounded(limit, "limit", 200)}
+    if caller is not None:
+        if not caller or len(caller) > 120:
+            raise ValueError("caller must contain 1–120 characters")
+        params["caller"] = caller
+    rows = await _request("GET", "/api/v1/usage/traces", params=params)
+    return {"traces": rows, "returned": len(rows)}
+
+
+def _pick_fields(row: dict, fields: tuple[str, ...]) -> dict:
+    return {key: row[key] for key in fields if key in row}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def benchmark_status(run_id: Optional[str] = None, limit: int = 20) -> dict:
+    """Inspect ARIA/evalstack benchmark records, or bounded metrics for one
+    run. Does NOT launch, cancel or rerun anything. External engineering
+    benchmarks are not automatically indexed here; an empty list proves
+    nothing about their results. No raw logs or launch commands are returned."""
+    _bounded(limit, "limit", 100)
+    if run_id:
+        _path_id(run_id)
+    health = await _request("GET", "/api/v1/benchmarks/health")
+    if not health.get("available"):
+        return {"available": False, "reason": "evalstack unavailable", "runs": None}
+    fields = ("run_id", "status", "started_at", "finished_at", "returncode", "suites", "targets")
+    if run_id:
+        row = await _request("GET", f"/api/v1/benchmarks/runs/{run_id}", params={"tail": 1})
+        metrics = row.get("metrics") or []
+        return {"available": True, "run": _pick_fields(row, fields),
+                "metrics": [_pick_fields(m, ("target", "benchmark", "metric", "value", "n"))
+                            for m in metrics[:limit]], "metrics_total": len(metrics),
+                "truncated": len(metrics) > limit}
+    result = await _request("GET", "/api/v1/benchmarks/runs", params={"limit": limit})
+    return {"available": True, "runs": [_pick_fields(row, fields) for row in result["runs"][:limit]]}
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def ralph_status(run_id: Optional[str] = None, limit: int = 10) -> dict:
+    """Read bounded Ralph run state, limits and verification counts. No plans,
+    transcripts or logs; never approves, starts, resumes or edits a controller.
+    Administrative Ralph controls remain outside this tool."""
+    _bounded(limit, "limit", 100)
+    if run_id:
+        row = await _request("GET", f"/api/v1/ralph/runs/{_path_id(run_id)}")
+        rows = [row]
+    else:
+        rows = await _request("GET", "/api/v1/ralph/runs")
+    fields = ("_id", "id", "project", "project_slug", "state", "status", "version", "created_at",
+              "started_at", "finished_at", "limits", "usage", "metrics", "stop_reason")
+    projected = []
+    for row in rows[:limit]:
+        public = _pick_fields(row, fields)
+        tasks = row.get("tasks")
+        if isinstance(tasks, list):
+            public["task_counts"] = {"total": len(tasks),
+                                     "verified": sum(t.get("state") == "verified" for t in tasks)}
+        projected.append(public)
+    return {"runs": projected,
+            "returned": min(len(rows), limit), "truncated": len(rows) > limit,
+            "scope": "read-only; no controller acceptance or approval"}
 
 
 @mcp.tool()
@@ -443,6 +599,17 @@ async def list_tasks(project: Optional[str] = None, status: Optional[str] = None
         proj = await _resolve_project(project)
         params["project_id"] = proj.get("id")
     return await _request("GET", "/api/v1/todos", params=params or None)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+async def get_task(task_id: Optional[str] = None, id: Optional[str] = None) -> dict:
+    """Read one durable planning task, including notes/owner/status, before
+    changing it. Accepts task_id or the id from list_tasks; not a coding-session
+    or background-runner ID. Reading does not claim or complete the task."""
+    if task_id and id and task_id != id:
+        raise ValueError("Conflicting task_id and id")
+    ident = _path_id(_one_id(task_id, id, "task_id"))
+    return await _request("GET", f"/api/v1/todos/{ident}")
 
 
 @mcp.tool()
@@ -887,16 +1054,15 @@ async def list_model_servers() -> Any:
     and which agent (if any) it is bound to.
 
     Two fields answer "how do I load this differently":
-      - `devices` / `memory_pool` — WHERE it runs. Entries on `r9700-vram` and
-        entries on `halo-gtt` can be resident at the same time.
+      - `devices` / `memory_pool` — WHERE it runs. Hybrid deployments can use
+        multiple pools; consult exclusivity and live headroom, not old card names.
       - `parameters` — HOW it loads. Each knob carries its effective `value`
         and the `source` of that value, and any of them can be passed to
         start_model_server(overrides=...). An empty list means the server's
         configuration is frozen in its compose file or unit.
 
-    `startable: false` with a `not_startable_reason` is a deliberate record,
-    not a bug: several entries kept their weights but lost their runtime in the
-    2026-08-11..14 infrastructure consolidation, and the reason says which."""
+    `startable: false` with a `not_startable_reason` is an intentional gate
+    (retired or not qualified). Do not bypass it or infer readiness from weights."""
     return await _request("GET", "/api/v1/infrastructure/model-servers")
 
 
@@ -909,11 +1075,11 @@ async def model_server_utilization() -> Any:
     are busy. Use it when the local model "feels slow", before starting another
     server, or when deciding whether to spawn more concurrent work.
 
-    `saturated` is the field to watch, not `slot_utilisation`. Every slot busy
-    is FINE — each consumer has its own slot by design. Saturated means requests
-    are QUEUING (`requests_deferred > 0`), and a queued request lands in whichever
-    slot frees first rather than the one holding its prefix, so sustained
-    saturation is how warm caches quietly decay into a cold prefill per turn.
+    Hermes and Pi share serving capacity; consumers do not necessarily own
+    dedicated slots. Check inference_backend(model=...) for ARIA admission
+    queues too: backend metrics alone miss work waiting at the gateway.
+    Saturation and prefix eviction can increase latency; measure cache reuse
+    using inference_traces rather than assuming every queued request is cold.
 
     `saturated: null` means unknown, not false: the server was launched without
     `--metrics`, so queue depth and throughput are unreadable (`metrics_hint`
@@ -926,20 +1092,11 @@ async def model_server_utilization() -> Any:
 
 @mcp.tool()
 async def get_llm_route() -> Any:
-    """Which local model currently answers as 'the local model', and whether
-    that is pinned or auto-selected.
-
-    Also answers "what model am I running on?" — the payload carries `model_id`
-    (the loaded model as the backend reports it, read live) and a ready-to-say
-    `summary`. A dedicated which_model_am_i() wrapper existed briefly in Aug 2026
-    and was removed: it cost ~190 tokens of prompt prefix on every request, and
-    became redundant once Hermes started naming real models instead of the
-    `aria-resident` alias.
-
-    This is the model YOU are most likely running on: Hermes's default provider
-    is ARIA's /llm/v1 passthrough, so whatever this reports as `serving` is what
-    is generating your replies. `loaded` lists every resident server — more than
-    one can be up, and you can address a specific one by name."""
+    """Default routing policy only; not a named model's backend.
+    Inspect the default/auto local route and its pin. This is NOT necessarily
+    the model backing Hermes: a client can explicitly select another registered
+    model. Use inference_backend(model=<client model>) for that route, and
+    inference_traces for evidence of completed requests. Does not change routing."""
     return await _request("GET", "/api/v1/infrastructure/llm-route")
 
 
@@ -948,24 +1105,19 @@ async def set_llm_route(slug: Optional[str] = None) -> dict:
     """Pin 'the local model' to one server, or pass slug=None for auto (follow
     whichever is resident, largest first).
 
-    Because Hermes follows the same passthrough, this changes the model backing
-    your own replies from the next turn onward — no gateway restart. Refuses
-    (409) if the named server is not running."""
+    Admin authorization required. Affects default/auto consumers, NOT clients
+    explicitly selecting another model. It does not edit Hermes/Pi configuration.
+    Refuses (409) if the named server is not running; never bypass an auth error."""
     return await _request("PUT", "/api/v1/infrastructure/llm-route", json={"slug": slug})
 
 
 @mcp.tool()
 async def list_gpu_devices() -> Any:
-    """The physical GPUs on corsair-ai and the memory pools they own.
-
-    There are TWO, with separate memory: the Strix Halo iGPU (124 GiB of shared
-    system memory) and a discrete Radeon AI PRO R9700 (32 GiB of its own VRAM).
-    A model on one does NOT compete with a model on the other — running one from
-    each simultaneously is a supported deployment, not an accident. Read this
-    before concluding "the box is full": the answer depends on which pool.
-
-    `spilling: true` on the R9700 means it is serving out of system RAM, at
-    which point the pools are no longer independent."""
+    """Live registered GPU devices and memory pools, including host identity.
+    Corsair now pairs Strix Halo with RTX 3090; its old R9700 deployment is
+    retired. Other hosts may legitimately have R9700s. Trust returned host,
+    device identity and headroom. Hybrid models use both dedicated and shared
+    memory; do not assume pools or simultaneous model loads are independent."""
     return await _request("GET", "/api/v1/infrastructure/model-servers/devices")
 
 
@@ -990,12 +1142,11 @@ async def start_model_server(
     any override a previous start applied — a plain start is always a clean one.
 
     Refuses (409) if a mutually-exclusive server is running, if the port is
-    taken, or if the projected footprint would blow the safety margin of THAT
-    SERVER'S memory pool (the Halo's shared RAM or the R9700's VRAM — see
-    list_gpu_devices). Pass force=True only if you have verified it is safe.
+    taken, or if the projected footprint would blow its memory-pool safety
+    margin — see list_gpu_devices. Do not bypass qualification/retirement gates.
+    Pass force=True only with explicit authorization and verified safe headroom.
 
-    REMOTE SERVERS (2026-08-15): 'Red-Qwen3.6-35B-A3B' (RTX 5090) and
-    'Ridge-Qwen3.8-27B' (RTX 3090) can now be started from here. Starting
+    For startable remote entries, starting
     one WAKES the machine if it is asleep, then starts its model service, then
     waits until it actually serves — so the call can take a few minutes
     (RED ~5 min worst case, Ridge ~90s cold) and returns state='ready' only
@@ -1078,11 +1229,11 @@ async def sleep_model_server(slug: str) -> dict:
 
 @mcp.tool()
 async def whats_running() -> Any:
-    """What is actually running on corsair-ai, across BOTH registries.
+    """What is running across ARIA's service and model registries/hosts.
 
     Use this for "is everything up?", "what's running?", "is X running?".
     Returns non-LLM services (mongod, embeddings, hermes-gateway, signal-cli,
-    samba, ...) plus the local model servers, and — the useful part — an
+    samba, ...) on the Mac control plane plus model-host runtimes, and an
     `unhealthy` list containing ONLY services that are expected to be up and
     are not. A stopped model server is normal (they are mutually RAM-exclusive)
     and a stopped on_demand service is normal, so neither is flagged."""
@@ -1189,7 +1340,9 @@ async def list_model_pulls() -> Any:
 
 @mcp.tool()
 async def search_memory(query: str, limit: int = 10, content_type: Optional[str] = None) -> Any:
-    """Hybrid (vector + lexical) search over ARIA's long-term memory.
+    """Recall ARIA long-term memory using currently enabled retrieval modes.
+    Check retrieval_capabilities: with search disabled this uses the mongod
+    fallback, not vector/full-text search. Does not enable search or embeddings.
     content_type optionally filters: fact | preference | event | skill | document."""
     body: dict[str, Any] = {"query": query, "limit": limit}
     if content_type:
@@ -1496,6 +1649,22 @@ async def run_workflow(workflow_id: Optional[str] = None, dry_run: bool = False,
 async def get_workflow_status(workflow_id: Optional[str] = None, id: Optional[str] = None) -> dict:
     """Get a workflow definition plus its recent runs (status + step_results)."""
     return await _request("GET", f"/api/v1/workflows/{_one_id(workflow_id, id, 'workflow_id')}/status")
+
+
+def _register_operations():
+    global _OPERATIONS_SHA256
+    _OPERATIONS_SHA256 = sha256(Path(__file__).with_name("operations.py").read_bytes()).hexdigest()
+    # Keep operation extensions beside this standalone bridge when deploying.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("aria_mcp_operations", Path(__file__).with_name("operations.py"))
+    module = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    module.register(mcp, _request)
+
+
+_register_operations()
 
 
 if __name__ == "__main__":

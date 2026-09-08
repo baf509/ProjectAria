@@ -28,7 +28,7 @@ def _load_bridge_server():
         def __init__(self, _name):
             pass
 
-        def tool(self):
+        def tool(self, **kwargs):
             return lambda func: func
 
     mcp_package = ModuleType("mcp")
@@ -37,6 +37,7 @@ def _load_bridge_server():
     mcp_server_package.__path__ = []
     fastmcp_module = ModuleType("mcp.server.fastmcp")
     fastmcp_module.FastMCP = FakeFastMCP
+    fastmcp_module.Context = type("Context", (), {})
 
     server_path = Path(__file__).parents[2] / "mcp" / "server.py"
     spec = importlib.util.spec_from_file_location("aria_mcp_bridge_for_test", server_path)
@@ -155,7 +156,8 @@ async def test_bridge_exposes_source_fingerprint_for_live_contract_checks():
     bridge = _load_bridge_server()
     status = await bridge.tool_contract_status()
 
-    assert status["version"] == "2026-09-02.1"
+    import re
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}\.\d+", status["version"])
     assert len(status["sha256"]) == 64
 
 # ============================================================================

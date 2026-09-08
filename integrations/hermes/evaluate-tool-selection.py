@@ -28,6 +28,33 @@ def _contains(haystack: object, needle: object) -> bool:
     return haystack == needle
 
 
+def first_operation(record: dict) -> tuple[str | None, dict]:
+    """Score the operation reached through native progressive disclosure.
+
+    Captures may contain discovery calls followed by a tool_call envelope;
+    searching/describing a capability is not evidence that it was executed.
+    Legacy direct-call captures remain supported.
+    """
+    calls = record.get("tool_calls")
+    if calls is None:
+        calls = [{"name": record.get("first_tool"), "arguments": record.get("arguments", {})}]
+    for call in calls:
+        function = call.get("function", call)
+        name, args = function.get("name"), function.get("arguments") or {}
+        if isinstance(args, str):
+            args = json.loads(args)
+        if name in ("tool_search", "tool_describe"):
+            continue
+        if name == "tool_call":
+            name, args = args.get("name"), args.get("arguments") or {}
+            if isinstance(args, str):
+                args = json.loads(args)
+        if name and name.startswith("mcp__aria__"):
+            name = name.removeprefix("mcp__aria__")
+        return name, args
+    return None, {}
+
+
 def score(records: list[dict], cases: list[dict]) -> dict:
     expected = {case["id"]: case for case in cases}
     results = []
@@ -37,12 +64,17 @@ def score(records: list[dict], cases: list[dict]) -> dict:
             results.append({"id": record.get("id"), "ok": False, "errors": ["unknown case"]})
             continue
         errors: list[str] = []
-        if record.get("first_tool") != case.get("first_tool"):
+        try:
+            first_tool, arguments = first_operation(record)
+        except (TypeError, ValueError, AttributeError):
+            first_tool, arguments = None, {}
+            errors.append("malformed tool-call capture")
+        if first_tool != case.get("first_tool"):
             errors.append(
-                f"first_tool={record.get('first_tool')!r}, expected={case.get('first_tool')!r}"
+                f"first_tool={first_tool!r}, expected={case.get('first_tool')!r}"
             )
         wanted_args = case.get("arguments") or {}
-        if wanted_args and not _contains(record.get("arguments") or {}, wanted_args):
+        if wanted_args and not _contains(arguments, wanted_args):
             errors.append(f"arguments missing expected subset {wanted_args!r}")
         transcript = str(record.get("transcript") or "").lower()
         for forbidden in case.get("forbidden") or []:

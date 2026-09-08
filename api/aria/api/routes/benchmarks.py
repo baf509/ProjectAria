@@ -32,6 +32,8 @@ class StartRunRequest(BaseModel):
     limit: Optional[int] = Field(default=None, ge=1, description="Cap samples per benchmark")
     allow_coresident: bool = Field(default=False, description="Skip evalstack's VRAM guard")
     keep_up: bool = Field(default=False, description="Leave the last model server running")
+    timeout_seconds: int = Field(default=300, ge=10, le=3600,
+                                 description="Hard runtime limit, enforced across API restarts")
     force: bool = Field(default=False,
                         description="Proceed even if a target would disturb a model "
                                     "currently bound to an agent")
@@ -85,6 +87,10 @@ async def _bound_conflicts(manager: ModelServerManager, db, targets: list[str],
     target names, so we match on the served model id where we can. A failure to
     introspect must not block benchmarking, only the *confident* conflicts do.
     """
+    catalog = await svc.list_targets()
+    selected = [t for t in catalog if t["name"] in targets]
+    if selected and all(t.get("manages_lifecycle") is False for t in catalog):
+        return []  # No catalog entry gives the harness a model lifecycle command.
     try:
         rows = await manager.status(db)
     except Exception:
@@ -133,7 +139,7 @@ async def start_run(
         return await svc.start_run(
             suites=body.suites, targets=body.targets, run_id=body.run_id,
             limit=body.limit, allow_coresident=body.allow_coresident,
-            keep_up=body.keep_up,
+            keep_up=body.keep_up, timeout_seconds=body.timeout_seconds,
         )
     except BenchmarkError as ex:
         raise HTTPException(status_code=400, detail=str(ex))

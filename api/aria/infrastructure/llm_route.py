@@ -182,8 +182,9 @@ async def backend_model_id(base: str) -> Optional[str]:
         return None
     try:
         import httpx
+        from aria.infrastructure.backend_auth import backend_headers
 
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=3.0, headers=backend_headers(base)) as client:
             resp = await client.get(f"{base}/models")
             for entry in (resp.json() or {}).get("data") or []:
                 mid = entry.get("id")

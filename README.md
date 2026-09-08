@@ -1,5 +1,10 @@
 # ARIA
 
+Current model operations: [September 8 deployment and client handoff](docs/ops/CURRENT_DEPLOYMENT_20260908.md)
+and [local inference topology](docs/ops/LOCAL_INFERENCE_TOPOLOGY.md). Corsair now
+uses RTX3090 + Strix Halo; Red has dual R9700s and Ridge has RTX5090. Older
+Corsair R9700 benchmarks are historical, not current startup instructions.
+
 ARIA is Ben's local-first agent control plane and project steward. The canonical
 control plane runs on the MacBook Pro; Corsair is its primary model data plane.
 ARIA is infrastructure other programs and operators drive. Hermes, not ARIA's
@@ -131,6 +136,12 @@ service work on Corsair is appropriate for an authorized model repair/test, but
 ARIA must observe and reconcile the result.
 
 ## Development
+
+Ralph loops are available under **Supervise → Ralph loops** for approved-plan
+execution with fresh worker sessions, independent verification, and local Git
+checkpoints. They are disabled until an operator configures a trusted container
+image, repository allowlist, and verification assets. See
+[Ralph setup and lifecycle](docs/ops/RALPH_LOOPS.md).
 
 ```bash
 # API tests from the canonical Mac source checkout

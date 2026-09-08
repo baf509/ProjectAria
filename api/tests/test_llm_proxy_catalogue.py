@@ -14,6 +14,37 @@ from tests.test_llm_proxy_usage import _request
 ENGINE = "Qwen3.8-Flash-Next-Engine-R9700-Halo"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [None, "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"])
+async def test_backend_diagnostic_can_inspect_explicit_queue_without_changing_pin(monkeypatch, requested):
+    selected = llm_proxy._Route(requested, "http://localhost:8131/v1", "fixture", [])
+    pick = AsyncMock(return_value=selected)
+    read_pin = AsyncMock(return_value="unchanged-default")
+    snapshot = AsyncMock(return_value={"controlled": True, "active": False, "queued": 0})
+    monkeypatch.setattr(llm_proxy, "_pick_backend", pick)
+    monkeypatch.setattr(llm_proxy, "read_pin", read_pin)
+    monkeypatch.setattr(llm_proxy, "_admission_snapshot", snapshot)
+    manager, db = MagicMock(), MagicMock()
+    response = await llm_proxy.current_backend(manager, db, model=requested)
+    pick.assert_awaited_once_with(manager, db, requested=requested)
+    snapshot.assert_awaited_once_with(selected)
+    assert response["requested_model"] == requested
+    assert response["pinned"] == "unchanged-default"
+    assert response["admission"]["controlled"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", [None, "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"])
+async def test_identified_backend_diagnostic_preserves_requested_model(monkeypatch, requested):
+    expected = {"requested_model": requested, "backend": requested, "pinned": "unchanged-default"}
+    handler = AsyncMock(return_value=expected)
+    monkeypatch.setattr(llm_proxy, "current_backend", handler)
+    manager, db = MagicMock(), MagicMock()
+    response = await llm_proxy.current_backend_identified(manager, db, model=requested)
+    handler.assert_awaited_once_with(manager, db, model=requested)
+    assert response == expected
+
+
 def server(slug, port, auto_route):
     return {"slug": slug, "port": port, "state": "running", "onbox": True,
             "startable": auto_route, "auto_route": auto_route,

@@ -113,8 +113,8 @@ export function MemoryPools({
       <Async r={devices} skeletonRows={3} isEmpty={(d) => !d.system && !(d.pools?.length ?? 0) && !(d.remote_hosts?.length ?? 0)} empty="No memory telemetry.">
         {(d) => {
           const sys = d.system
-          const vram = (d.pools ?? []).find((p) => p.pool === 'r9700-vram')
           const dgpu = (d.devices ?? []).find((x) => x.discrete)
+          const vram = (d.pools ?? []).find((p) => p.pool === dgpu?.pool)
 
           // Where the selected server's footprint lands. A dGPU server is
           // charged to VRAM *and* to system RAM for its host-side runtime —
@@ -123,7 +123,7 @@ export function MemoryPools({
           const add = selected?.resident_gib_estimate ?? 0
           const pool = selected?.memory_pool
           const addsToSystem = pool === 'halo-gtt' || pool === 'host-ram'
-          const addsToVram = pool === 'r9700-vram'
+          const addsToVram = !!vram && pool === vram.pool
 
           const sysSegments: Segment[] = sys
             ? [
@@ -173,8 +173,8 @@ export function MemoryPools({
 
               {vramTotal > 0 && (
                 <StackedMeter
-                  title="R9700 VRAM"
-                  note="The discrete card's own memory. A model here does not compete with one on the iGPU."
+                  title={vram?.label ?? `${dgpu?.label ?? 'Discrete GPU'} VRAM`}
+                  note="The discrete card's own memory. Hybrid models also claim shared system memory; check all pools and conflicts."
                   total={vramTotal}
                   segments={vramSegments}
                   free={vramFree}
@@ -207,7 +207,7 @@ export function MemoryPools({
                 <p className="m-0 text-micro text-ink-dim">
                   <span className="text-ink">{selected.slug}</span> needs {gib(add)} from{' '}
                   {pool === 'remote' ? 'the remote host’s GPU memory' : addsToVram ? 'the card’s VRAM' : 'system memory'}
-                  {selected.also_uses?.length ? ' (plus host RAM for its runtime)' : ''}.
+                  {selected.also_uses?.length ? ` (also uses ${selected.also_uses.join(', ')}; additional capacity not estimated here)` : ''}.
                 </p>
               )}
 

@@ -38,6 +38,8 @@ import json
 import os
 import shutil
 import signal
+import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -105,10 +107,25 @@ class BenchmarkService:
         """Named suites (code, tool-use, performance, …) with their bench ids."""
         cat = await self._yaml(self.root / "suites/catalog.yaml")
         benches = {b["id"]: b for b in (cat.get("benchmarks") or [])}
+        proc = await asyncio.create_subprocess_exec(
+            str(self.root / ".venv/bin/python"), "-c",
+            "import json; from evalstack.cli import RUNNERS; "
+            "print(json.dumps({k: bool(v.available()) for k,v in RUNNERS.items()}))",
+            cwd=str(self.root), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            availability = json.loads(stdout) if proc.returncode == 0 else {}
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            availability = {}
         out = []
         for name, ids in (cat.get("suites") or {}).items():
             out.append({
                 "name": name,
+                "available": all(availability.get(benches.get(i, {}).get("runner"), False) for i in ids),
+                "unavailable_runners": sorted({benches.get(i, {}).get("runner", "unknown")
+                                               for i in ids if not availability.get(benches.get(i, {}).get("runner"), False)}),
                 "benches": [
                     {"id": i,
                      "what": benches.get(i, {}).get("what", ""),
@@ -133,31 +150,40 @@ class BenchmarkService:
                 "deployment": t.get("deployment") or "",
                 "cloud": "cloud" in tags,
                 "tags": tags,
+                "manages_lifecycle": bool(t.get("lifecycle")),
             })
         return out
 
     async def gpu_budget_gb(self) -> float:
         cfg = await self._yaml(self.root / "configs/targets.yaml")
-        return float(cfg.get("gpu_budget_gb") or 110)
+        budget = cfg.get("gpu_budget_gb")
+        return float(110 if budget is None else budget)
 
     # ---------------------------------------------------------------- run ----
 
     async def start_run(self, suites: list[str], targets: list[str],
                         run_id: Optional[str] = None, limit: Optional[int] = None,
                         allow_coresident: bool = False,
-                        keep_up: bool = False) -> dict:
+                        keep_up: bool = False, timeout_seconds: int = 300) -> dict:
         """Launch a benchmark run detached. Returns the registry record."""
         binary = self._require()
+        if not 10 <= timeout_seconds <= 3600:
+            raise BenchmarkError("timeout_seconds must be between 10 and 3600")
         if not suites:
             raise BenchmarkError("no suites selected")
         if not targets:
             raise BenchmarkError("no targets selected")
 
-        known_suites = {s["name"] for s in await self.list_suites()}
+        suite_catalog = await self.list_suites()
+        known_suites = {s["name"] for s in suite_catalog}
         bad = [s for s in suites if s not in known_suites]
         if bad:
             raise BenchmarkError(f"unknown suite(s): {', '.join(bad)}; "
                                  f"available: {', '.join(sorted(known_suites))}")
+        unavailable = [s for s in suite_catalog if s["name"] in suites and not s.get("available", True)]
+        if unavailable:
+            raise BenchmarkError("Suite dependencies unavailable: " + "; ".join(
+                f"{s['name']}: {', '.join(s['unavailable_runners'])}" for s in unavailable))
         known_targets = {t["name"] for t in await self.list_targets()}
         bad = [t for t in targets if t not in known_targets]
         if bad:
@@ -165,15 +191,18 @@ class BenchmarkService:
                                  f"available: {', '.join(sorted(known_targets))}")
 
         run_id = run_id or f"aria-{int(time.time())}"
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,120}", run_id):
+            raise BenchmarkError("Invalid run_id")
         async with self._lock:
             reg = self._read_registry()
-            if run_id in reg["runs"] and reg["runs"][run_id].get("status") == "running":
-                raise BenchmarkError(f"run '{run_id}' is already running")
+            if run_id in reg["runs"] or (self.results / run_id).exists():
+                raise BenchmarkError(f"run '{run_id}' already exists; choose a new ID")
             # Heal stale records first. A run killed by a reboot or an OOM keeps
             # status="running" forever because its reaper died with it, and that
             # then blocks every future run. list_runs() already heals this; the
             # concurrency gate must too, or a crash bricks the whole feature.
             for r in reg["runs"].values():
+                self._refresh(r)
                 if r.get("status") == "running" and not self._alive(r.get("pid")):
                     r["status"] = "interrupted"
                     r["finished_at"] = r.get("finished_at") or time.time()
@@ -199,6 +228,10 @@ class BenchmarkService:
             if keep_up:
                 argv += ["--no-down"]
 
+            completion = run_dir / "aria-completion.json"
+            argv = [sys.executable, str(Path(__file__).with_name("runner.py")),
+                    str(timeout_seconds), str(completion), *argv]
+
             # Escape aria-api's cgroup (see module docstring) so an API restart
             # cannot kill a running benchmark.
             if shutil.which("systemd-run"):
@@ -220,6 +253,7 @@ class BenchmarkService:
                 "started_at": time.time(), "finished_at": None, "returncode": None,
                 "log": str(log_path), "results_dir": str(run_dir),
                 "argv": argv,
+                "timeout_seconds": timeout_seconds, "completion": str(completion),
             }
             reg["runs"][run_id] = rec
             self._write_registry(reg)
@@ -244,10 +278,35 @@ class BenchmarkService:
             reg = self._read_registry()
             rec = reg["runs"].get(run_id)
             if rec:
-                rec["status"] = "succeeded" if rc == 0 else "failed"
+                rec["status"] = rec["status"] if rec["status"] == "cancelled" else ("succeeded" if rc == 0 else "failed")
                 rec["returncode"] = rc
                 rec["finished_at"] = time.time()
+                self._refresh(rec)
                 self._write_registry(reg)
+
+    def _refresh(self, rec: dict) -> None:
+        completion = rec.get("completion")
+        if completion and Path(completion).is_file():
+            try:
+                done = json.loads(Path(completion).read_text())
+                rec.update({key: done[key] for key in ("status", "returncode", "finished_at")})
+            except (OSError, ValueError, KeyError):
+                pass
+        if rec.get("status") == "succeeded":
+            summary = _extract_json_summary(self._tail(Path(rec["log"]), 2000))
+            rows = summary.get("results", []) if isinstance(summary, dict) else []
+            if rows and any(row.get("status") != "ok" for row in rows):
+                rec["status"] = "failed"
+
+    @staticmethod
+    def _tail(path: Path, lines: int) -> list[str]:
+        if not path.is_file():
+            return []
+        # Bound I/O as well as the returned text for long-running harnesses.
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 256_000))
+            return stream.read().decode(errors="replace").splitlines()[-max(1, lines):]
 
     def _alive(self, pid: Optional[int]) -> bool:
         if not pid:
@@ -263,6 +322,7 @@ class BenchmarkService:
         runs = sorted(reg["runs"].values(), key=lambda r: r.get("started_at") or 0,
                       reverse=True)
         for r in runs:                       # heal state after an API restart
+            self._refresh(r)
             if r.get("status") == "running" and not self._alive(r.get("pid")):
                 r["status"] = "unknown"
         return runs[:limit]
@@ -273,11 +333,12 @@ class BenchmarkService:
         if not rec:
             raise BenchmarkError(f"unknown run '{run_id}'")
         rec = dict(rec)
+        self._refresh(rec)
         if rec.get("status") == "running" and not self._alive(rec.get("pid")):
             rec["status"] = "unknown"
         log = Path(rec.get("log", ""))
         if log.is_file():
-            lines = log.read_text(errors="replace").splitlines()
+            lines = self._tail(log, 2000)
             rec["log_tail"] = "\n".join(lines[-tail:])
             rec["summary"] = _extract_json_summary(lines)
         rec["metrics"] = _read_metrics(Path(rec.get("results_dir", "")))
@@ -290,7 +351,7 @@ class BenchmarkService:
     # way to clear them from any surface. Dismissal is registry-only: the
     # results directory and logs on disk are left alone, because those are the
     # measurement and this is just the index.
-    TERMINAL = ("succeeded", "failed", "cancelled", "interrupted", "unknown")
+    TERMINAL = ("succeeded", "failed", "cancelled", "interrupted", "unknown", "timed_out")
 
     async def dismiss(self, run_id: str) -> dict:
         """Drop one finished run from the registry. Refuses while it is alive."""
@@ -340,7 +401,10 @@ class BenchmarkService:
                 try:
                     # the child runs in its own session; signal the whole group so
                     # lm_eval/inspect subprocesses die with it
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                    if rec.get("completion"):
+                        os.kill(pid, signal.SIGTERM)  # supervisor forwards and escalates
+                    else:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
                 except Exception as ex:
                     raise BenchmarkError(f"could not stop pid {pid}: {ex}")
             rec["status"] = "cancelled"
@@ -394,5 +458,7 @@ def _read_metrics(run_dir: Path) -> list[dict]:
             if r.get("value") is not None:
                 out.append({"target": r.get("target"), "benchmark": r.get("benchmark"),
                             "metric": r.get("metric"), "value": r.get("value"),
-                            "n": r.get("n")})
+                            "n": r.get("n"), "source": r.get("source"),
+                            "prompt_tokens": r.get("prompt_tokens"),
+                            "prefix_cache_hits": r.get("prefix_cache_hits")})
     return out

@@ -1,5 +1,38 @@
 # ARIA Changelog
 
+## 2026-09-06 — Durable approved-plan Ralph workflows
+
+- Added a qualified Codex app-server worker with a fresh private reasoning
+  session per attempt and repository tools executed only by Ralph's isolated
+  runtime. Native tools/environment access are disabled and checked by live
+  containment tests. Explicit tool truncation and remaining turns keep context
+  bounded; admin-only limit extensions preserve cumulative usage and evidence.
+- Activated a scoped Flash Next CUDA-graph control preparation run from the
+  existing agent's preserved handoff. CPU acceptance gates local checkpoints;
+  remote GPU experiments remain an explicit human-review/integration boundary.
+- Added a controller-owned coding loop with Mongo run/task/attempt state,
+  repository reservations and ownership fencing, fresh tool-enabled model
+  sessions, bounded retries/usage/time, retained handoffs, pause/resume/cancel,
+  emergency-stop observation, and restart reconciliation.
+- Candidates and trusted checks execute in separate private Docker volumes
+  with networking disabled. Only independently checked, immutable revisions
+  become accepted local checkpoints; final integrated checks gate review-ready
+  status. Source branches and deployment remain operator-owned.
+- Added read-only plan proposal and admin approval, `/api/v1/ralph` operations,
+  Supervise → Ralph loops, evidence/log views, existing-settings configuration,
+  startup indexes, and `docs/ops/RALPH_LOOPS.md` with a small example.
+- Fixed completed-process cleanup on macOS and matched worker tool history to
+  Aria's provider-neutral adapter contract, including local reasoning wrappers.
+- Validation: 156 targeted backend tests including actual adapter conversions
+  and four real-container tests; 14 populated-page browser tests; live responsive
+  checks, TypeScript, class lint, and a production UI build under Node 22.
+- Activated the Mac API/UI for the isolated calculator example. A live Qwen run
+  reached ready for review in one attempt and six turns, with independent task
+  and final checks for commit `12e0fbae0b2c`. The earlier Gemma run exhausted its
+  task limit and remains blocked with retained evidence. Source defaults remain
+  disabled; additional repositories need an approved operator policy. The
+  runbook records the release manifest, setup, live evidence, and rollback.
+
 ## 2026-09-05 — Exact-model health confirmation activated; compact engine screening
 
 - The two-hour production-reference soak failed after 845 responses and

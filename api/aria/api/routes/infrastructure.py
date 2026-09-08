@@ -41,6 +41,8 @@ from aria.infrastructure.gpu_devices import (
 from aria.infrastructure.model_pull import RUNTIME_TEMPLATES, ModelPullService
 from aria.infrastructure.model_servers import (
     _BY_SLUG,
+    _corsair_actuate,
+    _corsair_forward_mode,
     ModelServerBindingConflict,
     ModelServerError,
     ModelServerManager,
@@ -494,6 +496,18 @@ async def _local_devices():
     RAM — at which point the pools are no longer independent and a co-resident
     Halo model is at risk.
     """
+    if _corsair_forward_mode():
+        # The Mac cannot read Corsair DRM/NVIDIA counters. Reuse the existing
+        # restricted, read-only status capability; never spawn a general SSH
+        # command or report the Mac's missing /sys as an empty GPU host.
+        try:
+            row = await _corsair_actuate("status", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate")
+            hardware = row.get("hardware")
+            if not isinstance(hardware, dict) or hardware.get("node") != "corsair-ai":
+                raise ModelServerError("Corsair actuator has no hardware observation")
+            return hardware
+        except ModelServerError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     # `system` is the composite that `pools` cannot express: halo-gtt and
     # host-ram are the same DIMMs, so a client drawing one bar per pool
     # double-counts ~102 GiB on this box.

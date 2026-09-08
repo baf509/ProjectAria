@@ -32,7 +32,10 @@ def test_experimental_engine_claims_both_pools_and_all_corsair_gpu_conflicts():
     assert engine.bench_prefill_tok_s is None
     assert engine.bench_at is None
     assert engine.auto_route is False
-    assert all(spec.auto_route is True for spec in ms.REGISTRY if spec.slug != ENGINE)
+    # Other engineering/retired deployments are now ineligible too. In
+    # particular, the historical production control needs the removed R9700.
+    assert specs[PRODUCTION].auto_route is False
+    assert specs["Red-Qwen3.8-27B-MXFP4"].auto_route is True
 
 
 def test_experimental_launcher_identity_and_fixed_geometry_are_explicit():

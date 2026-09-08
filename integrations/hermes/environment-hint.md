@@ -2,7 +2,16 @@
 
 This Mac runs Hermes and Project ARIA. Fleet machines connect through Tailscale.
 Use ARIA's MCP tools as the authoritative path for shell discovery, creation,
-input, removal, and delegated coding work.
+input, removal, and delegated coding work. Never probe ARIA with bare curl or
+raw HTTP: the API is authenticated. If a tool is not initially visible, use
+tool search to load it by name. Report a missing MCP bridge instead of trying
+to bypass API authentication.
+
+- Use `operator_snapshot` for combined readiness/queues/retrieval checks.
+  Pass the client model to `inference_backend`; the default route alone does
+  not identify Hermes. Use `inference_traces` and `inference_usage` for cache
+  and latency evidence, `benchmark_status` for indexed results, and
+  `ralph_status` for read-only controller progress. Missing data is unknown.
 
 - Start fleet questions with `fleet_status`; use `list_nodes` when placement or
   connectivity matters. Treat semantic state (`working`, `blocked`, `done`,

@@ -20,12 +20,13 @@ import type { Toast } from '@/components/ui/controls'
 export const POOL_LABELS: Record<string, string> = {
   'halo-gtt': 'Strix Halo',
   'r9700-vram': 'R9700',
+  'corsair-nvidia-vram': 'RTX 3090',
   'host-ram': 'CPU',
   remote: 'off-box',
 }
 
 /** Fleet grouping order: the two GPU pools, then CPU, then off-box. */
-export const POOL_ORDER = ['halo-gtt', 'r9700-vram', 'host-ram', 'remote'] as const
+export const POOL_ORDER = ['halo-gtt', 'r9700-vram', 'corsair-nvidia-vram', 'host-ram', 'remote'] as const
 
 export const SOURCE_LABELS: Record<string, string> = {
   aria_override: 'set here',

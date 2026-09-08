@@ -1,0 +1,72 @@
+--- a/evalstack/runners/perf.py
++++ b/evalstack/runners/perf.py
+@@ -18,15 +18,15 @@
+ Measured across several prompt lengths, because prefill cost scales with prompt
+ size while decode is roughly flat — a single number would hide that.
+ 
+-Source of truth: llama.cpp returns a `timings` block (`prompt_per_second`,
+-`predicted_per_second`) measured server-side, with no network or client overhead.
+-We use it when present and fall back to client-side streaming timing otherwise
+-(vLLM, cloud endpoints), recording which method produced each row.
++Every repetition uses client-side streaming timing and server-reported token
++usage. Prefill is input tokens / TTFT, including queueing and network overhead;
++decode is an estimate after the first token. These are not GPU kernel timings.
++The non-stream helper retains support for llama.cpp's optional timing block.
+ 
+ PREFIX-CACHE HAZARD: llama.cpp caches prompt prefixes, so re-sending a prompt
+ makes prefill look arbitrarily fast (`prompt_n` collapses to the uncached tail).
+-Every request here is given a unique preamble so each rep really processes its
+-full prompt; `cache_n` is asserted to be 0 and surfaced if it isn't.
++Every request has a unique preamble to reduce prefix reuse. Cache reuse is
++unknown when the endpoint does not report it; unknown is not treated as zero.
+ """
+ from __future__ import annotations
+ import json, os, statistics, time
+@@ -89,7 +89,6 @@
+     # streaming: the only way to see TTFT, and the fallback when a server
+     # reports no timings of its own
+     ttft = None
+-    n_chunks = 0
+     usage = {}
+     try:
+         s = client.chat.completions.create(
+@@ -112,12 +111,12 @@
+             if delta or reasoning_delta:
+                 if ttft is None:
+                     ttft = time.perf_counter() - t0
+-            if delta:
+-                n_chunks += 1
+     except Exception as ex:
+         return {"error": str(ex)[:300]}
+     t_end = time.perf_counter()
+-    n_out = usage.get("completion_tokens") or n_chunks
++    # SSE chunks can contain multiple tokens (or only reasoning). Never treat
++    # chunk count as a tokenizer: absent usage means throughput is unknown.
++    n_out = usage.get("completion_tokens")
+     n_in = usage.get("prompt_tokens")
+     decode_s = (t_end - t0) - (ttft or 0)
+     return {
+@@ -128,7 +127,7 @@
+         # prefill rate approximated from TTFT; includes queueing, so it is a
+         # LOWER bound on true prefill speed
+         "prefill_tps": (n_in / ttft) if (n_in and ttft) else None,
+-        "decode_tps": (n_out / decode_s) if (n_out and decode_s > 0) else None,
++        "decode_tps": ((n_out - 1) / decode_s) if (n_out and n_out > 1 and ttft and decode_s > 0) else None,
+         "cache_n": None,
+         "ttft_ms": (ttft * 1000) if ttft else None,
+     }
+@@ -164,10 +163,11 @@
+             for i in range(warmup + reps):
+                 nonce = f"{size}-{i}-{int(time.time()*1000)%100000}"
+                 prompt = _make_prompt(size, nonce)
+-                # stream on the first rep to capture TTFT; non-streaming reps get
+-                # the exact server-side timings block
++                # Stream every measured repetition. vLLM has no llama.cpp timings
++                # block; mixing non-stream responses made three advertised reps
++                # yield only one prefill/decode observation.
+                 res = _one_request(client, target.model, prompt, max_tokens,
+-                                   stream=(i == warmup))
++                                   stream=True)
+                 if res is None or res.get("error"):
+                     errors.append((res or {}).get("error", "unknown"))
+                     continue

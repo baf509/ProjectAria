@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from dataclasses import replace
 
 from typing import Any, Optional
@@ -80,6 +81,7 @@ class FakeDB:
         self.agents = FakeCollection()
         self.model_servers = FakeCollection()
         self.model_pulls = FakeCollection()
+        self.nodes = FakeCollection()
 
 
 def _agent(slug: str, model_server: Optional[str] = None) -> dict:
@@ -1073,6 +1075,68 @@ def test_ds4_projection_tracks_its_live_unit():
 
 # ────────────────────────────────────────────────── runtime utilisation ──
 
+def _candidate_profile_fixture(tmp_path):
+    spec = ms._BY_SLUG["Qwen3.8-Flash-Next-CUDA-Halo-Candidate"]
+    path = tmp_path / spec.launch_profile
+    path.parent.mkdir(parents=True)
+    profile = {"schema": "flashnext-cuda-halo-profile-v1", "alias": spec.slug.lower(),
+               "host": "127.0.0.1", "proposed_port": 8131, "context": 262144, "slots": 1}
+    path.write_text(json.dumps(profile))
+    return spec, path, profile
+
+
+def test_candidate_geometry_reads_profile_without_launching_and_tracks_edits(tmp_path):
+    spec, path, profile = _candidate_profile_fixture(tmp_path)
+    with patch.object(ms.settings, "infrastructure_root", str(tmp_path)):
+        geo = ms.read_launch_geometry(spec)
+        assert (geo.n_ctx, geo.slots, geo.source) == (262144, 1, spec.launch_profile)
+        profile["slots"] = 2
+        path.write_text(json.dumps(profile))
+        geo = ms.read_launch_geometry(spec)
+        assert (geo.n_ctx, geo.slots, geo.total_kv_tokens) == (131072, 2, 262144)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("context", True), ("slots", False), ("slots", 0), ("context", "262144"),
+    ("context", -1), ("slots", 3), ("alias", "other-model"),
+    ("schema", "unknown"), ("host", "0.0.0.0"), ("proposed_port", 8121),
+])
+def test_candidate_profile_bad_geometry_or_identity_stays_unknown(tmp_path, field, value):
+    spec, path, profile = _candidate_profile_fixture(tmp_path)
+    profile[field] = value
+    path.write_text(json.dumps(profile))
+    with patch.object(ms.settings, "infrastructure_root", str(tmp_path)):
+        assert ms.read_launch_geometry(spec) == ms.LaunchGeometry()
+
+
+def test_candidate_profile_missing_malformed_oversized_or_escaping_stays_unknown(tmp_path):
+    spec, path, profile = _candidate_profile_fixture(tmp_path)
+    with patch.object(ms.settings, "infrastructure_root", str(tmp_path)):
+        for content in ("{", "[]", " " * 65537):
+            path.write_text(content)
+            assert ms.read_launch_geometry(spec) == ms.LaunchGeometry()
+        path.unlink()
+        assert ms.read_launch_geometry(spec) == ms.LaunchGeometry()
+        path.symlink_to(tmp_path.parent / "outside-profile.json")
+        assert ms.read_launch_geometry(spec) == ms.LaunchGeometry()
+        assert ms.read_launch_geometry(replace(spec, launch_profile="../outside.json")) == ms.LaunchGeometry()
+
+
+@pytest.mark.asyncio
+async def test_candidate_running_summary_exposes_slot_for_gateway_admission(tmp_path, manager):
+    spec, _, _ = _candidate_profile_fixture(tmp_path)
+    with patch.object(ms.settings, "infrastructure_root", str(tmp_path)), \
+            patch.object(ms, "REGISTRY", (spec,)), \
+            patch.object(ms, "_corsair_forward_mode", return_value=True), \
+            patch.object(ms, "_forwarded_fleet_states", AsyncMock(return_value={spec.slug: "running"})):
+        rows = await manager.running_summary()
+    assert rows[0]["slots"] == 1
+    from aria.api.routes import llm_proxy
+    route = llm_proxy._Route(spec.slug, "http://localhost:8131/v1", "fixture", rows)
+    with patch.object(llm_proxy.settings, "llm_proxy_admission_enabled", True), \
+            patch.dict(llm_proxy._admissions, {}, clear=True):
+        assert llm_proxy._admission_for(route) is not None
+
 def test_parse_prometheus_picks_known_gauges_only():
     text = (
         "# HELP llamacpp:requests_deferred Number of requests deferred.\n"
@@ -1704,3 +1768,50 @@ async def test_one_probes_only_the_requested_spec(manager, unwired_registry):
 async def test_one_unknown_slug_raises_not_found(manager):
     with pytest.raises(ModelServerNotFound):
         await manager.one("does-not-exist")
+
+
+def test_cuda_halo_operator_accepted_option_keeps_locked_release_and_no_auto_route(manager):
+    spec = manager.get_spec("Qwen3.8-Flash-Next-CUDA-Halo-Candidate")
+    assert spec.startable is True
+    assert spec.allow_force_start is False
+    assert spec.auto_route is False
+    assert spec.parameters == ()
+    assert spec.port == 8131
+    assert spec.systemd_unit == "flashnext-cuda-halo.service"
+    assert spec.deployment == "flashnext-author-reproduction"
+    assert spec.launch_profile == "flashnext-author-reproduction/profile.json"
+    assert spec.launch_script == "flashnext-author-reproduction/serve-release.sh"
+    assert "sustained reliability is not qualified" in spec.description
+    assert spec.also_uses == ("corsair-nvidia-vram",)
+    assert spec.ctx_param is None
+    assert spec.bench_decode_tok_s is None
+    assert spec.bench_prefill_tok_s is None
+    assert spec.bench_at is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force", [False, True])
+async def test_cuda_halo_accepted_start_uses_restricted_actuator(manager, force):
+    result = {"state": "starting", "slug": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"}
+    with patch.object(ms, "_corsair_actuate", AsyncMock(return_value=result)) as actuator, \
+         patch.object(ms, "_corsair_forward_mode", return_value=True):
+        assert await manager.start(result["slug"], force=force) == result
+        actuator.assert_awaited_once_with("start", result["slug"], force=force)
+
+
+@pytest.mark.asyncio
+async def test_cuda_halo_accepted_start_cannot_override_pinned_parameters(manager):
+    with patch.object(ms, "_corsair_actuate", AsyncMock()) as actuator, \
+         patch.object(ms, "_corsair_forward_mode", return_value=True):
+        with pytest.raises(ModelServerSafetyError, match="overrides are not accepted"):
+            await manager.start("Qwen3.8-Flash-Next-CUDA-Halo-Candidate", overrides={"ctx": 8192})
+        actuator.assert_not_called()
+
+
+def test_cuda_halo_conflicts_with_existing_corsair_residency(manager):
+    candidate = manager.get_spec("Qwen3.8-Flash-Next-CUDA-Halo-Candidate")
+    for slug in ("Qwen3.8-Flash-Next-Hybrid-R9700-Halo", "Qwen3.8-Flash-Next-Engine-R9700-Halo",
+                 "Qwen3.8-27B-R9700-Radiance", "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+                 "context1-Q4"):
+        assert slug in candidate.exclusive_with
+        assert candidate.slug in manager.get_spec(slug).exclusive_with

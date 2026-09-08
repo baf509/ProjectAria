@@ -11,6 +11,7 @@ import { ProjectsBoard } from '@/features/supervise/ProjectsBoard'
 import { useResource } from '@/lib/swr'
 import { K } from '@/lib/api/endpoints'
 import type { FleetOverview, ProjectsOverview } from '@/lib/api/types'
+import Link from 'next/link'
 
 export default function SupervisePage() {
   const overview = useResource<ProjectsOverview>(K.projectsOverview, { tier: 'slow' })
@@ -40,6 +41,7 @@ export default function SupervisePage() {
         </>
       }
     >
+      <Link href="/supervise/ralph" className="mb-3 inline-flex min-h-control items-center text-micro text-accent underline">Ralph loops — plans and verified checkpoints</Link>
       <ProjectsBoard />
     </AppShell>
   )

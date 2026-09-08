@@ -3,7 +3,7 @@
 
 The credential is read from stdin or a dotenv file and is never printed.  The
 script refuses to touch a Pi inventory that contains any provider/model outside
-the three entries in the current managed deployment policy.
+the explicitly supported pre-cutover or RTX3090/Halo managed inventories.
 """
 
 from __future__ import annotations
@@ -22,6 +22,15 @@ APPROVED_MODELS = {
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
 }
+CURRENT_MODELS = {"Red-Qwen3.8-27B-MXFP4", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"}
+
+
+def approved_inventory(provider):
+    entries = provider.get("models", [])
+    if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+        return False
+    ids = {item.get("id") for item in entries}
+    return ids in (APPROVED_MODELS, CURRENT_MODELS) and len(entries) == len(ids)
 
 
 def _dotenv_value(path: Path, name: str) -> str:
@@ -76,8 +85,8 @@ def main() -> int:
     model_ids = {
         item.get("id") for item in provider.get("models", []) if isinstance(item, dict)
     }
-    if model_ids != APPROVED_MODELS or len(provider.get("models", [])) != len(APPROVED_MODELS):
-        raise SystemExit("refusing Pi config: model inventory is not the approved three-model set")
+    if not approved_inventory(provider):
+        raise SystemExit("refusing Pi config: model inventory is not an approved managed set")
 
     provider["apiKey"] = _load_key(args)
     prior_mode = args.models.stat().st_mode & 0o777
@@ -90,7 +99,7 @@ def main() -> int:
     os.chmod(temporary, prior_mode or 0o600)
     os.replace(temporary, args.models)
     os.chmod(args.models, prior_mode or 0o600)
-    print(f"Pi ARIA inference credential installed; provider=aria models={len(APPROVED_MODELS)}")
+    print(f"Pi ARIA inference credential installed; provider=aria models={len(model_ids)}")
     return 0
 
 

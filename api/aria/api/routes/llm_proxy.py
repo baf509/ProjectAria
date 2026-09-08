@@ -60,6 +60,7 @@ from aria.api.deps import get_db, get_model_server_manager
 from aria.config import settings
 from aria.db.usage import UsageRepo
 from aria.infrastructure.model_servers import ModelServerManager
+from aria.infrastructure.backend_auth import BackendAuthError, backend_headers
 from aria.infrastructure.preamble_fingerprint import preamble_tracker
 from aria.infrastructure.llm_route import (
     backend_model_id as _backend_model_id,
@@ -678,18 +679,33 @@ async def _context_length(base: str) -> Optional[int]:
     guess here is how a caller ends up overflowing a smaller resident model.
     """
     try:
-        resp = await _client().get(f"{base}/models", timeout=5.0)
+        resp = await _client().get(f"{base}/models", timeout=5.0, headers=backend_headers(base))
         for entry in (resp.json() or {}).get("data") or []:
             n_ctx = (entry.get("meta") or {}).get("n_ctx") or entry.get("max_model_len")
             if isinstance(n_ctx, int) and n_ctx > 0:
                 return n_ctx
-    except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+    except (httpx.HTTPError, OSError, ValueError, AttributeError, TypeError):
         return None
     return None
 
 
 def _forward_headers(request: Request) -> dict[str, str]:
     return {k: v for k, v in request.headers.items() if k.lower() not in _STRIP}
+
+
+def _headers_for_backend(request: Request, base: str) -> dict[str, str]:
+    headers = _forward_headers(request)
+    try:
+        auth = backend_headers(base)
+    except BackendAuthError:
+        raise HTTPException(status_code=503, detail="backend authentication is not provisioned") from None
+    if auth:
+        # Caller credentials terminate at ARIA; the model receives only its
+        # dedicated key, regardless of which authorized client made the call.
+        headers = {key: value for key, value in headers.items()
+                   if key.lower() not in ("authorization", "x-api-key")}
+        headers.update(auth)
+    return headers
 
 
 @router.get("/models")
@@ -784,14 +800,18 @@ async def list_models(
 async def current_backend(
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    model: Optional[str] = None,
 ) -> Any:
     """Which server this proxy is currently forwarding to, and why.
 
     Not an OpenAI route — a diagnostic, so `scripts/health` and a human can see
     the resolution without inferring it from a completion.
     """
-    route = await _pick_backend(manager, db)
+    # A concrete model lets engineering clients inspect its queue without
+    # changing the global pin or issuing an inference request.
+    route = await _pick_backend(manager, db, requested=model)
     return {
+        "requested_model": model,
         "backend": route.slug,
         "base_url": route.base_url,
         "reason": route.reason,
@@ -841,6 +861,12 @@ async def _autostart(
     spec = _BY_SLUG.get(slug)
     if spec is None or not spec.onbox:
         return False
+    # Reject retired/unqualified launchers BEFORE evicting any live conflict.
+    # manager.start() enforces this too, but checking only there would first
+    # stop the working CUDA/Halo model for a stale R9700 client request.
+    # Autostart never uses force, even where a manual forced start is allowed.
+    if not spec.startable:
+        return False
 
     by_slug = {s.get("slug"): s for s in servers}
     for other_slug in spec.exclusive_with:
@@ -879,9 +905,14 @@ async def _await_ready(base: str, slug: str) -> bool:
     deadline = settings.llm_proxy_autostart_timeout
     waited = 0.0
     client = _client()
+    try:
+        auth = backend_headers(base)
+    except BackendAuthError:
+        logger.error("llm-proxy: %s backend credential unavailable", slug)
+        return False
     while waited < deadline:
         try:
-            resp = await client.get(f"{base}/models", timeout=5.0)
+            resp = await client.get(f"{base}/models", timeout=5.0, headers=auth)
             if resp.status_code == 200:
                 logger.warning("llm-proxy: %s ready after %.0fs", slug, waited)
                 return True
@@ -1046,7 +1077,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             logger.warning("llm-proxy: model rewrite failed; forwarding verbatim")
 
     url = f"{base}/{path}"
-    headers = _forward_headers(request)
+    headers = _headers_for_backend(request, base)
     headers["x-aria-trace-id"] = trace_id
     preamble = preamble_tracker.observe(
         f"{caller}\0{slug or 'unknown'}\0{path}", forwarded_body
@@ -1262,5 +1293,6 @@ async def list_models_identified(
 async def current_backend_identified(
     manager: ModelServerManager = Depends(get_model_server_manager),
     db: AsyncIOMotorDatabase = Depends(get_db),
+    model: Optional[str] = None,
 ) -> Any:
-    return await current_backend(manager, db)
+    return await current_backend(manager, db, model=model)

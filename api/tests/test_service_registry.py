@@ -45,10 +45,21 @@ def test_registries_are_disjoint_by_port():
     """A shared port would let health.py's port-keyed `stopped_on_purpose`
     map mark a down always_up service as 'stopped on purpose' — silencing the
     exact alert this registry exists to raise."""
-    ms_ports = {s.port for s in MODEL_SERVERS if s.port}
+    # health.py adds only onbox models to stopped_on_purpose. A remote model
+    # may expose its separately managed loopback proxy's port as metadata.
+    ms_ports = {s.port for s in MODEL_SERVERS if s.port and s.onbox}
     svc_ports = {s.port for s in REGISTRY if s.port}
     overlap = ms_ports & svc_ports
     assert not overlap, f"port collision between registries: {overlap}"
+
+
+def test_remote_shared_port_is_only_the_documented_red_transport():
+    """Don't turn the remote proxy exception into a blanket collision waiver."""
+    shared = {(m.slug, s.slug, m.port) for m in MODEL_SERVERS for s in REGISTRY
+              if not m.onbox and m.port is not None and m.port == s.port}
+    assert shared == {("Red-Qwen3.8-27B-MXFP4", "red-proxy", 8094)}
+    red = next(m for m in MODEL_SERVERS if m.slug == "Red-Qwen3.8-27B-MXFP4")
+    assert red.endpoint_override == "http://127.0.0.1:8094/v1"
 
 
 def test_service_specs_carry_no_llm_routing_fields():

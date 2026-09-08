@@ -8,6 +8,7 @@ test here touches the real ~/.config/systemd/user or /sys.
 from __future__ import annotations
 
 import os
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -328,7 +329,7 @@ def test_single_gpu_box_still_gets_a_halo_pool(tmp_path, monkeypatch):
 
 
 def test_every_onbox_spec_names_a_real_pool():
-    valid = {gd.POOL_HALO, gd.POOL_R9700, gd.POOL_HOST, gd.POOL_REMOTE}
+    valid = {gd.POOL_HALO, gd.POOL_R9700, gd.POOL_NVIDIA, gd.POOL_HOST, gd.POOL_REMOTE}
     for spec in ms.REGISTRY:
         assert spec.memory_pool in valid, f"{spec.slug} has pool {spec.memory_pool}"
         for pool in spec.also_uses:
@@ -433,9 +434,8 @@ def test_live_deployments_point_at_files_that_exist():
     """The failure this catches is exactly the one that made most of this
     registry stale: a path that moved without the entry following it.
 
-    The canonical source now lives on the Mac while these deployment paths live
-    on Corsair. The filesystem assertion is therefore a Corsair data-plane test,
-    not a portable ProjectAria source-tree test.
+    Canonical launcher source lives on the Mac; deployed weights live only on
+    Corsair. Check launcher paths on either host, weight paths on Linux only.
     """
     if not os.path.isdir(ms.settings.infrastructure_root):
         pytest.skip("Corsair deployment tree is not mounted on this host")
@@ -444,7 +444,7 @@ def test_live_deployments_point_at_files_that_exist():
     for spec in live:
         script = ms._abs_infra(spec.launch_script)
         assert os.path.exists(script), f"{spec.slug}: missing launch script {script}"
-        if spec.model_file:
+        if spec.model_file and sys.platform != "darwin":
             model = ms._abs_infra(spec.model_file)
             assert os.path.exists(model), f"{spec.slug}: missing model {model}"
 

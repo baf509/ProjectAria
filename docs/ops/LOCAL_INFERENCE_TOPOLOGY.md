@@ -1,181 +1,89 @@
 # Local inference topology
 
-Current operations guide for ARIA's model data plane. Historical benchmark and
-DeepSeek-era measurements remain in dated vault analysis; they are not startup
-instructions.
-
-Last reconciled: **2026-09-04**.
+Last reconciled: **2026-09-08**. See [current deployment and delivery status](CURRENT_DEPLOYMENT_20260908.md)
+for the exact release, client checks, performance scope and pending activation.
+Earlier R9700 benchmarks are historical evidence, not current launch instructions.
 
 ## Boundary and routing
 
-The Mac is the control plane and gateway. Corsair serves the primary models.
-Consumers use:
+The Mac owns ARIA, MongoDB, Hermes/Signal, credentials, managed shells and canonical
+general projects. Corsair is the model/benchmark data plane. Consumers use the
+authenticated Mac gateway:
 
 - `http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1`
-- `http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1-identified` for pinned/identified consumers including Pi, Hermes local roles, and the ARIA steward
+- `http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1-identified` for Hermes and Pi
 
-Raw Corsair model endpoints are loopback-only and reach the Mac through managed
-SSH forwards. Never publish them directly or configure clients to call them.
+Raw model listeners remain loopback-only. Corsair's `:8131` is carried by the
+restricted Mac SSH forward, not published as a public API. The raw endpoint also
+requires its own backend credential; ARIA supplies it without forwarding client
+credentials. An unauthenticated curl is expected to return 401, not prove failure.
 
-The canonical Mac forwarding launcher is `scripts/macos/run-corsair-model-forwards`,
-deployed at `/Users/ben/Services/apps/bin/run-corsair-model-forwards`. Its existing
-system job is `com.ben.devbox.corsair-forwards`. Ben approved the additional
-experimental loopback `:8122` on 2026-09-05; the SSH key still denies shell access
-and unapproved destinations. This does not enable experiment auto-routing.
+| Host / deployment | Devices | Model endpoint / current role |
+|---|---|---|
+| Corsair Flash Next candidate | RTX 3090 FE CUDA + Strix Halo RADV Vulkan | Raw `127.0.0.1:8131`; explicit Hermes/Pi default |
+| Red Qwen3.8-27B MXFP4 | Dual R9700 | Mac proxy `:8094`; distinct running alternative |
+| Ridge | RTX 5090 (Ben-confirmed) | Mac proxy `:8092`; asleep at reconciliation, new-card readiness unverified |
+| Mac Gemma | Mac native | Retained `:8104` configuration, intentionally stopped; not Hermes fallback |
 
-Restart this system job with an administrator-authorized
-`sudo launchctl kickstart -k system/com.ben.devbox.corsair-forwards` after checking
-gateway admission for active/queued work. Do not terminate SSH expecting automatic
-restart: it exits zero on SIGTERM and the current job restarts only unsuccessful
-exits. A recovery forward must be explicitly handed back to launchd; don't leave
-two processes competing for the same local ports.
+No Corsair R9700 is installed. The old `:8080/:8120/:8121` Corsair loadouts
+must not appear as live consumer options. Red's R9700 hardware is not retired.
+Search/mongot remain disabled. DeepSeek assets may be retained for model
+engineering; retention does not imply current serving eligibility.
 
-| Deployment | Device/pool | Raw listener | Current role |
-|---|---|---|---|
-| Qwen3.8 Radiance | R9700, 32 GiB discrete VRAM | `127.0.0.1:8080` | dual-resident rollback option |
-| Qwen3.8 Flash Next UD-Q4_K_XL | Strix Halo, 124 GiB shared/GTT | `127.0.0.1:8120` | dual-resident long-context rollback option, 1 slot × 256K with MTP/ngram speculative decoding |
-| Qwen3.8 Flash Next UD-Q4_K_XL hybrid | R9700 dense/KV/MTP + Strix Halo experts | `127.0.0.1:8121` | boot-default 256K model for ARIA, Hermes, and Pi; replaces both resident servers |
-| Gemma 4 E4B Q4 | Mac native | `127.0.0.1:8104` | auxiliary workers and side tasks |
+## Current profile and lifecycle
 
-The normal loadout is hybrid Flash Next on `:8121`; it is enabled at boot. The
-dual-resident Radiance plus Halo-only Flash Next profile is retained as an
-operator-selectable rollback. The hybrid unit conflicts with both dual-resident
-services. Switch between these profiles through the dashboard loadout
-controls so ARIA sequences the unload, start, and readiness checks.
+`Qwen3.8-Flash-Next-CUDA-Halo-Candidate` uses the pinned author runtime plus the
+Top-K argsort fallback, NVIDIA610.43.02, MTP Q4_K_M/depth3, q8_0 K/V, one
+262144-token slot, batch2048/microbatch512, 32checkpoints and8GiB host cache.
+`kv_unified=false`; CUDA capture OFF, independent graph reuse ON.
+VRAM on the RTX3090 and Halo shared memory are separate pools. Never infer
+placement from changing CUDA/Vulkan ordinal numbers; the launcher binds identities.
 
-The hybrid short-context profile was measured on 2026-09-03 at 64K total context:
-layout 10, one slot, `-b 4096 -ub 2048`, q8_0 K/V, and MTP depth 3. On a fixed
-4.3K-token prompt, warmed prefill was about 1,049 tok/s and decode 65.8 tok/s;
-at 63K context, prefill was 634 tok/s and decode 34.9 tok/s. The former
-`-b 2048 -ub 512`, depth-2 baseline measured about 552/59.5 tok/s. An early
-four-slot throughput experiment reached roughly 70 aggregate tok/s, but that
-configuration is retired: upstream issue #28286 demonstrates cross-request
-content contamination with Qwen4exp MTP and `-np > 1`. The launcher now refuses
-MTP with more than one slot; concurrency queues through ARIA until upstream has
-an isolated per-sequence implementation and we requalify it.
+This exact profile is operator accepted, **not** a passed sustained-reliability
+qualification. Known intermittent CUDA faults remain unresolved. No further soak
+or crash investigation is scheduled. The old R9700's 1000+tok/s prefill is not
+this deployment's measurement; current bounded samples are about443/57 at4K
+and462/56 at8K prefill/decode tok/s.
 
-The production profile is 1 x 256K with layout 0: every routed expert lives on
-the Halo, leaving the R9700 room for the dense trunk, shared MTP head and the
-262,144-token q8_0 KV cache. Unified KV and idle-slot caching are forced
-explicitly, with a 16 GiB host-RAM prompt cache sized for roughly two complete
-q8 context prefixes. The server fallback reasoning effort is `medium`, avoiding
-the embedded template's `xhigh` fallback for clients that omit template kwargs;
-Pi's explicit per-request controls still override it.
-Live qualification on 2026-09-03 reported `n_ctx=262144`, about 29.4 GiB R9700
-VRAM used, 73.0 GiB Halo GTT used, and about 40.7 GiB MemAvailable after load.
-An identical second gateway request reused 57 of 61 prompt tokens.
+Routine starts/stops use ARIA's restricted actuator. The prepared normal-start
+wrapper verifies the exact accepted release hash and artifacts. Its API
+activation and one routine lifecycle verification remain pending in the current
+delivery record. The existing model is still running from its registered
+engineering task. No boot-autostart, automatic fallback or global-route change
+is implied by the explicit client default. Do not rerun historical upgrade,
+stall-capture or experiment scripts.
 
-The pinned hybrid runtime already contains the merged upstream Qwen4exp
-long-context fixes through llama.cpp #28040. A matched 512-token workload test
-of chained `ngram-mod,draft-mtp` reduced median decode from 61.02 to 53.64
-tok/s, so production remains plain depth-3 MTP. The launcher rejects multiple
-slots while MTP is active because upstream #28286 reports cross-request state
-contamination; ARIA queues concurrency instead.
+Use authenticated ARIA `GET /infrastructure/model-servers/<slug>` and gateway
+`GET /backend?model=<slug>` to inspect identity/geometry/admission. On Corsair,
+`systemctl --user show flashnext-cuda-halo.service` supplies lifecycle evidence.
+A listener, successful systemd start or token-speed sample alone is not readiness
+or correctness qualification.
 
-The hybrid systemd unit uses `KillMode=mixed`: SIGTERM goes only to the launch
-guard, which owns and reaps llama-server's process group and allows one
-30-second graceful GPU/mmap unwind. systemd keeps a 60-second whole-cgroup
-SIGKILL ceiling. A controlled restart on 2026-09-03 stopped in about five
-seconds with one cleanup signal and no orphan, second interrupt, or timeout.
+The forwarding launcher remains `scripts/macos/run-corsair-model-forwards`,
+deployed under `/Users/ben/Services/apps/bin/`. Its launchd job is
+`com.ben.devbox.corsair-forwards`. Only use an administrator-authorized restart
+after checking admission; do not leave competing temporary forwards behind.
 
-DeepSeek V4 weights/runtimes may remain on Corsair for rollback, testing, and
-model engineering. They are retained-but-inactive and are not default gateway
-targets.
+## Managed clients
 
-## Registry and observed truth
+Mac and Corsair Pi use the `aria` provider, the explicit candidate default and
+the retained Red option. Both configs are authenticated/catalogue-checked at
+256Kcontext/32Koutput with wired thinking controls, default thinking off and
+compaction near95K (`reserveTokens=167144`,20K verbatim tail). Additional
+unregistered machines are not covered by those checks. The idempotent helper
+is `scripts/configure-pi-flashnext.py`; keep credentials private.
 
-ARIA owns desired state. The backend readiness identity and Corsair process/unit
-state own observed state. A shared open port is not model identity.
+Hermes uses the same identified candidate with256K/32K limits,95K compaction,
+the installed `aria-flashnext` medium/2048 default plugin and sixteen
+thinking-off auxiliary routes. Its actual gateway has gracefully reloaded and
+reconnected to118ARIA tools. Installed executor/compaction fixtures passed;
+a personal Signal inference conversation was not used as a test. Red overrides
+are preserved; Gemma is not an auxiliary fallback.
 
-Routine starts/stops go through ARIA's restricted actuator. An authorized coding
-or model-engineering agent may directly start a registered deployment for a
-repair or test, but ARIA must observe, identify, record, and reconcile it.
-
-The Flash registry slug still contains `2x256K` as a compatibility identifier,
-but the reconciled registry reports the live 1 × 256K geometry, runtime
-`8148b062e`, and MTP/ngram speculative mode. Continue comparing desired state
-with backend identity and observed process state.
-
-## Hardware facts that must not be guessed
-
-- DRM `card0` is the R9700 discrete GPU; `card1` is the Strix Halo iGPU.
-- The R9700 VRAM and Halo GTT are separate capacity pools, but loading a large
-  checkpoint can still pressure host-wide memory.
-- Vulkan/ROCm device numbering depends on the runtime build. Verify placement
-  after a runtime change; do not copy a `-dev` flag across runtimes.
-- GPU-offloaded unified memory is visible in DRM/GTT accounting, not reliably in
-  `docker stats` or only `free -h`.
-- In this llama.cpp lineage, `-c` is the total context pool. Multiple slots
-  divide that pool; they do not each receive another `-c` tokens.
-
-## Verification
-
-```bash
-# Mac control plane and forwards
-curl -fsS http://127.0.0.1:8200/api/v1/health
-nc -z 127.0.0.1 8080
-nc -z 127.0.0.1 8120
-# Present as the boot-default hybrid forward.
-nc -z 127.0.0.1 8121
-
-# Corsair observed state
-systemctl --user is-enabled qwen3.8-flash-next-hybrid.service
-systemctl --user is-active qwen3.8-flash-next-hybrid.service
-ss -ltn | rg '127.0.0.1:(8080|8120|8121)'
-curl -fsS http://127.0.0.1:8121/v1/models
-```
-
-Use authenticated ARIA endpoints for the registry, model utilization, device
-pools, and running infrastructure. Compare those results with the direct
-readiness identity before declaring reconciliation complete.
-
-## Pi policy
-
-Pi has one provider (`aria`) and three model entries: Halo-only Flash Next,
-hybrid Flash Next, and `Red-Qwen3.8-27B-MXFP4`. Hybrid is the default.
-All go through the identified Mac gateway with an inference-only key.
-Fireworks, raw Corsair ports, and all
-other models are forbidden in Pi configuration. The two physical managed Pi
-installations are the Mac (`mac-agents`) and Corsair (`corsair-ai`); both were
-live-tested against hybrid on 2026-09-03 and identify their gateway traffic as
-`pi-coding-mac` and `pi-coding-corsair` respectively.
-
-Ben selected Red's dual-R9700 Radiance instance as the only Qwen3.8-27B option
-on both installations on 2026-09-07, removing the old Corsair 27B entry from Pi.
-Its Pi entry declares the 262,144-token context and a 16,384-token
-generation budget, with Pi thinking controls mapped to the Qwen chat template.
-Open `/model` and select `aria/Red-Qwen3.8-27B-MXFP4`; Pi reloads the model file
-when the picker opens. The Flash Next default remains unchanged.
-The rerunnable installer is `scripts/configure-pi-red-radiance.py`, alongside
-`scripts/pi-red-radiance-model.json`. It retains credentials and Flash Next
-choices, backs up changed configs privately, removes other Qwen3.8-27B choices,
-and adds Red to enabled model cycling.
-
-Both Flash Next entries advertise the native 262,144-token window and a
-32,768-token generation budget. They declare reasoning support and map Pi's
-off/low/medium/high controls into `chat_template_kwargs.enable_thinking` and
-`reasoning_effort`. This mapping is load-bearing: the embedded model template
-defaults to `xhigh` when those arguments are absent. Pi defaults to thinking
-off for quick coding traffic, uses deterministic sampling, and auto-compacts at
-about 95K tokens (`reserveTokens=167144`, with a 20K verbatim tail) so routine
-sessions stay out of the measured deep-context latency band. ARIA's legacy
-`pi-coding` and `pi-coding-ridge` database rows are compatibility launch
-profiles, not additional Pi installations; startup reconciliation pins both to
-the same hybrid model rather than maintaining a second source of routing truth.
-
-Hermes's `aria` provider also offers `Red-Qwen3.8-27B-MXFP4` at 262,144 tokens.
-Select it with `/model Red-Qwen3.8-27B-MXFP4 --provider aria`; the model picker
-reloads the config from disk. Its runtime provider resolution and an actual
-completion were verified through `/llm/v1-identified` on 2026-09-07. Hybrid
-Flash Next remains Hermes's default, and its prior provider entries are retained.
-
-Hermes also declares both Flash Next variants at 262,144 tokens and reserves a
-32,768-token output budget. Its absolute 95K compression cap remains the
-latency-control threshold; it is intentionally much earlier than capacity
-pressure. Hermes's Corsair Radiance entry remains declared at 245,760 tokens to retain explicit output
-headroom beneath its 262,144-token server limit. Hermes control-plane work uses
-the authenticated ARIA MCP bridge; a bare `curl` to `:8200` is expected to fail
-and must not be used as a fallback when a deferred MCP tool needs loading.
+The legacy `pi-coding`/`pi-coding-ridge` database rows are compatibility launch
+profiles, not extra Pi installations. Reconciliation migrates only retired
+Flash contracts and does not overwrite explicit Red/custom choices. Mainstream
+client calls use the gateway; control-plane operations use authenticated ARIA MCP.
 
 ## Gateway accounting
 
@@ -253,8 +161,8 @@ Start Red through Operate before using it when asleep (global gateway autostart
 remains disabled). Existing Flash Next client choices remain registered.
 
 Qualified Red is eligible for automatic routing while resident. The stale
-Flash Next route pin is cleared to auto; the unqualified CUDA/Halo candidate
-remains excluded. Explicit model names still require their named backend.
+Flash Next route pin is cleared to auto; the operator-accepted CUDA/Halo candidate
+remains excluded from model-omitted auto-selection. Explicit model names still require their named backend.
 Registry benchmark metadata now refers to the 21:05 EDT BetterBench refresh:
 195.6 weighted decode, 5108.3 prefill at 47,056 input tokens. Full conditions and
 raw results live in CorsairModelHost/red-r9700/results/2026-09-07/.
