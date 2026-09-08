@@ -59,6 +59,12 @@ _aria_coding_agent() {
         case "$arg" in
             --corsair|--remote) remote_mode=1 ;;
             --local|--no-aria) ;;
+            --aria-view|--aria-takeover)
+                if [ "${ARIA_MANAGED:-}" = 1 ]; then
+                    echo "aria: attach controls require an SSH prompt outside the managed shell" >&2
+                    return 2
+                fi
+                forwarded_args+=("$arg") ;;
             *) forwarded_args+=("$arg") ;;
         esac
     done

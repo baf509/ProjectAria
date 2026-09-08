@@ -71,6 +71,34 @@ def _configure_tmux_session(name: str) -> None:
         )
 
 
+def _session_is_live(name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-t", f"={name}", "-F", "#{pane_dead}"],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+        return result.returncode == 0 and "0" in result.stdout.splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _attach(name: str, mode: str) -> int:
+    _configure_tmux_session(name)
+    if os.environ.get("TMUX"):
+        if mode != "shared":
+            print("aria: use --aria-view or --aria-takeover from an SSH prompt outside tmux", file=sys.stderr)
+            return 2
+        command = ["tmux", "switch-client"]
+    else:
+        command = ["tmux", "attach-session"]
+        if mode == "takeover":
+            command += ["-d"]
+        elif mode == "view":
+            command += ["-f", "read-only,ignore-size"]
+    # An attach failure must never start a second coding process.
+    return subprocess.call([*command, "-t", f"={name}"])
+
+
 def _load_key() -> str:
     path = Path.home() / ".config" / "aria" / "env"
     if not path.is_file():
@@ -171,6 +199,18 @@ def main() -> int:
         return 2
 
     tool, args = sys.argv[1], sys.argv[2:]
+    mode = "shared"
+    if "--aria-view" in args and "--aria-takeover" in args:
+        print("aria: choose either --aria-view or --aria-takeover", file=sys.stderr)
+        return 2
+    if "--aria-view" in args:
+        mode = "view"
+    elif "--aria-takeover" in args:
+        mode = "takeover"
+    if mode != "shared" and os.environ.get("TMUX"):
+        print("aria: attach controls require an SSH prompt outside tmux", file=sys.stderr)
+        return 2
+    args = [arg for arg in args if arg not in {"--aria-view", "--aria-takeover"}]
     workdir = os.getcwd()
     base = re.sub(r"[^a-z0-9]+", "-", Path(workdir).name.lower()).strip("-") or "home"
     path_id = hashlib.sha256(workdir.encode()).hexdigest()[:6]
@@ -181,6 +221,13 @@ def main() -> int:
     # for Claude: request_name already starts with "claude-", while Codex and
     # Pi need the prefix added.
     full_name = _canonical_shell_name(request_name)
+
+    # Reconnect is a local tmux operation, independent of API/auth/agent startup.
+    if _session_is_live(full_name):
+        return _attach(full_name, mode)
+    if mode == "view":
+        print("aria: no running shell to view in this directory", file=sys.stderr)
+        return 1
 
     launcher = Path.home() / ".local" / "bin" / f"aria-{tool}-launch"
     if not launcher.is_file():
@@ -222,9 +269,7 @@ def main() -> int:
         return 1
     full_name = shell.get("name", full_name)
 
-    _configure_tmux_session(full_name)
-    action = "switch-client" if os.environ.get("TMUX") else "attach-session"
-    return subprocess.call(["tmux", action, "-t", f"={full_name}"])
+    return _attach(full_name, mode)
 
 
 if __name__ == "__main__":

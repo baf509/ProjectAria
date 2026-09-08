@@ -173,6 +173,8 @@ class Settings(BaseSettings):
     # whose `host` differs are driven via the node command queue rather than
     # local tmux. Empty local_node_id → resolved to socket.gethostname().
     local_node_id: str = ""
+    # Logical command workers may share a physical tmux host with the API.
+    node_shell_host_aliases: dict[str, str] = {}
     node_heartbeat_timeout_seconds: int = 45   # missed heartbeats → node offline
     node_command_ttl_seconds: int = 120        # queued command expiry (TTL)
     node_command_timeout_seconds: int = 30     # how long a remote op awaits a result

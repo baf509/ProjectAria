@@ -332,3 +332,15 @@ async def test_tail_order(service):
     )
     tail = await service.tail("claude-proj", lines=2)
     assert [e.text_clean for e in tail] == ["b", "c"]
+
+
+@pytest.mark.asyncio
+async def test_register_alias_keeps_one_physical_owner(service, monkeypatch):
+    from aria.config import settings
+    monkeypatch.setattr(settings, 'local_node_id', 'mac')
+    monkeypatch.setattr(settings, 'node_shell_host_aliases', {'mac-agents': 'mac'})
+    for host in ['mac', 'mac-agents', None, 'mac-agents']:
+        shell = await service.register_shell('claude-owned', host=host)
+        assert shell.host == 'mac'
+    remote = await service.register_shell('claude-remote', host='corsair')
+    assert remote.host == 'corsair'

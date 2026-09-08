@@ -23,3 +23,9 @@ def local_node_id() -> str:
 def is_remote_host(host: str | None) -> bool:
     """True if `host` names a machine other than the one running the API."""
     return bool(host) and host != local_node_id()
+
+
+def canonical_shell_host(host: str | None) -> str:
+    """Resolve physical shell ownership without changing command-queue routing."""
+    host = host or local_node_id()
+    return settings.node_shell_host_aliases.get(host, host)

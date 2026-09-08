@@ -55,6 +55,7 @@ export const K = {
   shellsOverview: '/shells/overview',
   shell: (name: string) => `/shells/${encodeURIComponent(name)}`,
   shellScreen: (name: string) => `/shells/${encodeURIComponent(name)}/screen`,
+  shellScreenStream: (name: string) => `/shells/${encodeURIComponent(name)}/screen/stream`,
   shellEvents: (name: string, sinceLine: number, limit = 400) =>
     `/shells/${encodeURIComponent(name)}/events?since_line=${sinceLine}&limit=${limit}`,
   shellStream: (name: string, sinceLine: number) =>

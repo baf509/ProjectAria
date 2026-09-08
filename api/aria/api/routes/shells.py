@@ -391,6 +391,36 @@ async def get_current_screen(
     return {"name": name, "lines": lines, "screen": screen}
 
 
+@router.get("/shells/{name}/screen/stream")
+async def stream_shell_screen(
+    name: str,
+    service: Annotated[ShellService, Depends(get_shell_service)] = None,
+):
+    """Coalesced current screen shared by all visible viewers of this shell."""
+    from aria.shells.ansi import strip_ansi
+    from aria.shells.screen_stream import screen_hub
+
+    name = await _canonical_name(service, name)
+    shell = await service.get_shell(name)
+    remote = service._shell_is_remote(shell)
+
+    async def fetch():
+        if remote:
+            snapshot = await service.get_last_snapshot(name)
+            return snapshot.content[-100_000:] if snapshot else ""
+        return strip_ansi(await service.tmux.capture_screen(name))
+
+    async def frames():
+        async with screen_hub.subscribe(name, fetch) as queue:
+            while True:
+                yield {"event": "screen", "data": json.dumps(await queue.get())}
+
+    return EventSourceResponse(
+        frames(), ping=15, send_timeout=5,
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get("/shells/{name}/stream")
 async def stream_shell_events(
     request: Request,

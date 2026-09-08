@@ -627,6 +627,9 @@ async def lifespan(app: FastAPI):
     if _awareness_service is not None:
         await _awareness_service.stop()
 
+    from aria.shells.screen_stream import screen_hub
+    await screen_hub.stop()
+
     # 3a. Stop watched shells workers
     for attr in (
         "shell_notifier", "shell_extractor", "shell_pruner", "shell_reaper",

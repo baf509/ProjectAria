@@ -97,6 +97,7 @@ class NodeAgent:
         *,
         prefix: str = "claude-",
         capture_interval: float = 2.0,
+        capture_enabled: bool = True,
         heartbeat_interval: float = 10.0,
         snapshot_lines: int = 400,
         commands_enabled: bool = True,
@@ -107,6 +108,7 @@ class NodeAgent:
         self.node_id = node_id
         self.prefix = prefix
         self.capture_interval = capture_interval
+        self.capture_enabled = capture_enabled
         self.heartbeat_interval = heartbeat_interval
         self.snapshot_lines = snapshot_lines
         # full: start/run/control; control: input/stop existing user shells;
@@ -174,12 +176,13 @@ class NodeAgent:
     async def heartbeat_loop(self) -> None:
         while True:
             try:
-                live_shells = await self.tmux.list_sessions(prefix=self.prefix)
-                await self._post(
-                    f"/api/v1/nodes/{self.node_id}/heartbeat",
-                    {"live_shells": live_shells},
-                )
-                await self._flush_spool()
+                payload = {}
+                if self.capture_enabled:
+                    payload["live_shells"] = await self.tmux.list_sessions(prefix=self.prefix)
+                await self._post(f"/api/v1/nodes/{self.node_id}/heartbeat", payload)
+                # Old capture spool entries must not reassert duplicate ownership.
+                if self.capture_enabled:
+                    await self._flush_spool()
             except Exception as e:
                 logger.warning("heartbeat failed: %s", e)
             await asyncio.sleep(self.heartbeat_interval)
@@ -492,7 +495,9 @@ class NodeAgent:
             except Exception as e:
                 logger.warning("register failed (%s); retrying in 5s", e)
                 await asyncio.sleep(5)
-        loops = [self.heartbeat_loop(), self.capture_loop()]
+        loops = [self.heartbeat_loop()]
+        if self.capture_enabled:
+            loops.append(self.capture_loop())
         if self.command_mode != "capture":
             loops.append(self.command_loop())
         await asyncio.gather(*loops)
@@ -526,6 +531,11 @@ def main() -> None:
         default=os.getenv("ARIA_NODE_COMMAND_MODE", "").strip() or None,
         help="full execution, existing-shell control, or capture-only",
     )
+    p.add_argument(
+        "--no-capture", action="store_true",
+        default=os.getenv("ARIA_NODE_CAPTURE_ENABLED", "true").lower() in {"0", "false", "no", "off"},
+        help="keep command execution and liveness; let the API host own pane capture",
+    )
     args = p.parse_args()
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s aria-node: %(message)s"
@@ -535,6 +545,7 @@ def main() -> None:
         args.api_key,
         args.node_id,
         prefix=args.prefix,
+        capture_enabled=not args.no_capture,
         commands_enabled=not args.capture_only,
         command_mode=("capture" if args.capture_only else args.command_mode),
         spool_path=args.spool_path or None,
