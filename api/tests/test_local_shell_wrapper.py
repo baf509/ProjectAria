@@ -96,7 +96,7 @@ def test_repeat_launch_reattaches_to_existing_shell(
         monkeypatch.delenv("TMUX", raising=False)
 
     assert main() == 0
-    assert option_calls == [
+    expected_options = [
         ["tmux", "set-option", "-t", expected_target[1:], "mouse", "on"],
         [
             "tmux",
@@ -117,6 +117,10 @@ def test_repeat_launch_reattaches_to_existing_shell(
             "smallest",
         ]
     ]
+    combined = expected_options[0].copy()
+    for command in expected_options[1:]:
+        combined.extend([";", *command[1:]])
+    assert option_calls == [combined]
     assert calls == [["tmux", expected_action, "-t", expected_target]]
 
 
