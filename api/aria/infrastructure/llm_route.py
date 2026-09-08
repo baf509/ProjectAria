@@ -148,7 +148,7 @@ def select(
         best = rank_resident(servers)
         return best, f"pin '{pin}' {detail} — fell back to largest resident", False
 
-    return rank_resident(servers), "largest resident_gib among running on-box servers", False
+    return rank_resident(servers), "largest resident_gib among eligible verified running servers", False
 
 
 async def read_pin(db: Optional[AsyncIOMotorDatabase]) -> Optional[str]:
