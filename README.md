@@ -10,20 +10,21 @@ control plane runs on the MacBook Pro; Corsair is its primary model data plane.
 ARIA is infrastructure other programs and operators drive. Hermes, not ARIA's
 disabled default chat agent, is the conversational front door over Signal.
 
-Last reconciled against the live deployment: **2026-09-02**.
+Documentation reconciled: **2026-09-08**. Dated checks below are snapshots;
+use live identity/readiness for current process state.
 
 ## Deployment boundary
 
 | Owner | Current responsibility |
 |---|---|
-| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB, Hermes/Signal, embeddings, TTS, Mac-native Gemma, canonical general projects, watched shells, credentials, and operational state; mongot search is currently disabled/stopped |
-| Corsair (`corsair-ai`) | Qwen3.8 Radiance and Qwen3.8 Flash Next weights/runtimes, GPU tooling, benchmarks, restricted model actuation, and the thin `aria-node` compatibility runtime |
+| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB, Hermes/Signal, embeddings, TTS, canonical general projects, watched shells, credentials, and operational state; Gemma is retained but stopped and mongot search is disabled/stopped |
+| Corsair (`corsair-ai`) | Qwen3.8 Flash Next CUDA/Halo serving, retained model weights/experiments, GPU tooling, benchmarks, restricted model actuation, and the thin `aria-node` compatibility runtime |
 | `red`, `ridge` | Registered on-demand GPU nodes reached through Mac-managed proxies |
 | NAS | CouchDB LiveSync hub and recovery repositories |
 
 The desired-state authority is the vault-root `Architecture_Charter.md`. The
 maintained observed-topology explanation is
-`ProjectAria/Design/ARCHITECTURE.md`. Runtime state and functional probes win for
+`ProjectAria/Design/2026-09-08 ARCHITECTURE_CURRENT_20260908.md`. Runtime state and functional probes win for
 volatile facts.
 
 The Mac source checkout is
@@ -42,16 +43,19 @@ jobs. The old `devboxsvc` and `devboxagent` paths and identities are historical.
 | ARIA API and inference gateway | loopback `:8200`, tailnet-published `:8200` | `com.ben.devbox.aria-api` |
 | ARIA UI | loopback `:3000`, tailnet-published `:3000` | `com.ben.devbox.aria-ui` |
 | Hermes and Signal | private gateway and `:8090` | Mac launchd services |
-| MongoDB, embeddings, TTS, Gemma | private/loopback | Mac launchd plus the Lima guest used by MongoDB |
+| MongoDB, embeddings, TTS | private/loopback | Mac launchd plus the Lima guest used by MongoDB; Gemma remains stopped |
 | Corsair node agent | outbound to the Mac API | `aria-node.service` on Corsair |
 
-Verified model data plane:
+September 8 model inventory (readiness is checked separately):
 
-| Model | Corsair listener | Use |
+| Model/host | Listener or Mac proxy | Use |
 |---|---|---|
-| `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` | `127.0.0.1:8121` | boot-default 256K model for ARIA, Hermes, and Pi |
-| `Qwen3.8-27B-R9700-Radiance` | `127.0.0.1:8080` | dual-resident rollback option |
-| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | `127.0.0.1:8120` | dual-resident long-context rollback option; live geometry is 1 × 256K despite the retained legacy slug |
+| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair `127.0.0.1:8131` | RTX 3090/Halo, operator-accepted 256K/one-slot MTP-on default for managed Hermes/Pi; no boot autostart |
+| `Red-Qwen3.8-27B-MXFP4` | Mac proxy `:8094` | Separate dual-R9700 alternative; existing overrides preserved |
+| Ridge | Mac proxy `:8092` | RTX 5090 inventory confirmed by Ben; sleeping at last check, not newly qualified |
+
+Retired Corsair R9700 loadouts are not current rollback hardware. The accepted
+CUDA/Halo release retains a known intermittent CUDA fault; see the handoff above.
 
 DeepSeek V4 weights and experiments may remain on Corsair for rollback and model
 engineering, but no DeepSeek listener is part of the default topology.
@@ -86,22 +90,25 @@ copies the production service environment or embeds a broad key.
 - Inference gateway: `http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1`
 - Identified-model gateway for Pi: `http://bens-macbook-pro.tailb286a5.ts.net:8200/llm/v1-identified`
 
-The current UI publication is private tailnet TCP on `:3000`. Publishing the
-same Mac UI on tailnet HTTPS `:443`, and removing Corsair's stale `:443` rule,
-remains an operational gap; do not describe the stale Corsair HTTPS endpoint as
-working.
+The charter records Mac UI publication on private tailnet TCP `:3000` and
+`https://bens-macbook-pro.tailb286a5.ts.net/`, verified August 30. Corsair's old
+dashboard publication was removed. See `docs/ops/WEB_UI.md`; this documentation
+reconciliation is not a new network-configuration or reachability test.
+
+Hermes uses one standard upstream installation. See the
+[installation and update runbook](integrations/hermes/README.md).
 
 ## Pi Coding policy
 
-Every managed Pi installation has one provider, `aria`, and exactly three models:
+Both checked managed Pi installations (Mac and Corsair) use provider `aria`:
 
-- `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`
-- `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default)
+- `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` (default)
 - `Red-Qwen3.8-27B-MXFP4` (Radiance on Red's two R9700s)
 
 All use the Mac `/llm/v1-identified` gateway with an inference-only credential.
-No Fireworks provider, cloud fallback, raw Corsair URL, or additional registered
-Pi model is allowed. ARIA owns the shell, capture, watchdog, review, and model
+Retired Corsair R9700 entries are removed; Red overrides are preserved. No
+automatic cloud fallback or raw Corsair URL is configured. These checks do not
+imply discovery of every unregistered machine. ARIA owns the shell, capture, watchdog, review, and model
 awareness; Pi owns its coding transcript and tools.
 
 ## Verify before changing anything
@@ -115,8 +122,8 @@ sudo launchctl print system/com.ben.devbox.aria-ui
 
 # Corsair — observation only
 systemctl --user is-active aria-node.service
-systemctl is-active qwen3.8-radiance.service qwen3.8-flash-next.service
-ss -ltn | rg '127.0.0.1:(8080|8120)'
+systemctl --user is-active flashnext-cuda-halo.service
+ss -ltn | rg '127.0.0.1:8131'
 ```
 
 Authenticated infrastructure checks should compare ARIA's registry with the
@@ -168,8 +175,8 @@ launchd/service-tree procedure.
 - `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` — current model routing and hardware constraints
 - `docs/ops/RETRIEVAL_CAPABILITIES.md` — retrieval switches and recovery
 - `tui/README.md`, `cli/README.md`, `ui/README.md` — client-specific use
-- Vault `ProjectAria/START_HERE.md` — plain-language orientation
-- Vault `ProjectAria/Design/ARCHITECTURE.md` — maintained current topology
+- Vault `ProjectAria/Design/2026-09-08 START_HERE_CURRENT_20260908.md` — current plain-language orientation
+- Vault `ProjectAria/Design/2026-09-08 ARCHITECTURE_CURRENT_20260908.md` — current topology; earlier unsuffixed notes are preserved snapshots
 
 ARIA's default conversational agent remains intentionally disabled. `aria chat`
 and direct conversation creation against agent `aria` refuse by design; use

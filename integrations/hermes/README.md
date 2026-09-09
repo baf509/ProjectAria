@@ -19,7 +19,9 @@ integrations live outside the engine; do not reapply the retired core patches.
 `~/.hermes` links to the data home. Its `hermes-agent` entry links to the sole
 application, preserving old virtualenv paths without a second installation.
 The `Infrastructure/Hermes` repository contains integration sources and notes,
-not another Hermes engine installation.
+not another Hermes engine installation. Its private origin is
+[baf509/hermes-aria-integration](https://github.com/baf509/hermes-aria-integration).
+Update the engine from Nous upstream, not from this integration repository.
 
 Installed baseline: **0.21.1**, clean `main`, commit
 `c3ce41645cb08f39e7dd5739dcfd72527096896f`, Nous upstream origin. No local engine

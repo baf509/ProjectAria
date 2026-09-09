@@ -60,14 +60,17 @@ been applied. No new driver/engine/tuning sweep or soak is scheduled.
 ## Hermes and Pi
 
 Hermes CLI and Signal now share one **unmodified Nous upstream** Git installation
-at `/Users/ben/Services/apps/hermes-agent`: version0.21.1, cleanmain commit
+at `/Users/ben/Services/apps/hermes-agent`: version 0.21.1, clean main commit
 `c3ce41645cb08f39e7dd5739dcfd72527096896f`. The sole data home remains
 `/Users/ben/Services/data/hermes-home`; `~/.hermes` is an alias, not a second
 profile. Ben chose standard upstream approvals; the old custom core adapters
 are retired and archived, while ARIA's external hooks/plugins are retained.
 Use `hermes update --plan` then `hermes update --backup` between conversations.
 The existing launchd gateway is correctly recognized as externally supervised.
-See `integrations/hermes/README.md` for verification, recovery and update details.
+See ProjectAria's `integrations/hermes/README.md` for verification, recovery and
+update details. Integration sources are published separately in the private
+[hermes-aria-integration](https://github.com/baf509/hermes-aria-integration)
+repository; that repository is not another engine installation.
 
 Hermes's installed configuration and both managed Pi configurations (Mac and
 Corsair) select the explicit candidate with context 262144 / max output 32768.
@@ -122,8 +125,23 @@ Evidence: `accepted-activation-z4h1cbx_.json`,
 `container-jr4sudfp.json` and `accepted-routine-backend-auth-20260908.json`
 under the author runtime's `results/` directory.
 No further soak, boot autostart, automatic restart or route change was enabled.
-Git publication remains separate: GitHub authentication still returns401 and
-Hermes still needs a usable push repository URL.
+
+## Git publication checkpoint
+
+The previously pending code has a published baseline:
+
+| Repository | Branch | Published baseline |
+|---|---|---|
+| `baf509/ProjectAria` | `master` | `75ea85e83372e89c8e2bcbdd4f6d7118addcb07d` |
+| `baf509/infrastructure` | `feature/flashnext-engine` | `973131c3ccfb691da533714f3e7d0f6676dd2489` |
+| `baf509/hermes-aria-integration` (private) | `master` | `e2550e84459c6d9667bae146475c35e1f753c8bf` |
+
+ProjectAria's remote head was independently read; the two private repositories
+have matching remote-tracking refs with `update by push` reflog evidence from
+Ben's successful Terminal publication. This agent's separate GitHub credential
+context still fails authentication; that does not undo those completed pushes.
+Later documentation revisions are separate: check Git status/remote heads for
+their publication rather than treating this checkpoint as a claim about future commits.
 
 ## Source, evidence and documentation
 
@@ -143,7 +161,7 @@ Relevant reports in `CorsairModelHost/flashnext-author-reproduction/results/`:
 - `topk-sort-fallback-soak-2h-20260908/summary.json` (failed evidence)
 
 Vault notes are published through ARIA. Ben explicitly authorized the September
-8 hardware/current-state charter correction. The two pre-existing charter
-projection histories differ; unrelated policy and history are preserved, not
-silently overwritten. Publication and cross-projection synchronization are
+8 hardware/current-state charter correction and this documentation follow-up.
+The Mac service, desktop and Corsair charters matched before this follow-up;
+unrelated policy and historical entries are preserved. Publication and cross-projection synchronization are
 separate checks. No Ralph/controller acceptance or policy is changed here.
