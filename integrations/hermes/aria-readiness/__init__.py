@@ -28,7 +28,7 @@ def snapshot(platform="signal"):
     from hermes_cli.config import load_config
     from hermes_cli.tools_config import _get_platform_tools
     from toolsets import resolve_toolset
-    from tools.mcp_tool import get_mcp_status
+    from tools.mcp_tool_discovery import get_mcp_status
     from tools.registry import registry
     cfg = load_config()
     connection = next((r for r in get_mcp_status() if r["name"] == "aria"), {})
@@ -49,7 +49,7 @@ def snapshot(platform="signal"):
 
 
 def record(report):
-    from hermes_cli.config import get_hermes_home
+    from hermes_constants import get_hermes_home
     global _last_report
     with _lock:
         # Preserve the model-visible observation until another request replaces it.
@@ -91,10 +91,20 @@ def recover():
     def work():
         global _recovery_running
         try:
-            from tools.mcp_tool import discover_mcp_tools, reconnect_mcp_server
+            from tools.mcp_tool_discovery import discover_mcp_tools
+            from tools.mcp_tool_loop import reconnect_mcp_server
             if not reconnect_mcp_server("aria"):
-                discover_mcp_tools()
+                discover_mcp_tools(allowed_mcp_names=["aria"])
             LOG.info("Requested Aria MCP recovery through Hermes connector")
+            # Discovery/reconnect can finish after the startup observer exits.
+            # Refresh the receipt rather than leaving a stale "not ready" flag
+            # until the next personal conversation. Never alter agent history.
+            for _ in range(15):
+                report = snapshot()
+                record(report)
+                if report["ready"]:
+                    break
+                time.sleep(1)
         except Exception as exc:
             LOG.warning("Aria MCP recovery failed (%s)", type(exc).__name__)
         finally:

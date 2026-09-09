@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 from unittest.mock import Mock
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -53,3 +54,23 @@ def test_disabled_aria_is_not_reenabled(plugin, monkeypatch):
         "connection": "disabled", "missing_required": sorted(plugin.REQUIRED)})
     plugin.before_turn(session_id="s")
     recover.assert_not_called()
+
+
+def test_recovery_refreshes_receipt_and_only_discovers_aria(plugin, monkeypatch):
+    discover = Mock()
+    reconnect = Mock(return_value=False)
+    for name, values in {
+        "tools": {},
+        "tools.mcp_tool_discovery": {"discover_mcp_tools": discover},
+        "tools.mcp_tool_loop": {"reconnect_mcp_server": reconnect},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(values)
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(plugin.threading, "Thread",
+                        lambda *, target, **_: SimpleNamespace(start=target))
+    plugin.recover()
+    reconnect.assert_called_once_with("aria")
+    discover.assert_called_once_with(allowed_mcp_names=["aria"])
+    assert plugin.record.call_args.args[0]["ready"] is True
+    assert plugin._recovery_running is False

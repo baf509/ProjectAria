@@ -1,0 +1,20 @@
+#!/bin/zsh
+set -euo pipefail
+
+# One upstream installation, shared by launchd and the interactive CLI.
+readonly app=/Users/ben/Services/apps/hermes-agent
+readonly hermes_home=/Users/ben/Services/data/hermes-home
+readonly python="$app/venv/bin/python"
+readonly launcher=/Users/ben/Services/apps/bin/run-with-dotenv.py
+unset PYTHONPATH PYTHONHOME
+export HERMES_HOME="$hermes_home"
+export VIRTUAL_ENV="$app/venv"
+# Retain the reviewed ARIA coding-routing hook for noninteractive launchd.
+export HERMES_ACCEPT_HOOKS=1
+export PATH="$app/venv/bin:$app/node_modules/.bin:/Users/ben/Services/apps/bin:/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PYTHONUNBUFFERED=1
+
+cd "$hermes_home"
+# Native updater must leave relaunch to the existing launchd supervisor.
+exec "$python" "$launcher" "$hermes_home/.env" \
+  "$python" -m hermes_cli.main gateway run --external-supervisor

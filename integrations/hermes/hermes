@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+unset PYTHONPATH PYTHONHOME
+readonly app=/Users/ben/Services/apps/hermes-agent
+export HERMES_HOME="${HERMES_HOME:-/Users/ben/Services/data/hermes-home}"
+exec "$app/venv/bin/python" \
+  /Users/ben/Services/apps/bin/run-with-dotenv.py "$HERMES_HOME/.env" \
+  "$app/venv/bin/python" "$app/hermes" "$@"

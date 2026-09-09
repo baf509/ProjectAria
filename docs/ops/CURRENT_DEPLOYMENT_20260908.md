@@ -59,6 +59,16 @@ been applied. No new driver/engine/tuning sweep or soak is scheduled.
 
 ## Hermes and Pi
 
+Hermes CLI and Signal now share one **unmodified Nous upstream** Git installation
+at `/Users/ben/Services/apps/hermes-agent`: version0.21.1, cleanmain commit
+`c3ce41645cb08f39e7dd5739dcfd72527096896f`. The sole data home remains
+`/Users/ben/Services/data/hermes-home`; `~/.hermes` is an alias, not a second
+profile. Ben chose standard upstream approvals; the old custom core adapters
+are retired and archived, while ARIA's external hooks/plugins are retained.
+Use `hermes update --plan` then `hermes update --backup` between conversations.
+The existing launchd gateway is correctly recognized as externally supervised.
+See `integrations/hermes/README.md` for verification, recovery and update details.
+
 Hermes's installed configuration and both managed Pi configurations (Mac and
 Corsair) select the explicit candidate with context 262144 / max output 32768.
 Compaction remains near **95K**, not near the full capacity limit. Pi retains

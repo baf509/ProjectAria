@@ -14,6 +14,7 @@ from pathlib import Path
 import platform
 import sys
 import time
+import traceback
 
 HERMES = Path("/Users/ben/Services/apps/hermes-agent")
 PROFILE = Path("/Users/ben/Services/data/hermes-home")
@@ -39,17 +40,26 @@ def probe(args):
     if platform.system() != "Darwin":
         raise ValueError("Use the Mac control plane")
     os.environ["HERMES_HOME"] = str(PROFILE)
-    sys.path.insert(0, str(HERMES))
+    sys.path.insert(0, str(args.hermes_root.resolve()))
     from dotenv import dotenv_values
+    # Match the actual CLI/gateway dotenv launcher before Hermes loads config.
+    for name, value in dotenv_values(PROFILE / ".env").items():
+        if value is not None:
+            os.environ.setdefault(name, value)
     import yaml
     from agent.secret_scope import set_secret_scope, reset_secret_scope
     from tools import mcp_tool
+    from tools.mcp_tool_common import mcp_field
+    from tools.mcp_tool_config import _interpolate_env_vars
+    from tools.mcp_tool_discovery import register_mcp_servers
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from tools.mcp_tool_schema import mcp_prefixed_tool_name
     from tools.registry import registry
 
     config = yaml.safe_load((PROFILE / "config.yaml").read_text())
     token = set_secret_scope(dotenv_values(PROFILE / ".env"))
     try:
-        transport = mcp_tool._interpolate_env_vars(config["mcp_servers"]["aria"])
+        transport = _interpolate_env_vars(config["mcp_servers"]["aria"])
     finally:
         reset_secret_scope(token)
     if (transport.get("enabled") is not True
@@ -76,13 +86,13 @@ def probe(args):
     def call(name, arguments):
         at = time.monotonic()
         print(json.dumps({"checking_tool": name}), flush=True)
-        result = unpack(registry.dispatch(mcp_tool.mcp_prefixed_tool_name("aria", name), arguments))
+        result = unpack(registry.dispatch(mcp_prefixed_tool_name("aria", name), arguments))
         calls.append({"tool": name, "passed": True, "seconds": round(time.monotonic() - at, 3)})
         return result
 
     try:
-        registered = set(mcp_tool.register_mcp_servers({"aria": transport}))
-        wanted = {mcp_tool.mcp_prefixed_tool_name("aria", n) for n in ADDITIONS}
+        registered = set(register_mcp_servers({"aria": transport}))
+        wanted = {mcp_prefixed_tool_name("aria", n) for n in ADDITIONS}
         if not wanted <= registered:
             raise ValueError("Hermes registration missing new tools")
         # Actual installed Hermes schema conversion/filtering, not a hand-made
@@ -102,17 +112,17 @@ def probe(args):
         # Native progressive discovery, preserving deferred full schemas.
         search_config = ToolSearchConfig.from_raw((config.get("tools") or {}).get("tool_search"))
         for name in wanted:
-            hits = json.loads(dispatch_tool_search({"query": name, "limit": 5},
+            hits = json.loads(dispatch_tool_search({"queries": [name], "limit": 5},
                                                  current_tool_defs=definitions, config=search_config))
-            if name not in {row["name"] for row in hits["matches"]}:
+            if name not in {hit for row in hits["results"] for hit in row["matches"]}:
                 raise ValueError("Native tool search cannot find addition")
-            described = json.loads(dispatch_tool_describe({"name": name}, current_tool_defs=definitions))
-            if described.get("name") != name or "parameters" not in described:
+            described = json.loads(dispatch_tool_describe({"names": [name]}, current_tool_defs=definitions))
+            if "parameters" not in described.get("tools", {}).get(name, {}):
                 raise ValueError("Native tool describe failed")
         server = mcp_tool._servers["aria"]
         for tool in server._tools:
             if tool.name in ADDITIONS:
-                if not tool.annotations or tool.annotations.readOnlyHint is not True:
+                if not tool.annotations or mcp_field(tool.annotations, "read_only_hint", "readOnlyHint") is not True:
                     raise ValueError("Missing read-only annotation")
         contract = call("tool_contract_status", {})
         if contract.get("sha256") != source_sha or contract.get("version") != args.expected_version:
@@ -154,11 +164,13 @@ def probe(args):
                 "calls": calls, "wall_seconds": round(time.monotonic() - started, 3),
                 "scope": "Fresh installed Hermes MCP registry/dispatch; no existing Signal process reload or LLM turn"}
     finally:
-        mcp_tool.shutdown_mcp_servers()
+        shutdown_mcp_servers()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--hermes-root', type=Path, default=HERMES,
+                        help='Source checkout to verify before a managed installation cutover')
     parser.add_argument("--staged-source", type=Path)
     parser.add_argument("--expected-sha256", required=True)
     parser.add_argument("--expected-version", default="2026-09-08.2")
@@ -172,7 +184,9 @@ def main():
     try:
         result = probe(args)
     except Exception as exc:
-        result = {"passed": False, "error_type": type(exc).__name__}
+        result = {"passed": False, "error_type": type(exc).__name__,
+                  "error_locations": [{"file": Path(f.filename).name, "line": f.lineno}
+                                      for f in traceback.extract_tb(exc.__traceback__)]}
     result["instrument_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     with args.out.open("x") as out:
         json.dump(result, out, indent=2)
