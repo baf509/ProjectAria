@@ -188,3 +188,49 @@ The Mac's Red/Ridge model proxies are loopback-only; their direct tailnet
 publications are removed. ARIA model start still uses the separate authenticated
 Corsair wake relay. Tailnet `:8099` is the registered War Audio artifact server,
 not an inference proxy.
+
+## Swapping Red's model (2026-09-10)
+
+Red serves exactly one model at a time; both options share the GPUs, the
+`red-model-gpus.lock`, and the restricted `:8094` forward. ARIA owns the
+lifecycle — the gateway does **not** autostart Red, because `_autostart` in
+`llm_proxy.py` returns early for anything with `onbox=False`.
+
+Four operations, all verified 2026-09-10:
+
+| Intent | Call |
+|---|---|
+| Switch to Flash Next | `select_red_model(model="qwen-flash-next")` |
+| Switch to Radiance | `select_red_model(model="qwen3.8-27b")` |
+| Start one directly | `start_model_server(slug=...)` |
+| Stop (leave Red awake) | `stop_model_server(slug=...)` |
+
+`select_red_model` is preferred for swaps: it stops the other option first and
+verifies readiness. `sleep_model_server` suspends the box itself.
+
+**Agent assignments block swaps.** `select_red_model` refuses while any agent
+is bound to the running Red model ("Current Red model has agent assignments").
+The Pi personas select their model through the gateway and do not need a
+binding, so both Red entries are deliberately left with `bound_agents: []`.
+Re-binding one re-introduces the block.
+
+**Both Red options have a coding persona**, so neither is stale whichever is
+loaded:
+
+- `pi-coding-red` → `Red-Qwen3.8-27B-MXFP4`
+- `pi-coding-red-flashnext` → `Red-Qwen3.8-Flash-Next-MXFP4`
+
+Pi's own `/model` menu lists all three current models from its local
+`models.json` regardless of what is loaded, so the operator picks the one ARIA
+has running. Picking the other returns a legible 503 rather than hanging:
+
+```json
+{"error":"requested server 'Red-Qwen3.8-Flash-Next-MXFP4' is not running",
+ "hint":"start it via ARIA, or omit `model` to use whichever is resident",
+ "running":["Qwen3.8-Flash-Next-CUDA-Halo-Candidate"]}
+```
+
+Omitting `model` follows the ARIA route to whatever is resident instead.
+Note that `/llm/v1-identified/models` lists only *running* servers, so a
+stopped Red option is absent from gateway discovery even though it is
+selectable in Pi.
