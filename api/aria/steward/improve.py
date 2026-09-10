@@ -1784,7 +1784,7 @@ class Improver:
         if not candidates:
             raise ImproverError("no mutable targets are readable")
         backend = str(_setting("steward_backend", "llamacpp"))
-        model = str(_setting("steward_model", "qwen3.8-27b-rocmfp4-r9700"))
+        model = str(_setting("steward_model", settings.steward_model))
         endpoint = _setting(
             "steward_endpoint", "http://127.0.0.1:8200/llm/v1-identified"
         )
@@ -1849,12 +1849,6 @@ class Improver:
            string, and accepting it is how a mis-budgeted model labelled every memory with zero
            entities.
         """
-        url = str(base_url or "")
-        if ":8108" in url:
-            raise ImproverError(
-                "refusing to send improver work to :8108 — that is the pi coding "
-                "agent's single slot and a background call evicts its warm prefix"
-            )
         from aria.llm.base import Message
         from aria.llm.manager import LLMManager
 

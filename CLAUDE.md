@@ -78,8 +78,8 @@ clients remain subject to the charter's unresolved cloud-exception rule.
 
 | Deployment | Host/device | Listener | Role |
 |---|---|---|---|
-| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair RTX 3090 + Strix Halo | `127.0.0.1:8131` | Explicit Hermes/Pi default, operator-accepted 1 × 256K, no boot autostart |
-| `Red-Qwen3.8-27B-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Separate alternative; eligible for model-omitted routing while resident |
+| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair RTX 3090 + Strix Halo | `127.0.0.1:8131` | Explicit Hermes/Pi default **and the automatic route for model-omitted requests** (2026-09-10); operator-accepted 1 × 256K, no boot autostart |
+| `Red-Qwen3.8-27B-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Separate alternative; the model-omitted fallback when the candidate is not resident |
 | `Red-Qwen3.8-Flash-Next-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Explicit selection only; exclusive with Radiance on the same GPUs |
 | Ridge | RTX 5090, user-confirmed | Mac loopback `:8092` | On demand; new-card readiness unverified |
 | Gemma | Mac | retained `:8104` configuration | Intentionally stopped; not an auxiliary fallback |

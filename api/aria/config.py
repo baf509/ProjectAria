@@ -924,11 +924,22 @@ class Settings(BaseSettings):
     # --- Charters / steward -------------------------------------------------
     steward_enabled: bool = False
     steward_interval_minutes: int = 30
-    # Explicit slug through ARIA's identified gateway, never the /llm/v1
-    # "largest resident" auto-route: that could select a coding model and evict
-    # its warm prefix. The gateway preserves identity, policy and observability.
+    # Explicit slug through ARIA's identified gateway. This value MUST name a
+    # registered deployment: an unrecognised model string is not an error at the
+    # gateway, it silently falls through to the auto route (see llm_route.select
+    # -> match_requested returning "no opinion"). That is exactly what happened
+    # here — the slug below was `qwen3.8-27b-rocmfp4-r9700`, a deployment
+    # retired with the R9700 loadouts, so three separate comments claiming this
+    # was pinned "never to the auto-route" described a pin that did not exist.
+    #
+    # Background work now goes to the Corsair model deliberately (Ben,
+    # 2026-09-10). It shares one slot with pi's coding sessions; the gateway's
+    # admission queue gives background callers the lowest priority, and the
+    # deployment carries an 8 GiB prompt cache with 32 context checkpoints, so a
+    # background prefill costs the coding agent a checkpoint restore rather than
+    # a full cold re-prefill.
     steward_backend: str = "llamacpp"
-    steward_model: str = "qwen3.8-27b-rocmfp4-r9700"
+    steward_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     steward_endpoint: str = "http://127.0.0.1:8200/llm/v1-identified"
     steward_max_actions_per_tick: int = 2
     # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before
