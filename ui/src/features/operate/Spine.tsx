@@ -26,6 +26,8 @@ import type {
 } from '@/lib/api/types'
 import { Card, EmptyState, Notice, StatusDot, Text } from '@/components/ui/primitives'
 import { MemoryPools } from './MemoryPools'
+import { Temperatures } from './Temperatures'
+import { RedModels } from './RedModels'
 import { Button, Toasts } from '@/components/ui/controls'
 import { Async } from '@/components/ui/Async'
 import { Cluster, Row, Stack } from '@/components/layout'
@@ -182,12 +184,7 @@ export function Spine({
         </Notice>
       ))}
 
-      <MemoryPools
-        devices={devices}
-        residents={(fleet.data?.servers ?? []).filter((srv) => isResident(srv))}
-      />
-
-      <Card title="Corsair model loadout" hint="RTX 3090 + Strix Halo">
+      <Card title="Corsair model" hint="RTX 3090 + Strix Halo">
         <Stack gap="sm">
           <Cluster>
             <Button
@@ -197,12 +194,12 @@ export function Spine({
               aria-pressed={Boolean(flash && isResident(flash) && route.data?.pinned === FLASH_HYBRID)}
               onClick={activateLoadout}
             >
-              Load and select Flash Next hybrid
+              Load and select Flash Next
             </Button>
           </Cluster>
           <Text>
-            CUDA runs the dense trunk and KV cache on the RTX 3090; Vulkan runs the experts on the Halo.
-            Red remains a separate model choice. The former Corsair R9700 loadouts are retired.
+            Qwen Flash Next is the current Corsair model, with one 256K context slot.
+            This button loads it and makes it the default for requests without a selected model.
           </Text>
           {flash?.startable !== true && (
             <Notice tone="info">{flash?.not_startable_reason ?? 'Waiting for a qualified, registered Flash Next deployment.'}</Notice>
@@ -211,12 +208,14 @@ export function Spine({
         </Stack>
       </Card>
 
-      <Card title="Local model route" hint="ARIA + Hermes follow this">
+      <RedModels fleet={fleet} route={route} utilization={utilization} />
+
+      <Card title="Local model route" hint="Default for requests without an explicit model">
         <Async r={route} skeletonRows={2}>
           {(r) => {
             const loaded = r.loaded ?? []
             if (loaded.length === 0)
-              return <EmptyState>Nothing is loaded — start a model and both ARIA and Hermes follow it.</EmptyState>
+              return <EmptyState>Nothing is loaded — start a model to serve requests without an explicit model.</EmptyState>
             return (
               <Stack gap="sm">
                 <Cluster>
@@ -258,6 +257,13 @@ export function Spine({
           }}
         </Async>
       </Card>
+
+      <Temperatures devices={devices} />
+      <MemoryPools
+        devices={devices}
+        residents={(fleet.data?.servers ?? []).filter((srv) => isResident(srv))}
+      />
+
 
       <Card title="Resident now" bodyClassName="p-0">
         <Async

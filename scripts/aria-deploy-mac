@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""Stage, activate and roll back manifest-pinned Mac API/UI/node releases.
+
+Staging never changes live launchers or the current symlink. Activation requires
+an explicit release path and validates all hashes before touching production.
+Runtime environments and secrets remain outside releases. Run as ben on the Mac.
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from urllib.request import Request, urlopen
+
+APP = Path('/Users/ben/Services/apps/ProjectAria')
+RELEASES = Path('/Users/ben/Services/releases/ProjectAria')
+BIN = Path('/Users/ben/Services/apps/bin')
+JOBS = ['com.ben.devbox.aria-api', 'com.ben.devbox.aria-ui', 'com.ben.devbox.aria-agent-node']
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def run(args, **kwargs):
+    return subprocess.run([str(x) for x in args], check=True, **kwargs)
+
+
+def atomic_write(path, data, mode=0o644):
+    temporary = path.with_name(path.name + '.new-' + str(os.getpid()))
+    temporary.write_bytes(data)
+    temporary.chmod(mode)
+    os.replace(temporary, path)
+
+
+def point_to(target):
+    temporary = APP / ('current.new-' + str(os.getpid()))
+    temporary.symlink_to(target, target_is_directory=True)
+    os.replace(temporary, APP / 'current')
+
+
+def source_files(source):
+    result = subprocess.check_output(['git', '-C', str(source), 'ls-files',
+                                     '--cached', '--others', '--exclude-standard', '-z'])
+    for relative in sorted(set(result.decode().split('\0')) - {''}):
+        p = source / relative
+        if p.is_symlink():
+            raise ValueError('Source symlinks require an explicit deployment mapping: ' + relative)
+        if p.is_file():
+            if p.name == '.env' or 'secrets' in p.parts or p.stat().st_size > 10 * 1024 * 1024:
+                raise ValueError('Unexpected private/large source file: ' + relative)
+            yield relative
+
+
+def stage(source):
+    files = list(source_files(source))
+    head = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    # Dirty source has its own content identity; never label it as plain HEAD.
+    hashes = {f: digest(source / f) for f in files if f != 'ui/src/build-info.json'}
+    content = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    build = head[:7] + '-' + content[:12]
+    release = RELEASES / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + build)
+    release.mkdir(parents=True, mode=0o700)
+    for f in files:
+        target = release / f
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source / f, target)
+    (release / '.env').symlink_to(APP / '.env')
+    (release / 'api/.venv').symlink_to(APP / 'api/.venv', target_is_directory=True)
+    (release / 'ui/node_modules').symlink_to(APP / 'ui/node_modules', target_is_directory=True)
+    environment = {**os.environ, 'BUILD_SHA': build, 'BUILD_BRANCH': 'reviewed-working-tree',
+                   'NEXT_TELEMETRY_DISABLED': '1'}
+    for command in [['node', 'scripts/gen-build-info.mjs'], ['node', 'scripts/gen-tokens.mjs'],
+                    ['npm', 'run', 'typecheck'], ['node', 'scripts/ui-lint-classes.mjs'],
+                    ['npm', 'run', 'build']]:
+        run(command, cwd=release / 'ui', env=environment)
+    tracked = {f: digest(release / f) for f in files if (release / f).is_file()}
+    tracked['ui/src/build-info.json'] = digest(release / 'ui/src/build-info.json')
+    artifacts = {str(p.relative_to(release)): digest(p)
+                 for p in (release / 'ui/.next').rglob('*')
+                 if p.is_file() and 'cache' not in p.relative_to(release / 'ui/.next').parts}
+    for p in (release / 'ui/public').rglob('*'):
+        if p.is_file():
+            artifacts[str(p.relative_to(release))] = digest(p)
+    manifest = {'source_head': head, 'source_content_sha256': content, 'build': build,
+                'files': tracked, 'artifacts': artifacts,
+                'external_dependencies': {'api_python': str(APP / 'api/.venv'),
+                                          'ui_node_modules': str(APP / 'ui/node_modules')},
+                'created_at': datetime.now(timezone.utc).isoformat()}
+    (release / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps({'release': str(release), 'build': build}), flush=True)
+    return release
+
+
+def verify(release):
+    release = release.resolve()
+    if release.parent != RELEASES.resolve():
+        raise ValueError('Release must be directly under ' + str(RELEASES))
+    manifest = json.loads((release / 'release.json').read_text())
+    for name, expected in {**manifest['files'], **manifest['artifacts']}.items():
+        p = release / name
+        if not p.resolve().is_relative_to(release) or p.is_symlink() or not p.is_file() or digest(p) != expected:
+            raise ValueError('Release hash mismatch: ' + name)
+    return manifest
+
+
+def api_key():
+    # Use the service interpreter's dotenv parser; never put a key in argv/logs.
+    code = "from dotenv import dotenv_values; print(dotenv_values('/Users/ben/Services/apps/ProjectAria/.env')['API_KEY'])"
+    return subprocess.check_output([str(APP / 'api/.venv/bin/python'), '-c', code], text=True).strip()
+
+
+def get(path, key=None, port=8200):
+    request = Request(f'http://127.0.0.1:{port}{path}',
+                      headers={'X-API-Key': key} if key else {})
+    with urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+def require_idle(key):
+    for slug in ['Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Red-Qwen3.8-27B-MXFP4']:
+        d = get('/llm/v1/backend?model=' + slug, key)
+        admission = d['admission']
+        if admission.get('active') or admission.get('queued'):
+            raise ValueError('Inference has active/queued work; retry activation after it drains')
+    utilization = get('/api/v1/infrastructure/model-servers/utilization', key)
+    for row in utilization.get('servers', []):
+        if any((row.get(k) or 0) > 0 for k in ('busy_slots', 'requests_processing', 'requests_deferred')):
+            raise ValueError('Backend utilization reports active/queued work; retry after it drains')
+
+
+def job_pid(label):
+    result = run(['launchctl', 'print', 'system/' + label], capture_output=True, text=True)
+    match = re.search(r'^\s*pid = (\d+)\s*$', result.stdout, re.M)
+    return int(match[1]) if match else None
+
+
+def restart(label):
+    pid = job_pid(label)
+    if pid:
+        os.kill(pid, signal.SIGTERM)  # Graceful shutdown of this user's process.
+        deadline = time.monotonic() + 75
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(1)
+        else:
+            raise TimeoutError(label + ' did not shut down; no force kill was attempted')
+    # Next exits successfully on SIGTERM, so KeepAlive may not restart it.
+    run(['sudo', '-n', 'launchctl', 'kickstart', 'system/' + label], capture_output=True)
+
+
+def wait_ready(build):
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        try:
+            if get('/api/v1/health/ready')['ready'] and get('/api/build', port=3000)['sha'] == build:
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise TimeoutError('Live API readiness/UI identity did not match the release')
+
+
+def install_launchers(release, backup):
+    # Preserve host-specific service configuration; change only the source root.
+    for name in ['run-aria-api', 'run-aria-ui', 'run-aria-ui-server', 'run-aria-node']:
+        path = BIN / name
+        shutil.copy2(path, backup / name)
+        if name == 'run-aria-node':
+            data = (release / 'scripts/macos/run-aria-node').read_bytes()
+        else:
+            text = path.read_text()
+            text = text.replace('readonly project=/Users/ben/Services/apps/ProjectAria\n',
+                                'readonly project=/Users/ben/Services/apps/ProjectAria/current\n')
+            text = text.replace('readonly ui=/Users/ben/Services/apps/ProjectAria/ui\n',
+                                'readonly ui=/Users/ben/Services/apps/ProjectAria/current/ui\n')
+            if '/ProjectAria/current' not in text:
+                raise ValueError('Unrecognized launcher: ' + name)
+            data = text.encode()
+        atomic_write(path, data, 0o755)
+
+
+def activate(release):
+    manifest = verify(release)
+    # Verify the system-domain restart privilege BEFORE changing any live file.
+    # In Terminal, authorize once with sudo -v; no password enters this script.
+    run(['sudo', '-n', 'true'], capture_output=True)
+    key = api_key()
+    require_idle(key)
+    backup = Path('/Users/ben/Services/backups') / ('aria-release-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+    backup.mkdir(mode=0o700)
+    current = APP / 'current'
+    previous = str(current.resolve()) if current.is_symlink() else None
+    receipt = {'release': str(release.resolve()), 'previous': previous,
+               'previous_build': get('/api/build', port=3000)['sha'],
+               'manifest_sha256': digest(release / 'release.json'), 'backup': str(backup),
+               'status': 'activating'}
+    (backup / 'activation.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    try:
+        install_launchers(release, backup)
+        point_to(release.resolve())
+        for job in JOBS:
+            restart(job)
+        wait_ready(manifest['build'])
+        # An installed LaunchAgent keeps using the stable script path.
+        entry = APP / 'scripts/aria-boot-check'
+        shutil.copy2(entry, backup / 'aria-boot-check')
+        # Hermes MCP may have an independent release newer than the API.
+        mcp_boot = Path('/Users/ben/Services/apps/aria-mcp/current/scripts/aria-boot-check')
+        boot = mcp_boot if mcp_boot.is_file() else APP / 'current/scripts/aria-boot-check'
+        atomic_write(entry, f'#!/bin/sh\nexec {boot} "$@"\n'.encode(), 0o755)
+        receipt['status'] = 'active'
+    except Exception:
+        for name in ['run-aria-api', 'run-aria-ui', 'run-aria-ui-server', 'run-aria-node']:
+            if (backup / name).exists():
+                atomic_write(BIN / name, (backup / name).read_bytes(), 0o755)
+        if previous:
+            point_to(Path(previous))
+        elif current.is_symlink():
+            current.unlink()
+        if (backup / 'aria-boot-check').exists():
+            atomic_write(APP / 'scripts/aria-boot-check', (backup / 'aria-boot-check').read_bytes(), 0o755)
+        for job in JOBS:
+            restart(job)
+        receipt['status'] = 'rolled_back'
+        raise
+    finally:
+        (backup / 'activation.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    print(json.dumps(receipt), flush=True)
+
+
+def rollback(backup):
+    receipt = json.loads((backup / 'activation.json').read_text())
+    if (APP / 'current').resolve() != Path(receipt['release']):
+        raise ValueError('Active release changed; refuse to roll back a different deployment')
+    run(['sudo', '-n', 'true'], capture_output=True)
+    require_idle(api_key())
+    for name in ['run-aria-api', 'run-aria-ui', 'run-aria-ui-server', 'run-aria-node']:
+        if not (backup / name).is_file():
+            raise ValueError('Incomplete rollback backup: ' + name)
+    if receipt['previous']:
+        verify(Path(receipt['previous']))
+    for name in ['run-aria-api', 'run-aria-ui', 'run-aria-ui-server', 'run-aria-node']:
+        atomic_write(BIN / name, (backup / name).read_bytes(), 0o755)
+    if receipt['previous']:
+        point_to(Path(receipt['previous']))
+    else:
+        (APP / 'current').unlink()
+    atomic_write(APP / 'scripts/aria-boot-check', (backup / 'aria-boot-check').read_bytes(), 0o755)
+    for job in JOBS:
+        restart(job)
+    wait_ready(receipt['previous_build'])
+    receipt['status'] = 'rolled_back'
+    atomic_write(backup / 'activation.json', (json.dumps(receipt, indent=2) + '\n').encode())
+    print(json.dumps(receipt))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    sub = p.add_subparsers(dest='action', required=True)
+    s = sub.add_parser('stage')
+    s.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1])
+    for action in ['verify', 'activate']:
+        sub.add_parser(action).add_argument('release', type=Path)
+    sub.add_parser('rollback').add_argument('backup', type=Path)
+    args = p.parse_args()
+    if sys.platform != 'darwin' or Path.home() != Path('/Users/ben'):
+        p.error('Use Ben’s Mac service account')
+    if args.action == 'stage':
+        stage(args.source.resolve())
+    elif args.action == 'verify':
+        print(json.dumps({'verified': verify(args.release)['build']}))
+    elif args.action == 'activate':
+        activate(args.release.resolve())
+    else:
+        rollback(args.backup.resolve())
+
+
+if __name__ == '__main__':
+    main()

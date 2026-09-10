@@ -322,6 +322,7 @@ async def stop_service(
 # tailnet. The same fields for a list view come to 12.6 KB.
 _LIST_VIEW_FIELDS = frozenset({
     "slug", "state", "port", "onbox", "startable", "weights_present",
+    "catalog_visible", "host_machine",
     "backend_device", "memory_pool", "also_uses",
     "resident_gib_estimate", "resident_gib_measured",
     "pool_used_gib", "pool_total_gib", "pool_spilling",
@@ -473,13 +474,25 @@ async def model_server_utilization(
 
 @router.get("/model-servers/devices")
 async def list_devices(db: AsyncIOMotorDatabase = Depends(get_db)):
+    from aria.infrastructure.thermals import thermal_snapshot, host_temperatures
+    # Local sampling runs off the event loop; the ten-second collector cache
+    # shares reads across dashboards. No privileged process or listener is added.
+    mac = await asyncio.to_thread(thermal_snapshot)
     try:
         hardware = await _local_devices()
     except HTTPException as exc:
         # One unreachable GPU host must not hide another host's telemetry.
         hardware = {"node": "corsair-ai", "devices": [], "pools": [], "system": None,
                     "telemetry_error": str(exc.detail)}
-    return await _with_red_hardware(hardware, db)
+    result = await _with_red_hardware(hardware, db)
+    red = next((h.get('hardware') for h in result['remote_hosts'] if h['node'] == 'red-linux'), None)
+    result['temperature_hosts'] = [
+        host_temperatures('bens-macbook-pro', mac),
+        host_temperatures('corsair-ai', hardware.get('temperatures')),
+        host_temperatures('red-linux', red.get('temperatures') if red else None),
+        host_temperatures('ridge', None),
+    ]
+    return result
 
 
 async def _local_devices():

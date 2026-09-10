@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     agentic_url: str = "http://localhost:8105/v1"
     agentic_api_key: str = ""
 
-    # Ridge (RTX 3090) — NInfer serving Qwen3.6-35B-A3B, reached over the tailnet
+    # Ridge (RTX 5090, user-confirmed; retained runtime needs verification), reached
     # via the Mac-native ridge-llama-proxy (:8092). The proxy sends Wake-on-LAN and
     # HOLDS the request while the box boots and loads 20.8 GiB of weights, so a
     # cold call legitimately takes ~90s before the first byte — hence a timeout
@@ -653,13 +653,10 @@ class Settings(BaseSettings):
     shells_context_lookback_hours: int = 24
     shells_context_lines_per_shell: int = 20
     shells_extraction_enabled: bool = True
-    # Was hardcoded `"agentic"`, i.e. AGENTIC_URL -> the on-demand local coding
-    # server, which is STOPPED by default -- so this fired every 10 minutes at a
-    # port with no listener. It is cheap bulk classification, which is what
-    # gemma-aux exists for, and keeping it off the big server leaves that
-    # server's slots for Hermes and the coding agents.
+    # Gemma is retired. Auxiliary extraction uses the current managed model
+    # through Aria's gateway, like the other local-model consumers.
     shells_extraction_backend: str = "llamacpp"
-    shells_extraction_model: str = "gemma-4-e4b-Q4"
+    shells_extraction_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     shells_extraction_interval_minutes: int = 10
     shells_extraction_min_events: int = 20
     # Per-shell wall-clock bound on one extraction call. Belt-and-suspenders
@@ -800,13 +797,7 @@ class Settings(BaseSettings):
     # passthrough, which follows whichever server is resident. Naming a port
     # here would break every time the resident model changes.
     ontology_extraction_backend: str = "llamacpp"
-    # Names gemma-aux explicitly rather than following the resident model. Two
-    # measured reasons (2026-08-07): the resident server is DS4, a REASONING
-    # model that spends its whole token budget thinking before emitting JSON —
-    # and gemma is the box's designated auxiliary model, so extraction does not
-    # compete with interactive inference for the GPU. The passthrough resolves
-    # this string via llm_route.match_requested, so it is a selector, not a URL.
-    ontology_extraction_model: str = "gemma-4-e4b-Q4"
+    ontology_extraction_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     # Require the memory text to actually contain an entity's name before
     # accepting the LLM's proposal. Measured on the first sample, this rejected
     # a wrong-quant model server, an unrelated container, and two entities that
@@ -998,25 +989,11 @@ class Settings(BaseSettings):
     # agents/review.py. Repointing steward_model would have moved those onto a
     # 4B model too, which is not what was asked for and not what they need.
     #
-    # Only the INFORMATIONAL-vs-FAILURE call runs here. The DIAGNOSE session is
-    # separate and untouched (triage_diagnose_backend = "claude_code").
-    # Classification is a bounded binary judgement over a short alert message —
-    # well within a 4B model — and moving it off :8080 keeps triage from
-    # competing with Hermes's interactive model.
-    #
-    # ⚠️ Yes, a 4B model on gemma :8104 is what this loop used to run on before
-    # 2026-08-10. It failed because gemma was ABSENT (its systemd unit gated on a
-    # retired :18211 endpoint and exited 1 every boot — repaired 2026-08-17), not
-    # because a 4B classified badly. The failure mode is also safe by design: an
-    # unusable classification returns None and LEAVES THE ALERT ALONE, so Ben
-    # still receives it. A dead classifier costs a downgrade, never a delivery.
-    #
-    # One thing that genuinely improves here: gemma runs with `--reasoning off
-    # --reasoning-budget 0`, so the empty-content reasoning-model trap described
-    # under steward_max_tokens does not apply to it at all.
+    # Classification remains a bounded call, separate from diagnosis. Gemma
+    # is retired; route to the current model through the authenticated gateway.
     triage_classify_backend: str = "llamacpp"
-    triage_classify_model: str = "gemma-4-e4b-it"
-    triage_classify_endpoint: str = "http://127.0.0.1:8104/v1"
+    triage_classify_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    triage_classify_endpoint: str = "http://127.0.0.1:8200/llm/v1"
     triage_classify_max_tokens: int = 512
     shells_nudge_worker_enabled: bool = False
     shells_nudge_worker_interval_minutes: int = 15

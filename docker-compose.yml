@@ -1,3 +1,5 @@
+# HISTORICAL Linux standalone stack; not the Mac production deployment.
+# Do not use this to restore a Corsair control plane. See docs/ops/MAC_DEPLOYMENT.md.
 services:
   # =============================================================================
   # NOTE: The ARIA API runs natively on the host (not in Docker) so it can

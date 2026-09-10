@@ -15,6 +15,8 @@ from aria.config import settings
 
 NODE = 'red-linux'
 MODEL = 'Red-Qwen3.8-27B-MXFP4'
+MODELS = {MODEL: 'qwen3.8-27b',
+          'Red-Qwen3.8-Flash-Next-MXFP4': 'red-qwen3.8-flash-next-mxfp4'}
 SSH_CONFIG = '/Users/ben/Services/config/red-model-ssh.conf'
 logger = logging.getLogger(__name__)
 
@@ -84,7 +86,7 @@ async def enrich(rows, db):
     if observation is None:
         return rows
     for row in rows:
-        if row.get('slug') != MODEL:
+        if row.get('slug') not in MODELS:
             continue
         hardware = observation.get('hardware', {})
         pools = hardware.get('pools', [])
@@ -93,7 +95,7 @@ async def enrich(rows, db):
                        pool_total_gib=round(sum(p['total_gib'] for p in pools), 3),
                        pool_spilling=any(p.get('spilling') for p in pools))
         runtime = observation.get('runtime', {})
-        if row.get('state') == 'running' and runtime.get('model_id') == 'qwen3.8-27b':
+        if row.get('state') == 'running' and runtime.get('model_id') == MODELS[row['slug']]:
             row.update(served_ctx=runtime.get('served_ctx'), ctx_per_slot=runtime.get('served_ctx'),
                        slots=runtime.get('slots'), geometry_source='red-linux running container and /v1/models')
         row['hardware_observed_at'] = hardware.get('observed_at')

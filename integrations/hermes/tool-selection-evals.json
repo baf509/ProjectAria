@@ -113,5 +113,75 @@
     "id": "inspect-benchmark-options",
     "prompt": "Which model targets and benchmark suites are available through Aria? Do not start a benchmark.",
     "first_tool": "benchmark_catalog"
+  },
+  {
+    "id": "watch-shell-output",
+    "prompt": "Wait up to 15 seconds for new captured output after line 42 in watched shell claude-work. Do not type anything.",
+    "first_tool": "wait_for_shell_output",
+    "arguments": {
+      "name": "claude-work",
+      "since_line": 42
+    },
+    "forbidden": [
+      "terminal",
+      "send_shell_input"
+    ]
+  },
+  {
+    "id": "host-temperatures",
+    "prompt": "How hot are the Mac and Corsair CPUs and GPUs right now?",
+    "first_tool": "host_temperatures"
+  },
+  {
+    "id": "inspect-memory-before-correction",
+    "prompt": "Read Aria memory 6aa0e1c3b2ea9c354a8d782b and its provenance before we correct it.",
+    "first_tool": "get_memory",
+    "arguments": {
+      "memory_id": "6aa0e1c3b2ea9c354a8d782b"
+    }
+  },
+  {
+    "id": "inspect-environmental-events",
+    "prompt": "What warning observations did Aria record in the last hour?",
+    "first_tool": "awareness_observations",
+    "arguments": {
+      "severity": "warning"
+    }
+  },
+  {
+    "id": "inspect-research-report",
+    "prompt": "Read the existing Aria research report for run r-123. Do not start more research.",
+    "first_tool": "get_research_report",
+    "arguments": {
+      "run_id": "r-123"
+    }
+  },
+  {
+    "id": "red-current-model-status",
+    "prompt": "Which models can Red Linux load, and what is loaded now? Do not change anything.",
+    "first_tool": "red_model_status",
+    "arguments": {}
+  },
+  {
+    "id": "red-wake-flash-next",
+    "prompt": "Wake Red and load Qwen Flash Next. Keep Hermes on Corsair.",
+    "first_tool": "select_red_model",
+    "arguments": {
+      "model": "qwen-flash-next"
+    }
+  },
+  {
+    "id": "red-switch-27b",
+    "prompt": "Switch Red to Qwen3.8-27B when it is safe to do so.",
+    "first_tool": "select_red_model",
+    "arguments": {
+      "model": "qwen3.8-27b"
+    }
+  },
+  {
+    "id": "red-pending-load",
+    "prompt": "The Red model selection returned pending. Check its state; do not repeat the start.",
+    "first_tool": "red_model_status",
+    "arguments": {}
   }
 ]

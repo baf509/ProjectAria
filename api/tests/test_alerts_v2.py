@@ -55,6 +55,9 @@ def _match(doc: dict, flt: dict) -> bool:
                 elif op == "$regex":
                     if actual is None or not re.search(operand, str(actual)):
                         return False
+                elif op == "$lte":
+                    if actual is None or actual > operand:
+                        return False
                 else:  # pragma: no cover - unsupported operator in a test
                     raise NotImplementedError(op)
         elif actual != expected:
@@ -139,6 +142,12 @@ class FakeCollection:
         doc = candidates[0]
         _apply(doc, update)
         return dict(doc)
+
+    async def update_many(self, flt, update):
+        matched = [doc for doc in self.docs if _match(doc, flt)]
+        for doc in matched:
+            _apply(doc, update)
+        return SimpleNamespace(modified_count=len(matched))
 
     def find(self, flt=None, *args, **kwargs):
         self.queries.append(dict(flt or {}))
@@ -1080,6 +1089,74 @@ async def test_heartbeat_without_prior_death_is_quiet(tmp_path):
     wd = _watchdog(db, tmp_path, lambda: now)
     await wd.record_heartbeat("hermes")
     wd.notifier.notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["heartbeat", "healthy_tick", "route"])
+async def test_relay_recovery_closes_old_incident_and_allows_new_outage(tmp_path, alerts_client, via):
+    """A recovered row must leave Needs You, and a later outage must be new
+    and undelivered instead of merging into an already-delivered old row."""
+    db = alerts_client.db
+    now = datetime.now(timezone.utc)
+    old = _alert_doc(source="relay", event_type="dead", dedup_key="relay|dead",
+                     last_seen_at=now - timedelta(minutes=10), delivered_at=now)
+    unrelated = _alert_doc(source="selfcheck", event_type="degraded")
+    db.alerts.docs.extend([old, unrelated])
+    db.app_state.docs.append({"_id": RELAY_STATE_ID, "last_heartbeat_at": now,
+                              "dead_since": None})
+    wd = _watchdog(db, tmp_path, lambda: now)
+    with patch.object(settings, "obsidian_vault_path", str(tmp_path)):
+        if via == "heartbeat":
+            await wd.record_heartbeat("hermes")
+        elif via == "route":
+            response = await alerts_client.post("/api/v1/alerts/relay-heartbeat")
+            assert response.status_code == 200
+        else:
+            await wd.evaluate_once()
+    assert old["acked"] and not old["needs_human"]
+    assert old["decision"] is None and "false_raise" not in old
+    assert not unrelated["acked"]
+    with _patch_db(db):
+        result = await NotificationService().notify(
+            source="relay", event_type="dead", detail="new outage", cooldown_seconds=0,
+        )
+    assert result["alert_id"] != str(old["_id"])
+    assert db.alerts.docs[-1]["delivered_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolution_preserves_newer_incidents_and_human_decisions():
+    from aria.notifications.resolution import resolve_alerts
+
+    db = FakeDB()
+    now = datetime.now(timezone.utc)
+    future = _alert_doc(source="relay", event_type="dead", last_seen_at=now + timedelta(seconds=1))
+    decided = _alert_doc(source="relay", event_type="dead", acked=True,
+                         decision={"value": "HOLD"}, last_seen_at=now - timedelta(minutes=5))
+    legacy = _alert_doc(source="relay", event_type="dead", created_at=now - timedelta(days=1))
+    legacy.pop("last_seen_at", None)
+    db.alerts.docs.extend([future, decided, legacy])
+    count = await resolve_alerts(db, source="relay", event_type="dead", observed_at=now)
+    assert count == 1 and legacy["acked"]
+    assert not future["acked"] and decided["decision"] == {"value": "HOLD"}
+    assert "resolution" not in decided
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("healthy", [True, False])
+async def test_selfcheck_reconciles_old_alert_after_restart(healthy):
+    from aria.shells.selfcheck import SelfCheckWorker
+
+    db = FakeDB()
+    old = _alert_doc(source="selfcheck", event_type="degraded",
+                     last_seen_at=datetime.now(timezone.utc) - timedelta(hours=1))
+    db.alerts.docs.append(old)
+    worker = SelfCheckWorker(db, notifier=None, interval_minutes=5, cooldown_minutes=30)
+    with patch("aria.shells.selfcheck.run_checks", AsyncMock(return_value=[
+        {"name": "llm", "ok": healthy, "detail": "observed"},
+    ])):
+        await worker.evaluate_once()
+    assert old["acked"] is healthy
 
 
 @pytest.mark.asyncio

@@ -36,8 +36,8 @@ async function fixture(page: Page, startable: boolean, running = false, failStar
     }
     await route.fulfill({ json: body })
   })
-  await page.goto('/operate')
-  return page.getByRole('button', { name: 'Load and select Flash Next hybrid', exact: true })
+  await page.goto('/operate', { waitUntil: 'domcontentloaded' })
+  return page.getByRole('button', { name: 'Load and select Flash Next', exact: true })
 }
 
 test('qualification gate disables the new loadout and retired dual button is absent', async ({ page }) => {

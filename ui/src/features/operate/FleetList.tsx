@@ -9,10 +9,8 @@
  * nothing was in the URL. Rows are Links, so a selection survives reload, Back
  * works, and a Signal deep-link lands on the right server.
  *
- * Grouped by MEMORY POOL because that is the actual constraint: entries in
- * different pools can be resident simultaneously, so a flat by-weight list
- * (the old ordering) implied a queue that does not exist. The state WORD is
- * printed on every row — the old 7px dot was the only state signal.
+ * Grouped by machine, with current choices only. Archived deployments that
+ * unexpectedly become resident remain visible for diagnosis and stopping.
  */
 import { useState } from 'react'
 import Link from 'next/link'
@@ -24,7 +22,7 @@ import { Async } from '@/components/ui/Async'
 import { Row, Stack } from '@/components/layout'
 import { gib } from '@/lib/format'
 import type { Resource } from '@/lib/swr'
-import { STATE_WORD, dotState, groupFleet, isGpu, serverState } from './lib'
+import { STATE_WORD, dotState, groupFleet, isGpu, isModelChoice, isResident, modelName, serverState } from './lib'
 
 function FleetRow({ server, selected }: { server: ModelServerFull; selected: boolean }) {
   const st = serverState(server)
@@ -44,7 +42,7 @@ function FleetRow({ server, selected }: { server: ModelServerFull; selected: boo
         {/* Slugs discriminate at both ends and hold real information — let
             them wrap rather than hiding half behind an ellipsis+tooltip. */}
         <span className={`block wrap-anywhere font-mono text-label ${selected ? 'text-accent' : 'text-ink'}`}>
-          {server.slug}
+          {modelName(server.slug)}
         </span>
         <span className={`text-micro ${word.tone}`}>{word.word}</span>
       </Row>
@@ -58,7 +56,7 @@ export function FleetList({ fleet }: { fleet: Resource<ModelServersFullResponse>
   const selected = params?.slug ? decodeURIComponent(params.slug) : null
 
   return (
-    <Card title="Fleet" hint={fleet.data ? `${fleet.data.servers.length} registered` : undefined} bodyClassName="p-0">
+    <Card title="Models" hint={fleet.data ? `${fleet.data.servers.filter((s) => isModelChoice(s) || isResident(s)).length} available` : undefined} bodyClassName="p-0">
       <div className="border-b border-line px-2.5 py-2">
         <Field label="Filter">
           {/* coarse:text-title (1rem) works around the shared Input's `text-body`
@@ -69,7 +67,7 @@ export function FleetList({ fleet }: { fleet: Resource<ModelServersFullResponse>
             className="coarse:text-title"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="slug, pool, description…"
+            placeholder="Model or machine…"
             aria-label="Filter the fleet"
           />
         </Field>

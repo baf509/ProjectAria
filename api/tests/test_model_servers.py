@@ -373,8 +373,12 @@ async def test_start_skips_gtt_gate_for_cpu_only_server(manager):
 
 @pytest.mark.asyncio
 async def test_start_force_bypasses_safety_checks(manager):
+    # Generic force behavior is tested with an explicitly forceable fixture;
+    # production archives now refuse force starts as well as ordinary starts.
+    spec = replace(manager.get_spec("Laguna-S-2.1"), allow_force_start=True)
     docker = FakeDocker({"chadrock": ("running", "")})  # would normally conflict
-    with patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(112.0, 124.0)):
+    with patch.object(manager, "resolve_spec", AsyncMock(return_value=spec)), \
+         patch.object(ms, "_run", docker), patch.object(ms, "_read_gtt_gib", return_value=(112.0, 124.0)):
         result = await manager.start("Laguna-S-2.1", force=True)
     assert result["action"] == "started"
     assert any(kind == "compose" for kind, *_ in docker.calls)

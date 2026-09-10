@@ -3,7 +3,7 @@
 Only open, current work belongs here. Shipped work lives in `CHANGELOG.md`;
 desired architecture lives in the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-09-05**.
+Last reconciled: **2026-09-08**.
 
 ## Architecture reconciliation
 
@@ -15,100 +15,11 @@ the duplicate Corsair Gemma service, and stale/manual Mac forward mappings.
 
 ## Inference scheduling
 
-- Qualify the gateway's concurrent fleet-read coalescing and shorter idle pool
-  expiry against mixed Hermes/Pi-shaped traffic. The production control showed
-  intermittent 503 routing failures and a dropped stream without a model
-  restart; the candidate also saw a 502 before receiving response headers.
-  Five targeted regressions cover the new cache/pool behavior, but passing
-  unit tests is not live reliability evidence. Activate the reviewed API change
-  only between benchmark windows, then repeat the reference soak before
-  judging the experimental engine. Never retry an accepted generation silently.
-  Post-restart follow-up: the 180-second production control failed at 93.9
-  seconds after 12 correct requests (trace `2e6a44328ae0419cbd903d5bddb8d470`).
-  The second administrator restart activated fresh upstream connections and
-  bounded transport-stage diagnostics. The repeated 180-second control passed
-  37 requests in 184.49 seconds without retries. Extended reliability remains
-  open, and root cause is unresolved. Prior failures remain evidence, not retries.
-  The separate two-hour production-reference protocol soak started at 19:34:58
-  UTC in `claude-flashnext-gateway-validation`, sibling results directory
-  `gateway-fresh-soak-2h-20260905`. Inspect its final summary; this is not an
-  experimental-candidate or actual-agent-executor qualification.
-- Finish qualification and measured optimization of the original R9700 + Strix
-  Halo engine in the sibling `CorsairModelHost/flashnext-engine` project.
-  The updated source review is in
-  `infrastructure/Planning/2026-09-05 Flash Next R9700 Halo Implementation Review.md`;
-  it supersedes the original plan's technical assumptions and absolute speed targets.
-  Indexed sparse attention has independent CPU/both-GPU numerical evidence;
-  its original matrix-unit path remains opt-in. Generic chunked GDN is correct
-  but failed its performance gate and must remain disabled. Operator findings:
-  `infrastructure/Analysis/2026-09-05 Flash Next Original Engine Operator Qualification 015331.md`.
-  Preserve the qualified `:8121` deployment as control.
-  The experimental registry is not startable or auto-route eligible; full-model
-  gateway qualification requires the restricted `:8122` forward. Ben approved
-  that addition on 2026-09-05; its key restriction and loopback binding are
-  verified. Launchd ownership is restored and the temporary forward is gone.
-  Ben's API restart activated the reviewed registry/routing files. The candidate
-  has loaded successfully and explicit gateway benchmarks have begun, with all
-  new kernel flags disabled for the initial control. Exclusive-GPU test windows
-  have an independent timed production rollback; live state is in the task.
-  Promotion still requires matched depth-ladder performance, model correctness,
-  cache, and mixed Hermes/Pi soak gates. Task: `6a9b9412db2209986aed4cd4`.
-  The first always-on WMMA screen fails short-context performance despite a
-  better 32K median. Startup profiling is now captured without a policy change;
-  production is restored and the experiment is stopped. Findings and next tests:
-  `infrastructure/Analysis/2026-09-05 2026-09-05 Flash Next Whole Model Screen and Prefill Trace.md`.
-  Qualify depth gating, replay representative Halo Q4_K/Q5_1 expert matrix shapes,
-  and establish transfer dependencies before attempting scheduling overlap.
-  A single-cell 64K improvement is encouraging but not promotion evidence.
-  Original GPU-routed Q4_K/Q5_1 expert kernels now compile for both AMD targets
-  and pass the numerical replay suite, but their first four implementations fail
-  the operator speed gate. `moe_prefill` remains opt-in/off; preserve native
-  serving. Packed F16 and Q8 activations improved the custom paths but did not
-  beat interleaved native controls. The Q8 candidate passes 320 numerical cases
-  across both GPUs; full-model quality remains unqualified. Profiling confirms
-  its matrix loop remains slower than native. New modes 5/6 retain native MMQ
-  arithmetic while replacing route preparation; 240 numerical cases and 56
-  timing calls match native output fingerprints on both GPUs. Mode 5 has small
-  operator-only point gains; mode 6's small-group sorting adds no convincing
-  benefit. Keep both off until full-model qualification. Canonical parameter
-  declarations now accept 0..6, but these additions are not deployed to the API.
-  Hardware topology is verified end-to-end:
-  the upstream external link is Gen4 x4 despite the GPU endpoint's Gen5 x16 report.
-  A verified 40-cell synthetic probe measures about 605/236 GB/s local reads on
-  R9700/Halo, but only 7.02/6.72 GB/s peer payload transfers. Measure actual
-  graph-boundary bytes, sustained behavior and overlap before scheduler changes.
-  Evidence: `infrastructure/Analysis/2026-09-05 Flash Next Hardware Roofline and Original Expert Kernel Checkpoint.md`.
-  Latest: `infrastructure/Analysis/2026-09-05 Flash Next Measured Transport Limits and Native MMQ Routing.md`.
-  The depth-gated combined screen now recovers 4K/8K prefill and improves 64K
-  prefill by about 35%; one 32K gateway failure leaves the comparison incomplete.
-  Seven short full-model correctness checks pass, not a deep-context qualification.
-  The short reference protocol control now passes on the activated gateway.
-  Also compare Halo-only and hybrid with identical
-  runtime/settings: improvements over the old hybrid do not establish OCuLink's
-  net benefit. Production is restored; the experiment is stopped.
-  The experimental `placement=halo-only` control is implemented and its
-  launchers deployed, with original production commands unchanged by default.
-  It must pass both-pool guards; do not shrink context/cache to force a fit and
-  then call the comparison matched. Use the sibling comparator's
-  `--same-runtime --allow-change placement --allow-change mtp.device` identity
-  gate; this does not permit different draft algorithms or depths. The initial
-  Halo text-model load and 11 arithmetic/tool/4K/32K cache-branch checks pass.
-  The retained vision projector still allocates R9700 memory, and two-lane
-  prefill is ignored with one target GPU. Full-cache/deep fit, warmed ABBA
-  measurements and full quality/soak remain outstanding.
-  Review community `halo-box/strix-llama.cpp` PR18 as isolated candidates:
-  compact Halo routed-MMQ tiles/prefetch, RDNA4 GDN reductions and fusion.
-  The current quant's Q5_1 expert down projection is not in their compact
-  selector. Do not import the entire fork, MTP state changes, or power settings
-  without matching local correctness/performance gates.
-  Remote experimental parameter views currently show
-  declared defaults; expose observed unit/process overrides without treating
-  defaults as runtime evidence. This test's actual flags are recorded from
-  the server process and journal in the active task.
-- Add a Jobs view over gateway usage/admission telemetry: caller class,
-  requested model, selected deployment/node, queue time, run time, token counts,
-  cache hit rate, and outcome. Include a cheap deterministic route canary from
-  the dashboard. Do not store prompts or generated text.
+The retired Corsair R9700 engine qualification and former `:8121` control
+instructions are closed as superseded. The CUDA/Halo candidate is operator
+accepted with its known intermittent fault; no further crash investigation or
+soak is scheduled. Historical measurements remain in dated vault evidence.
+
 - Add explicit `available` / `draining` / `reserved` node intent. New work must
   avoid a drained node without treating normal sleep, gaming, or interactive
   GPU use as a service failure.
@@ -124,16 +35,11 @@ Closed 2026-09-03: single-slot priority admission, cancellation-safe release,
 30-second starvation-preventing aging, live queue diagnostics, per-request
 queue accounting, and background labeling for Aria-owned inference.
 
-## UI publication and deployment
+## Deployment
 
-- Ben must publish the Mac's loopback UI on tailnet HTTPS `:443`; agents are not
-  permitted to change Tailscale configuration. After acceptance, remove the
-  stale Corsair `:443 -> 127.0.0.1:3000` publication.
-- Replace the retired Docker implementation behind the Makefile's `ui-deploy`
-  target with a tested, atomic Mac service-tree deployment procedure. Until then
-  the target fails with an explanatory message instead of touching the wrong
-  host/runtime.
-- Add a production build-identity acceptance check to the Mac deployment.
+- Keep API, UI and node release manifests and acceptance checks synchronized.
+  Use `scripts/aria-deploy-mac`; the Mac UI is already published on private
+  tailnet TCP and HTTPS. Historical Corsair publication is retired.
 
 ## Control-plane resilience
 
@@ -150,8 +56,7 @@ queue accounting, and background labeling for Aria-owned inference.
   that MCP-documented values match dispatch values.
 - Schedule or explicitly retire memory confidence decay; the maintenance route
   alone does not implement a policy.
-- Add response models for high-use operational endpoints and durable build
-  identity for the UI.
+- Add response models for high-use operational endpoints.
 - Decide the three retention defaults before lowering any value that triggers
   irreversible TTL deletion.
 

@@ -588,10 +588,7 @@ class TriageWorker:
         try:
             from aria.llm.manager import LLMManager
 
-            # 2026-08-17: classification runs on its OWN model (gemma :8104),
-            # not steward_model — see config.triage_classify_*. steward_model
-            # also drives the Steward service and agents/review.py, so reusing
-            # it here would have coupled three unrelated consumers.
+            # Keep classifier settings independent from diagnosis/review.
             self._adapter = LLMManager().get_adapter(
                 getattr(settings, "triage_classify_backend", None)
                 or getattr(settings, "steward_backend", "llamacpp"),

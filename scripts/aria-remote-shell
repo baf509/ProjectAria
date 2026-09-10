@@ -12,14 +12,15 @@ tool=$2
 shift 2
 
 # Placement flags belong to the ARIA wrapper, not the underlying coding tool.
-# Placement flags are consumed here, but never bypass the managed tmux shell.
-# Every supported interactive coding session remains visible to ARIA.
+# Explicit --no-aria/--local uses the standalone terminal launcher.
 forwarded_args=()
 attach_args=()
 attach_mode=shared
+untracked_mode=${ARIA_UNTRACKED:-0}
 for arg in "$@"; do
     case "$arg" in
-        --local|--no-aria|--corsair|--remote) ;;
+        --local|--no-aria) untracked_mode=1 ;;
+        --corsair|--remote) ;;
         --aria-view|--aria-takeover)
             if [[ "$attach_mode" != shared && "$attach_mode" != "$arg" ]]; then
                 echo "choose either --aria-view or --aria-takeover" >&2; exit 2
@@ -32,6 +33,14 @@ done
 # Non-interactive SSH does not load Ben's shell profile. The launchers call the
 # agent binaries by basename, so supply the same user-local PATH explicitly.
 export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
+
+if [[ "$untracked_mode" == 1 ]]; then
+    if [[ "$attach_mode" != shared ]]; then
+        echo 'aria: untracked mode cannot attach to a managed shell' >&2; exit 2
+    fi
+    cd -- "$workdir"
+    exec "$HOME/.local/bin/aria-untracked-shell" "$tool" "${forwarded_args[@]}"
+fi
 
 case "$workdir" in
     /home/ben/Development|/home/ben/Development/*) ;;

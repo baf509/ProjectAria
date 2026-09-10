@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -73,21 +74,63 @@ def _wait_ready(base: str, timeout: float) -> tuple[bool, dict, float]:
 
 
 def _launchd_running(label: str) -> bool:
-    completed = subprocess.run(
-        ["launchctl", "print", f"system/{label}"],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
+    try:
+        completed = subprocess.run(
+            ["launchctl", "print", f"system/{label}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
     return completed.returncode == 0 and "state = running" in completed.stdout
 
 
-def _mcp_contract(path: Path) -> dict:
+def _mcp_contract(path: Path, base: str = DEFAULT_URL) -> dict:
+    reference = Path(__file__).resolve().parents[1] / "mcp"
     try:
         data = path.read_bytes()
+        operations = path.with_name("operations.py").read_bytes()
+        expected = hashlib.sha256((reference / "server.py").read_bytes()).hexdigest()
+        expected_operations = hashlib.sha256((reference / "operations.py").read_bytes()).hexdigest()
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
-    return {"ok": True, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+    actual = hashlib.sha256(data).hexdigest()
+    actual_operations = hashlib.sha256(operations).hexdigest()
+    if (actual, actual_operations) != (expected, expected_operations):
+        return {"ok": False, "error": "Installed MCP differs from the release contract"}
+    environment = {**os.environ, "ARIA_API_KEY": _scoped_key(), "ARIA_API_URL": base}
+    try:
+        result = subprocess.run(
+            [str(path.parent / ".venv/bin/python"),
+             str(Path(__file__).resolve().with_name("aria-mcp-check")), str(path)],
+            env=environment, capture_output=True, text=True, timeout=30,
+        )
+        report = json.loads(result.stdout)
+        contract = report.get("contract", {})
+        report["ok"] = bool(report.get("ok") and result.returncode == 0
+                            and contract.get("sha256") == expected
+                            and contract.get("operations_sha256") == expected_operations)
+        return report
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "error": type(exc).__name__}
+
+
+def _node_health(status: int, nodes, required: list[str], max_age: float) -> dict:
+    if status != 200 or not isinstance(nodes, list):
+        return {"ok": False, "status": status, "error": "Node registry unavailable"}
+    by_id = {node.get("node_id"): node for node in nodes if isinstance(node, dict)}
+    checks = {}
+    now = datetime.now(timezone.utc)
+    for node_id in required:
+        node = by_id.get(node_id, {})
+        try:
+            at = datetime.fromisoformat(node["last_heartbeat_at"].replace("Z", "+00:00"))
+            age = (now - at).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            age = None
+        checks[node_id] = {"ok": node.get("status") == "online" and age is not None
+                          and -30 <= age <= max_age,
+                          "heartbeat_age_seconds": round(age, 1) if age is not None else None}
+    return {"ok": all(check["ok"] for check in checks.values()), "required": checks}
 
 
 def _harmless_shell_canary(base: str) -> dict:
@@ -118,29 +161,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--api-url", default=DEFAULT_URL)
     parser.add_argument("--wait", type=float, default=0)
     parser.add_argument("--canary-shell", action="store_true")
+    parser.add_argument("--required-node", action="append",
+                        help="Repeat to override the required always-on nodes; sleeping GPU nodes are excluded")
+    parser.add_argument("--heartbeat-max-age", type=float, default=120)
     parser.add_argument(
         "--mcp-source",
         default="/Users/ben/Services/apps/aria-mcp/server.py",
     )
     args = parser.parse_args(argv)
-
+    deadline = time.monotonic() + max(args.wait, 0)
     ready, readiness, wait_seconds = _wait_ready(args.api_url, args.wait)
     report = {
         "ok": ready,
         "checked_at": time.time(),
         "time_to_aria_ready_from_check_seconds": round(wait_seconds, 3),
         "aria_readiness": readiness,
-        "launchd": {
-            "aria_api": _launchd_running("com.ben.devbox.aria-api"),
-            "hermes_gateway": _launchd_running("com.ben.devbox.hermes-gateway"),
-            "signal_cli": _launchd_running("com.ben.devbox.signal-cli"),
-        },
-        "mcp_contract": _mcp_contract(Path(args.mcp_source)),
     }
     if ready:
-        status, nodes = _request(args.api_url, "GET", "/api/v1/nodes")
-        report["nodes"] = {"ok": status == 200, "items": nodes if status == 200 else []}
-        if args.canary_shell:
+        while True:
+            report["launchd"] = {
+                "aria_api": _launchd_running("com.ben.devbox.aria-api"),
+                "aria_ui": _launchd_running("com.ben.devbox.aria-ui"),
+                "aria_node": _launchd_running("com.ben.devbox.aria-agent-node"),
+                "hermes_gateway": _launchd_running("com.ben.devbox.hermes-gateway"),
+                "signal_cli": _launchd_running("com.ben.devbox.signal-cli"),
+            }
+            report["mcp_contract"] = _mcp_contract(Path(args.mcp_source), args.api_url)
+            try:
+                status, nodes = _request(args.api_url, "GET", "/api/v1/nodes")
+                report["nodes"] = _node_health(
+                    status, nodes, args.required_node or ["bens-macbook-pro", "mac-agents", "corsair-ai"],
+                    args.heartbeat_max_age,
+                )
+            except (OSError, ValueError) as exc:
+                report["nodes"] = {"ok": False, "error": type(exc).__name__}
+            report["ok"] = bool(all(report["launchd"].values())
+                                and report["mcp_contract"]["ok"] and report["nodes"]["ok"])
+            if report["ok"] or time.monotonic() >= deadline:
+                break
+            time.sleep(min(3, max(0, deadline - time.monotonic())))
+        if args.canary_shell and report["ok"]:
             report["managed_shell_canary"] = _harmless_shell_canary(args.api_url)
             report["ok"] = report["ok"] and report["managed_shell_canary"]["ok"]
     print(json.dumps(report, indent=2, sort_keys=True))

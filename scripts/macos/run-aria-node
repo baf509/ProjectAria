@@ -1,0 +1,14 @@
+#!/bin/zsh
+set -euo pipefail
+
+readonly user_home=/Users/ben
+readonly project=/Users/ben/Services/apps/ProjectAria/current
+set -a
+source "$user_home/.config/aria/env"
+set +a
+export ARIA_API_URL=http://127.0.0.1:8200
+export ARIA_NODE_ID=mac-agents
+export ARIA_NODE_COMMAND_MODE=full
+export PATH="$user_home/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+cd "$project/api"
+exec /Users/ben/Services/venvs/aria-node/bin/python -m aria.node

@@ -5,10 +5,9 @@ readonly key=/Users/ben/Services/secrets/corsair_forward_ed25519
 readonly known_hosts=/Users/ben/Services/config/corsair-known-hosts
 
 # Ports 8002 (TTS) and 8104 (Gemma) are intentionally absent: those services
-# run natively on this Mac. Keep current Corsair model endpoints and STT.
-# Experimental port 8122 was explicitly approved by Ben on 2026-09-05 for
-# ARIA-only Flash Next qualification. This does not enable automatic routing.
-# Ben approved loopback 8131 on 2026-09-06 for the CUDA/Halo candidate.
+# are retained Mac services. Forward the current CUDA/Halo candidate plus
+# optional STT, Context-1 and retained DeepSeek engineering endpoints.
+# Retired R9700 loadouts (8080/8120/8121/8122) have no forwarding path.
 exec /usr/bin/ssh -N \
   -p 2222 \
   -i "$key" \
@@ -21,11 +20,7 @@ exec /usr/bin/ssh -N \
   -o ServerAliveInterval=15 \
   -o ServerAliveCountMax=3 \
   -L 127.0.0.1:8003:127.0.0.1:8003 \
-  -L 127.0.0.1:8080:127.0.0.1:8080 \
   -L 127.0.0.1:8081:127.0.0.1:8081 \
   -L 127.0.0.1:8107:127.0.0.1:8107 \
-  -L 127.0.0.1:8120:127.0.0.1:8120 \
-  -L 127.0.0.1:8121:127.0.0.1:8121 \
-  -L 127.0.0.1:8122:127.0.0.1:8122 \
   -L 127.0.0.1:8131:127.0.0.1:8131 \
   ben@100.123.245.84

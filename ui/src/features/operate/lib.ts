@@ -3,14 +3,9 @@
 /**
  * ARIA - Operate: shared vocabulary and derivations
  *
- * The one fact that shapes everything here: this box has TWO GPUs with
- * SEPARATE memory pools (Strix Halo GTT 124 GiB, R9700 VRAM 32 GiB), and the
- * old single-GTT meter projected every model onto one number — which gave
- * wrong fit verdicts the moment the R9700 arrived (a 29 GiB model on the dGPU
- * does not compete with 100 GiB on the Halo). Every derivation in this module
- * is therefore per-pool, read from the server rows themselves — there is no
- * top-level `pools` object on the API, and reading the rows means the meters
- * survive the devices endpoint being unavailable.
+ * Current model choices are grouped by host. Memory meters still derive
+ * independent pools from observed rows; archived residents remain visible so
+ * the UI never hides memory use merely because a deployment was retired.
  */
 import { useState } from 'react'
 import type { ModelServerFull, ServiceFull, UtilServer } from '@/lib/api/types'
@@ -25,7 +20,7 @@ export const POOL_LABELS: Record<string, string> = {
   remote: 'off-box',
 }
 
-/** Fleet grouping order: the two GPU pools, then CPU, then off-box. */
+/** Memory meter ordering, independent of the host-grouped model list. */
 export const POOL_ORDER = ['halo-gtt', 'r9700-vram', 'corsair-nvidia-vram', 'host-ram', 'remote'] as const
 
 export const SOURCE_LABELS: Record<string, string> = {
@@ -70,6 +65,19 @@ export const isResident = (s: ModelServerFull) => {
   return st === 'running' || st === 'loading'
 }
 
+export const MODEL_NAMES: Record<string, string> = {
+  'Qwen3.8-Flash-Next-CUDA-Halo-Candidate': 'Qwen Flash Next',
+  'Red-Qwen3.8-27B-MXFP4': 'Qwen3.8-27B',
+  'Red-Qwen3.8-Flash-Next-MXFP4': 'Qwen Flash Next',
+  'Ridge-Qwen3.8-27B': 'Qwen3.8-27B (unverified)',
+}
+export const modelName = (slug: string) => MODEL_NAMES[slug] ?? slug
+export const isModelChoice = (s: ModelServerFull) => s.catalog_visible ?? (s.slug in MODEL_NAMES)
+export const modelHost = (s: ModelServerFull) =>
+  s.host_machine?.replace(/^machine:/, '') ??
+  (s.slug.startsWith('Red-') ? 'red' : s.slug.startsWith('Ridge-') ? 'ridge' :
+    s.slug.startsWith('gemma-') ? 'mac' : 'corsair')
+
 /** State for the DOT: "ready" must not glow live-green (see STATE_WORD.ready). */
 export const dotState = (s: ModelServerFull) => {
   const st = serverState(s)
@@ -109,26 +117,26 @@ export type FleetGroup = {
 }
 
 /**
- * Grouped by pool; running pinned to the top of each group; `startable=false`
- * split out so the caller can collapse them — 14+ of the 27 entries are
- * retired-on-purpose (the reason is the record of what happened), and the old
- * flat list made the fleet look like 27 live choices.
+ * Group current choices by host, with running models first. Retained records
+ * are hidden unless resident; a model that unexpectedly runs stays observable.
  */
 export function groupFleet(servers: ModelServerFull[], filter: string): FleetGroup[] {
   const q = filter.trim().toLowerCase()
   const match = (s: ModelServerFull) =>
     !q ||
     s.slug.toLowerCase().includes(q) ||
+    modelName(s.slug).toLowerCase().includes(q) ||
+    modelHost(s).includes(q) ||
     (s.description ?? '').toLowerCase().includes(q) ||
     (s.memory_pool ?? '').toLowerCase().includes(q)
 
   const groups = new Map<string, FleetGroup>()
   for (const s of servers) {
-    if (!match(s)) continue
-    const pool = s.onbox === false ? 'remote' : (s.memory_pool ?? 'host-ram')
+    if ((!isModelChoice(s) && !isResident(s)) || !match(s)) continue
+    const pool = modelHost(s)
     let g = groups.get(pool)
     if (!g) {
-      g = { pool, label: POOL_LABELS[pool] ?? pool, active: [], retired: [] }
+      g = { pool, label: pool.charAt(0).toUpperCase() + pool.slice(1), active: [], retired: [] }
       groups.set(pool, g)
     }
     // A retired entry that is somehow running still belongs in the live list —
@@ -142,10 +150,8 @@ export function groupFleet(servers: ModelServerFull[], filter: string): FleetGro
     g.active.sort((a, b) => rank(a) - rank(b) || (b.resident_gib_estimate ?? 0) - (a.resident_gib_estimate ?? 0))
     g.retired.sort((a, b) => (b.resident_gib_estimate ?? 0) - (a.resident_gib_estimate ?? 0))
   }
-  return [...groups.values()].sort(
-    (a, b) =>
-      POOL_ORDER.indexOf(a.pool as (typeof POOL_ORDER)[number]) - POOL_ORDER.indexOf(b.pool as (typeof POOL_ORDER)[number])
-  )
+  const hosts = ['corsair', 'red', 'ridge', 'mac']
+  return [...groups.values()].sort((a, b) => hosts.indexOf(a.pool) - hosts.indexOf(b.pool))
 }
 
 /** Services sorted unhealthy-first: this list exists to answer "is anything wrong?". */

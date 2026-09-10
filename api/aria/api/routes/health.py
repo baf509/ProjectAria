@@ -82,18 +82,19 @@ async def health_check(
         db_status = f"error: {str(e)}"
 
     # 2. Embeddings service
-    embeddings_status = "unknown"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{settings.embedding_url.rstrip('/').replace('/v1', '')}/health")
-            if resp.status_code == 200:
-                embeddings_status = "connected"
-            else:
-                embeddings_status = f"http {resp.status_code}"
-    except httpx.TimeoutException:
-        embeddings_status = "timeout"
-    except Exception:
-        embeddings_status = "unreachable"
+    embeddings_status = "disabled"
+    if retrieval_capabilities.embeddings_enabled:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(f"{settings.embedding_url.rstrip('/').replace('/v1', '')}/health")
+                if resp.status_code == 200:
+                    embeddings_status = "connected"
+                else:
+                    embeddings_status = f"http {resp.status_code}"
+        except httpx.TimeoutException:
+            embeddings_status = "timeout"
+        except Exception:
+            embeddings_status = "unreachable"
 
     # 3. LLM availability
     #
@@ -137,7 +138,7 @@ async def health_check(
 
     # Overall status
     is_healthy = db_status == "connected"
-    is_degraded = not any_llm or embeddings_status != "connected"
+    is_degraded = not any_llm or embeddings_status not in {"connected", "disabled"}
     if not is_healthy:
         overall = "unhealthy"
     elif is_degraded:
@@ -370,14 +371,14 @@ async def services_health(
         # model that has not run here in months.
         llm_ping("local-llm (orchestrator)", settings.llamacpp_url),
         llm_ping("local-llm (coding)", settings.agentic_url),
-        # NOTE: ridge (:8092 -> Ridge's RTX 3090) is deliberately NOT probed here.
+        # NOTE: Ridge's wake-on-demand proxy (:8092) is NOT probed here.
         # Ridge sleeps when idle, so a probe would either report it DOWN when it
         # is merely asleep, or send a Wake-on-LAN on every health tick and keep a
         # gaming PC awake 24/7. Its liveness is the proxy's job, not this list's.
         # Routed through svc_ping so a deliberately-stopped on_demand service
         # (stt, today) reads as "stopped on demand" rather than as a failure.
-        # embeddings and tts are always_up in the registry, so this is a no-op
-        # for them — they still get a real probe and still go red when down.
+        # Service expectations follow capability switches and intentional
+        # shutdown markers; enabled services still alarm when unreachable.
         # Same rule as mongot above: a disabled capability is reported as such
         # rather than probed and counted unhealthy.
         (

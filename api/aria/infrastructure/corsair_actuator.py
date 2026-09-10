@@ -78,7 +78,9 @@ async def execute(request: ActuatorRequest, manager: ModelServerManager) -> dict
 
 def hardware_snapshot() -> dict:
     """Observed on the model host; no new SSH action or shell capability."""
+    from aria.infrastructure.thermals import thermal_snapshot
     return {
+        "temperatures": thermal_snapshot(),
         "devices": gpu_devices.device_snapshot(),
         "pools": gpu_devices.pool_snapshot(),
         "system": gpu_devices.system_memory_snapshot(),

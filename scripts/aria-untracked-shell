@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Run a native coding CLI without ARIA shell registration or capture.
+
+This is an operator opt-out, not an OS sandbox. Pi still uses the normal model
+gateway, with no caller identity headers, through a separate local session store.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import shutil
+import sys
+import tomllib
+
+
+def write_private(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(path.name + f'.{os.getpid()}.new')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(value, stream, indent=2)
+        stream.write('\n')
+    os.replace(temporary, path)
+
+
+def plain_gateway(value):
+    """Keep provider authentication/model metadata; remove ARIA attribution."""
+    if isinstance(value, list):
+        return [plain_gateway(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {}
+    for key, item in value.items():
+        if key == 'headers' and isinstance(item, dict):
+            result[key] = {k: v for k, v in item.items() if not k.lower().startswith('x-aria-')}
+        elif key == 'baseUrl' and isinstance(item, str):
+            result[key] = item.replace('/llm/v1-identified', '/llm/v1')
+        else:
+            result[key] = plain_gateway(item)
+    return result
+
+
+def codex_mcp_overrides(home: Path, cwd: Path, environment: dict) -> list[str]:
+    # Override only existing declarations: creating an incomplete MCP table for
+    # a nonexistent server makes Codex reject its entire configuration.
+    paths = [Path(environment.get('CODEX_HOME', str(home / '.codex'))) / 'config.toml']
+    paths += [parent / '.codex/config.toml' for parent in [*reversed(cwd.parents), cwd]]
+    names = set()
+    for path in paths:
+        if not path.is_file():
+            continue
+        data = tomllib.loads(path.read_text())
+        for name, spec in data.get('mcp_servers', {}).items():
+            identity = ' '.join([name, str(spec.get('command', '')), str(spec.get('url', ''))]).lower()
+            if 'aria' in identity:
+                names.add(name)
+    return [arg for name in sorted(names) for arg in ('-c', f'mcp_servers.{json.dumps(name)}.enabled=false')]
+
+
+def prepare(tool: str, args: list[str], environment: dict, home: Path, cwd: Path):
+    if environment.get('TMUX') or environment.get('ARIA_MANAGED') == '1':
+        raise ValueError('open a normal terminal outside the managed/tmux shell for an untracked session')
+    env = {k: v for k, v in environment.items() if not k.startswith('ARIA_')}
+    env['ARIA_UNTRACKED'] = '1'
+    command = [tool, *args]
+    if tool == 'claude':
+        # The independent Claude sensor reads ~/.claude/projects even when no
+        # tmux shell exists. Disable transcript persistence before Claude starts.
+        env['CLAUDE_CODE_SKIP_PROMPT_HISTORY'] = '1'
+        env.pop('CLAUDE_CODE_FORCE_SESSION_PERSISTENCE', None)
+        command = [tool, '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+                   '--settings', '{"disableAllHooks":true,"autoMemoryEnabled":false}', *args]
+    elif tool == 'codex':
+        command = [tool, *codex_mcp_overrides(home, cwd, environment), *args]
+    elif tool == 'pi':
+        source = Path(environment.get('PI_CODING_AGENT_DIR', str(home / '.pi/agent')))
+        target = home / '.local/share/aria-untracked/pi'
+        # Nested untracked sessions reuse this generated configuration, never
+        # copy it onto itself or leave a symlink into the watched transcript tree.
+        if source.resolve() != target.resolve():
+            settings_file = source / 'settings.json'
+            settings = json.loads(settings_file.read_text()) if settings_file.is_file() else {}
+            safe_settings = {k: settings[k] for k in (
+                'defaultProvider', 'defaultModel', 'defaultThinkingLevel', 'enabledModels',
+                'theme', 'compaction', 'lastChangelogVersion') if k in settings}
+            # Seed once. Pi writes model/thinking preferences from /settings;
+            # later launches must not replace those choices with managed defaults.
+            if not (target / 'settings.json').is_file():
+                write_private(target / 'settings.json', safe_settings)
+            models_file = source / 'models.json'
+            models = plain_gateway(json.loads(models_file.read_text())) if models_file.is_file() else {}
+            # If the original key refers to an environment variable, preserve
+            # that authentication without exporting ARIA session-control state.
+            for provider in models.get('providers', {}).values():
+                key = provider.get('apiKey')
+                if isinstance(key, str) and key in environment:
+                    provider['apiKey'] = environment[key]
+            write_private(target / 'models.json', models)
+            auth = source / 'auth.json'
+            if auth.is_file():
+                write_private(target / 'auth.json', json.loads(auth.read_text()))
+        env['PI_CODING_AGENT_DIR'] = str(target)
+        env['PI_CODING_AGENT_SESSION_DIR'] = str(target / 'sessions')
+        if any(arg.split('=', 1)[0] in {'--session-dir', '--session', '--fork'} for arg in args):
+            raise ValueError('use --continue or --resume with the separate untracked Pi session store')
+        command = [tool, '--no-extensions', '--no-approve', *args]
+    else:
+        raise ValueError('supported tools: claude, codex, pi')
+    return command, env
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print('usage: aria-untracked-shell claude|codex|pi [args...]', file=sys.stderr)
+        return 2
+    try:
+        command, env = prepare(sys.argv[1], sys.argv[2:], dict(os.environ), Path.home(), Path.cwd())
+        binary = shutil.which(command[0], path=env.get('PATH'))
+        if not binary:
+            raise ValueError(f'{command[0]} is not installed on PATH')
+    except (ValueError, OSError) as exc:
+        print(f'aria: {exc}', file=sys.stderr)
+        return 2
+    os.execve(binary, [binary, *command[1:]], env)
+    return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

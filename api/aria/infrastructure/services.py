@@ -41,7 +41,9 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -104,6 +106,7 @@ class ServiceSpec:
     # guest (mongod and mongot are exactly that case).
     darwin_lima_instance: Optional[str] = None
     darwin_lima_container: Optional[str] = None
+    darwin_disable_marker: Optional[str] = None
 
     # Where it listens, when it listens anywhere. Used by the operator view and
     # by the disjointness test against the model-server registry.
@@ -148,7 +151,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
     # --- Core data plane. ARIA cannot function without these. ---
     ServiceSpec(
         slug="shared-mongod",
-        description="MongoDB 8.2, replica set rs0 — every ARIA collection.",
+        description="MongoDB database (mongod) — always required; hosted in the Mongo database VM.",
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongod",
@@ -161,11 +164,13 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         manageable=False,
         notes="Bound 127.0.0.1 only. Shared with AgentBenchPlatform — stopping "
         "it breaks both projects. The Lima VM is shared with mongot, but this "
-        "row probes the devbox-mongod container itself.",
+        "row probes the devbox-mongod container itself. Mongo database VM is the "
+        "role name; its historical Lima identifier is mongot. Stopping that VM "
+        "stops the database too. See docs/ops/MONGO_DATABASE_VM.md.",
     ),
     ServiceSpec(
         slug="shared-mongot",
-        description="MongoDB search sidecar (vector + BM25) behind mongod.",
+        description="MongoDB search (mongot) — optional sidecar inside the Mongo database VM.",
         expected_state="always_up",
         kind="datastore",
         container_name="shared-mongot",
@@ -250,6 +255,7 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         kind="service",
         container_name="shared-tts",
         darwin_label="com.ben.devbox.tts",
+        darwin_disable_marker="tts",
         port=8002,
         health_path="/health",
         compose_file="ProjectAria/docker-compose.yml",
@@ -317,9 +323,9 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         user_unit="ridge-llama-proxy.service",
         darwin_label="com.ben.devbox.ridge-proxy",
         port=8092,
-        notes="Bound on the TAILNET IP ONLY — localhost:8092 is "
-        "connection-refused even though `ss` shows a listener. Repeatedly "
-        "misdiagnosed; do not 'fix'. The `ridge` backend depends on it.",
+        notes="Mac loopback :8092 serves the private Ridge wake proxy. "
+        "Clients use the Aria gateway; the raw model proxy is not published "
+        "on the tailnet. Backend readiness is separate from proxy availability.",
     ),
     ServiceSpec(
         slug="red-proxy",
@@ -655,8 +661,18 @@ def is_healthy(state: str, expected: ExpectedState) -> bool:
     return False
 
 
+def _disabled_by_operator(spec: ServiceSpec) -> bool:
+    return bool(
+        sys.platform == "darwin"
+        and spec.darwin_disable_marker
+        and (Path.home() / "Services/config/disabled" / spec.darwin_disable_marker).is_file()
+    )
+
+
 def _effective_expected_state(spec: ServiceSpec) -> ExpectedState:
     """Let retrieval service expectations follow their runtime switches."""
+    if _disabled_by_operator(spec):
+        return "on_demand"
     if spec.slug not in {"shared-mongot", "shared-embeddings"}:
         return spec.expected_state
     # Lazy import avoids making the infrastructure registry part of memory's
@@ -691,6 +707,11 @@ def _row_for(spec: ServiceSpec, state: str) -> dict:
         handle = spec.user_unit or spec.system_unit
 
     expected_state = _effective_expected_state(spec)
+    disabled = _disabled_by_operator(spec)
+    port = spec.port
+    if darwin and spec.slug == "shared-mongod":
+        # The guest listens on 27017; operators connect through the Mac tunnel.
+        port = urlparse(settings.mongodb_uri).port or 27017
     return {
         "slug": spec.slug,
         "description": spec.description,
@@ -698,14 +719,19 @@ def _row_for(spec: ServiceSpec, state: str) -> dict:
         "state": state,
         "expected_state": expected_state,
         "healthy": is_healthy(state, expected_state),
-        "port": spec.port,
+        "port": port,
+        "guest_port": spec.port if darwin and spec.darwin_lima_container else None,
+        "disabled": disabled,
         # Plain launchd mutation is intentionally not implemented here. Lima
         # guest containers have a precise non-root lifecycle handle.
         "manageable": spec.manageable and (
             not darwin or bool(spec.darwin_lima_instance and spec.darwin_lima_container)
         ),
         "needs_review": spec.needs_review,
-        "notes": spec.notes,
+        "notes": (
+            "Intentionally disabled by the operator's launch marker; remove the marker "
+            "only when restoring this service." if disabled else spec.notes
+        ),
         "depends_on": list(spec.depends_on),
         "unit": handle,
         "container": None if darwin else spec.container_name,

@@ -1,0 +1,1385 @@
+{
+  "observed_at": "2026-09-09T04:40:39.633141+00:00",
+  "scope": "Read-only observation of existing local watched Codex pane; synthetic echo benchmark used a separate temporary tmux server, cleaned after measurement. No input sent to the user pane; no transcript retained.",
+  "live_terminal": {
+    "tmux_version": "3.7b",
+    "codex_version": "0.153.4",
+    "clients": 1,
+    "client": "local iTerm2 3.6.11",
+    "pane_size": "122x25",
+    "pipe_capture_workers": 1,
+    "shell_owner": "bens-macbook-pro",
+    "window_size_policy": "smallest",
+    "escape_time_ms": 10,
+    "client_synchronized_output_supported": true,
+    "codex_args": [
+      "--no-alt-screen",
+      "-c",
+      "tui.animations=false",
+      "-c",
+      "tui.terminal_resize_reflow_max_rows=250"
+    ],
+    "history_rows_at_initial_observation": 316
+  },
+  "live_measurement": {
+    "seconds": 23.38,
+    "cpu_pct_one_core": {
+      "585": 2.31,
+      "949": 10.56,
+      "1492": 0.21,
+      "1520": 0.21,
+      "1493": 3.08
+    },
+    "capture_ms": {
+      "min": 20.01,
+      "median": 40.65,
+      "max": 49.78
+    },
+    "client_output": [
+      {
+        "t": 0.04,
+        "bytes": "1832697",
+        "discarded": "0",
+        "activity": "1788928482"
+      },
+      {
+        "t": 4.69,
+        "bytes": "1836783",
+        "discarded": "0",
+        "activity": "1788928482"
+      },
+      {
+        "t": 9.34,
+        "bytes": "1842859",
+        "discarded": "0",
+        "activity": "1788928482"
+      },
+      {
+        "t": 14.01,
+        "bytes": "1850708",
+        "discarded": "0",
+        "activity": "1788928482"
+      },
+      {
+        "t": 18.71,
+        "bytes": "1850708",
+        "discarded": "0",
+        "activity": "1788928482"
+      }
+    ],
+    "geometry": [
+      "122x25"
+    ]
+  },
+  "output_metadata_60_seconds": {
+    "pipe_events": 16,
+    "raw_bytes": 5160,
+    "csi_sequences": 480,
+    "synchronized_output_starts": 13,
+    "scrollback_clears": 0,
+    "largest_raw_event_bytes": 1142
+  },
+  "codex_sample": {
+    "seconds": 5,
+    "result": "Mostly blocked waiting on conditions, kevent, semaphores; no sampled blocking terminal writes. This was not a typing interval."
+  },
+  "synthetic_echo_roundtrip": {
+    "direct_pty": {
+      "n": 60,
+      "median_ms": 0.266,
+      "p95_ms": 4.161,
+      "max_ms": 5.29
+    },
+    "tmux_only": {
+      "n": 60,
+      "median_ms": 0.815,
+      "p95_ms": 12.277,
+      "max_ms": 27.22
+    },
+    "tmux_with_aria_capture": {
+      "n": 60,
+      "median_ms": 0.559,
+      "p95_ms": 1.512,
+      "max_ms": 4.15
+    }
+  },
+  "capture_sha256": {
+    "/Users/ben/Development/Infrastructure/ProjectAria/api/aria/shells/capture.py": "d2b181be8e1be96688e1d5bb317b22a8344eced66884d6bdf8fb2e4ceb28933d",
+    "/Users/ben/Services/apps/ProjectAria/api/aria/shells/capture.py": "d2b181be8e1be96688e1d5bb317b22a8344eced66884d6bdf8fb2e4ceb28933d"
+  },
+  "conclusions": [
+    "No observed duplicate pane owners or capture workers, multi-client resize churn, remote client network hop, discarded client output, or capture CPU saturation.",
+    "No persistent Aria capture penalty was measured in the synthetic echo benchmark.",
+    "Codex and iTerm rendering/event processing remain plausible causes of intermittent lag, but these observations do not establish the cause."
+  ],
+  "limits": [
+    "No actual user keystrokes occurred in the live timed sample; client_activity was constant.",
+    "Echo benchmark uses a synthetic raw terminal application, not Codex or iTerm, with no full-frame redraw load.",
+    "Synthetic tmux test server used empty config and status off; it does not emulate all production terminal negotiation.",
+    "Single ordered benchmark run is subject to background scheduling noise; capture-on being faster is not evidence that capture improves responsiveness.",
+    "capture-pane subprocess latency is not keystroke-to-paint latency.",
+    "No production settings changed because there is no evidence-backed fix yet."
+  ],
+  "next_discriminating_measurement": "Capture privacy-preserving event timing while operator types and reproduce with identical Codex workload inside a disposable watched session versus native terminal; distinguish key-to-app, app-to-tmux and tmux-to-iTerm paint delays.",
+  "followup_observation": {
+    "seconds": 73.397,
+    "cpu_one_core_pct": {
+      "585": 2.85,
+      "949": 8.09,
+      "1492": 0.15,
+      "1520": 0.19,
+      "1493": 3.68
+    },
+    "input_activity_values": [
+      1788928482
+    ],
+    "output_bytes": 44204,
+    "geometry_values": [
+      "122x25"
+    ],
+    "rows": [
+      {
+        "elapsed_s": 1.037,
+        "utc": "2026-09-09T04:41:44.576561+00:00",
+        "client_written": 1942464,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928901,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 2.828,
+        "utc": "2026-09-09T04:41:46.367472+00:00",
+        "client_written": 1942620,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928901,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 4.24,
+        "utc": "2026-09-09T04:41:47.780868+00:00",
+        "client_written": 1942620,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928901,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 5.738,
+        "utc": "2026-09-09T04:41:49.277894+00:00",
+        "client_written": 1944348,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928908,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 7.109,
+        "utc": "2026-09-09T04:41:50.649135+00:00",
+        "client_written": 1944348,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928908,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 8.554,
+        "utc": "2026-09-09T04:41:52.093284+00:00",
+        "client_written": 1949720,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928911,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.93,
+          "949": 12.24,
+          "1492": 0.13,
+          "1520": 0.27,
+          "1493": 2.79
+        }
+      },
+      {
+        "elapsed_s": 10.35,
+        "utc": "2026-09-09T04:41:53.890011+00:00",
+        "client_written": 1951522,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928912,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 11.79,
+        "utc": "2026-09-09T04:41:55.329193+00:00",
+        "client_written": 1954216,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928914,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 13.193,
+        "utc": "2026-09-09T04:41:56.732962+00:00",
+        "client_written": 1954216,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928914,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 14.599,
+        "utc": "2026-09-09T04:41:58.139431+00:00",
+        "client_written": 1954216,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928914,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 15.859,
+        "utc": "2026-09-09T04:41:59.398763+00:00",
+        "client_written": 1959146,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928918,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 4.79,
+          "949": 11.22,
+          "1492": 0.27,
+          "1520": 0.41,
+          "1493": 3.7
+        }
+      },
+      {
+        "elapsed_s": 17.272,
+        "utc": "2026-09-09T04:42:00.811224+00:00",
+        "client_written": 1966466,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928920,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 18.45,
+        "utc": "2026-09-09T04:42:01.989269+00:00",
+        "client_written": 1966466,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928920,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 19.618,
+        "utc": "2026-09-09T04:42:03.157590+00:00",
+        "client_written": 1966466,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928920,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 20.788,
+        "utc": "2026-09-09T04:42:04.327255+00:00",
+        "client_written": 1966466,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928920,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 21.985,
+        "utc": "2026-09-09T04:42:05.524970+00:00",
+        "client_written": 1966466,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928920,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 3.1,
+          "949": 10.12,
+          "1492": 0.16,
+          "1520": 0.16,
+          "1493": 2.77
+        }
+      },
+      {
+        "elapsed_s": 23.222,
+        "utc": "2026-09-09T04:42:06.761242+00:00",
+        "client_written": 1968440,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928926,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 24.401,
+        "utc": "2026-09-09T04:42:07.940111+00:00",
+        "client_written": 1968440,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928926,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 25.588,
+        "utc": "2026-09-09T04:42:09.127398+00:00",
+        "client_written": 1968440,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928926,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 26.779,
+        "utc": "2026-09-09T04:42:10.318656+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 28.06,
+        "utc": "2026-09-09T04:42:11.599172+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.96,
+          "949": 13.33,
+          "1492": 0.16,
+          "1520": 0.33,
+          "1493": 8.4
+        }
+      },
+      {
+        "elapsed_s": 29.416,
+        "utc": "2026-09-09T04:42:12.955363+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 30.6,
+        "utc": "2026-09-09T04:42:14.139088+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 31.785,
+        "utc": "2026-09-09T04:42:15.324311+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 32.954,
+        "utc": "2026-09-09T04:42:16.493596+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 34.13,
+        "utc": "2026-09-09T04:42:17.669549+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.31,
+          "949": 4.28,
+          "1492": 0.16,
+          "1520": 0.0,
+          "1493": 4.61
+        }
+      },
+      {
+        "elapsed_s": 35.229,
+        "utc": "2026-09-09T04:42:18.768812+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 36.447,
+        "utc": "2026-09-09T04:42:19.985956+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 37.622,
+        "utc": "2026-09-09T04:42:21.161255+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 38.79,
+        "utc": "2026-09-09T04:42:22.329423+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 39.964,
+        "utc": "2026-09-09T04:42:23.503582+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.4,
+          "949": 2.23,
+          "1492": 0.0,
+          "1520": 0.17,
+          "1493": 3.94
+        }
+      },
+      {
+        "elapsed_s": 41.179,
+        "utc": "2026-09-09T04:42:24.718488+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 42.364,
+        "utc": "2026-09-09T04:42:25.903309+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 43.535,
+        "utc": "2026-09-09T04:42:27.074270+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 44.688,
+        "utc": "2026-09-09T04:42:28.226845+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 45.858,
+        "utc": "2026-09-09T04:42:29.396836+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.38,
+          "949": 2.55,
+          "1492": 0.17,
+          "1520": 0.0,
+          "1493": 4.24
+        }
+      },
+      {
+        "elapsed_s": 47.032,
+        "utc": "2026-09-09T04:42:30.571415+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 48.184,
+        "utc": "2026-09-09T04:42:31.722889+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 49.355,
+        "utc": "2026-09-09T04:42:32.894033+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 50.522,
+        "utc": "2026-09-09T04:42:34.060868+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 51.704,
+        "utc": "2026-09-09T04:42:35.243451+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 3.08,
+          "949": 2.05,
+          "1492": 0.17,
+          "1520": 0.17,
+          "1493": 2.74
+        }
+      },
+      {
+        "elapsed_s": 52.913,
+        "utc": "2026-09-09T04:42:36.452236+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 54.086,
+        "utc": "2026-09-09T04:42:37.625182+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 55.228,
+        "utc": "2026-09-09T04:42:38.766768+00:00",
+        "client_written": 1972223,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928929,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 56.461,
+        "utc": "2026-09-09T04:42:39.999808+00:00",
+        "client_written": 1974177,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928959,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 57.808,
+        "utc": "2026-09-09T04:42:41.346620+00:00",
+        "client_written": 1974177,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928959,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.62,
+          "949": 6.06,
+          "1492": 0.16,
+          "1520": 0.0,
+          "1493": 4.75
+        }
+      },
+      {
+        "elapsed_s": 59.413,
+        "utc": "2026-09-09T04:42:42.952534+00:00",
+        "client_written": 1976132,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928961,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 60.868,
+        "utc": "2026-09-09T04:42:44.407703+00:00",
+        "client_written": 1978087,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928963,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 62.259,
+        "utc": "2026-09-09T04:42:45.797649+00:00",
+        "client_written": 1978087,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928963,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 63.777,
+        "utc": "2026-09-09T04:42:47.315544+00:00",
+        "client_written": 1982268,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928966,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 65.109,
+        "utc": "2026-09-09T04:42:48.648327+00:00",
+        "client_written": 1982268,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928966,
+        "geometry": "122x25",
+        "sync_output_active": "0",
+        "cpu_since_previous_pct": {
+          "585": 2.47,
+          "949": 12.46,
+          "1492": 0.14,
+          "1520": 0.41,
+          "1493": 1.64
+        }
+      },
+      {
+        "elapsed_s": 66.654,
+        "utc": "2026-09-09T04:42:50.193000+00:00",
+        "client_written": 1982268,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928966,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 68.271,
+        "utc": "2026-09-09T04:42:51.810054+00:00",
+        "client_written": 1986668,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928970,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 69.7,
+        "utc": "2026-09-09T04:42:53.238929+00:00",
+        "client_written": 1986668,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928970,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      },
+      {
+        "elapsed_s": 71.293,
+        "utc": "2026-09-09T04:42:54.837211+00:00",
+        "client_written": 1986668,
+        "discarded": 0,
+        "input_activity_s": 1788928482,
+        "pane_output_activity_s": 1788928970,
+        "geometry": "122x25",
+        "sync_output_active": "0"
+      }
+    ],
+    "requested_typing_observed": false,
+    "notes": "Operator was invited to type before this sample, but client_activity remained unchanged. Sample overlapped MCP tests and an active Time Machine backup, so it is not an idle-host sample."
+  },
+  "host_contention_observed": {
+    "time_utc_approx": "2026-09-09T04:42:00Z",
+    "time_machine": {
+      "running": true,
+      "phase": "Copying",
+      "phase_changed_utc": "2026-09-09T04:40:56Z",
+      "estimated_total_bytes": 384040284160,
+      "estimated_total_files": 2321062
+    },
+    "apfsd_cpu_pct_one_core_in_ps": 58.3,
+    "backupd_cpu_pct_one_core_in_ps": 6.7,
+    "disk0_tps": [
+      5498,
+      5201,
+      4457
+    ],
+    "disk0_mib_per_second": [
+      21.64,
+      20.51,
+      17.56
+    ],
+    "load_averages": [
+      10.24,
+      10.35,
+      13.39
+    ],
+    "memory_pressure_healthy": true,
+    "interpretation": "Active backup/file-system work is a real candidate for system-wide command latency during followup. This does not establish causation for the original reported input lag, which occurred earlier. Backup was not altered."
+  },
+  "key_protocol_observation": {
+    "pane_key_mode": "VT10x",
+    "client_extended_keys_supported": true,
+    "extended_keys": "on",
+    "extended_keys_format": "xterm",
+    "escape_time_ms": 10,
+    "source": "Installed tmux 3.7b manual and live options",
+    "interpretation": "escape-time applies after ESC/function/meta sequence input; it does not explain a persistent delay on ordinary unmodified letters. Extended-key format is not evidence of a performance defect."
+  },
+  "fresh_control_observation": {
+    "start_utc": "2026-09-09T11:31:27.694477+00:00",
+    "end_utc": "2026-09-09T11:33:27.734477+00:00",
+    "duration_s": 120.04,
+    "metadata_samples": 962,
+    "sample_interval_median_s": 0.12504899999999708,
+    "sample_interval_max_s": 0.15467200000000503,
+    "observer": "read-only ignore-size tmux control client; raw output inspected transiently for control-sequence counts then discarded; no transcript or key text stored",
+    "human_client_activity_transitions": [
+      {
+        "t": 0.02504,
+        "input_s": 1788953390,
+        "written": 2943662,
+        "discarded": 86362,
+        "width": 122,
+        "height": 25,
+        "sync": 0,
+        "input_time_utc": "2026-09-09T11:29:50+00:00"
+      },
+      {
+        "t": 9.513512,
+        "input_s": 1788953497,
+        "written": 2952691,
+        "discarded": 86362,
+        "width": 122,
+        "height": 25,
+        "sync": 0,
+        "input_time_utc": "2026-09-09T11:31:37+00:00"
+      }
+    ],
+    "output_events": [
+      {
+        "t": 6.674049,
+        "bytes": 165,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 7.710094,
+        "bytes": 90,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 15,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 9.089916,
+        "bytes": 856,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 91,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 9.098415,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 9.419706,
+        "bytes": 29,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 5,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 9.419838,
+        "bytes": 48,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 8,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 12.620899,
+        "bytes": 90,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 15,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 12.631201,
+        "bytes": 525,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 28,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 14.873558,
+        "bytes": 356,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 20,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 14.87386,
+        "bytes": 213,
+        "sync_starts": 0,
+        "sync_ends": 0,
+        "csi": 19,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 14.878259,
+        "bytes": 14,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 2,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 14.880939,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 31.409817,
+        "bytes": 100,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 39.778511,
+        "bytes": 165,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 40.270735,
+        "bytes": 942,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 77,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 40.278409,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 40.286739,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 47.715775,
+        "bytes": 240,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 34,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 47.897564,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 70.270413,
+        "bytes": 91,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 15,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 88.030216,
+        "bytes": 100,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 93.000843,
+        "bytes": 165,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 93.193572,
+        "bytes": 97,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 17,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 93.200491,
+        "bytes": 922,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 73,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 93.214309,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 100.681751,
+        "bytes": 90,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 15,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.914584,
+        "bytes": 165,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 16,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.921966,
+        "bytes": 1024,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 61,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.922288,
+        "bytes": 110,
+        "sync_starts": 0,
+        "sync_ends": 0,
+        "csi": 6,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.922369,
+        "bytes": 158,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 24,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.930634,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 102.940702,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 107.771954,
+        "bytes": 90,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 15,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 107.781618,
+        "bytes": 525,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 28,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 110.235782,
+        "bytes": 359,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 20,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      },
+      {
+        "t": 110.236068,
+        "bytes": 193,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 21,
+        "clear_screen": 0,
+        "clear_scrollback": 0
+      }
+    ],
+    "sync_frame_durations_s": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.000132,
+      0.0,
+      0.0,
+      0.004701,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.000403,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.000286
+    ],
+    "sync_frame_max_s": 0.004701,
+    "output_bytes": 8538,
+    "client_written_delta": 62557,
+    "client_discarded_start": 86362,
+    "client_discarded_end": 86362,
+    "client_discarded_delta": 0,
+    "pane_geometry_values": [
+      [
+        122,
+        25
+      ]
+    ],
+    "synchronized_output_flag_observations": [
+      0
+    ],
+    "output_control_source": "https://raw.githubusercontent.com/tmux/tmux/3.7b/tty.c",
+    "current_backup_running": false,
+    "findings": [
+      "Only one change of client activity occurred, at elapsed 9.51 s; there was no continuous 20-second typing pattern and user has not confirmed typing or lag during this sample. tmux client_activity can reflect mouse or other input, so this alone does not prove typing.",
+      "No new tmux client-backlog discard, pane resize, screen clear, or scrollback clear occurred.",
+      "30 paired Codex synchronized-output frames completed within the same control output record or within 4.701 ms; there was no observed long-held app synchronized frame.",
+      "Historical 86,362 discarded bytes mean tmux had fallen behind sometime since attachment. They do not establish current backlog; count stayed unchanged during this sample.",
+      "The input-to-paint cause remains unproven. Current measurement excludes a long synchronized-frame hold or recurring tmux backlog during the recorded activity, but cannot measure iTerm pixel paint or exact physical key timing."
+    ],
+    "cleanup": "Observer detached; only original iTerm client remains. Active pane and capture worker unchanged.",
+    "user_confirmed_typing": false,
+    "user_confirmation": "Ben explicitly confirmed he was not typing during this observation. The single client-activity timestamp must not be described as observed typing."
+  },
+  "coordinated_observation_attempt": {
+    "start_utc": "2026-09-09T11:43:12.668230+00:00",
+    "end_utc": "2026-09-09T11:48:12.723230+00:00",
+    "duration_s": 300.055,
+    "metadata_samples": 2401,
+    "human_client_activity_transitions": [
+      {
+        "t": 0.026837,
+        "input_s": 1788954137,
+        "written": 3179143,
+        "discarded": 86362,
+        "width": 122,
+        "height": 25,
+        "sync": 0,
+        "input_time_utc": "2026-09-09T11:42:17+00:00"
+      },
+      {
+        "t": 31.643408,
+        "input_s": 1788954224,
+        "written": 3187472,
+        "discarded": 86362,
+        "width": 122,
+        "height": 25,
+        "sync": 0,
+        "input_time_utc": "2026-09-09T11:43:44+00:00"
+      }
+    ],
+    "output_events": [
+      {
+        "t": 7.99255,
+        "bytes": 300,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 40,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 8.008299,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 11.6346,
+        "bytes": 83,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 11.638041,
+        "bytes": 639,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 61,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 11.644346,
+        "bytes": 198,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 24,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 11.644472,
+        "bytes": 8,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 1,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 12.102067,
+        "bytes": 51,
+        "sync_starts": 1,
+        "sync_ends": 0,
+        "csi": 8,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 12.107902,
+        "bytes": 148,
+        "sync_starts": 0,
+        "sync_ends": 1,
+        "csi": 19,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 12.201469,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      },
+      {
+        "t": 12.217548,
+        "bytes": 77,
+        "sync_starts": 1,
+        "sync_ends": 1,
+        "csi": 13,
+        "clear_screen": 0,
+        "clear_scrollback": 0,
+        "osc_starts": 0,
+        "dcs_starts": 0
+      }
+    ],
+    "sync_frame_durations_s": [
+      0.0,
+      0.0,
+      0.003441,
+      0.000126,
+      0.005835,
+      0.0,
+      0.0
+    ],
+    "sync_frame_max_s": 0.005835,
+    "output_bytes": 1658,
+    "client_written_delta": 9109,
+    "client_discarded_start": 86362,
+    "client_discarded_end": 86362,
+    "client_discarded_delta": 0,
+    "pane_geometry_values": [
+      [
+        122,
+        25
+      ]
+    ],
+    "confirmed_typing": null,
+    "observer": "read-only ignore-size tmux control client; raw output inspected transiently for control-sequence counts then discarded; no transcript or key text stored",
+    "end_reason": "Five-minute deadline reached. No user-done signal received by observer.",
+    "limits": "Only one activity timestamp changed. No sustained typing pattern or subjective lag report was confirmed to the observer. Input activity can include mouse/focus events. This window does not establish the typing-lag cause.",
+    "cleanup": "Temporary observer detached; original pane/settings/capture unchanged."
+  }
+}

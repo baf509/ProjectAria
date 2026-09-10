@@ -21,7 +21,11 @@ PROFILE = Path("/Users/ben/Services/data/hermes-home")
 DEPLOYED = Path("/Users/ben/Services/apps/aria-mcp/server.py")
 BRIDGE_PYTHON = "/Users/ben/Services/apps/aria-mcp/.venv/bin/python"
 ADDITIONS = {"operator_snapshot", "inference_backend", "inference_usage",
-             "inference_traces", "benchmark_status", "ralph_status", "get_task"}
+             "inference_traces", "benchmark_status", "ralph_status", "get_task",
+             "host_temperatures", "get_model_server", "awareness_snapshot", "awareness_observations",
+             "list_memories", "get_memory", "research_status", "get_research_report", "wait_for_shell_output",
+             "red_model_status"}
+WRITES = {"store_memory", "update_memory", "select_red_model"}
 
 
 def unpack(raw):
@@ -33,7 +37,7 @@ def unpack(raw):
         result = value["structuredContent"]
         return result.get("result", result)
     result = value.get("result", value)
-    return json.loads(result) if isinstance(result, str) else result
+    return json.loads(result) if isinstance(result, str) and result else result
 
 
 def probe(args):
@@ -92,7 +96,7 @@ def probe(args):
 
     try:
         registered = set(register_mcp_servers({"aria": transport}))
-        wanted = {mcp_prefixed_tool_name("aria", n) for n in ADDITIONS}
+        wanted = {mcp_prefixed_tool_name("aria", n) for n in ADDITIONS | WRITES}
         if not wanted <= registered:
             raise ValueError("Hermes registration missing new tools")
         # Actual installed Hermes schema conversion/filtering, not a hand-made
@@ -129,6 +133,9 @@ def probe(args):
             raise ValueError("Wrong running bridge contract")
         if dependency_sha and contract.get("operations_sha256") != dependency_sha:
             raise ValueError("Wrong loaded operations dependency")
+        red = call("red_model_status", {})
+        if {r.get("model") for r in red.get("models", [])} != {"qwen3.8-27b", "qwen-flash-next"}:
+            raise ValueError("Red supported-model choices are missing")
         snapshot = call("operator_snapshot", {"model": args.model})
         if not snapshot.get("complete"):
             raise ValueError("Incomplete live operator snapshot")
@@ -145,6 +152,65 @@ def probe(args):
                 raise ValueError("Trace includes content or credentials")
         benchmarks = call("benchmark_status", {"limit": 2})
         ralph = call("ralph_status", {"limit": 2})
+        call("host_temperatures", {})
+        model = call("get_model_server", {"slug": args.model})
+        if model.get("slug") != args.model:
+            raise ValueError("Model detail mismatch")
+        call("awareness_snapshot", {})
+        call("awareness_observations", {"hours": 1, "limit": 2})
+        memories = call("list_memories", {"limit": 1})
+        if memories["memories"]:
+            memory_id = memories["memories"][0]["id"]
+            if call("get_memory", {"memory_id": memory_id}).get("id") != memory_id:
+                raise ValueError("Memory read mismatch")
+        runs = call("research_status", {"limit": 1})
+        if runs["runs"]:
+            call("get_research_report", {"run_id": runs["runs"][0]["id"], "limit": 100})
+        shell_canary = None
+        if args.canary_shell:
+            import uuid
+            nonce = uuid.uuid4().hex
+            marker = "aria-mcp-canary-" + nonce
+            expected_output = "verified-" + nonce
+            created = call("create_shell", {"name": marker, "profile": "shell", "launch_claude": False})
+            name = created["name"]
+            try:
+                call("get_shell", {"name": name})
+                call("set_shell_tags", {"name": name, "tags": ["mcp-canary"]})
+                call("resize_shell", {"name": name, "cols": 100, "rows": 30})
+                # The adopter attaches capture asynchronously (15s cadence).
+                # Emit a bounded marker stream so a new shell can be observed
+                # after attachment; never claim output before capture was saved.
+                sent = call("send_shell_input", {"name": name, "text": "for i in " + " ".join(str(i) for i in range(30)) + "; do printf 'verified-%s\\n' '" + nonce + "'; sleep 1; done",
+                                               "literal": True, "wait_ms": 500})
+                screen = call("get_shell_screen", {"name": name, "lines": 40})
+                if expected_output not in json.dumps(screen):
+                    raise ValueError("Canary input not visible on screen")
+                cursor = 0
+                captured = False
+                for _ in range(3):
+                    output = call("wait_for_shell_output", {"name": name, "since_line": cursor, "timeout_seconds": 5})
+                    cursor = output["next_line"]
+                    if any(expected_output in event.get("text_clean", "") for event in output["events"]):
+                        captured = True
+                        break
+                if not captured:
+                    raise ValueError("Canary output not durably captured")
+                call("get_shell_events", {"name": name, "since_line": 0, "limit": 100})
+                # Snapshots are worker-owned on a 30-second cadence; unlike
+                # live screens they need not exist immediately after creation.
+                snapshot_deadline = time.monotonic() + 40
+                while True:
+                    saved = call("get_shell_snapshot", {"name": name})
+                    if saved.get("available") is not False:
+                        break
+                    if time.monotonic() >= snapshot_deadline:
+                        raise ValueError("No stored canary snapshot within worker deadline")
+                    time.sleep(2)
+                call("search_shells", {"q": marker, "limit": 2})
+                shell_canary = {"passed": True, "captured": True}
+            finally:
+                call("delete_shell", {"name": name, "purge": True})
         task = call("get_task", {"id": args.task_id})
         if task.get("id") != args.task_id:
             raise ValueError("Planning task read mismatch")
@@ -154,7 +220,7 @@ def probe(args):
             raise ValueError("Operations dependency changed during test")
         return {"passed": True, "configured_transport": not bool(args.staged_source),
                 "installed_hermes_registry": True, "profile_key_matches": True,
-                "contract": contract, "new_tools": sorted(ADDITIONS),
+                "contract": contract, "new_tools": sorted(ADDITIONS | WRITES), "shell_canary": shell_canary,
                 "registered_tool_count": len(registered), "bridge_tool_count": len(server._tools),
                 "schema_characters": len(json.dumps(definitions)), "model": backend.get("backend"),
                 "operations_file_sha256": dependency_sha,
@@ -173,10 +239,11 @@ def main():
                         help='Source checkout to verify before a managed installation cutover')
     parser.add_argument("--staged-source", type=Path)
     parser.add_argument("--expected-sha256", required=True)
-    parser.add_argument("--expected-version", default="2026-09-08.2")
+    parser.add_argument("--expected-version", default="2026-09-09.3")
     parser.add_argument("--expected-operations-sha256")
     parser.add_argument("--model", required=True)
     parser.add_argument("--task-id", required=True)
+    parser.add_argument("--canary-shell", action="store_true", help="Create, exercise and purge one disposable plain watched shell")
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     if args.out.exists():

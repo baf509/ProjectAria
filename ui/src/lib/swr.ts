@@ -12,7 +12,7 @@
  * (i.e. a blank card); and 14 requests committed in ONE transition so every
  * dashboard tab was empty until the slowest returned.
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useSWR, { SWRConfiguration, mutate as globalMutate } from 'swr'
 import { api, ApiError, fetcher } from './http'
 
@@ -31,6 +31,21 @@ export const TIER = {
 } as const
 
 export type Tier = keyof typeof TIER
+
+/** Expire observations even when network polling fails. No network requests. */
+export function useObservationClock() {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const update = () => setNow(Date.now())
+    const timer = setInterval(update, 5000)
+    document.addEventListener('visibilitychange', update)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', update)
+    }
+  }, [])
+  return now
+}
 
 /** ±10% jitter so six keys do not fire in lockstep when the tab regains focus. */
 function jitter(ms: number) {

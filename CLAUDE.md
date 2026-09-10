@@ -3,13 +3,13 @@
 This file is the repository-local operating guide for coding agents. It does not
 override the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-09-04**.
+Last reconciled: **2026-09-08**.
 
 ## Read first
 
 1. `/Users/ben/Obsidian/Architecture_Charter.md` — desired-state authority.
-2. `/Users/ben/Obsidian/ProjectAria/START_HERE.md` — system orientation.
-3. `/Users/ben/Obsidian/ProjectAria/Design/ARCHITECTURE.md` — maintained observed topology.
+2. `/Users/ben/Obsidian/ProjectAria/Design/2026-09-08 START_HERE_CURRENT_20260908.md` — system orientation.
+3. `/Users/ben/Obsidian/ProjectAria/Design/2026-09-08 ARCHITECTURE_CURRENT_20260908.md` — maintained observed topology.
 4. This repository's `CHANGELOG.md`, `BACKLOG.md`, and relevant `docs/ops/*` runbook.
 
 On Corsair, the synchronized vault projection is `/home/ben/Obsidian/vault`.
@@ -20,7 +20,7 @@ facts. Reviewed commits win over dirty or duplicated checkouts for source truth.
 
 - The MacBook Pro is the permanent ARIA control plane and a direct development
   host. It owns ARIA API/UI, MongoDB/mongot, Hermes/Signal, credentials,
-  embeddings/TTS/Gemma, canonical general project trees, watched shells, and
+  retained but disabled embeddings/TTS/Gemma, canonical general project trees, watched shells, and
   operational state.
 - Corsair is the primary model data plane. It owns Qwen3.8 weights/runtimes,
   hardware tooling, benchmarks, restricted model actuation, and a thin
@@ -29,7 +29,7 @@ facts. Reviewed commits win over dirty or duplicated checkouts for source truth.
   or general autonomous-agent service on Corsair.
 - The Mac source checkout is
   `/Users/ben/Development/Infrastructure/ProjectAria`; the separately deployed
-  service tree is `/Users/ben/Services/apps/ProjectAria`.
+  release is selected by `/Users/ben/Services/apps/ProjectAria/current`.
 - `/home/ben/Development/ProjectAria` is a noncanonical Corsair
   compatibility/recovery checkout. Its presence is not authorization to restore
   the former Corsair control plane.
@@ -69,41 +69,35 @@ default. Raw model ports are loopback-only and consumed through Mac-managed SSH
 forwards and the gateway. Do not publish raw model ports, put broad ARIA keys in
 interactive Corsair shells, or change host power/network/Tailscale settings.
 
-Every local-model consumer should go through the gateway. Known direct Hermes
-Radiance/Gemma routes are migration gaps to close, not exemptions. Cloud clients
-remain subject to the charter's unresolved cloud-exception rule.
+Every local-model consumer goes through the gateway. Managed Hermes and Pi
+use the identified candidate explicitly; model-omitted requests follow the
+ARIA route. Red and Ridge model forwards remain private to the Mac. Cloud
+clients remain subject to the charter's unresolved cloud-exception rule.
 
 ## Current model plane
 
 | Deployment | Host/device | Listener | Role |
 |---|---|---|---|
-| `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` | Corsair R9700 + Strix Halo | `127.0.0.1:8121` | boot-default 1 × 256K model for ARIA, Hermes, and Pi |
-| `Qwen3.8-27B-R9700-Radiance` | Corsair R9700 | `127.0.0.1:8080` | dual-resident rollback and Pi option |
-| `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K` | Corsair Strix Halo | `127.0.0.1:8120` | dual-resident rollback and Pi option; live geometry is 1 × 256K |
-| Gemma 4 E4B Q4 | Mac | `127.0.0.1:8104` | auxiliary workers |
+| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair RTX 3090 + Strix Halo | `127.0.0.1:8131` | Explicit Hermes/Pi default, operator-accepted 1 × 256K, no boot autostart |
+| `Red-Qwen3.8-27B-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Separate alternative; eligible for model-omitted routing while resident |
+| `Red-Qwen3.8-Flash-Next-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Explicit selection only; exclusive with Radiance on the same GPUs |
+| Ridge | RTX 5090, user-confirmed | Mac loopback `:8092` | On demand; new-card readiness unverified |
+| Gemma | Mac | retained `:8104` configuration | Intentionally stopped; not an auxiliary fallback |
 
-DeepSeek V4 weights/runtimes may remain on Corsair for rollback, testing, and
-model engineering. They are retained-but-inactive and are not part of the
-default listener topology.
+Corsair's former R9700 loadouts are retired and cannot be force-started. Retained
+DeepSeek assets are historical/model-engineering material, not default serving.
+The current candidate retains a known intermittent CUDA fault; operator acceptance
+is not sustained-reliability qualification. No further soak is scheduled.
 
-ARIA's registry owns desired state; backend identity/readiness plus the host's
-process manager own observed state. A port alone is not identity. Routine model
-lifecycle uses the restricted actuator. Direct `systemctl`/runtime work is
-allowed only for an authorized model repair/test; ARIA must observe and reconcile
-the result.
+ARIA's registry owns desired state; backend identity/readiness and native process
+state own observed state. Routine lifecycle uses the restricted actuator. Direct
+service work is limited to authorized model repair/testing and must be reconciled.
+Use `/llm/v1-identified/backend?model=<slug>` for model-specific admission state.
 
-Hardware constraints:
-
-- R9700 discrete VRAM and Halo GTT are separate pools, though checkpoint loading
-  can pressure host-wide memory.
-- On Corsair, DRM `card0` is the R9700 and `card1` is the Halo.
-- Runtime-specific Vulkan/ROCm device numbering must be verified, never copied.
-- In the qualified llama.cpp lineage, `-c` is the total context pool; multiple
-  slots divide it. The hybrid remains one slot because upstream #28286 can
-  contaminate Qwen4exp recurrent MTP state across parallel slots.
-
-The Flash registry compatibility slug still says `2x256K`; correct its static
-geometry/runtime metadata before treating the label as literal.
+RTX 3090 VRAM and Halo shared memory are separate pools. Resolve GPU identities
+rather than copying device ordinals. The candidate has one 262144-token slot,
+q8_0 K/V, MTP depth 3 and an 8 GiB prompt cache; `kv_unified=false`.
+See `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` for the maintained model runbook.
 
 ## Pi Coding invariant
 
@@ -111,9 +105,9 @@ Pi is an external coding harness, not an ARIA persona. Every managed Pi
 installation has exactly:
 
 - provider `aria`;
-- model `Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K`;
-- model `Qwen3.8-Flash-Next-Hybrid-R9700-Halo` (default);
+- model `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` (default);
 - model `Red-Qwen3.8-27B-MXFP4` (Red's dual-R9700 Radiance instance);
+- model `Red-Qwen3.8-Flash-Next-MXFP4` (Red's dual-R9700 Flash Next instance);
 - base URL `/llm/v1-identified` on the Mac;
 - an inference-only scoped credential.
 
@@ -157,8 +151,10 @@ systemd/              historical pre-Mac control-plane units only
 - A coding/model agent may start a registered model for an authorized repair or
   test, but may not silently create an unregistered deployment.
 - Use worktrees/checkpoints/merge gates for ARIA-managed autonomous work. Direct
-  interactive operator sessions are distinct and must still be registered and
-  watched through ARIA shells.
+  interactive operator sessions use registered shells by default. Ben's explicit
+  `--no-aria` (or Mac `--local`) opt-out runs a native terminal session without
+  registration, capture or supervision; do not auto-adopt it. Model gateway use
+  remains allowed. See `docs/ops/UNTRACKED_SESSIONS.md`.
 - Never rewrite human-owned charter/approval content. Agent vault writes go
   through ARIA's guarded Obsidian writer.
 
@@ -201,8 +197,8 @@ sudo launchctl print system/com.ben.devbox.aria-ui
 
 # Corsair observed data plane
 systemctl --user is-active aria-node.service
-systemctl --user is-active qwen3.8-flash-next-hybrid.service
-ss -ltn | rg '127.0.0.1:(8080|8120|8121)'
+systemctl --user is-active flashnext-cuda-halo.service
+ss -ltn | rg '127.0.0.1:8131'
 ```
 
 Authenticated ARIA registry/service/health responses should be compared with

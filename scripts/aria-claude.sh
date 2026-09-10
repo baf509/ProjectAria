@@ -35,6 +35,17 @@ _aria_claude_bare() {
 }
 
 claude() {
+    if [ "${ARIA_UNTRACKED:-0}" = 1 ]; then
+        "$HOME/.local/bin/aria-untracked-shell" claude "$@"
+        return $?
+    fi
+    case "${1:-}" in
+        --no-aria|--local)
+            shift
+            "$HOME/.local/bin/aria-untracked-shell" claude "$@"
+            return $?
+            ;;
+    esac
     # ---- bail-outs: hand straight to the real binary -----------------------
     # ARIA_MANAGED is set by the coding backends (agents/backends/claude_code.py).
     # The shell substrate launches the agent under `bash -lc`, which sources this
@@ -48,13 +59,6 @@ claude() {
     # whatever bare `claude` meant before this file was sourced.
     if [ "$#" -eq 0 ]; then
         _aria_claude_bare "$@"
-        return $?
-    fi
-    # Escape hatch inherited from the older corsair wrapper: `claude --no-aria …`
-    # skips every wrapper and runs the real binary.
-    if [ "$1" = "--no-aria" ]; then
-        shift
-        command claude "$@"
         return $?
     fi
     # Non-interactive shell: nothing to attach to, and it's almost certainly a

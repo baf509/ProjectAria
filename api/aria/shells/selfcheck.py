@@ -390,6 +390,7 @@ class SelfCheckWorker:
     async def evaluate_once(self) -> list[dict]:
         """Run the checks once, fire degraded/recovered alerts, return the checks.
         Separated from the loop so it can be unit-tested."""
+        observed_at = datetime.now(timezone.utc)
         checks = await run_checks(self.db)
         failed = [c for c in checks if not c["ok"]]
         if failed:
@@ -404,6 +405,11 @@ class SelfCheckWorker:
                 self._degraded = True
                 await self._alert("degraded", detail, self.cooldown)
         else:
+            from aria.notifications.resolution import resolve_alerts
+
+            await resolve_alerts(
+                self.db, source="selfcheck", event_type="degraded", observed_at=observed_at,
+            )
             if self._degraded:
                 self._degraded = False
                 await self._alert("recovered", "all checks green again", 0)

@@ -69,11 +69,11 @@ after checking admission; do not leave competing temporary forwards behind.
 Mac and Corsair Pi use the `aria` provider, the explicit candidate default and
 the retained Red option. Both configs are authenticated/catalogue-checked at
 256Kcontext/32Koutput with wired thinking controls, default thinking off and
-compaction near95K (`reserveTokens=167144`,20K verbatim tail). Additional
+compaction at 75% = 196608 (`reserveTokens=65536`,20K verbatim tail). Additional
 unregistered machines are not covered by those checks. The idempotent helper
 is `scripts/configure-pi-flashnext.py`; keep credentials private.
 
-Hermes uses the same identified candidate with256K/32K limits,95K compaction,
+Hermes uses the same identified candidate with256K/32K limits,196608 compaction,
 the installed `aria-flashnext` medium/2048 default plugin and sixteen
 thinking-off auxiliary routes. Its actual gateway has gracefully reloaded and
 reconnected to118ARIA tools. Installed executor/compaction fixtures passed;
@@ -131,8 +131,10 @@ replicated onto the Mac by routing policy alone.
 
 The Flash registry drift, duplicate Corsair Gemma listener, stale forward
 mappings, Hermes/Pi gateway bypasses, and the steward's direct `:8080` route
-were closed on 2026-08-29. The managed Mac forward job now carries only current
-ports.
+were closed on 2026-08-29. The Mac forward job carries current candidate `:8131` plus optional
+STT `:8003`, Context-1 `:8081` and retained DeepSeek engineering `:8107`.
+These optional forwards do not imply a running backend. Retired R9700 ports
+`:8080/:8120/:8121/:8122` are removed.
 
 
 ## Red fleet integration (2026-09-07)
@@ -166,3 +168,23 @@ remains excluded from model-omitted auto-selection. Explicit model names still r
 Registry benchmark metadata now refers to the 21:05 EDT BetterBench refresh:
 195.6 weighted decode, 5108.3 prefill at 47,056 input tokens. Full conditions and
 raw results live in CorsairModelHost/red-r9700/results/2026-09-07/.
+
+## Red Linux network and power
+
+Red Linux currently connects only over Wi-Fi (`wlp10s0`, RTL8922AE). The
+Ethernet adapters have no carrier. ARIA's wake relay targets Wi-Fi MAC
+`f8:3d:c6:88:54:92`; an Ethernet Wake-on-LAN flag does not prove Wi-Fi wake.
+The Wi-Fi adapter supports magic-packet wake; its WoWLAN and PCI wake settings
+are enabled, with Netplan/udev persistence. Sleep refuses unless Wi-Fi is
+connected and wake is armed. A registered ARIA sleep/start cycle on 2026-09-08
+resumed the same Linux boot over Wi-Fi in 30.13 seconds, before the four-minute
+RTC recovery alarm, and returned the model to `ready`. The alarm was cleared.
+Corsair's system wake relay is active and enabled. No automatic idle suspend
+policy is enabled. See `CorsairModelHost/red-r9700/README.md` for the persistent
+Netplan, udev and sleep-helper configuration; reboot persistence has not yet
+been tested by rebooting Red.
+
+The Mac's Red/Ridge model proxies are loopback-only; their direct tailnet
+publications are removed. ARIA model start still uses the separate authenticated
+Corsair wake relay. Tailnet `:8099` is the registered War Audio artifact server,
+not an inference proxy.

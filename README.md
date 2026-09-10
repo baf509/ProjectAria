@@ -17,7 +17,7 @@ use live identity/readiness for current process state.
 
 | Owner | Current responsibility |
 |---|---|
-| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB, Hermes/Signal, embeddings, TTS, canonical general projects, watched shells, credentials, and operational state; Gemma is retained but stopped and mongot search is disabled/stopped |
+| MacBook Pro (`bens-macbook-pro`) | ARIA API/UI, MongoDB, Hermes/Signal, retained but disabled embeddings/TTS, canonical general projects, watched shells, credentials, and operational state; Gemma is retained but stopped and mongot search is disabled/stopped |
 | Corsair (`corsair-ai`) | Qwen3.8 Flash Next CUDA/Halo serving, retained model weights/experiments, GPU tooling, benchmarks, restricted model actuation, and the thin `aria-node` compatibility runtime |
 | `red`, `ridge` | Registered on-demand GPU nodes reached through Mac-managed proxies |
 | NAS | CouchDB LiveSync hub and recovery repositories |
@@ -28,8 +28,8 @@ maintained observed-topology explanation is
 volatile facts.
 
 The Mac source checkout is
-`/Users/ben/Development/Infrastructure/ProjectAria`; production is deployed to
-`/Users/ben/Services/apps/ProjectAria`. They are deliberately separate. Editing
+`/Users/ben/Development/Infrastructure/ProjectAria`; production selects a staged release through
+`/Users/ben/Services/apps/ProjectAria/current`. They are deliberately separate. Editing
 source does not deploy it. `/home/ben/Development/ProjectAria` on Corsair is a
 noncanonical compatibility/recovery checkout, not a second control plane.
 
@@ -43,7 +43,8 @@ jobs. The old `devboxsvc` and `devboxagent` paths and identities are historical.
 | ARIA API and inference gateway | loopback `:8200`, tailnet-published `:8200` | `com.ben.devbox.aria-api` |
 | ARIA UI | loopback `:3000`, tailnet-published `:3000` | `com.ben.devbox.aria-ui` |
 | Hermes and Signal | private gateway and `:8090` | Mac launchd services |
-| MongoDB, embeddings, TTS | private/loopback | Mac launchd plus the Lima guest used by MongoDB; Gemma remains stopped |
+| MongoDB | Mac loopback `:27018` → Lima guest `:27017` | launchd tunnel plus Lima |
+| Embeddings, TTS, Gemma | intentionally stopped | launchd launchers honor disable markers |
 | Corsair node agent | outbound to the Mac API | `aria-node.service` on Corsair |
 
 September 8 model inventory (readiness is checked separately):
@@ -92,8 +93,7 @@ copies the production service environment or embeds a broad key.
 
 The charter records Mac UI publication on private tailnet TCP `:3000` and
 `https://bens-macbook-pro.tailb286a5.ts.net/`, verified August 30. Corsair's old
-dashboard publication was removed. See `docs/ops/WEB_UI.md`; this documentation
-reconciliation is not a new network-configuration or reachability test.
+dashboard publication was removed. See `docs/ops/WEB_UI.md`; the current review verified both Mac UI publications from Corsair.
 
 Hermes uses one standard upstream installation. See the
 [installation and update runbook](integrations/hermes/README.md).
@@ -165,8 +165,8 @@ uvicorn aria.main:app --reload --host 127.0.0.1 --port 18200
 ```
 
 Do not use the legacy Corsair systemd/Docker instructions to repair the Mac
-control plane. Deploy and restart Mac services deliberately through the current
-launchd/service-tree procedure.
+control plane. Use the staged release and rollback procedure in
+[MAC_DEPLOYMENT.md](docs/ops/MAC_DEPLOYMENT.md).
 
 ## Documentation map
 
@@ -181,3 +181,5 @@ launchd/service-tree procedure.
 ARIA's default conversational agent remains intentionally disabled. `aria chat`
 and direct conversation creation against agent `aria` refuse by design; use
 Hermes for conversation and the UI/TUI/CLI for operations.
+
+The [Mongo database VM](docs/ops/MONGO_DATABASE_VM.md) hosts both the required database and optional search; its historical Lima name is `mongot`.

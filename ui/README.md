@@ -34,6 +34,6 @@ for the server-side upstream when needed; never expose ARIA credentials through
 `NEXT_PUBLIC_API_KEY`, a browser bundle, or a URL query parameter.
 
 Production deployment details are in `docs/ops/WEB_UI.md`. Production runs from
-`/Users/ben/Services/apps/ProjectAria/ui` under the Mac
+`/Users/ben/Services/apps/ProjectAria/current/ui` under the Mac
 `com.ben.devbox.aria-ui` LaunchDaemon, loopback-bound on `:3000` and privately
 published over the tailnet.

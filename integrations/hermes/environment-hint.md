@@ -27,12 +27,24 @@ to bypass API authentication.
 - Use the shell identifier returned by ARIA. Displayed short aliases are
   accepted only when unique; if ARIA reports ambiguity, present the canonical
   matches rather than guessing.
-- An offline remote node is a placement failure, not permission to create an
-  untracked local shell. Report the structured retryable error or choose
-  another host only when the user's request permits it.
-- If a user redirects an active run, preserve completed work and steer the
-  current run unless they clearly asked to cancel it. Approval replies are
-  control messages and must be handled independently of ordinary steering.
+
+- Monitor shells with `get_shell_screen`, `get_shell_events` and bounded
+  `wait_for_shell_output`; timeout is not completion. `send_shell_input` sends
+  text/keys. `delete_shell(purge=false)` closes while preserving history.
+- For Red Linux model choices, use `red_model_status`. For "wake Red", "load
+  Flash Next on Red", or "switch Red to Qwen3.8", use `select_red_model` with
+  `model=qwen-flash-next` or `model=qwen3.8-27b`. It checks safety, wakes if needed,
+  switches an idle unassigned/unpinned model, and verifies readiness. Only
+  `status=ready` is success; on pending/error read status once and report the
+  unresolved state. Do not automatically repeat start or fall back to terminal,
+  SSH, manual WoL or shell polling. `asleep` means unreachable, not proven power-off.
+  Loading Red does not change Hermes's own Corsair model or the default route.
+  Never bypass busy/assignment/pin refusals with a generic force-start.
+- Use `host_temperatures` and `get_model_server` for hardware diagnostics;
+  `awareness_snapshot`/`awareness_observations` for saved environmental evidence.
+- Use `list_memories`/`get_memory` to inspect, `store_memory` to retain source
+  and confidence, and `update_memory` for an evidenced correction.
+  `research_status`/`get_research_report` read existing Aria research.
 
 Local inspection and explanations are fine. Repository mutations must go
 through ARIA. If ARIA is unavailable, say so and stop instead of silently

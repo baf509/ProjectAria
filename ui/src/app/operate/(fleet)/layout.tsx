@@ -29,7 +29,7 @@ import type {
   UtilizationResponse,
 } from '@/lib/api/types'
 import { FleetList } from '@/features/operate/FleetList'
-import { derivePools, isResident } from '@/features/operate/lib'
+import { derivePools, isModelChoice, isResident, modelName } from '@/features/operate/lib'
 
 export default function OperateLayout({ children }: { children: ReactNode }) {
   // `slow` for the fleet is a hard rule: the payload is 73KB and the endpoint
@@ -45,7 +45,7 @@ export default function OperateLayout({ children }: { children: ReactNode }) {
 
   const servers = fleet.data?.servers ?? []
   const pools = derivePools(servers)
-  const onbox = servers.filter((s) => s.onbox !== false)
+  const onbox = servers.filter((s) => isModelChoice(s) || isResident(s))
   const resident = onbox.filter(isResident).length
   const down = (services.data?.services ?? []).filter((s) => !s.healthy).length
   const serving = route.data?.serving
@@ -71,7 +71,7 @@ export default function OperateLayout({ children }: { children: ReactNode }) {
             {fleet.data ? `${resident} of ${onbox.length}` : '…'}
           </StatusStat>
           <StatusStat label="SERVING" tone={servingUtil?.saturated ? 'warn' : 'default'}>
-            {serving ?? '—'}
+            {serving ? modelName(serving) : '—'}
             {route.data?.pinned ? ' · pinned' : ''}
             {servingUtil?.saturated ? ' · queuing' : ''}
           </StatusStat>

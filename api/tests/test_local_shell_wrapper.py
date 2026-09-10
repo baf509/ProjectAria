@@ -219,22 +219,20 @@ def test_readiness_timeout_never_launches_tmux(monkeypatch):
 def test_remote_wrapper_consumes_aria_placement_flags():
     source = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "--local|--no-aria|--corsair|--remote) ;;" in source
+    assert "--corsair|--remote) ;;" in source
     assert '"$launcher" "${forwarded_args[@]}"' in source
 
 
-def test_remote_wrapper_local_flag_stays_managed():
+def test_remote_wrapper_explicit_opt_out_precedes_tmux_creation():
     source = REMOTE_SCRIPT.read_text(encoding="utf-8")
 
-    assert "local_mode" not in source
-    assert 'exec "$tool" "${forwarded_args[@]}"' not in source
+    assert source.index('exec "$HOME/.local/bin/aria-untracked-shell"') < source.index('tmux new-session')
 
 
-def test_mac_wrapper_local_flags_remain_registered_compatibility_aliases():
+def test_mac_wrapper_preserves_managed_default_and_offers_explicit_opt_out():
     source = MAC_ROUTER.read_text(encoding="utf-8")
 
-    assert "--local|--no-aria) ;;" in source
-    assert "bypass_aria" not in source
+    assert "--no-aria) untracked_mode=1" in source
     assert '"$HOME/.config/aria/aria-local-shell" "$tool"' in source
 
 

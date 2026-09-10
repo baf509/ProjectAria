@@ -1,8 +1,12 @@
 #!/bin/bash
 set -e
 
-# ARIA Setup Script
-# Installs all dependencies needed to run ARIA locally
+# Historical Linux standalone setup; not a Mac production installer.
+# See docs/ops/MAC_DEPLOYMENT.md. Explicit opt-in prevents accidental reuse.
+if [ "${ARIA_LEGACY_LINUX_SETUP:-}" != "1" ]; then
+    echo "Historical Linux setup disabled. Use docs/ops/MAC_DEPLOYMENT.md." >&2
+    exit 2
+fi
 
 # Colors for output
 RED='\033[0;31m'

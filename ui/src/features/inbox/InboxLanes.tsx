@@ -111,7 +111,7 @@ function AlertRow({
                   {alert.project_slug}
                 </Link>
               )}
-              <span className="ml-auto shrink-0 text-micro text-ink-faint">{relativeTime(alert.created_at)}</span>
+              <span className="ml-auto shrink-0 text-micro text-ink-faint">{relativeTime(alert.last_seen_at || alert.created_at)}</span>
             </span>
             {/* Two lines, then a real expand — never truncate-with-tooltip. */}
             <span className="line-clamp-2 min-w-0 wrap-anywhere font-sans text-prose text-ink">{title}</span>
@@ -196,11 +196,16 @@ function ReviewGroups({ items, onDone, onError }: { items: ReviewItem[]; onDone:
 
   async function ackAll(group: ReviewItem[], key: string) {
     setBusy(key)
+    let acked = 0
     for (const it of group) {
-      await run(() => ackReview(it.id), { onError: (e) => onError(e.message) })
+      const result = await run(() => ackReview(it.id), {
+        invalidate: ['/shared/review'],
+        onError: (e) => onError(e.message),
+      })
+      if (result !== undefined) acked += 1
     }
     setBusy(null)
-    onDone(`Acked ${group.length}`)
+    onDone(`Acked ${acked} of ${group.length}`)
   }
 
   return (
@@ -213,7 +218,7 @@ function ReviewGroups({ items, onDone, onError }: { items: ReviewItem[]; onDone:
               <Chip>{key}</Chip>
               <span className="tnum text-micro text-ink-dim">{group.length}</span>
               <span className="ml-auto shrink-0 text-micro text-ink-faint">
-                {relativeTime(group[0]?.created_at)}
+                {relativeTime(group[0]?.updated_at || group[0]?.created_at)}
               </span>
             </span>
           }

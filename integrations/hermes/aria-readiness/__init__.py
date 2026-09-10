@@ -16,7 +16,10 @@ import time
 LOG = logging.getLogger("aria.readiness")
 PREFIX = "mcp__aria__"
 REQUIRED = {PREFIX + name for name in ("fleet_status", "create_coding_session", "list_nodes",
-                                      "resume_coding_session", "ralph_policy", "benchmark_catalog")}
+                                      "resume_coding_session", "ralph_policy", "benchmark_catalog",
+                                      "wait_for_shell_output", "host_temperatures", "get_memory",
+                                      "store_memory", "awareness_observations", "get_research_report",
+                                      "red_model_status", "select_red_model")}
 _lock = threading.RLock()
 _recovery_running = False
 _last_recovery = 0.0
@@ -129,6 +132,9 @@ def before_turn(session_id="", platform="signal", **_):
     if report["ready"]:
         return {"context": "Aria MCP is connected and its tools are selected. When full schemas are deferred, "
                 "use tool_search to find Aria capabilities, tool_describe for parameters, and tool_call to execute. "
+                "For Red Linux, prefer red_model_status and select_red_model (qwen3.8-27b or qwen-flash-next) "
+                "for wake/load/switch. Only status=ready confirms a load; on pending/error read status once and report unresolved state. Do not automatically retry or use terminal/SSH/WoL fallbacks. "
+                "These tools do not change Hermes's own model or default routing. "
                 "Do not infer that Aria is missing merely because individual tools are not listed directly."}
     return {"context": "Aria tool readiness check reports " + report["connection"] +
             ". Required tools missing from the selected catalog: " + ", ".join(report["missing_required"]) +

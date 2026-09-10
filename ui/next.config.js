@@ -15,8 +15,8 @@ const nextConfig = {
   poweredByHeader: false,
   // NOTE: no `env` block. The API URL and key are read at REQUEST time by the
   // proxy route handler (src/lib/server/config.ts) from ARIA_API_URL /
-  // ARIA_API_KEY, so changing either is `docker compose up -d ui`, not a
-  // rebuild — and neither reaches the browser bundle.
+  // ARIA_API_KEY. Runtime configuration changes take effect on a service
+  // restart; neither value reaches the browser bundle.
   async redirects() {
     return [
       // Routes renamed 2026-08-17 so the URL matches the area it belongs to.

@@ -58,7 +58,7 @@ import re
 import shlex
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -207,6 +207,7 @@ class ModelServerSpec:
     exclusive_with: tuple[str, ...] = ()
     onbox: bool = True  # False = ARIA cannot start/stop it (e.g. Ridge)
     startable: bool = True  # False = no working runtime/compose service exists yet
+    catalog_visible: bool = True  # Current operator choice; archives remain observable.
     allow_force_start: bool = True  # False = force cannot override an unqualified startable=False entry
     not_startable_reason: Optional[str] = None
     # Eligibility for automatic resident ranking, independent of process
@@ -1156,7 +1157,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=100,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
         consumers_note="Explicit default for managed Hermes and Pi clients; 256K context, "
-        "32K output budget and compaction near 95K. No automatic fallback or Red default "
+        "32K output budget and compaction at 75% (196608). No automatic fallback or Red default "
         "change. Hash-pinned operator acceptance is not a passed reliability qualification.",
     ),
     ModelServerSpec(
@@ -2345,6 +2346,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Red-Qwen3.8-27B-MXFP4",
+        exclusive_with=("Red-Qwen3.8-Flash-Next-MXFP4",),
         description="Qwen3.8-27B AMD AWQ MXFP4 on Red's two Radeon AI PRO R9700s. "
         "Native Ubuntu on the Lexar disk; Windows remains on the Samsung. "
         "TP2, W4A8, FP8 KV and DFlash2 depth 7 through ggz14 Radiance. "
@@ -2392,11 +2394,74 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "Start wakes Linux through Corsair's LAN relay; "
         "Sleep stops the model and suspends Red. Windows remains a separate boot mode.",
     ),
+    ModelServerSpec(
+        slug="Red-Qwen3.8-Flash-Next-MXFP4",
+        description="Qwen3.8 Flash Next MXFP4/FP8 on Red's two R9700s, with davetha's "
+        "GPU LRU expert cache and file-backed FP8 n-gram tables on the Linux SSD. "
+        "Alternative to Red's 27B Radiance deployment; stop the current model before starting this one.",
+        runtime_repo="https://github.com/davetha/r9700-lru-expert-cache",
+        runtime_ref="8be54e0b8e65f5aa571d2a93fdeb5c32b996dc01; Red SSD PLE, exact UVA and MTP alignment",
+        backend_device="2 x gfx1201 (Radeon AI PRO R9700, 32 GiB each)",
+        onbox=False,
+        startable=True,
+        allow_force_start=False,
+        auto_route=False,
+        runtime_family="vllm",
+        memory_pool=POOL_REMOTE,
+        devices=("Red R9700 0000:03:00.0", "Red R9700 0000:06:00.0"),
+        host_machine="machine:red",
+        deployment="red-r9700/flash-next",
+        container_name="red-flashnext-mxfp4",
+        exclusive_with=("Red-Qwen3.8-27B-MXFP4",),
+        port=8094,
+        wake_command=("/Users/ben/Services/apps/bin/wake-red-model",),
+        remote_start_command=(
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "start-flashnext",
+        ),
+        remote_stop_command=(
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "stop-flashnext",
+        ),
+        sleep_command=(
+            "ssh", "-F", "/Users/ben/Services/config/red-model-ssh.conf", "red-linux-model", "sleep",
+        ),
+        remote_health_url="http://127.0.0.1:8094/health",
+        remote_model_id="red-qwen3.8-flash-next-mxfp4",
+        remote_ready_deadline=1200.0,
+        endpoint_override="http://127.0.0.1:8094/v1",
+        consumers_note="Configured 262144 context, one sequence, MTP4 and one image per prompt; "
+        "qualification evidence was collected at 131072. "
+        "Explicit selection only. Shares both GPUs and the restricted inference "
+        "forward with Red Radiance; model identity is checked before routing.",
+    ),
 )
 
 # This node's stable Tailscale IP — same constant every compose file binds to.
 _TAILNET_IP = "100.123.245.84"
 
+# Ben's current deployment choices (2026-09-09). Preserve archival records for
+# observation/recovery, but never offer or force-start an old Corsair loadout.
+# Ridge's independent on-demand contract is unchanged.
+CURRENT_MODEL_CHOICES = frozenset({
+    "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+    "Red-Qwen3.8-27B-MXFP4",
+    "Red-Qwen3.8-Flash-Next-MXFP4",
+    "Ridge-Qwen3.8-27B",
+})
+REGISTRY = tuple(
+    replace(
+        spec, catalog_visible=False, startable=False, allow_force_start=False,
+        auto_route=False,
+        not_startable_reason=(
+            "Removed from use by Ben on 2026-09-09. Gemma E4B is not a model option."
+            if spec.slug == "gemma-4-e4b-Q4" else
+            "Not a current Corsair option. Use Qwen3.8 Flash Next on RTX 3090 + Strix Halo. "
+            + (spec.not_startable_reason or "Retained for model engineering only.")
+        ),
+        consumers_note=None,
+    ) if spec.onbox and spec.slug not in CURRENT_MODEL_CHOICES else
+    replace(spec, catalog_visible=spec.slug in CURRENT_MODEL_CHOICES)
+    for spec in REGISTRY
+)
 _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
 # refuse start() if projected usage would exceed this fraction of the pool
@@ -4335,6 +4400,7 @@ def _server_row(
             spec.remote_model_id and spec.remotely_operable and state == "running"
         ),
         "startable": spec.startable,
+        "catalog_visible": spec.catalog_visible,
         "allow_force_start": spec.allow_force_start,
         "not_startable_reason": spec.not_startable_reason,
         "auto_route": spec.auto_route,
@@ -4733,6 +4799,7 @@ class ModelServerManager:
                 # The 503 hint lists what a caller could start instead —
                 # routing needs the flag even though it never acts on it.
                 "startable": spec.startable,
+                "catalog_visible": spec.catalog_visible,
                 "allow_force_start": spec.allow_force_start,
                 "auto_route": spec.auto_route,
             })
@@ -5000,6 +5067,14 @@ class ModelServerManager:
 
             wake = await _wake_remote(spec)
             rc, out, err = await _run(*spec.remote_start_command)
+            if rc != 0 and spec.exclusive_with:
+                # Shared-hardware launchers reject a conflicting deployment.
+                # Surface that refusal immediately instead of waiting for a
+                # model that the launcher explicitly declined to start.
+                raise ModelServerError(
+                    f"Failed to start {spec.slug}: {(err or out).strip()[-300:]} "
+                    f"(exit {rc})"
+                )
             # A scheduled task that is already running returns nonzero on some
             # Windows builds; readiness below is the real oracle, so a nonzero
             # exit is recorded but not treated as terminal.

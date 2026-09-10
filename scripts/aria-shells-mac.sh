@@ -2,8 +2,8 @@
 #
 # Source from ~/.zshrc. Interactive coding agents register with ARIA and run
 # locally by default. `--corsair`/`--remote` selects an explicitly mapped
-# Corsair worktree; the compatibility flags `--local` and `--no-aria` still
-# select Mac execution but do not bypass ARIA registration.
+# Corsair worktree. `--no-aria` bypasses shell tracking; `--local` is its
+# Mac-local alias. Plain commands retain the managed default.
 
 _aria_corsair_path() {
     local here="$PWD" local_root remote_root
@@ -52,14 +52,16 @@ _aria_corsair_command() {
 _aria_coding_agent() {
     local tool="$1"
     shift
-    local arg remote_mode=0
+    local arg remote_mode=0 untracked_mode=${ARIA_UNTRACKED:-0} local_mode=0 attach_mode=0
     local -a forwarded_args
     forwarded_args=()
     for arg in "$@"; do
         case "$arg" in
             --corsair|--remote) remote_mode=1 ;;
-            --local|--no-aria) ;;
+            --local) untracked_mode=1; local_mode=1 ;;
+            --no-aria) untracked_mode=1 ;;
             --aria-view|--aria-takeover)
+                attach_mode=1
                 if [ "${ARIA_MANAGED:-}" = 1 ]; then
                     echo "aria: attach controls require an SSH prompt outside the managed shell" >&2
                     return 2
@@ -68,6 +70,21 @@ _aria_coding_agent() {
             *) forwarded_args+=("$arg") ;;
         esac
     done
+    if (( untracked_mode )); then
+        if (( attach_mode || (local_mode && remote_mode) )); then
+            echo 'aria: untracked mode cannot attach to a managed shell or combine --local with --corsair' >&2
+            return 2
+        fi
+        if [ -n "${TMUX:-}" ] || [ "${ARIA_MANAGED:-}" = 1 ]; then
+            echo 'aria: open a normal terminal outside the managed/tmux shell for an untracked session' >&2
+            return 2
+        fi
+        if (( ! remote_mode )); then
+            "$HOME/.local/bin/aria-untracked-shell" "$tool" "${forwarded_args[@]}"
+            return $?
+        fi
+        forwarded_args=(--no-aria "${forwarded_args[@]}")
+    fi
     if [ "${ARIA_MANAGED:-}" = 1 ]; then
         command "$tool" "${forwarded_args[@]}"
         return $?

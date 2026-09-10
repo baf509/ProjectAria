@@ -52,6 +52,7 @@ export type Alert = {
   acked?: boolean
   delivered_at?: string | null
   created_at?: string
+  last_seen_at?: string
   proposal?: AlertProposal | null
   decision?: AlertDecision | null
 }
@@ -105,6 +106,8 @@ export type ModelServer = {
   measured_resident_gib?: number | null
   weights_present?: boolean
   startable?: boolean
+  catalog_visible?: boolean
+  host_machine?: string | null
   not_startable_reason?: string
   onbox?: boolean
   endpoint?: string
@@ -806,6 +809,8 @@ export type ModelServerFull = {
   exclusive_with?: string[]
   onbox?: boolean
   startable?: boolean
+  catalog_visible?: boolean
+  host_machine?: string | null
   not_startable_reason?: string | null
   consumers_note?: string | null
   can_sleep?: boolean
@@ -1057,7 +1062,27 @@ export type SystemMemory = {
   note?: string
 }
 
+export type TemperatureSensor = {
+  id: string
+  kind: string
+  label: string
+  device: string
+  value_c: number | null
+  high_c?: number | null
+  critical_c?: number | null
+  source: string
+}
+
+export type TemperatureHost = {
+  node: string
+  status: string
+  observed_at: string | null
+  max_age_seconds: number
+  sensors: TemperatureSensor[]
+}
+
 export type DevicesResponse = {
+  temperature_hosts?: TemperatureHost[]
   devices: GpuDevice[]
   pools: MemoryPool[]
   system?: SystemMemory | null

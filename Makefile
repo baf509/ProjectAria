@@ -14,7 +14,7 @@ BRANCH := $(shell git rev-parse --abbrev-ref HEAD)
 help:
 	@echo "ui-check   typecheck + lint + build + responsive gate"
 	@echo "ui-build   production build (no deploy)"
-	@echo "ui-deploy  disabled until the atomic Mac launchd deploy is implemented"
+	@echo "ui-deploy  stage a Mac API/UI/node release; activation is explicit"
 	@echo "ui-serve   serve the production build on :3100 for the gate (STOP IT WHEN DONE)"
 	@echo "ui-gate    run the responsive gate against :3100 (server must be up)"
 	@echo "ui-https   print the human-only Mac Tailscale publication command"
@@ -41,14 +41,10 @@ ui-check:
 		kill $$(cat /tmp/aria-ui-gate.pid) 2>/dev/null || true; \
 		exit $$status
 
-# Production is native launchd on the Mac. The old implementation below built a
-# Corsair Docker container and could deploy the wrong architecture. Fail closed
-# until a tested atomic source -> /Users/ben/Services/apps/ProjectAria procedure
-# is added; docs/ops/WEB_UI.md records the live layout and acceptance checks.
+# Production uses a reviewed, manifest-pinned Mac release. Staging prints the
+# explicit activation command boundary; it never restarts production itself.
 ui-deploy:
-	@echo "ERROR: production is the Mac launchd service tree, not Docker." >&2
-	@echo "Use the reviewed Mac deployment procedure and verify the live build; see docs/ops/WEB_UI.md." >&2
-	@exit 2
+	./scripts/aria-deploy-mac stage
 
 # Agents may not change host network/Tailscale settings. Print the exact Mac
 # command for Ben instead of silently altering whichever host ran make.

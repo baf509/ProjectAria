@@ -315,6 +315,30 @@ def test_enabled_retrieval_service_still_alarms_when_stopped(monkeypatch):
     assert row["healthy"] is False
 
 
+def test_tts_disable_marker_suppresses_only_intentional_shutdown(monkeypatch, tmp_path):
+    from aria.infrastructure import services
+    monkeypatch.setattr(services.sys, "platform", "darwin")
+    monkeypatch.setattr(services.Path, "home", lambda: tmp_path)
+    marker = tmp_path / "Services/config/disabled/tts"
+    marker.parent.mkdir(parents=True)
+    spec = get_spec("shared-tts")
+    assert not services._row_for(spec, "stopped")["healthy"]
+    marker.touch()
+    row = services._row_for(spec, "stopped")
+    assert row["healthy"] and row["disabled"] and row["notes"]
+    assert not services._row_for(spec, "failed")["healthy"]
+    monkeypatch.setattr(services.sys, "platform", "linux")
+    assert not services._row_for(spec, "stopped")["healthy"]
+
+
+def test_mongo_reports_mac_tunnel_and_guest_ports(monkeypatch):
+    from aria.infrastructure import services
+    monkeypatch.setattr(services.sys, "platform", "darwin")
+    monkeypatch.setattr(services.settings, "mongodb_uri", "mongodb://127.0.0.1:27018/")
+    row = services._row_for(get_spec("shared-mongod"), "running")
+    assert row["port"] == 27018 and row["guest_port"] == 27017
+
+
 # ---------------------------------------------------------------------------
 # Single-entity reads must not pay the full-fleet cost
 # ---------------------------------------------------------------------------

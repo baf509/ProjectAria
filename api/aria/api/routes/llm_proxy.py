@@ -930,21 +930,22 @@ def _norm_slug(value: Optional[str]) -> str:
 
 # A backend's ground-truth model id only changes when that process loads a
 # different model, but fetching it is a tunnel round trip on every request.
-# A short cache is invisible next to a model swap: the swap restarts the
-# backend, which voids its prompt cache anyway.
+# Include the selected deployment: Red alternatives share one SSH forward.
+# Switching models must not reuse the previous deployment's vLLM wire id.
 _BACKEND_MODEL_ID_TTL_SECONDS = 30.0
-_backend_model_id_cache: dict[str, tuple[float, Optional[str]]] = {}
+_backend_model_id_cache: dict[tuple[str, Optional[str]], tuple[float, Optional[str]]] = {}
 
 
-async def _backend_model_id_cached(base: str) -> Optional[str]:
+async def _backend_model_id_cached(base: str, slug: Optional[str] = None) -> Optional[str]:
     if not base:
         return None
-    hit = _backend_model_id_cache.get(base)
+    key = (base, slug)
+    hit = _backend_model_id_cache.get(key)
     now = time.monotonic()
     if hit is not None and now - hit[0] < _BACKEND_MODEL_ID_TTL_SECONDS:
         return hit[1]
     model_id = await _backend_model_id(base)
-    _backend_model_id_cache[base] = (now, model_id)
+    _backend_model_id_cache[key] = (now, model_id)
     return model_id
 
 
@@ -1058,7 +1059,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
     # instead of ignoring it, so resolve the backend's ground-truth id and
     # rewrite the forwarded request after routing.
     if isinstance(body, dict):
-        model_id = await _backend_model_id_cached(base)
+        model_id = await _backend_model_id_cached(base, slug)
         try:
             forwarded = dict(body)
             if model_id:

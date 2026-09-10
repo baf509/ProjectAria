@@ -74,7 +74,10 @@ repository; that repository is not another engine installation.
 
 Hermes's installed configuration and both managed Pi configurations (Mac and
 Corsair) select the explicit candidate with context 262144 / max output 32768.
-Compaction remains near **95K**, not near the full capacity limit. Pi retains
+Compaction is at **75% of the window** = 196608 of 262144, shared by both
+clients. Pi sets `reserveTokens=65536`; Hermes's percentage applies to the
+input budget, so `threshold: 0.857143` x (262144 - 32768) reaches the same
+point and must be recomputed if `model.max_tokens` changes. Pi retains
 its 20K verbatim tail and explicit thinking mapping; default thinking stays off.
 
 Hermes main persisted reasoning is medium with a 2048-token budget through the

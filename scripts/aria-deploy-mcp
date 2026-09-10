@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Stage and install an independent, hash-pinned Hermes MCP release on the Mac.
+
+Does not restart API/UI/node/model services. After installation, gracefully
+reload Hermes and verify its process-specific readiness. Backups contain every
+replaced entry for rollback; do not edit an installed release in place.
+"""
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+APP = Path('/Users/ben/Services/apps/aria-mcp')
+RELEASES = Path('/Users/ben/Services/releases/aria-mcp')
+BOOT = Path('/Users/ben/Services/apps/ProjectAria/scripts/aria-boot-check')
+LAUNCHER = Path('/Users/ben/Services/apps/bin/run-aria-mcp')
+HERMES_PLUGIN = Path('/Users/ben/Services/data/hermes-home/plugins/aria-readiness')
+FILES = ('mcp/server.py', 'mcp/operations.py', 'scripts/aria-boot-check', 'scripts/aria-mcp-check',
+         'integrations/hermes/verify-aria-exposure.py', 'integrations/hermes/environment-hint.md',
+         'integrations/hermes/aria-readiness/__init__.py', 'integrations/hermes/aria-readiness/plugin.yaml')
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def atomic_link(path, target):
+    temporary = path.with_name(path.name + '.new-' + str(os.getpid()))
+    temporary.symlink_to(target)
+    os.replace(temporary, path)
+
+
+def atomic_write(path, data):
+    temporary = path.with_name(path.name + '.new-' + str(os.getpid()))
+    temporary.write_bytes(data)
+    temporary.chmod(0o755)
+    os.replace(temporary, path)
+
+
+def stage():
+    hashes = {f: digest(ROOT / f) for f in FILES}
+    identity = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
+    release = RELEASES / (datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + identity[:12])
+    release.mkdir(parents=True, mode=0o700)
+    for f in FILES:
+        target = release / f
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / f, target)
+    (release / 'mcp/.venv').symlink_to(APP / '.venv', target_is_directory=True)
+    manifest = {'files': hashes, 'content_sha256': identity,
+                'source_head': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
+                'created_at': datetime.now(timezone.utc).isoformat()}
+    (release / 'release.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps({'release': str(release), **manifest}))
+
+
+def verify(release):
+    release = release.resolve()
+    if release.parent != RELEASES.resolve():
+        raise ValueError('Not an independent MCP release directory')
+    manifest = json.loads((release / 'release.json').read_text())
+    if set(manifest['files']) != set(FILES):
+        raise ValueError('Unexpected release file set')
+    for f, expected in manifest['files'].items():
+        path = release / f
+        if path.is_symlink() or not path.resolve().is_relative_to(release) or digest(path) != expected:
+            raise ValueError('Release hash mismatch: ' + f)
+    identity = hashlib.sha256(json.dumps(manifest['files'], sort_keys=True).encode()).hexdigest()
+    if identity != manifest['content_sha256']:
+        raise ValueError('Release identity mismatch')
+    return manifest
+
+
+def install(release):
+    manifest = verify(release)
+    backup = Path('/Users/ben/Services/backups') / ('aria-mcp-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+    backup.mkdir(mode=0o700)
+    launcher = LAUNCHER
+    replacements = [APP / 'server.py', APP / 'operations.py', launcher, BOOT,
+                    HERMES_PLUGIN / '__init__.py']
+    previous = str((APP / 'current').resolve()) if (APP / 'current').is_symlink() else None
+    entries = []
+    for i, path in enumerate(replacements):
+        saved = backup / str(i)
+        shutil.copy2(path, saved, follow_symlinks=False)
+        entries.append({'path': str(path), 'backup': str(saved)})
+    receipt = {'release': str(release), 'previous': previous, 'entries': entries,
+               'manifest_sha256': digest(release / 'release.json'), 'status': 'installing'}
+    receipt_path = backup / 'installation.json'
+    receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+    try:
+        atomic_link(APP / 'current', release)
+        # Each bridge process resolves one immutable bundle before loading it.
+        atomic_write(launcher, b'#!/bin/sh\nset -eu\nexec /Users/ben/Services/apps/aria-mcp/.venv/bin/python /Users/ben/Services/apps/aria-mcp/current/mcp/server.py "$@"\n')
+        atomic_link(APP / 'server.py', 'current/mcp/server.py')
+        atomic_link(APP / 'operations.py', 'current/mcp/operations.py')
+        atomic_link(HERMES_PLUGIN / '__init__.py', release / 'integrations/hermes/aria-readiness/__init__.py')
+        atomic_write(BOOT, b'#!/bin/sh\nexec /Users/ben/Services/apps/aria-mcp/current/scripts/aria-boot-check "$@"\n')
+        receipt['status'] = 'installed-awaiting-hermes-reload'
+    except Exception:
+        restore(receipt)
+        receipt['status'] = 'rolled_back'
+        raise
+    finally:
+        receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+    print(json.dumps({'backup': str(backup), 'release': str(release), 'status': receipt['status']}))
+
+
+def restore(receipt):
+    for entry in receipt['entries']:
+        path, saved = Path(entry['path']), Path(entry['backup'])
+        if saved.is_symlink():
+            atomic_link(path, os.readlink(saved))
+        else:
+            atomic_write(path, saved.read_bytes())
+    if receipt['previous']:
+        atomic_link(APP / 'current', receipt['previous'])
+    else:
+        (APP / 'current').unlink(missing_ok=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='action', required=True)
+    sub.add_parser('stage')
+    for action in ('verify', 'install'):
+        sub.add_parser(action).add_argument('release', type=Path)
+    sub.add_parser('rollback').add_argument('backup', type=Path)
+    args = parser.parse_args()
+    if args.action == 'stage':
+        stage()
+    elif args.action == 'verify':
+        print(json.dumps(verify(args.release)))
+    elif args.action == 'install':
+        install(args.release.resolve())
+    else:
+        receipt = json.loads((args.backup / 'installation.json').read_text())
+        if (APP / 'current').resolve() != Path(receipt['release']):
+            raise ValueError('A different MCP release is now installed')
+        restore(receipt)
+        print(json.dumps({'rolled_back': True, 'hermes_reload_required': True}))
+
+
+if __name__ == '__main__':
+    main()

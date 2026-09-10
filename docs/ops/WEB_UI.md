@@ -4,7 +4,7 @@ The ARIA UI is a Next.js 14 application in `ui/`. Production runs natively on
 the MacBook Pro as `ben`; the old Corsair Docker and Tailscale Serve deployment
 is retired.
 
-Last verified: **2026-09-03**.
+Last reconciled: **2026-09-08**.
 
 ## Current topology
 
@@ -34,7 +34,7 @@ Tailscale Serve configuration and does not publish an alternate dashboard.
 ## Production layout
 
 - Source: `/Users/ben/Development/Infrastructure/ProjectAria/ui`
-- Deployed tree: `/Users/ben/Services/apps/ProjectAria/ui`
+- Deployed tree: `/Users/ben/Services/apps/ProjectAria/current/ui`
 - Launcher: `/Users/ben/Services/apps/bin/run-aria-ui`
 - LaunchDaemon: `/Library/LaunchDaemons/com.ben.devbox.aria-ui.plist`
 - Logs: `/Users/ben/Services/logs/aria-ui.log` and `aria-ui.error.log`
@@ -56,12 +56,11 @@ ARIA's default chat agent is disabled; `/converse` is retained for explicit
 non-default agents and existing conversation records, not as the primary human
 front door.
 
-`/operate` has two whole-machine loadout controls. Hybrid is the boot default.
-“Load Qwen dual resident” starts Radiance on the R9700, waits for readiness,
-then starts Halo-only Flash Next as a rollback profile. “Load Flash Next hybrid”
-unloads both and starts the registered R9700 + Halo split on `:8121`. The
-controls clear a stale operator route pin after a successful switch so normal
-model-aware routing can select the new residents.
+`/operate` offers **Load and select Flash Next hybrid** for the registered
+CUDA/Halo candidate on Corsair's RTX 3090 + Strix Halo. The button honors
+`startable`, waits for readiness, then pins the model-omitted route. Red is a
+separate choice; the former Corsair R9700 loadouts are retired. Explicit
+Hermes/Pi model choices remain explicit when the global route changes.
 
 ## Build and verification
 
@@ -84,10 +83,10 @@ sudo launchctl print system/com.ben.devbox.aria-ui
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve status
 ```
 
-The Makefile now fails closed for `ui-deploy` instead of running the retired
-Docker deployment. `ui-https` prints the exact human-only Mac command because
-agents may not change Tailscale settings. The production service tree and
-launchd job are the authority.
+Production releases use `scripts/aria-deploy-mac`; see
+[Mac release deployment](MAC_DEPLOYMENT.md) for staging, checks, activation and
+rollback. `make ui-deploy` selects that same procedure. Build identity must match
+the release manifest after activation.
 
 ## Safety rules
 
@@ -103,3 +102,6 @@ launchd job are the authority.
 The responsive-design decision record remains in the vault at
 `ProjectAria/Planning/WEB_UI_RESPONSIVE_REBUILD_20260817.md`; it is historical
 rationale, while this file is the operations guide.
+
+Temperature telemetry on Operate: see [TEMPERATURES.md](TEMPERATURES.md).
+The tailnet dashboard is https://bens-macbook-pro.tailb286a5.ts.net/.

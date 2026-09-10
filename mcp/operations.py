@@ -5,6 +5,9 @@ service-owned file only after consent, never accepted as a model argument.
 """
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import re
@@ -16,6 +19,130 @@ from pydantic import BaseModel, Field
 
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,120}$")]
+RedModel = Literal["qwen3.8-27b", "qwen-flash-next"]
+RED_MODELS = {
+    "qwen3.8-27b": "Red-Qwen3.8-27B-MXFP4",
+    "qwen-flash-next": "Red-Qwen3.8-Flash-Next-MXFP4",
+}
+_RED_STOPPED = {"stopped", "exited", "not_created", "dead", "asleep"}
+_RED_PATH = "/api/v1/infrastructure/model-servers"
+_RED_RECOVERY = {
+    "next_tool": "red_model_status",
+    "automatic_retry_allowed": False,
+    "shell_fallback_allowed": False,
+    "recovery": "Read Red status once. If still asleep, unreachable or unknown, stop and report that readiness is unconfirmed; ask the operator to check the host. Do not repeat start, send manual wake packets, or use terminal/SSH polling. An asleep observation does not prove power-off or explain the failure.",
+}
+
+
+@contextmanager
+def _red_selection_lock():
+    """Serialize this workflow across Mac MCP processes; never wait holding a turn.
+
+    UI/API clients retain their own controls. Fresh checks plus the native Red
+    exclusivity lock still arbitrate those callers; this is not a transaction
+    across arbitrary lifecycle clients.
+    """
+    directory = Path(os.environ.get("ARIA_MCP_STATE_DIR", str(Path.home() / ".cache/aria-mcp")))
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (directory / "red-model-selection.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+async def _red_rows(request):
+    rows = await asyncio.gather(*(request("GET", f"{_RED_PATH}/{slug}") for slug in RED_MODELS.values()))
+    if any(not isinstance(row, dict) or row.get("slug") != slug
+           for row, slug in zip(rows, RED_MODELS.values())):
+        raise ValueError("Red registry response is missing or has the wrong identity")
+    return dict(zip(RED_MODELS, rows))
+
+
+async def _red_ready(request, slug):
+    row = await request("GET", f"{_RED_PATH}/{slug}")
+    backend = await request("GET", "/llm/v1/backend", params={"model": slug})
+    return row.get("state") == "running" and backend.get("backend") == slug
+
+
+async def _select_red(request, model):
+    slug = RED_MODELS[model]
+    result = {"host": "red-linux", "model": model, "slug": slug,
+              "routing_changed": False, "hermes_model_changed": False, "actions": []}
+
+    def finish(status, reason, **extra):
+        recovery = _RED_RECOVERY if status in ("pending", "error") else {}
+        return {**result, "status": status, "reason": reason, **recovery, **extra}
+
+    try:
+        rows = await _red_rows(request)
+        target = rows[model]
+        if target.get("startable") is not True or target.get("catalog_visible") is not True:
+            return finish("blocked", "Model is unavailable in the active Aria catalog.")
+        if any(r.get("state") in ("starting", "loading") for r in rows.values()):
+            return finish("pending", "Red is already loading a model. Check red_model_status; do not repeat the start.")
+        if any(r.get("state") not in _RED_STOPPED | {"running"} for r in rows.values()):
+            return finish("blocked", "Red's current state is unknown; inspect red_model_status before changing it.")
+        running = [r for r in rows.values() if r.get("state") == "running"]
+        if len(running) > 1:
+            return finish("blocked", "Conflicting Red residency reported; inspect the host before changing models.")
+        if target.get("state") == "running":
+            if await _red_ready(request, slug):
+                return finish("ready", "Requested model is already serving on Red.", request_model=slug)
+            return finish("pending", "Requested model is not yet verified by the inference gateway.")
+        if running:
+            previous = running[0]
+            old = previous["slug"]
+            result["previous_slug"] = old
+            if not isinstance(previous.get("bound_agents"), list):
+                return finish("blocked", "Current Red agent assignments are unknown; no model was stopped.")
+            if previous.get("bound_agents"):
+                return finish("blocked", "Current Red model has agent assignments. Release those assignments before switching.",
+                              bound_agents=previous["bound_agents"])
+            route, util, backend = await asyncio.gather(
+                request("GET", "/api/v1/infrastructure/llm-route"),
+                request("GET", _RED_PATH + "/utilization"),
+                request("GET", "/llm/v1/backend", params={"model": old}),
+            )
+            if "pinned" not in route or route["pinned"] == old:
+                return finish("blocked", "Current Red model is pinned as the default, or the route is unknown. Resolve the route separately before switching.")
+            activity = next((r for r in util.get("servers", []) if r.get("slug") == old), {})
+            admission = backend.get("admission", {})
+            counts = [activity.get(k) for k in ("busy_slots", "requests_processing", "requests_deferred")]
+            counts += [admission.get("active"), admission.get("queued")]
+            if backend.get("backend") != old or not activity.get("reachable") or any(v is None for v in counts):
+                return finish("blocked", "Red request activity is unavailable; no model was stopped.")
+            if any(v != 0 for v in counts):
+                return finish("blocked", "Red is serving or queueing requests. Wait for them to finish before switching.")
+            # Re-read bindings/residency immediately before the destructive step.
+            current = await _red_rows(request)
+            if any(current[k].get("state") != rows[k].get("state") or
+                   current[k].get("bound_agents") != rows[k].get("bound_agents") for k in rows):
+                return finish("blocked", "Red changed during the check; inspect red_model_status before retrying.")
+            result["actions"].append({"action": "stop_requested", "slug": old})
+            await request("POST", f"{_RED_PATH}/{old}/stop", timeout=90.0)
+            current = await _red_rows(request)
+            if current[next(k for k, v in RED_MODELS.items() if v == old)].get("state") not in _RED_STOPPED:
+                return finish("pending", "Previous Red model has not stopped. No replacement was started; inspect red_model_status.")
+            result["actions"].append({"action": "stopped", "slug": old})
+            if current[model].get("state") not in _RED_STOPPED:
+                return finish("pending", "Another caller changed Red during the switch; inspect red_model_status.")
+        result["actions"].append({"action": "start_requested", "slug": slug})
+        started = await request("POST", f"{_RED_PATH}/{slug}/start", json={"force": False}, timeout=600.0)
+        if started.get("state") in ("ready", "running") and await _red_ready(request, slug):
+            return finish("ready", "Model is serving on Red.", request_model=slug, woken=started.get("woken"))
+        return finish("pending", "Start was requested but readiness is not confirmed. Check red_model_status; do not blindly repeat the start.")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # Upstream errors may contain credentials or transcripts. Return type/status only.
+        return finish("error", "Red selection did not complete. Inspect red_model_status before retrying; requested actions may still be finishing.",
+                      error_type=type(exc).__name__, http_status=getattr(exc, "status_code", None))
 
 
 class Consent(BaseModel):
@@ -56,6 +183,49 @@ def _id(value: str) -> str:
 
 
 def register(mcp, request):
+    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
+    async def red_model_status() -> dict:
+        """Show Red Linux's two supported models, current state and assignments.
+        Use for 'what is loaded on Red?', checking a pending load, or choosing a
+        Red model. Does not wake the machine or start inference. Use
+        select_red_model to wake/load/switch; no registry slugs need guessing."""
+        rows = await _red_rows(request)
+        return {"host": "red-linux", "one_model_at_a_time": True,
+                "models": [{"model": model, **{k: row.get(k) for k in
+                            ("slug", "state", "startable", "catalog_visible", "bound_agents")}}
+                           for model, row in rows.items()],
+                "select_tool": "select_red_model",
+                "wake": "Wake from sleep via the Corsair host relay; full shutdown power-on is not qualified.",
+                "unreachable_recovery": _RED_RECOVERY,
+                "routing": "Loading Red does not change Hermes's own Corsair model or the default route."}
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False})
+    async def select_red_model(model: RedModel) -> dict:
+        """Preferred tool for 'wake Red and load Qwen', 'use Flash Next on Red',
+        or 'switch Red models'. Choose qwen3.8-27b (256K, up to 8 requests) or
+        qwen-flash-next (256K, 1 request). Wakes red-linux from sleep if needed,
+        unloads an idle unassigned/unpinned Red model, then loads and verifies
+        the chosen deployment. Refuses busy/queued/unknown activity and agent
+        assignments; never force-stops or changes routing/Hermes configuration.
+        Allow up to 640 seconds. Only status=ready confirms success. For pending
+        or error, read red_model_status once, then report unresolved state.
+        Do not retry start automatically or fall back to shell/SSH/WoL commands.
+        An asleep state is a failed reachability observation, not proof of power-off.
+        If a user merely asks
+        what's available, use red_model_status instead of changing the host."""
+        if model not in RED_MODELS:
+            raise ValueError("Choose qwen3.8-27b or qwen-flash-next")
+        with _red_selection_lock() as acquired:
+            if not acquired:
+                return {"status": "pending", "host": "red-linux", "model": model, **_RED_RECOVERY,
+                        "reason": "Another MCP Red selection is in progress. Check red_model_status; do not repeat it."}
+            try:
+                async with asyncio.timeout(640):
+                    return await _select_red(request, model)
+            except TimeoutError:
+                return {"status": "pending", "host": "red-linux", "model": model, **_RED_RECOVERY,
+                        "reason": "Selection deadline reached; an action may still be running. Check red_model_status before retrying."}
+
     async def admin(ctx: Context, method: str, path: str, body: dict | None = None,
                     *, run_id: str | None = None) -> Any:
         key_file = os.environ.get("ARIA_ADMIN_KEY_FILE")
@@ -244,4 +414,3 @@ def register(mcp, request):
         """Cancel the specified benchmark, keeping its results. Only deployments
         started by that run may be torn down; pre-existing endpoints stay running."""
         return await request("POST", f"/api/v1/benchmarks/runs/{_id(run_id)}/cancel", timeout=120)
-

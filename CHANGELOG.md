@@ -1,5 +1,78 @@
 # ARIA Changelog
 
+## 2026-09-09 — Failed Red wake recovery
+
+- MCP pending/error results specify one status recheck and no automatic retry
+  or shell fallback. Hermes guidance distinguishes unreachable from power-off.
+- Corrected Hermes lifecycle and diagnostic skills: removed stale motherboard
+  WoL fallback, Windows speculation, retired Gemma remediation and obsolete
+  Corsair control-plane paths. Relay acceptance is not proof of host wake.
+
+## 2026-09-09 — Red model selection through Hermes MCP
+
+- Added curated Red status and select tools with two named model choices,
+  wake/start/readiness handling, guarded switching, and explicit pending/errors.
+- Added Hermes discovery guidance and checks for the two tools. MCP deployment
+  now backs up and installs the matching readiness plugin with rollback support.
+- Deployed MCP contract `2026-09-09.2`; 113 tests passed. The reloaded Hermes
+  gateway has 131 tools and Signal connected. A native Hermes request loaded
+  Red Flash Next successfully; selecting it again confirmed readiness without
+  restarting it. Red was restored to stopped after verification.
+
+## 2026-09-09 — Current model choices and Red switching (activated)
+
+- Operate groups current models by machine and puts model controls before telemetry.
+  Red has Load, Switch and Unload controls for Qwen3.8-27B and Qwen Flash Next,
+  with activity checks, readiness progress and persistent errors.
+- Corsair offers only its accepted Flash Next deployment. Old Corsair loadouts
+  and Gemma are hidden from choices and cannot be force-started. Ridge is unchanged.
+- Removed stale Gemma extraction/classifier defaults. Its native disabled marker
+  remains in place. The Mac environment override has a private backup.
+- Supported-model notes and dated benchmark evidence live in the Obsidian vault:
+  `ProjectAria/Design/Supported Models`.
+
+
+## 2026-09-09 — Inbox stale-item cleanup and incident recovery
+
+- Cleaned all Inbox lanes against live evidence: acknowledged nine alerts and
+  22 reviews, dismissed 53 duplicate/superseded proposals, and restored four
+  vault plan provenance records using exact historical content hashes.
+- Added automatic relay/selfcheck alert resolution, informational weekly
+  reports, latest-occurrence Inbox ages, and immediate review-queue refresh.
+- The data cleanup is live; tested code is staged pending privileged activation.
+  See [the cleanup receipt](docs/ops/INBOX_CLEANUP_20260909.md).
+
+## 2026-09-09 — Hermes MCP diagnostics, knowledge and shell monitoring
+
+- Added eleven MCP tools for named model/host diagnostics, environmental
+  observations, memory inspection/provenance/corrections, saved research reports,
+  and bounded watched-shell output polling. Memory recall accepts category filters.
+- Fixed watched-shell literal text plus Enter submission and explicit resize
+  success responses at the MCP boundary.
+- Extended Hermes discovery/readiness and operator guidance; added actual Hermes
+  dispatch verification with an optional disposable watched-shell canary.
+- Added an independent, hash-pinned MCP deployment and rollback path so bridge
+  updates preserve API/UI/node/model processes and the active terminal.
+
+
+## 2026-09-08 — Documentation and deployment consistency corrections
+
+- Restored explicit untracked Claude/Codex/Pi launches through `--no-aria` and
+  the Mac `--local` alias. Pi uses the standard model gateway without shell
+  registration or caller identity headers; native history stays outside watched
+  directories. Claude's independent transcript capture is disabled for these
+  launches. See [untracked sessions](docs/ops/UNTRACKED_SESSIONS.md).
+- Reconciled current model/service documentation, removed retired active work,
+  and scoped historical Linux setup instructions.
+- Corrected disabled-service health and Mongo port metadata; made boot checks
+  validate actual MCP discovery and fresh node heartbeats with failure exit codes.
+- Added manifest-verified Mac API/UI/node staging, activation and rollback.
+  The prepared release still requires privileged Mac activation; see the
+  [correction receipt](docs/ops/CONSISTENCY_FIXES_20260908.md).
+- Removed direct tailnet model publications and guarded retired Corsair starts.
+  Configured Red Linux Wi-Fi wake persistence and verified a full ARIA sleep/start
+  cycle; idle suspend remains disabled.
+
 ## 2026-09-06 — Durable approved-plan Ralph workflows
 
 - Added a qualified Codex app-server worker with a fresh private reasoning
@@ -3270,3 +3343,8 @@ Template for new entries:
 - 
 
 -->
+
+### Dashboard temperatures and database naming (2026-09-09 UTC)
+
+- Add expiring Mac/Corsair/Red CPU/GPU temperature readings to Operate, with additional hardware sensors in disclosures. Monitoring never wakes hosts.
+- Clarify the Mongo database VM role and distinguish required mongod from disabled mongot search.

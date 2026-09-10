@@ -45,6 +45,22 @@ async def test_sleeping_node_does_not_supply_live_counters():
 
 
 @pytest.mark.asyncio
+async def test_shared_gpu_counters_but_only_matching_model_geometry():
+    db = MagicMock()
+    db.nodes.find_one = AsyncMock(return_value={
+        'last_heartbeat_at': datetime.now(timezone.utc),
+        'hardware': {'pools': [dict(used_gib=30, total_gib=32)] * 2},
+        'runtime': {'model_id': 'red-qwen3.8-flash-next-mxfp4',
+                    'served_ctx': 131072, 'slots': 1},
+    })
+    rows = [dict(slug=slug, state='running') for slug in red.MODELS]
+    await red.enrich(rows, db)
+    assert all(row['pool_used_gib'] == 60 for row in rows)
+    assert 'served_ctx' not in rows[0]
+    assert rows[1]['served_ctx'] == 131072 and rows[1]['slots'] == 1
+
+
+@pytest.mark.asyncio
 async def test_utilization_includes_only_verified_remote(monkeypatch):
     good = {'slug': red.MODEL, 'state': 'running', 'onbox': False,
             'remote_identity_verified': True, 'port': 8094,

@@ -98,6 +98,7 @@ class HeartbeatReportWorker:
             await self.notifier.notify(
                 source="aria-shells", event_type="weekly report",
                 detail=report["text"], cooldown_seconds=0,
+                severity="info", needs_human=False,
             )
         await self.db.report_state.update_one(
             {"_id": "heartbeat"},

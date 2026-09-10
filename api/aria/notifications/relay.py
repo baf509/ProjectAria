@@ -37,6 +37,7 @@ from typing import Callable, Optional
 
 from aria.config import settings
 from aria.notifications import signal_rpc
+from aria.notifications.resolution import resolve_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,11 @@ async def record_heartbeat(db, source: str = "relay") -> dict:
         },
         upsert=True,
     )
-    return dict(previous)
+    previous = dict(previous)
+    previous["resolved_alerts"] = await resolve_alerts(
+        db, source=RELAY_KIND, event_type="dead", observed_at=now,
+    )
+    return previous
 
 
 class RelayWatchdog:
@@ -187,6 +192,7 @@ class RelayWatchdog:
                 needs_human=False,
                 dedup_key="relay|recovered",
             )
+        if recovered or previous.get("resolved_alerts"):
             # The dead-state inbox is a generated status surface. Leaving its
             # warning in place after the heartbeat recovers makes a healthy
             # relay look broken indefinitely, so refresh it in the same
@@ -230,6 +236,12 @@ class RelayWatchdog:
 
         age = now - last_beat
         if age <= self.timeout:
+            resolved = await resolve_alerts(
+                self.db, source=RELAY_KIND, event_type="dead", observed_at=last_beat,
+            )
+            if resolved:
+                pending = await self._pending_alerts()
+                await self.write_inbox(pending)
             self._last = {
                 "checked_at": now,
                 "reason": "alive",

@@ -55,6 +55,55 @@ def test_red_runtime_is_exact_and_loopback_only():
     assert ms.unit_name(spec) is None  # Lifecycle is remote; never run systemctl on the Mac.
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('loaded_id', ['qwen3.8-27b', 'red-qwen3.8-flash-next-mxfp4'])
+async def test_shared_red_forward_never_identifies_both_models(monkeypatch, loaded_id):
+    manager = ms.ModelServerManager()
+    specs = [manager.get_spec(slug) for slug in (
+        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4')]
+    client_type = httpx.AsyncClient
+
+    def handle(request):
+        return httpx.Response(200, json={'data': [{'id': loaded_id}]})
+
+    monkeypatch.setattr(ms.httpx, 'AsyncClient', lambda **kw: client_type(
+        transport=httpx.MockTransport(handle), **kw))
+    results = [await ms._remote_health_ok(spec) for spec in specs]
+    assert sum(results) == 1
+    assert specs[results.index(True)].remote_model_id == loaded_id
+    assert specs[0].remote_start_command != specs[1].remote_start_command
+    assert specs[0].remote_stop_command != specs[1].remote_stop_command
+    assert specs[1].slug in specs[0].exclusive_with
+    assert specs[0].slug in specs[1].exclusive_with
+    assert not specs[1].auto_route
+
+
+@pytest.mark.asyncio
+async def test_model_swap_does_not_reuse_other_deployments_wire_id(monkeypatch):
+    monkeypatch.setattr(llm_proxy, '_backend_model_id_cache', {})
+    probe = AsyncMock(side_effect=['qwen3.8-27b', 'red-qwen3.8-flash-next-mxfp4'])
+    monkeypatch.setattr(llm_proxy, '_backend_model_id', probe)
+    base = 'http://127.0.0.1:8094/v1'
+    assert await llm_proxy._backend_model_id_cached(base, 'radiance') == 'qwen3.8-27b'
+    assert await llm_proxy._backend_model_id_cached(base, 'flashnext') == 'red-qwen3.8-flash-next-mxfp4'
+    assert await llm_proxy._backend_model_id_cached(base, 'radiance') == 'qwen3.8-27b'
+    assert probe.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_conflicting_red_launcher_refusal_does_not_wait_for_readiness(monkeypatch):
+    manager = ms.ModelServerManager()
+    spec = manager.get_spec('Red-Qwen3.8-Flash-Next-MXFP4')
+    monkeypatch.setattr(ms, '_remote_health_ok', AsyncMock(return_value=False))
+    monkeypatch.setattr(ms, '_wake_remote', AsyncMock(return_value={'woken': False}))
+    monkeypatch.setattr(ms, '_run', AsyncMock(return_value=(1, '', 'Radiance is active. Stop it first.')))
+    ready = AsyncMock()
+    monkeypatch.setattr(ms, '_await_remote_ready', ready)
+    with pytest.raises(ms.ModelServerError, match='Radiance is active'):
+        await manager._start_remote(spec)
+    ready.assert_not_awaited()
+
+
 def test_only_identified_remote_is_explicitly_routable():
     row = {"slug": "Red-Qwen3.8-27B-MXFP4", "state": "running", "onbox": False,
            "port": 8094, "endpoints": {"local": "http://127.0.0.1:8094/v1"},
