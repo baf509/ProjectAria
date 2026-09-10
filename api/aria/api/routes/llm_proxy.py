@@ -519,7 +519,17 @@ async def _record_gateway_usage(
                 "identified": identify,
                 "streamed": streamed,
                 "status_code": status_code,
-                "outcome": "ok" if 200 <= status_code < 400 and not error else "error",
+                # A streamed response that ended without ever reporting usage
+                # did not deliver an answer, whatever its status line said. The
+                # steward's calls died on the adapter timeout eight times in a
+                # row and every one recorded "ok" with zero tokens, which is why
+                # nothing alerted. `incomplete` is not `error` — the backend may
+                # still be generating, the client simply stopped listening.
+                "outcome": (
+                    "error" if error or not (200 <= status_code < 400) else
+                    "incomplete" if streamed and not (response_payload or {}).get("usage") else
+                    "ok"
+                ),
                 "error": error,
                 "requested_model": requested_model,
                 # False means the caller named something the registry does not

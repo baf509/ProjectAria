@@ -790,3 +790,50 @@ def test_routing_only_probes_servers_that_could_serve():
     for spec in ms.REGISTRY:
         if not spec.onbox:
             assert ms.is_routing_candidate(spec), spec.slug
+
+
+# ---------------------------------------------------------------------------
+# The steward's budget and its timeout are set independently — and must agree
+# ---------------------------------------------------------------------------
+
+def test_steward_budget_fits_inside_the_adapter_timeout():
+    """Two numbers in different files silently contradicted each other.
+
+    `steward_max_tokens` (6144 live) and `llamacpp_timeout_seconds` (120) were
+    tuned apart. Qwen3.8 is a reasoning model that spends `reasoning_content`
+    before `content`, so it uses most of the budget on every call. Whether that
+    fits depends entirely on the decode rate of whichever backend it lands on:
+
+        Red      ~90 tok/s -> 6144 tokens in ~68s   fits
+        Corsair  ~44 tok/s -> 6144 tokens in ~140s  dies at 120s, content=""
+
+    Pointing the steward at Corsair on 2026-09-10 produced eight consecutive
+    120s calls returning zero tokens and both projects reporting model-failed.
+    Assert the invariant instead of rediscovering it: the configured budget must
+    be completable, on the configured model, inside the adapter's timeout.
+    """
+    from aria.config import settings
+    from aria.infrastructure import model_servers as ms
+
+    # Measured floors. Deliberately conservative: a backend slower than this
+    # cannot serve the steward at the configured budget, whatever else is true.
+    DECODE_TOK_S = {
+        "Red-Qwen3.8-27B-MXFP4": 90.0,
+        "Qwen3.8-Flash-Next-CUDA-Halo-Candidate": 44.0,
+    }
+    model = settings.steward_model
+    assert model in ms._BY_SLUG, "steward_model must name a registered deployment"
+    rate = DECODE_TOK_S.get(model)
+    assert rate, f"no measured decode rate for {model}; measure before routing to it"
+
+    needed = settings.steward_max_tokens / rate
+    assert needed < settings.llamacpp_timeout_seconds, (
+        f"{model} needs ~{needed:.0f}s to spend {settings.steward_max_tokens} tokens "
+        f"at {rate} tok/s, but the adapter gives up at "
+        f"{settings.llamacpp_timeout_seconds}s — the call dies with content=''"
+    )
+
+    # Red also has the slots. Background work sharing pi's single coding slot
+    # for minutes at a time is what made this expensive as well as broken.
+    spec = ms._BY_SLUG[model]
+    assert spec.slug != ms.PI_CODING_SLUG, "background work must not sit in pi's coding slot"

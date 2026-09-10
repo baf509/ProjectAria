@@ -932,14 +932,24 @@ class Settings(BaseSettings):
     # retired with the R9700 loadouts, so three separate comments claiming this
     # was pinned "never to the auto-route" described a pin that did not exist.
     #
-    # Background work now goes to the Corsair model deliberately (Ben,
-    # 2026-09-10). It shares one slot with pi's coding sessions; the gateway's
-    # admission queue gives background callers the lowest priority, and the
-    # deployment carries an 8 GiB prompt cache with 32 context checkpoints, so a
-    # background prefill costs the coding agent a checkpoint restore rather than
-    # a full cold re-prefill.
+    # Background work runs on RED, not the Corsair candidate. Pointing it at
+    # Corsair (2026-09-10) killed the steward within the hour: both active
+    # projects returned model-failed, and eight consecutive calls burned 120s
+    # and returned zero tokens.
+    #
+    # The cause is decode, not prefill — these are small calls, ~1,031 prompt
+    # tokens. Qwen3.8 is a reasoning model that spends `reasoning_content`
+    # before `content`, so it uses most of steward_max_tokens (6144 live). At
+    # Corsair's ~44 tok/s that needs ~140s and dies on the 120s adapter timeout
+    # (llamacpp_timeout_seconds) with content=""; at Red's ~90 tok/s the same
+    # budget lands in ~68s. Red also has 8 slots against Corsair's 1, so
+    # background work no longer sits in pi's coding slot for minutes.
+    #
+    # Corsair remains the AUTO route, so model-omitted traffic still has a
+    # resident fallback when Red sleeps — that fix is unaffected.
+    # See test_steward_budget_fits_inside_the_adapter_timeout.
     steward_backend: str = "llamacpp"
-    steward_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    steward_model: str = "Red-Qwen3.8-27B-MXFP4"
     steward_endpoint: str = "http://127.0.0.1:8200/llm/v1-identified"
     steward_max_actions_per_tick: int = 2
     # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before

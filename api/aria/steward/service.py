@@ -277,6 +277,47 @@ Answer with ONE JSON object and nothing else:
 """
 
 
+# Measured decode floors, tokens/second. Conservative on purpose: a backend
+# slower than its entry cannot spend the steward's budget inside the adapter
+# timeout, and the call then returns finish_reason="length" with content="".
+_DECODE_FLOOR_TOK_S = {
+    "Red-Qwen3.8-27B-MXFP4": 90.0,
+    "Qwen3.8-Flash-Next-CUDA-Halo-Candidate": 44.0,
+}
+
+
+def _warn_if_budget_cannot_finish() -> None:
+    """Check the live budget against the live timeout, at startup.
+
+    A unit test can only pin the DEFAULT; `.env` overrides it
+    (STEWARD_MAX_TOKENS=6144 against a 2048 default), so the contradiction that
+    killed the steward on 2026-09-10 was invisible to the suite. Qwen3.8 spends
+    `reasoning_content` before `content` and so uses most of the budget on every
+    call; the question is whether the configured model can decode that many
+    tokens before the adapter gives up. Warn rather than refuse — a wrong floor
+    here must not be able to stop the steward from running.
+    """
+    rate = _DECODE_FLOOR_TOK_S.get(settings.steward_model)
+    if not rate:
+        logger.warning(
+            "steward: no measured decode rate for %s — cannot check that "
+            "steward_max_tokens=%d completes within the %ds adapter timeout",
+            settings.steward_model, settings.steward_max_tokens,
+            settings.llamacpp_timeout_seconds,
+        )
+        return
+    needed = settings.steward_max_tokens / rate
+    if needed >= settings.llamacpp_timeout_seconds:
+        logger.error(
+            "steward: %s needs ~%.0fs to spend steward_max_tokens=%d at %.0f tok/s, "
+            "but llamacpp_timeout_seconds=%d. Calls will time out with empty "
+            "content. Lower the budget, raise the timeout, or route to a faster "
+            "deployment.",
+            settings.steward_model, needed, settings.steward_max_tokens, rate,
+            settings.llamacpp_timeout_seconds,
+        )
+
+
 class StewardWorker:
     """The per-project steward loop.
 
@@ -324,6 +365,7 @@ class StewardWorker:
             # in main.py staying correct through every future edit.
             logger.info("steward worker not started (steward_enabled=false)")
             return
+        _warn_if_budget_cannot_finish()
         self._stop.clear()
         self._task = asyncio.create_task(self._run(), name="steward.worker")
         logger.info(
