@@ -26,9 +26,12 @@ def _inference_trace_row(doc: dict) -> dict:
         if isinstance(metadata.get("preamble"), dict)
         else {"state": "absent", "change_reason": None}
     )
-    cached = doc.get("cache_read_tokens", 0) or 0
+    # `cache_reported=False` means the backend never answered the question.
+    # Legacy rows carry no flag and were written by reporting backends.
+    cache_reported = doc.get("cache_reported", True) is not False
+    cached = (doc.get("cache_read_tokens") or 0) if cache_reported else None
     fresh = doc.get("input_tokens", 0) or 0
-    prompt = cached + fresh
+    prompt = (cached or 0) + fresh
     return {
         "trace_id": doc.get("trace_id"),
         "timestamp": doc.get("timestamp"),
@@ -49,7 +52,10 @@ def _inference_trace_row(doc: dict) -> dict:
         "prompt_tokens": prompt,
         "fresh_prompt_tokens": fresh,
         "cache_read_tokens": cached,
-        "cache_hit_rate": round(cached / prompt, 4) if prompt else 0.0,
+        "cache_hit_rate": (
+            None if cached is None else round(cached / prompt, 4) if prompt else 0.0
+        ),
+        "cache_reported": cache_reported,
         "output_tokens": doc.get("output_tokens", 0) or 0,
         "context_tokens": metadata.get("context_tokens"),
         "prompt_tokens_per_second": metadata.get("prompt_tokens_per_second"),
@@ -119,9 +125,9 @@ async def usage_by_model(
                 "input_tokens": {"$sum": "$input_tokens"},
                 "output_tokens": {"$sum": "$output_tokens"},
                 "total_tokens": {"$sum": "$total_tokens"},
-                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
                 "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                 "requests": {"$sum": 1},
+                **UsageRepo.CACHE_GROUP_FIELDS,
             }
         },
         {"$sort": {"total_tokens": -1}},
@@ -132,9 +138,7 @@ async def usage_by_model(
             cost_for(r["_id"], r.get("input_tokens", 0), r.get("output_tokens", 0), r.get("backend")),
             6,
         )
-        cache_read = r.get("cache_read_tokens", 0) or 0
-        denom = cache_read + (r.get("input_tokens", 0) or 0)
-        r["cache_hit_rate"] = round(cache_read / denom, 4) if denom else 0.0
+        UsageRepo.annotate_cache(r)
     return rows
 
 
@@ -159,17 +163,15 @@ async def usage_by_caller(
                 "input_tokens": {"$sum": "$input_tokens"},
                 "output_tokens": {"$sum": "$output_tokens"},
                 "total_tokens": {"$sum": "$total_tokens"},
-                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
                 "requests": {"$sum": 1},
+                **UsageRepo.CACHE_GROUP_FIELDS,
             }
         },
         {"$sort": {"total_tokens": -1}},
     ]
     rows = await db.usage.aggregate(pipeline).to_list(length=200)
     for row in rows:
-        cached = row.get("cache_read_tokens", 0) or 0
-        fresh = row.get("input_tokens", 0) or 0
-        row["cache_hit_rate"] = round(cached / (cached + fresh), 4) if cached + fresh else 0.0
+        UsageRepo.annotate_cache(row)
     return rows
 
 

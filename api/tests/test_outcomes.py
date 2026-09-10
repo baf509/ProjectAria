@@ -689,3 +689,104 @@ async def test_worker_tick_scores_without_an_llm():
     # The scorer is evidence-only: no model call, so it can run on a timer
     # without competing for a local slot.
     review.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Background routing: the steward's model must be a real deployment
+# ---------------------------------------------------------------------------
+
+def test_steward_model_names_a_registered_deployment():
+    """An unrecognised model string is not an error at the gateway.
+
+    `llm_route.match_requested` returns "no opinion" for a name it does not
+    know, so the request falls through to the auto route. That is how
+    `steward_model` came to name `qwen3.8-27b-rocmfp4-r9700` — retired with the
+    R9700 loadouts — while three comments claimed the steward was pinned away
+    from the auto route. Nothing failed loudly; the pin simply was not there.
+    """
+    from aria.config import settings
+    from aria.infrastructure import model_servers as ms
+    from aria.infrastructure.llm_route import AUTO_ALIASES, _names_for, _norm
+
+    want = _norm(settings.steward_model)
+    assert want not in AUTO_ALIASES, "an auto alias would defeat the point of naming a model"
+    matches = [
+        spec.slug for spec in ms.REGISTRY
+        if want in _names_for({"slug": spec.slug, "model_file": spec.model_file})
+    ]
+    assert matches, (
+        f"steward_model={settings.steward_model!r} matches no registered deployment, "
+        "so every steward/research/review call silently rides the auto route"
+    )
+    assert ms._BY_SLUG[matches[0]].startable, "the steward cannot use a deployment ARIA may not start"
+
+
+def test_a_resident_model_always_answers_a_model_omitted_request():
+    """Auto routing must not depend on a machine that sleeps.
+
+    Red was the only auto-routable server, so a model-omitted request 503'd
+    whenever Red was down — 304 times in the 7 days to 2026-09-10, every one of
+    them ARIA's own background layer, none alerted. The always-resident Corsair
+    deployment now carries the auto route and outranks Red by footprint.
+    """
+    from aria.infrastructure import model_servers as ms
+    from aria.infrastructure.llm_route import rank_resident
+
+    def row(spec, state="running"):
+        return {
+            "slug": spec.slug, "state": state, "onbox": spec.onbox,
+            "remote_identity_verified": True, "port": spec.port,
+            "endpoints": {"local": f"http://127.0.0.1:{spec.port}/v1"},
+            "resident_gib_estimate": spec.resident_gib, "auto_route": spec.auto_route,
+        }
+
+    corsair = ms._BY_SLUG[ms.PI_CODING_SLUG]
+    red = ms._BY_SLUG["Red-Qwen3.8-27B-MXFP4"]
+    assert corsair.auto_route, "the standing deployment must be eligible for the auto route"
+
+    # Red asleep: the resident Corsair model still answers.
+    picked = rank_resident([row(corsair), row(red, state="asleep")])
+    assert picked and picked["slug"] == corsair.slug
+
+    # Both up: the larger resident wins, which is Corsair.
+    picked = rank_resident([row(corsair), row(red)])
+    assert picked and picked["slug"] == corsair.slug
+
+    # Corsair down: Red is still the fallback rather than a 503.
+    picked = rank_resident([row(corsair, state="exited"), row(red)])
+    assert picked and picked["slug"] == red.slug
+
+
+def test_routing_only_probes_servers_that_could_serve():
+    """The request path must not pay for retired deployments.
+
+    In Corsair forward mode every distinct onbox port costs a TCP connect plus
+    an HTTP /health round trip through the SSH tunnel, and a stale tunnel makes
+    those sub-second timeouts stack. Measured on the live gateway before this
+    filter: ~148 ms added at the median, with a routing_ms tail of p95 4.3 s,
+    p99 10.2 s and a 12.0 s maximum — for 13 ports covering 20 onbox specs of
+    which 19 were retired.
+    """
+    from aria.infrastructure import model_servers as ms
+
+    onbox = [spec for spec in ms.REGISTRY if spec.onbox and spec.port]
+    probed = [spec for spec in onbox if ms.is_routing_candidate(spec)]
+    assert onbox, "expected registered onbox deployments"
+
+    # Everything skipped must be genuinely unselectable, not merely stopped.
+    for spec in onbox:
+        if ms.is_routing_candidate(spec):
+            continue
+        assert not spec.startable and not spec.catalog_visible and not spec.auto_route, spec.slug
+
+    # Anything a caller can name or the auto route can pick is still probed.
+    for spec in onbox:
+        if spec.startable or spec.catalog_visible or spec.auto_route:
+            assert spec in probed, spec.slug
+
+    assert len({spec.port for spec in probed}) < len({spec.port for spec in onbox})
+
+    # Off-box deployments are resolved separately and must never be filtered out.
+    for spec in ms.REGISTRY:
+        if not spec.onbox:
+            assert ms.is_routing_candidate(spec), spec.slug

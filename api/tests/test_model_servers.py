@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import json
 from dataclasses import replace
 
@@ -1621,9 +1622,59 @@ async def test_mac_forward_mode_discovers_models_without_linux_tools(
 
 
 @pytest.mark.asyncio
-async def test_mac_forward_mode_disambiguates_reused_port_by_runtime_family(
+async def test_routing_skips_retired_specs_and_never_probes_their_ports(
     manager, _seeded_remote_state
 ):
+    """The request path probes only servers routing could actually choose.
+
+    Each distinct onbox port costs a TCP connect plus an HTTP /health round trip
+    through the Corsair SSH tunnel, and a stale tunnel stacks those timeouts:
+    measured on the live gateway, ~148 ms at the median with a routing_ms tail of
+    p95 4.3 s / p99 10.2 s / max 12.0 s. It was paying that for 13 ports covering
+    20 onbox specs of which 19 are retired.
+
+    A retired spec is not startable, not catalog-visible and not auto-routable,
+    so no probe result could make it selectable. `status()` still checks every
+    port — see the disambiguation test below.
+    """
+    retired = ms._BY_SLUG["Qwen3.8-27B-R9700-HIP"]
+    assert not ms.is_routing_candidate(retired)
+
+    probed: list[int] = []
+
+    async def fake_probe(port, *, identify_runtime=False):
+        probed.append(port)
+        return True, "vllm"
+
+    with patch.object(ms.sys, "platform", "darwin"), \
+         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}), \
+         patch.object(ms, "_forwarded_endpoint_status", side_effect=fake_probe):
+        rows = await manager.running_summary()
+
+    by_slug = {row["slug"]: row for row in rows}
+    # Reported stopped without asking, which is what every retired spec is.
+    assert by_slug[retired.slug]["state"] == "exited"
+    assert retired.port not in probed
+
+    # The one deployment that can serve is still probed, and still answers.
+    candidate = ms._BY_SLUG["Qwen3.8-Flash-Next-CUDA-Halo-Candidate"]
+    assert candidate.port in probed
+    assert by_slug[candidate.slug]["state"] == "running"
+    # Nothing unselectable was probed at all.
+    for spec in ms.REGISTRY:
+        if spec.onbox and spec.port and not ms.is_routing_candidate(spec):
+            assert spec.port not in probed or any(
+                other.port == spec.port and ms.is_routing_candidate(other)
+                for other in ms.REGISTRY if other.onbox
+            ), spec.slug
+
+
+@pytest.mark.asyncio
+async def test_full_status_still_disambiguates_a_reused_port_by_runtime_family(manager):
+    """Two deployments deliberately share a port, so port health alone must not
+    make both registry entries look resident. Routing no longer probes either of
+    these (both retired), but the fleet view does and must still tell them
+    apart — that is where a manually started retired deployment shows up."""
     radiance = ms._BY_SLUG["Qwen3.8-27B-R9700-Radiance"]
     retired = ms._BY_SLUG["Qwen3.8-27B-R9700-HIP"]
     assert radiance.port == retired.port
@@ -1634,10 +1685,11 @@ async def test_mac_forward_mode_disambiguates_reused_port_by_runtime_family(
             return True, "vllm"
         return False, None
 
-    with patch.object(ms.sys, "platform", "darwin"), \
-         patch.dict(ms.os.environ, {"ARIA_CORSAIR_MODEL_FORWARDS": "1"}), \
+    with patch.object(ms, "_corsair_forward_mode", return_value=True), \
+         patch.object(ms, "_read_gtt_gib", return_value=None), \
+         patch.object(ms, "_remote_state", AsyncMock(return_value="asleep")), \
          patch.object(ms, "_forwarded_endpoint_status", side_effect=fake_probe):
-        rows = await manager.running_summary()
+        rows = await manager.status()
 
     by_slug = {row["slug"]: row for row in rows}
     assert by_slug[radiance.slug]["state"] == "running"
@@ -1760,11 +1812,17 @@ async def test_one_unknown_slug_raises_not_found(manager):
         await manager.one("does-not-exist")
 
 
-def test_cuda_halo_operator_accepted_option_keeps_locked_release_and_no_auto_route(manager):
+def test_cuda_halo_operator_accepted_option_keeps_locked_release_and_carries_auto_route(manager):
     spec = manager.get_spec("Qwen3.8-Flash-Next-CUDA-Halo-Candidate")
     assert spec.startable is True
     assert spec.allow_force_start is False
-    assert spec.auto_route is False
+    # Carries the auto route since 2026-09-10. Excluding it left Red — a machine
+    # that sleeps — as the only auto-routable server, so every model-omitted
+    # request 503'd whenever Red was down while this deployment sat resident.
+    # The locked release, the force-start refusal and the pinned parameters are
+    # what keep it safe; auto-routing to a resident model is not the risk they
+    # guard against.
+    assert spec.auto_route is True
     assert spec.parameters == ()
     assert spec.port == 8131
     assert spec.systemd_unit == "flashnext-cuda-halo.service"
@@ -1805,3 +1863,58 @@ def test_cuda_halo_conflicts_with_existing_corsair_residency(manager):
                  "Ling-3.0-flash-Q6_K"):
         assert slug in candidate.exclusive_with
         assert candidate.slug in manager.get_spec(slug).exclusive_with
+
+
+@pytest.mark.asyncio
+async def test_routing_never_blocks_on_a_remote_probe(manager):
+    """A sleeping remote must not sit on the gateway's critical path.
+
+    Probing an asleep Ridge costs 3s of health timeout plus 4s of reachability
+    timeout — measured at 8.3s against the live host. `_REMOTE_STATE_MAX_AGE`
+    makes a stale entry block again, so routing stalled for that long every five
+    minutes on a box serving nothing. Routing now answers 'unknown', which is
+    not servable, and refreshes behind the read.
+    """
+    spec = ms._BY_SLUG["Ridge-Qwen3.8-27B"]
+    started = asyncio.Event()
+
+    async def slow_probe(_spec):
+        started.set()
+        await asyncio.sleep(30)          # never completes within the test
+        return "asleep"
+
+    ms._remote_state_cache.pop(spec.slug, None)
+    ms._remote_state_inflight.pop(spec.slug, None)
+    try:
+        with patch.object(ms, "_probe_remote_state", slow_probe):
+            state = await asyncio.wait_for(ms._remote_state(spec, wait=False), timeout=2)
+            assert state == "unknown"
+            # The probe still runs, so the next read can be answered from cache.
+            await asyncio.wait_for(started.wait(), timeout=2)
+
+            # A stale-but-usable entry is still served rather than refetched.
+            ms._remote_state_cache[spec.slug] = (
+                time.monotonic() - ms._REMOTE_STATE_TTL - 1, "running"
+            )
+            assert await asyncio.wait_for(ms._remote_state(spec, wait=False), timeout=2) == "running"
+
+            # Past MAX_AGE the remembered value is too old to route on.
+            ms._remote_state_cache[spec.slug] = (
+                time.monotonic() - ms._REMOTE_STATE_MAX_AGE - 1, "running"
+            )
+            assert await asyncio.wait_for(ms._remote_state(spec, wait=False), timeout=2) == "unknown"
+    finally:
+        for task in list(ms._remote_state_inflight.values()):
+            task.cancel()
+        ms._remote_state_inflight.clear()
+        ms._remote_state_cache.pop(spec.slug, None)
+
+
+def test_unknown_remote_state_is_not_servable():
+    """The whole safety of a non-blocking route rests on this."""
+    from aria.infrastructure.llm_route import is_servable
+
+    row = {"state": "unknown", "onbox": False, "remote_identity_verified": True,
+           "port": 8092, "endpoints": {"local": "http://127.0.0.1:8092/v1"}}
+    assert not is_servable(row)
+    assert is_servable({**row, "state": "running"})

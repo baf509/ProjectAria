@@ -92,6 +92,36 @@ def test_trace_timings_extracts_cache_speed_context_and_mtp():
     assert trace["speculative_acceptance_rate"] == 0.7
 
 
+def test_a_backend_that_reports_no_reuse_is_not_a_backend_that_stayed_silent():
+    """Zero reuse and unmeasured reuse are different answers.
+
+    llama.cpp says `cached_tokens: 0` on a cold prefill — a real zero. Red's
+    Radiance answers `"prompt_tokens_details": null` with no timings block: it
+    never measured. Folding the second into the first recorded 33M prompt
+    tokens over 7 days as a 0% hit rate for a prefix cache that measurably
+    works (25.6K tokens took 5210 ms cold against 1005 ms warm).
+    """
+    cold = {"usage": {"prompt_tokens": 100, "completion_tokens": 7,
+                      "prompt_tokens_details": {"cached_tokens": 0}}}
+    assert llm_proxy._usage_counts(cold) == (100, 7, 0, 100)
+    assert llm_proxy._trace_timings(cold)["cache_hit_rate"] == 0.0
+    assert llm_proxy._trace_timings(cold)["cache_reported"] is True
+
+    silent = {"usage": {"prompt_tokens": 100, "completion_tokens": 7,
+                        "prompt_tokens_details": None}}
+    fresh, output, cached, prompt = llm_proxy._usage_counts(silent)
+    assert (fresh, output, cached, prompt) == (100, 7, None, 100)
+    trace = llm_proxy._trace_timings(silent)
+    assert trace["cache_read_tokens"] is None
+    assert trace["cache_hit_rate"] is None, "absence must not be reported as zero reuse"
+    assert trace["cache_reported"] is False
+    # The prompt is still fully accounted for; only the split is unknown.
+    assert trace["prompt_tokens"] == 100 and trace["fresh_prompt_tokens"] == 100
+
+    # No usage block at all behaves the same way.
+    assert llm_proxy._usage_counts({})[2] is None
+
+
 def test_preamble_tracker_classifies_stability_and_timestamp_only_drift():
     tracker = PreambleTracker(max_entries=2)
     body = {

@@ -37,34 +37,44 @@ async function fixture(page: Page, startable: boolean, running = false, failStar
     await route.fulfill({ json: body })
   })
   await page.goto('/operate', { waitUntil: 'domcontentloaded' })
-  return page.getByRole('button', { name: 'Load and select Flash Next', exact: true })
+  return page
 }
 
+/**
+ * The label states BOTH facts — resident, and selected as the default. It used
+ * to read "Load and select Flash Next" unconditionally, i.e. it said "load"
+ * while the model was already loaded.
+ */
+const loadBtn = (page: Page) => page.getByRole('button', { name: 'Load and select Flash Next', exact: true })
+const selectBtn = (page: Page) => page.getByRole('button', { name: 'Select Flash Next', exact: true })
+const doneBtn = (page: Page) => page.getByRole('button', { name: 'Flash Next loaded and selected', exact: true })
+
 test('qualification gate disables the new loadout and retired dual button is absent', async ({ page }) => {
-  const button = await fixture(page, false)
-  await expect(button).toBeDisabled()
+  await fixture(page, false)
+  await expect(loadBtn(page)).toBeDisabled()
   await expect(page.getByText('Qualification pending', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Load Qwen dual resident' })).toHaveCount(0)
   expect(writes).toEqual([])
 })
 
 test('qualified loadout starts only the selected model and pins it after readiness', async ({ page }) => {
-  const button = await fixture(page, true)
-  await button.click()
-  await expect(button).toHaveAttribute('aria-pressed', 'true')
+  await fixture(page, true)
+  await loadBtn(page).click()
+  await expect(doneBtn(page)).toHaveAttribute('aria-pressed', 'true')
   expect(writes).toEqual([`POST /infrastructure/model-servers/${FLASH}/start`, 'PUT /infrastructure/llm-route'])
 })
 
-test('already resident selection does not restart or stop any model', async ({ page }) => {
-  const button = await fixture(page, true, true)
-  await button.click()
-  await expect(button).toHaveAttribute('aria-pressed', 'true')
+test('a resident model offers Select, not Load, and does not restart it', async ({ page }) => {
+  await fixture(page, true, true)
+  await expect(loadBtn(page)).toHaveCount(0)
+  await selectBtn(page).click()
+  await expect(doneBtn(page)).toHaveAttribute('aria-pressed', 'true')
   expect(writes).toEqual(['PUT /infrastructure/llm-route'])
 })
 
 test('a rejected start does not change the route or stop another deployment', async ({ page }) => {
-  const button = await fixture(page, true, false, true)
-  await button.click()
+  await fixture(page, true, false, true)
+  await loadBtn(page).click()
   await expect(page.getByText('loadout: Conflicting residency; review required')).toBeVisible()
   expect(writes).toEqual([`POST /infrastructure/model-servers/${FLASH}/start`])
 })

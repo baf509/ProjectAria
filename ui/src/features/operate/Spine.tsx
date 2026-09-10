@@ -3,16 +3,22 @@
 /**
  * ARIA - Operate: the phone spine (/operate index)
  *
- * The first screen of Operate, absorbing the old `/` overview. Order is
- * alarms → memory → route → residents → services, i.e. worst news first: the
- * old page announced downed services in the status bar and made them fixable
- * only four viewports down.
+ * Organised by MACHINE. The previous version was organised by kind — one
+ * Memory card, one Temperatures card, one "Resident now" card, one Corsair
+ * loadout card — so answering "what is Red doing?" meant reading four cards and
+ * joining them by hand, and the Corsair loadout button stood alone with no
+ * statement of what was already resident on that box (it read "Load and select
+ * Flash Next" while Flash Next was loaded).
  *
- * Memory is drawn by MemoryPools, which renders the machine's actual topology:
- * ONE system-memory bar (the Strix Halo iGPU has no memory of its own — its GTT
- * allocation is system RAM, so `halo-gtt` and `host-ram` are the same DIMMs and
- * host-ram's figure already contains the iGPU's) plus a separate bar for the
- * installed discrete GPU's own VRAM.
+ * Order is alarms → machines → default route → unclaimed telemetry. Worst news
+ * still first: the old page announced downed services in the status bar and
+ * made them fixable only four viewports down.
+ *
+ * Each machine card carries its own residency, memory and temperature, plus
+ * whatever that box can be told to do. The Mac carries the service list,
+ * because the services ARE what the control plane runs. The full model
+ * catalogue stays in the fleet list (the layout's left column, and below the
+ * spine on a phone).
  */
 import Link from 'next/link'
 import { useState } from 'react'
@@ -25,17 +31,18 @@ import type {
   UtilizationResponse,
 } from '@/lib/api/types'
 import { Card, EmptyState, Notice, StatusDot, Text } from '@/components/ui/primitives'
-import { MemoryPools } from './MemoryPools'
 import { Temperatures } from './Temperatures'
-import { RedModels } from './RedModels'
+import { RedModelControls } from './RedModels'
+import { MachineCard } from './MachineCard'
+import { buildMachines, unclaimedTemperatureHosts, type Machine } from './machines'
 import { Button, Toasts } from '@/components/ui/controls'
 import { Async } from '@/components/ui/Async'
 import { Cluster, Row, Stack } from '@/components/layout'
 import { useAction, type Resource } from '@/lib/swr'
 import { modelServerAction, serviceAction, setLlmRoute } from '@/lib/api/endpoints'
 import { api, ApiError } from '@/lib/http'
-import { gib, middleTruncate, pct } from '@/lib/format'
-import { STATE_WORD, dotState, isResident, serverState, sortServices, useToasts, utilFor } from './lib'
+import { middleTruncate, pct } from '@/lib/format'
+import { isResident, sortServices, useToasts } from './lib'
 
 const FLASH_HYBRID = 'Qwen3.8-Flash-Next-CUDA-Halo-Candidate'
 
@@ -93,6 +100,47 @@ function ServiceAlarm({
   )
 }
 
+/* ------------------------------------------------------------------ services */
+
+function ServiceList({ services }: { services: Resource<ServicesResponse> }) {
+  return (
+    <Async r={services} skeletonRows={5}>
+      {(d) => (
+        <ul className="m-0 list-none p-0">
+          {sortServices(d.services).map((s) => {
+            const stopped = s.state !== 'running'
+            return (
+              <li key={s.slug} className="border-b border-line last:border-b-0">
+                <Row
+                  as={Link}
+                  href={`/operate/services/${encodeURIComponent(s.slug)}`}
+                  marker={<StatusDot state={s.healthy ? (stopped ? 'external' : 'running') : 'absent'} />}
+                  trailing={s.port ? `:${s.port}` : ''}
+                  className="px-0 py-1.5 hover:bg-panel-2"
+                >
+                  <span className="block wrap-anywhere font-mono text-label text-ink">
+                    {s.slug}
+                    {s.needs_review && (
+                      <span className="ml-1.5 text-micro text-idle" title="expected_state inferred, not confirmed">
+                        ⚠
+                      </span>
+                    )}
+                  </span>
+                  <span className={`text-micro ${s.healthy ? 'text-ink-faint' : 'text-gone'}`}>
+                    {s.state}
+                    {s.expected_state === 'on_demand' ? ' · on demand' : ''}
+                    {!s.healthy ? ' · expected up' : ''}
+                  </span>
+                </Row>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Async>
+  )
+}
+
 /* ------------------------------------------------------------------- spine */
 
 export function Spine({
@@ -120,6 +168,34 @@ export function Spine({
   const unhealthy = (services.data?.services ?? []).filter((s) => !s.healthy)
   const saturated = (utilization.data?.servers ?? []).filter((u) => u.reachable && u.saturated)
   const flash = fleet.data?.servers.find((s) => s.slug === FLASH_HYBRID)
+
+  const machines = buildMachines(
+    fleet.data?.servers ?? [],
+    devices.data,
+    utilization.data?.servers,
+    route.data
+  )
+  const machine = (id: string) => machines.find((m) => m.spec.id === id) as Machine | undefined
+  const strays = unclaimedTemperatureHosts(devices.data)
+
+  // The Corsair loadout button used to be an unconditional "Load and select
+  // Flash Next" — it said "load" while the model was resident, which is the
+  // single most misleading thing on this page. Both facts are now in the label.
+  //
+  // Until BOTH resources answer, the button states neither. Defaulting to
+  // "Load and select" while the fleet is still in flight is the same lie in a
+  // smaller window: an unloaded answer asserted from an absent one. (Caught by
+  // the phone gate, where a slow first fetch held that label for 10s.)
+  const flashKnown = Boolean(fleet.data && route.data)
+  const flashResident = Boolean(flash && isResident(flash))
+  const flashPinned = route.data?.pinned === FLASH_HYBRID
+  const flashLabel = !flashKnown
+    ? 'Checking Flash Next…'
+    : !flashResident
+      ? 'Load and select Flash Next'
+      : !flashPinned
+        ? 'Select Flash Next'
+        : 'Flash Next loaded and selected'
 
   async function pin(slug: string | null) {
     setRouteBusy(slug ?? 'auto')
@@ -161,6 +237,11 @@ export function Spine({
     }
   }
 
+  const corsair = machine('corsair')
+  const red = machine('red')
+  const ridge = machine('ridge')
+  const mac = machine('mac')
+
   return (
     <Stack>
       {actionError && (
@@ -184,33 +265,61 @@ export function Spine({
         </Notice>
       ))}
 
-      <Card title="Corsair model" hint="RTX 3090 + Strix Halo">
-        <Stack gap="sm">
-          <Cluster>
-            <Button
-              variant="primary"
-              busy={loadoutBusy}
-              disabled={loadoutBusy || flash?.startable !== true}
-              aria-pressed={Boolean(flash && isResident(flash) && route.data?.pinned === FLASH_HYBRID)}
-              onClick={activateLoadout}
-            >
-              Load and select Flash Next
-            </Button>
-          </Cluster>
-          <Text>
-            Qwen Flash Next is the current Corsair model, with one 256K context slot.
-            This button loads it and makes it the default for requests without a selected model.
-          </Text>
-          {flash?.startable !== true && (
-            <Notice tone="info">{flash?.not_startable_reason ?? 'Waiting for a qualified, registered Flash Next deployment.'}</Notice>
-          )}
-          {loadoutProgress && <Notice tone="info">{loadoutProgress}</Notice>}
-        </Stack>
-      </Card>
+      {corsair && (
+        <MachineCard machine={corsair}>
+          <Stack gap="sm">
+            <Cluster>
+              <Button
+                variant={!flashKnown || (flashResident && flashPinned) ? 'default' : 'primary'}
+                busy={loadoutBusy}
+                disabled={
+                  loadoutBusy || !flashKnown || flash?.startable !== true ||
+                  (flashResident && flashPinned)
+                }
+                aria-pressed={flashResident && flashPinned}
+                onClick={activateLoadout}
+              >
+                {flashLabel}
+              </Button>
+            </Cluster>
+            <Text>
+              {!flashKnown
+                ? 'Qwen Flash Next is the standing Corsair model, with one 256K context slot. Reading its current state…'
+                : flashResident
+                  ? 'Qwen Flash Next is resident with one 256K context slot. Selecting it makes it the default for requests that name no model.'
+                  : 'Qwen Flash Next is the standing Corsair model, with one 256K context slot. This loads it and makes it the default for requests that name no model.'}
+            </Text>
+            {flashKnown && flash?.startable !== true && (
+              <Notice tone="info">
+                {flash?.not_startable_reason ?? 'Waiting for a qualified, registered Flash Next deployment.'}
+              </Notice>
+            )}
+            {loadoutProgress && <Notice tone="info">{loadoutProgress}</Notice>}
+          </Stack>
+        </MachineCard>
+      )}
 
-      <RedModels fleet={fleet} route={route} utilization={utilization} />
+      {red && (
+        <MachineCard machine={red}>
+          <RedModelControls fleet={fleet} route={route} utilization={utilization} />
+        </MachineCard>
+      )}
 
-      <Card title="Local model route" hint="Default for requests without an explicit model">
+      {ridge && <MachineCard machine={ridge} />}
+
+      {mac && (
+        <MachineCard machine={mac}>
+          <div className="min-w-0">
+            <h3 className="m-0 mb-1.5 text-micro font-medium uppercase tracking-[0.14em] text-ink-faint">
+              Services
+            </h3>
+            <Text>Stopped on_demand is normal; a downed always_up pages.</Text>
+            <ServiceList services={services} />
+          </div>
+        </MachineCard>
+      )}
+
+      <Card title="Default route" hint="Answers requests that name no model">
         <Async r={route} skeletonRows={2}>
           {(r) => {
             const loaded = r.loaded ?? []
@@ -258,88 +367,7 @@ export function Spine({
         </Async>
       </Card>
 
-      <Temperatures devices={devices} />
-      <MemoryPools
-        devices={devices}
-        residents={(fleet.data?.servers ?? []).filter((srv) => isResident(srv))}
-      />
-
-
-      <Card title="Resident now" bodyClassName="p-0">
-        <Async
-          r={fleet}
-          skeletonRows={3}
-          isEmpty={(d) => d.servers.filter(isResident).length === 0}
-          empty="Nothing is resident. Pick a model from the fleet below."
-        >
-          {(d) => (
-            <ul className="m-0 list-none p-0">
-              {d.servers.filter(isResident).map((s) => {
-                const st = serverState(s)
-                const u = utilFor(utilization.data?.servers, s.slug)
-                const slots =
-                  u && u.busy_slots != null && u.total_slots != null ? `${u.busy_slots}/${u.total_slots} busy` : null
-                return (
-                  <li key={s.slug} className="border-b border-line last:border-b-0">
-                    <Row
-                      as={Link}
-                      href={`/operate/servers/${encodeURIComponent(s.slug)}`}
-                      marker={<StatusDot state={dotState(s)} />}
-                      trailing={s.resident_gib_estimate ? gib(s.resident_gib_estimate) : 'cpu'}
-                      className="px-2.5 py-1.5 hover:bg-panel-2"
-                    >
-                      <span className="block wrap-anywhere font-mono text-label text-ink">{s.slug}</span>
-                      <span className={`text-micro ${STATE_WORD[st].tone}`}>
-                        {STATE_WORD[st].word}
-                        {slots ? ` · ${slots}` : ''}
-                        {u?.saturated ? ' · QUEUING' : ''}
-                        {u?.slot_utilisation != null ? ` · ${pct(u.slot_utilisation)}` : ''}
-                      </span>
-                    </Row>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </Async>
-      </Card>
-
-      <Card title="Services" hint="stopped on_demand is normal; a downed always_up pages" bodyClassName="p-0">
-        <Async r={services} skeletonRows={5}>
-          {(d) => (
-            <ul className="m-0 list-none p-0">
-              {sortServices(d.services).map((s) => {
-                const stopped = s.state !== 'running'
-                return (
-                  <li key={s.slug} className="border-b border-line last:border-b-0">
-                    <Row
-                      as={Link}
-                      href={`/operate/services/${encodeURIComponent(s.slug)}`}
-                      marker={<StatusDot state={s.healthy ? (stopped ? 'external' : 'running') : 'absent'} />}
-                      trailing={s.port ? `:${s.port}` : ''}
-                      className="px-2.5 py-1.5 hover:bg-panel-2"
-                    >
-                      <span className="block wrap-anywhere font-mono text-label text-ink">
-                        {s.slug}
-                        {s.needs_review && (
-                          <span className="ml-1.5 text-micro text-idle" title="expected_state inferred, not confirmed">
-                            ⚠
-                          </span>
-                        )}
-                      </span>
-                      <span className={`text-micro ${s.healthy ? 'text-ink-faint' : 'text-gone'}`}>
-                        {s.state}
-                        {s.expected_state === 'on_demand' ? ' · on demand' : ''}
-                        {!s.healthy ? ' · expected up' : ''}
-                      </span>
-                    </Row>
-                  </li>
-                )
-              })}
-            </ul>
-          )}
-        </Async>
-      </Card>
+      {strays.length > 0 && <Temperatures devices={devices} hosts={strays} />}
 
       {(fleet.stale || services.stale) && (
         <Notice tone="warn">Showing the last known state — the API is not responding.</Notice>

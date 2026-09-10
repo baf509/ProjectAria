@@ -638,9 +638,11 @@ export type UsageSummary = {
   input_tokens?: number
   output_tokens?: number
   total_tokens?: number
-  cache_read_tokens?: number
+  cache_read_tokens?: number | null
   cache_write_tokens?: number
-  cache_hit_rate?: number
+  /** Null when no backend in the group reports prompt-cache reuse. */
+  cache_hit_rate?: number | null
+  cache_reporting?: 'reported' | 'partial' | 'unsupported'
 }
 
 export type UsageRow = {
@@ -651,7 +653,9 @@ export type UsageRow = {
   output_tokens?: number
   total_tokens?: number
   cost?: number
-  cache_hit_rate?: number
+  /** Null when no backend in the group reports prompt-cache reuse. */
+  cache_hit_rate?: number | null
+  cache_reporting?: 'reported' | 'partial' | 'unsupported'
 }
 
 export type InferenceTrace = {
@@ -673,8 +677,10 @@ export type InferenceTrace = {
   first_chunk_ms?: number | null
   prompt_tokens?: number
   fresh_prompt_tokens?: number
-  cache_read_tokens?: number
-  cache_hit_rate?: number
+  cache_read_tokens?: number | null
+  /** Null when the serving backend does not report prompt-cache reuse. */
+  cache_hit_rate?: number | null
+  cache_reported?: boolean
   output_tokens?: number
   context_tokens?: number | null
   prompt_tokens_per_second?: number | null

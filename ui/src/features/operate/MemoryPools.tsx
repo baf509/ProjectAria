@@ -42,9 +42,9 @@ type MemoryClaimant = {
 }
 import type { Resource } from '@/lib/swr'
 
-type Segment = { key: string; gib: number; color: string; label: string }
+export type Segment = { key: string; gib: number; color: string; label: string }
 
-function StackedMeter({
+export function StackedMeter({
   title,
   note,
   total,

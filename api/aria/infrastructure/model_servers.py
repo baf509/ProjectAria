@@ -768,14 +768,24 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # artifact/evidence hashes and explicit known-risk acceptance at start.
         startable=True,
         allow_force_start=False,
-        auto_route=False,
+        # The standing answer for requests that name no model (Ben, 2026-09-10).
+        # It was excluded before, which left Red — a machine that sleeps — as the
+        # ONLY auto-routable server. Every model-omitted request therefore 503'd
+        # whenever Red was down, while this 100 GiB deployment sat resident and
+        # idle: 304 such failures in the 7 days to 2026-09-10, all from ARIA's
+        # own background layer, none of them alerted.
+        #
+        # It outweighs Red (100 GiB vs 63.5) so `rank_resident` prefers it
+        # whenever both are up, and Red remains the fallback when it is not.
+        auto_route=True,
         parameters=(),
         # Keep isolated speed samples out of fleet benchmark claims.
         resident_gib=100,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
-        consumers_note="Explicit default for managed Hermes and Pi clients; 256K context, "
-        "32K output budget and compaction at 75% (196608). No automatic fallback or Red default "
-        "change. Hash-pinned operator acceptance is not a passed reliability qualification.",
+        consumers_note="Explicit default for managed Hermes and Pi clients, and the automatic "
+        "route for requests that name no model; 256K context, 32K output budget and compaction "
+        "at 75% (196608). Background callers share this one slot behind gateway admission "
+        "priority. Hash-pinned operator acceptance is not a passed reliability qualification.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
@@ -3130,8 +3140,14 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
     )
 
 
+# The server pi's coding profile actually runs on. ONE definition, because
+# the slot-budget check below defaulted to a retired slug for weeks and passed
+# by naming a deployment that no longer existed. Re-point this when pi moves.
+PI_CODING_SLUG = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+
+
 def check_pi_slot_budget(
-    slug: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+    slug: str = PI_CODING_SLUG,
 ) -> Optional[str]:
     """Complaint string if the coding-session cap over-subscribes the server's
     slots, else None.
@@ -3476,11 +3492,24 @@ def _remote_state_refresh(spec: "ModelServerSpec") -> asyncio.Task:
     return task
 
 
-async def _remote_state(spec: "ModelServerSpec", fresh: bool = False) -> str:
-    """'running' | 'stopped' | 'asleep' for an operable remote.
+async def _remote_state(
+    spec: "ModelServerSpec", fresh: bool = False, *, wait: bool = True
+) -> str:
+    """'running' | 'stopped' | 'asleep' | 'unknown' for an operable remote.
 
     'stopped' (box up, model not serving) is the state that motivated all of
     this — it is actionable and was previously indistinguishable from 'asleep'.
+
+    `wait=False` never blocks: an unknown or too-old remote answers 'unknown'
+    and refreshes behind the read. That is the ROUTING contract. A sleeping box
+    is slow to say so — probing Ridge costs 3s of health timeout plus 4s of
+    reachability timeout, measured at 8.3s — and because `_REMOTE_STATE_MAX_AGE`
+    makes a stale entry block again, routing stalled for ~8s every five minutes
+    on a host that serves nothing. 'unknown' is not servable, so the auto route
+    simply passes over it and lands on a resident model instead.
+
+    Operations and the fleet display still wait: a start/stop decision, or a
+    page that exists to report remote state, must not be made against a guess.
     """
     if fresh:
         return await _remote_state_refresh(spec)
@@ -3495,8 +3524,14 @@ async def _remote_state(spec: "ModelServerSpec", fresh: bool = False) -> str:
             _remote_state_refresh(spec)
             return hit[1]
 
-    # Nothing usable remembered: this read has to wait, but it joins the
-    # in-flight probe rather than starting a second one.
+    # Nothing usable remembered. Callers that can tolerate a gap say so; the
+    # probe still starts, so the next read is answered from the cache.
+    if not wait:
+        _remote_state_refresh(spec)
+        return "unknown"
+
+    # This read has to wait, but it joins the in-flight probe rather than
+    # starting a second one.
     return await _remote_state_refresh(spec)
 
 
@@ -3678,6 +3713,20 @@ async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
         spec.port, identify_runtime=ambiguous
     )
     return healthy and (not ambiguous or family == spec.runtime_family)
+
+
+def is_routing_candidate(spec: "ModelServerSpec") -> bool:
+    """Could routing ever choose this deployment?
+
+    Only these need probing on the request path. A retired spec is not
+    startable, not catalog-visible and not auto-routable, so it cannot be the
+    answer to a routing question no matter what its port reports — probing it
+    buys nothing and costs a tunnel round trip bounded by stacked sub-second
+    timeouts. Off-box specs are resolved elsewhere and always pass.
+    """
+    return (
+        not spec.onbox or spec.startable or spec.catalog_visible or spec.auto_route
+    )
 
 
 async def _forwarded_fleet_states(
@@ -4117,7 +4166,22 @@ class ModelServerManager:
 
         forwarded_states: dict[str, str] = {}
         if _corsair_forward_mode():
-            forwarded_states = await _forwarded_fleet_states(specs)
+            # Probe only what routing could actually choose. In forward mode
+            # each distinct onbox port costs a TCP connect plus an HTTP /health
+            # round trip through the Corsair SSH tunnel, and a stale tunnel
+            # stacks those sub-second timeouts: measured on the live gateway,
+            # this probe cost ~148 ms at the median and produced a routing_ms
+            # tail of p95 4.3 s / p99 10.2 s / max 12.0 s on every cache miss.
+            #
+            # It was probing 13 ports for 20 onbox specs of which NINETEEN are
+            # retired — not startable, not catalog-visible, not auto-routable,
+            # so incapable of being the answer to any routing question. The full
+            # `status()` still probes every port, so the fleet display and a
+            # manually started retired deployment stay visible there; this is
+            # the request path, and it only needs the servers that can serve.
+            forwarded_states = await _forwarded_fleet_states(
+                [spec for spec in specs if is_routing_candidate(spec)]
+            )
 
         unit_active: set[str] = set()
         if not _corsair_forward_mode() and any(s.onbox and unit_name(s) for s in specs):
@@ -4144,7 +4208,10 @@ class ModelServerManager:
             geometry = read_launch_geometry(spec)
             if spec.onbox:
                 if _corsair_forward_mode():
-                    state = forwarded_states[spec.slug]
+                    # Unprobed (retired) specs are reported stopped, which is
+                    # what all of them are. `status()` is the view that still
+                    # checks; see the routable filter above.
+                    state = forwarded_states.get(spec.slug, "exited")
                 else:
                     unit = unit_name(spec)
                     if unit:
@@ -4156,7 +4223,10 @@ class ModelServerManager:
                     else:
                         state = "unwired"
             elif spec.remotely_operable:
-                state = await _remote_state(spec)
+                # Routing never blocks on a remote probe. See _remote_state:
+                # a sleeping Ridge answers in 8.3s, and that landed on the
+                # gateway's critical path every five minutes.
+                state = await _remote_state(spec, wait=False)
             else:
                 state = "external"
             measured = self._last_measured.get(spec.slug)

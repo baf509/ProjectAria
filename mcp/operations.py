@@ -228,7 +228,10 @@ def register(mcp, request):
                 "select_tool": "select_red_model",
                 "wake": "Wake from sleep via the Corsair host relay; full shutdown power-on is not qualified.",
                 "unreachable_recovery": _RED_RECOVERY,
-                "routing": "Loading Red does not change Hermes's own Corsair model or the default route."}
+                "routing": ("Loading Red does not change Hermes's own Corsair model. It does not "
+                            "change the default route while the Corsair model is resident, which "
+                            "outranks Red by footprint; with Corsair stopped, Red is the "
+                            "model-omitted fallback.")}
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False})
     async def select_red_model(model: RedModel, ctx: Context = None, force: bool = False) -> dict:

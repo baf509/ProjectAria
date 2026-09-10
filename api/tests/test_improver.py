@@ -1318,15 +1318,6 @@ class TestHelpers:
         assert scan_destructive("a perfectly ordinary prompt") == []
 
     @pytest.mark.asyncio
-    async def test_background_work_never_goes_to_ds4s_slot(self, db, repo):
-        """The resident server on :8108 is pi's single slot; a background call evicts its warm
-        prefix (4.2 s warm vs 39.5 s cold)."""
-        worker = Improver(db, Notifier(), repo_root_path=str(repo))
-        with pytest.raises(ImproverError, match="8108"):
-            await worker._complete("llamacpp", "ds4", "hi",
-                                   base_url="http://127.0.0.1:8108/v1")
-
-    @pytest.mark.asyncio
     async def test_status_reports_the_surface_and_the_fixture(self, db, repo, cfg):
         _fixture_file(repo, cfg, [{"id": "c", "checks": []}])
         cfg["improver_mutable_paths"] = ["api/prompts/*.md"]

@@ -27,8 +27,9 @@ class UsageRepo:
         source: str,
         input_tokens: int = 0,
         output_tokens: int = 0,
-        cache_read_tokens: int = 0,
+        cache_read_tokens: Optional[int] = 0,
         cache_write_tokens: int = 0,
+        cache_reported: Optional[bool] = None,
         agent_slug: Optional[str] = None,
         conversation_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -49,10 +50,21 @@ class UsageRepo:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
-            # Prompt-cache accounting (0 for backends without caching). The
-            # cache-hit rate is cache_read / (cache_read + input) — see summary().
-            "cache_read_tokens": cache_read_tokens or 0,
+            # Prompt-cache accounting. The cache-hit rate is
+            # cache_read / (cache_read + input) — see summary().
+            #
+            # `cache_reported=False` means the BACKEND does not report reuse,
+            # which is not the same as reusing nothing. Rows marked that way are
+            # excluded from every hit-rate denominator: Red's Radiance answers
+            # with a null prompt_tokens_details, and counting it as 0% made a
+            # backend with a measurably working prefix cache (5.2x cold-to-warm)
+            # read as having none. Legacy rows have no flag and are treated as
+            # reporting, which is what they were.
+            "cache_read_tokens": cache_read_tokens if cache_reported is not False else None,
             "cache_write_tokens": cache_write_tokens or 0,
+            "cache_reported": (
+                cache_reported if cache_reported is not None else cache_read_tokens is not None
+            ),
             "agent_slug": agent_slug,
             "conversation_id": conversation_id,
             "session_id": session_id,
@@ -73,12 +85,60 @@ class UsageRepo:
         result = await self.db.usage.insert_one(doc)
         return str(result.inserted_id)
 
+    # A row counts toward the cache-hit denominator only if its backend
+    # actually reports reuse. Legacy rows predate the flag and were all written
+    # by reporting backends, so a MISSING field must read as reporting — hence
+    # `$ne … False` rather than a truthiness test.
+    REPORTED_CACHE = {"$ne": ["$cache_reported", False]}
+
+    #: `$group` fields every cache-aware aggregation needs.
+    CACHE_GROUP_FIELDS = {
+        "cache_read_tokens": {"$sum": "$cache_read_tokens"},
+        "reported_input_tokens": {
+            "$sum": {"$cond": [REPORTED_CACHE, "$input_tokens", 0]}
+        },
+        "reported_requests": {"$sum": {"$cond": [REPORTED_CACHE, 1, 0]}},
+    }
+
     @staticmethod
     def _hit_rate(cache_read: int, input_tokens: int) -> float:
         """Weighted cache-hit rate: cached prompt tokens as a share of all prompt
         tokens (cache_read + fresh input). Matches Pi-Flow's cacheHitRate."""
         denom = (cache_read or 0) + (input_tokens or 0)
         return round((cache_read or 0) / denom, 4) if denom else 0.0
+
+    @classmethod
+    def annotate_cache(cls, row: dict) -> dict:
+        """Add `cache_hit_rate` and `cache_reporting` to a grouped row.
+
+        The rate is computed over reporting requests ONLY. When nothing in the
+        group reports, the rate is None — the honest answer to "how much did it
+        reuse?" from a backend that never said. Reporting 0.0 there is what let
+        33M prompt tokens on a working prefix cache read as no reuse at all.
+        """
+        cache_read = row.get("cache_read_tokens") or 0
+        reported_requests = row.get("reported_requests")
+        requests = row.get("requests")
+        if reported_requests == 0:
+            row["cache_hit_rate"] = None
+            row["cache_reporting"] = "unsupported"
+            return row
+        # A row assembled without the reporting fields (an older pipeline, or a
+        # caller building rows by hand) says nothing about which backends
+        # answered. Fall back to the whole input rather than to zero: reading a
+        # missing breakdown as "none of it reported" would invert the fix and
+        # turn every such group into a 100% hit rate.
+        reported_input = row.get("reported_input_tokens")
+        if reported_input is None:
+            reported_input = row.get("input_tokens") or 0
+        denom = cache_read + reported_input
+        row["cache_hit_rate"] = round(cache_read / denom, 4) if denom else 0.0
+        row["cache_reporting"] = (
+            "partial"
+            if reported_requests is not None and requests is not None and reported_requests < requests
+            else "reported"
+        )
+        return row
 
     @staticmethod
     def _price_rows(rows: list[dict]) -> list[dict]:
@@ -103,17 +163,15 @@ class UsageRepo:
                 "input_tokens": {"$sum": "$input_tokens"},
                 "output_tokens": {"$sum": "$output_tokens"},
                 "total_tokens": {"$sum": "$total_tokens"},
-                "cache_read_tokens": {"$sum": "$cache_read_tokens"},
                 "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                 "requests": {"$sum": 1},
+                **self.CACHE_GROUP_FIELDS,
             }},
             {"$sort": {"total_tokens": -1}},
         ]
         rows = await self.db.usage.aggregate(pipeline).to_list(length=500)
         for r in rows:
-            r["cache_hit_rate"] = self._hit_rate(
-                r.get("cache_read_tokens", 0), r.get("input_tokens", 0)
-            )
+            self.annotate_cache(r)
         return self._price_rows(rows)
 
     async def cost_summary(self, days: int = 7) -> dict:
@@ -213,9 +271,9 @@ class UsageRepo:
                     "input_tokens": {"$sum": "$input_tokens"},
                     "output_tokens": {"$sum": "$output_tokens"},
                     "total_tokens": {"$sum": "$total_tokens"},
-                    "cache_read_tokens": {"$sum": "$cache_read_tokens"},
                     "cache_write_tokens": {"$sum": "$cache_write_tokens"},
                     "requests": {"$sum": 1},
+                    **self.CACHE_GROUP_FIELDS,
                 }
             },
         ]
@@ -228,12 +286,10 @@ class UsageRepo:
                 "cache_read_tokens": 0,
                 "cache_write_tokens": 0,
                 "cache_hit_rate": 0.0,
+                "cache_reporting": "reported",
                 "requests": 0,
             }
         row = result[0]
         row["cache_read_tokens"] = row.get("cache_read_tokens", 0)
         row["cache_write_tokens"] = row.get("cache_write_tokens", 0)
-        row["cache_hit_rate"] = self._hit_rate(
-            row["cache_read_tokens"], row.get("input_tokens", 0)
-        )
-        return row
+        return self.annotate_cache(row)

@@ -237,12 +237,13 @@ class ResearchPlanner:
         self._writer = writer
         self.web = web or WebTool(timeout_seconds=20, max_response_size=512 * 1024)
         self.poll_seconds = poll_seconds
-        # Pinned, never the /llm/v1 auto-route: that resolves to the largest
-        # resident model — pi's SINGLE coding slot. A research
-        # prefill there evicts a coding agent's warm prefix (4.2 s warm vs
-        # 39.5 s cold). Research runs on Qwen slot 2 or it does not run.
+        # Follows `steward_model` — the Corsair deployment, shared with pi's
+        # coding sessions by design (2026-09-10) and rate-limited by the
+        # gateway's admission priority rather than by refusing to run. The
+        # previous default named a retired R9700 deployment, so this claimed to
+        # be pinned while silently riding the auto route.
         self.backend = _setting("steward_backend", "llamacpp")
-        self.model = _setting("steward_model", "qwen3.8-27b-rocmfp4-r9700")
+        self.model = _setting("steward_model", settings.steward_model)
         self.endpoint = _setting(
             "steward_endpoint", "http://127.0.0.1:8200/llm/v1-identified"
         )

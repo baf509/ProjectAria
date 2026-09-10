@@ -162,9 +162,20 @@ The profile is available to both the escalation ladder and steward red tier.
 Start Red through Operate before using it when asleep (global gateway autostart
 remains disabled). Existing Flash Next client choices remain registered.
 
-Qualified Red is eligible for automatic routing while resident. The stale
-Flash Next route pin is cleared to auto; the operator-accepted CUDA/Halo candidate
-remains excluded from model-omitted auto-selection. Explicit model names still require their named backend.
+Both the CUDA/Halo candidate and qualified Red are eligible for automatic
+routing while resident, and the candidate outranks Red by resident footprint
+(100 GiB vs 63.5), so it answers model-omitted requests whenever it is up.
+
+**Changed 2026-09-10.** The candidate was previously excluded from
+model-omitted auto-selection, which left Red — a machine that sleeps — as the
+only auto-routable server. Every model-omitted request therefore returned 503
+whenever Red was down, while the resident 100 GiB candidate sat idle: 304 such
+failures in the 7 days to 2026-09-10, all from ARIA's own background layer, none
+alerted. Red is now the fallback rather than the sole option. Background callers
+share the candidate's single slot behind the gateway's admission priority, which
+ranks them below interactive coding.
+
+Explicit model names still require their named backend.
 Registry benchmark metadata now refers to the 21:05 EDT BetterBench refresh:
 195.6 weighted decode, 5108.3 prefill at 47,056 input tokens. Full conditions and
 raw results live in CorsairModelHost/red-r9700/results/2026-09-07/.
