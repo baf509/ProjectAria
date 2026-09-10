@@ -65,7 +65,24 @@ function UsageTable({ rows, nameLabel }: { rows: UsageRow[]; nameLabel: string }
               <td className="tnum py-1.5 pr-3 text-right">{count(row.output_tokens)}</td>
               <td className="tnum py-1.5 pr-3 text-right">{count(row.total_tokens)}</td>
               <td className="tnum py-1.5 pr-3 text-right">
-                {row.cache_hit_rate !== undefined ? pct(row.cache_hit_rate) : '—'}
+                {/* A backend that never reports reuse is not a backend with no
+                    reuse: Red's Radiance returns a null prompt_tokens_details,
+                    and printing 0% there described a working prefix cache as
+                    absent. Say "not reported" and mean it. */}
+                {row.cache_reporting === 'unsupported' ? (
+                  <span className="text-ink-faint" title="This backend does not report prompt-cache reuse. Its cache may still be working.">
+                    not reported
+                  </span>
+                ) : (
+                  <>
+                    {pct(row.cache_hit_rate)}
+                    {row.cache_reporting === 'partial' && (
+                      <span className="text-ink-faint" title="Some requests in this group came from a backend that does not report reuse; the rate covers only those that do.">
+                        *
+                      </span>
+                    )}
+                  </>
+                )}
               </td>
               <td className="tnum py-1.5 text-right">{row.cost !== undefined ? usd(row.cost) : '$0.00'}</td>
             </tr>
@@ -116,7 +133,13 @@ function TraceTable({ rows }: { rows: InferenceTrace[] }) {
               </td>
               <td className="py-1.5 pr-3 text-ink-dim">{trace.outcome || trace.status_code || '—'}</td>
               <td className="tnum py-1.5 pr-3 text-right">{count(trace.context_tokens)}</td>
-              <td className="tnum py-1.5 pr-3 text-right">{pct(trace.cache_hit_rate)}</td>
+              <td className="tnum py-1.5 pr-3 text-right">
+                {trace.cache_reported === false ? (
+                  <span className="text-ink-faint" title="This backend does not report prompt-cache reuse.">n/r</span>
+                ) : (
+                  pct(trace.cache_hit_rate)
+                )}
+              </td>
               <td className="tnum py-1.5 pr-3 text-right">{pct(trace.speculative_acceptance_rate)}</td>
               <td className="tnum py-1.5 pr-3 text-right">{milliseconds(trace.queue_wait_ms)}</td>
               <td className="tnum py-1.5 pr-3 text-right">
@@ -160,7 +183,11 @@ export default function UsagePage() {
                 { k: 'Output tokens', v: count(d.output_tokens), kind: 'num' },
                 { k: 'Total tokens', v: count(d.total_tokens), kind: 'num' },
                 { k: 'Cache read', v: count(d.cache_read_tokens), kind: 'num' },
-                { k: 'Cache hit rate', v: pct(d.cache_hit_rate), kind: 'num' },
+                {
+                  k: 'Cache hit rate',
+                  v: d.cache_reporting === 'unsupported' ? 'not reported' : pct(d.cache_hit_rate),
+                  kind: 'num',
+                },
               ]}
             />
           )}

@@ -148,7 +148,11 @@ async def fleet_status(awaiting_only: bool = False) -> dict:
         try:
             summary = await _request("GET", "/api/v1/usage/summary", params={"days": 1})
             if isinstance(summary, dict):
-                overview["cache_hit_rate"] = summary.get("cache_hit_rate", 0.0)
+                # None means no backend in the window reports prompt-cache
+                # reuse — not that nothing was reused. Carry the reason so a
+                # reader cannot mistake silence for a measured zero.
+                overview["cache_hit_rate"] = summary.get("cache_hit_rate")
+                overview["cache_reporting"] = summary.get("cache_reporting")
         except Exception:
             pass
     return overview
@@ -255,7 +259,12 @@ async def inference_usage(
     """Token totals and prompt-cache reuse over 1–30 days, overall or grouped
     by declared caller (Hermes/Pi) or model. Caller labels are diagnostic, not
     authenticated identities. Historical aggregates are NOT a controlled
-    benchmark; use inference_traces for context, latency and per-request rates."""
+    benchmark; use inference_traces for context, latency and per-request rates.
+
+    `cache_hit_rate` is null with `cache_reporting: "unsupported"` when the
+    backend does not report reuse at all (Red's Radiance). That is unmeasured,
+    NOT zero reuse — its prefix cache works. "partial" means the rate covers
+    only the requests that reported."""
     paths = {"summary": "summary", "caller": "by-caller", "model": "by-model"}
     if group_by not in paths:
         raise ValueError("group_by must be summary, caller or model")

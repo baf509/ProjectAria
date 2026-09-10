@@ -58,6 +58,55 @@ class TestUsageRepo:
         assert "trace_id" not in doc
         assert "preamble_hash" not in doc
 
+    @pytest.mark.asyncio
+    async def test_record_marks_a_backend_that_never_reported_reuse(self):
+        db = make_mock_db()
+        await UsageRepo(db).record(
+            model="Red-Qwen3.8-27B-MXFP4", source="llm-gateway",
+            input_tokens=44000, cache_read_tokens=None, cache_reported=False,
+        )
+        doc = db.usage.insert_one.call_args[0][0]
+        # Null, not zero: zero is a claim about the cache, null about the meter.
+        assert doc["cache_read_tokens"] is None
+        assert doc["cache_reported"] is False
+
+    def test_a_group_with_no_reporting_backend_has_no_hit_rate(self):
+        """`cache_hit_rate: 0.0` for a silent backend is a false statement.
+
+        It is what made Red's two deployments read as 0% reuse across 2,328
+        requests while their prefix cache was demonstrably working.
+        """
+        silent = UsageRepo.annotate_cache({
+            "cache_read_tokens": 0, "input_tokens": 32_609_700,
+            "reported_input_tokens": 0, "reported_requests": 0, "requests": 1643,
+        })
+        assert silent["cache_hit_rate"] is None
+        assert silent["cache_reporting"] == "unsupported"
+
+        # A reporting backend still gets a real rate...
+        reporting = UsageRepo.annotate_cache({
+            "cache_read_tokens": 80, "input_tokens": 20,
+            "reported_input_tokens": 20, "reported_requests": 5, "requests": 5,
+        })
+        assert reporting["cache_hit_rate"] == 0.8
+        assert reporting["cache_reporting"] == "reported"
+
+        # ...and a mixed group rates only the half that answered, so silent
+        # rows cannot dilute a working cache toward zero.
+        mixed = UsageRepo.annotate_cache({
+            "cache_read_tokens": 80, "input_tokens": 9020,
+            "reported_input_tokens": 20, "reported_requests": 5, "requests": 9,
+        })
+        assert mixed["cache_hit_rate"] == 0.8
+        assert mixed["cache_reporting"] == "partial"
+
+    def test_legacy_rows_without_the_flag_still_count_as_reporting(self):
+        """Every row written before the flag came from a reporting backend."""
+        cond = UsageRepo.CACHE_GROUP_FIELDS["reported_requests"]["$sum"]["$cond"][0]
+        # A missing field compares as null, and null != False, so legacy docs
+        # stay in the denominator instead of silently becoming "unsupported".
+        assert cond == {"$ne": ["$cache_reported", False]}
+
     def test_hit_rate_math(self):
         # 900 cached of 1000 total prompt tokens -> 0.9
         assert UsageRepo._hit_rate(900, 100) == 0.9

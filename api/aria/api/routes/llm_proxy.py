@@ -371,12 +371,21 @@ def _request_context_ids(request: Request) -> tuple[Optional[str], Optional[str]
     return conversation, session
 
 
-def _usage_counts(payload: Optional[dict]) -> tuple[int, int, int, int]:
+def _usage_counts(payload: Optional[dict]) -> tuple[int, int, Optional[int], int]:
     """Fresh input, output, cache-read, and raw prompt token counts.
 
     OpenAI's prompt_tokens includes cached input. UsageRepo's cache-hit formula
     expects input_tokens to mean fresh input, so subtract cached tokens once.
     llama.cpp also exposes timings.cache_n as a fallback for older responses.
+
+    Cache reuse is `None` when the backend did not report it AT ALL, which is
+    NOT the same as reporting zero reuse. Red's Radiance (vLLM) answers with
+    `"prompt_tokens_details": null` and no `timings` block, so folding that to 0
+    recorded 33M prompt tokens over 7 days as "0% cache hit rate" for a backend
+    whose prefix cache measurably works — 25.6K tokens cold in 5210 ms against
+    1005 ms warm, a 5.2x difference the meter claimed did not exist. A backend
+    that DOES report says `cached_tokens: 0` on a cold prefill, so a genuine
+    zero still arrives as a zero and stays distinguishable from silence.
     """
     payload = payload if isinstance(payload, dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -390,9 +399,19 @@ def _usage_counts(payload: Optional[dict]) -> tuple[int, int, int, int]:
     def count(value: Any) -> int:
         return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
+    def reported(value: Any) -> Optional[int]:
+        """An int — including 0 — means the backend answered the question."""
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
     prompt = count(usage.get("prompt_tokens")) or count(timings.get("prompt_n"))
     output = count(usage.get("completion_tokens")) or count(timings.get("predicted_n"))
-    cached = count(details.get("cached_tokens")) or count(timings.get("cache_n"))
+    cached = reported(details.get("cached_tokens"))
+    if cached is None:
+        cached = reported(timings.get("cache_n"))
+    if cached is None:
+        return prompt, output, None, prompt
     cached = min(cached, prompt) if prompt else cached
     return max(0, prompt - cached), output, cached, prompt
 
@@ -413,12 +432,19 @@ def _trace_timings(payload: Optional[dict]) -> dict[str, Any]:
     acceptance = (
         round((accepted or 0.0) / drafted, 4) if drafted and drafted > 0 else None
     )
-    prompt_total = cached + fresh
+    prompt_total = (cached or 0) + fresh
     return {
         "prompt_tokens": prompt_total,
         "fresh_prompt_tokens": fresh,
         "cache_read_tokens": cached,
-        "cache_hit_rate": round(cached / prompt_total, 4) if prompt_total else 0.0,
+        # None, not 0.0: this backend did not answer the question. A rate of
+        # zero is an assertion about the cache; absence is an assertion about
+        # the meter.
+        "cache_hit_rate": (
+            round(cached / prompt_total, 4) if cached is not None and prompt_total else
+            None if cached is None else 0.0
+        ),
+        "cache_reported": cached is not None,
         "output_tokens": output,
         "context_tokens": prompt_total + output,
         "prompt_ms": number(timings.get("prompt_ms")),
@@ -475,6 +501,7 @@ async def _record_gateway_usage(
             input_tokens=fresh_input,
             output_tokens=output,
             cache_read_tokens=cache_read,
+            cache_reported=cache_read is not None,
             metadata={
                 "path": path,
                 "identified": identify,
@@ -978,6 +1005,25 @@ async def _backend_model_id_cached(base: str, slug: Optional[str] = None) -> Opt
     if hit is not None and now - hit[0] < _BACKEND_MODEL_ID_TTL_SECONDS:
         return hit[1]
     model_id = await _backend_model_id(base)
+    if model_id is None and hit is not None and hit[1] is not None:
+        # `_backend_model_id` swallows every failure and answers None, including
+        # a 3 s timeout on a busy backend. On the identified route that None
+        # changes the injected system line from the model id to the registry
+        # slug — a DIFFERENT first system message, which invalidates the whole
+        # prompt prefix. At the observed context sizes that is a ~30 s cold
+        # prefill (measured: 1.4 s median TTFT on a stable prefix against
+        # ~30.8 s when it changed) bought by one slow health read.
+        #
+        # A model id only changes when the process loads a different model, and
+        # that path drops this cache explicitly. So a transient failure to READ
+        # the id is not evidence the id changed: keep the last known good one
+        # and re-arm the TTL rather than rewriting the prefix.
+        logger.warning(
+            "llm-proxy: backend model id unavailable for %s; keeping last known %r",
+            slug or base, hit[1],
+        )
+        _backend_model_id_cache[key] = (now, hit[1])
+        return hit[1]
     _backend_model_id_cache[key] = (now, model_id)
     return model_id
 
