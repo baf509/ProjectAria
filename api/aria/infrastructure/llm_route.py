@@ -101,6 +101,26 @@ def match_requested(servers: list[dict], requested: Optional[str]) -> tuple[Opti
     return None, stopped_match
 
 
+def recognises(servers: list[dict], requested: Optional[str]) -> bool:
+    """Does ARIA know this model name at all?
+
+    `match_requested` deliberately answers "no opinion" for a name it does not
+    know, so an unrecognised string falls through to the pin or the auto route.
+    That is right for a stock OpenAI client sending `gpt-4` — and catastrophic
+    for an ARIA-internal caller, because a typo or a retired slug then routes
+    somewhere plausible instead of failing. `steward_model` named a deployment
+    retired with the R9700 loadouts and rode the auto route for weeks; nothing
+    logged it, and the only symptom was 304 identical 503s.
+
+    Separating "unknown name" from "auto alias" is what lets the gateway warn
+    about the first while staying silent about the second.
+    """
+    want = _norm(requested)
+    if not want or want in AUTO_ALIASES:
+        return True
+    return any(want in _names_for(server) for server in servers)
+
+
 def rank_resident(servers: list[dict]) -> Optional[dict]:
     """Auto pick the largest eligible resident; experiments require explicit selection.
 

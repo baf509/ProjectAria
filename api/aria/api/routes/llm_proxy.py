@@ -68,6 +68,7 @@ from aria.infrastructure.llm_route import (
     is_servable,
     match_requested,
     read_pin,
+    recognises,
     select,
 )
 
@@ -354,6 +355,16 @@ def _gateway_caller(request: Request) -> tuple[str, str, str]:
     return caller[:120], host[:120], user_agent
 
 
+def _caller_is_declared(request: Request) -> bool:
+    """Did the client identify itself with X-Aria-Caller?
+
+    Managed clients do; a stock OpenAI SDK pointed at the gateway does not.
+    That is the line between "this name is a bug" and "this name is just some
+    other provider's model id the caller happened to send".
+    """
+    return bool((request.headers.get("x-aria-caller") or "").strip())
+
+
 def _safe_context_id(value: Optional[str]) -> Optional[str]:
     """Bound a client-supplied correlation id without treating it as auth."""
     if not value:
@@ -477,6 +488,7 @@ async def _record_gateway_usage(
     routing_ms: Optional[float] = None,
     backend_ms: Optional[float] = None,
     first_chunk_ms: Optional[float] = None,
+    model_recognised: Optional[bool] = None,
 ) -> None:
     """Persist one gateway request without ever storing prompt/response text.
 
@@ -510,6 +522,11 @@ async def _record_gateway_usage(
                 "outcome": "ok" if 200 <= status_code < 400 and not error else "error",
                 "error": error,
                 "requested_model": requested_model,
+                # False means the caller named something the registry does not
+                # know, so routing ignored it. Recorded rather than inferred:
+                # this is otherwise invisible in a trace that looks like a
+                # perfectly normal auto route.
+                "requested_model_recognised": model_recognised,
                 "resolved_slug": slug,
                 "backend_model_id": backend_model_id,
                 "route_reason": route.reason if route else None,
@@ -1100,6 +1117,22 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
 
     route = await _pick_backend(manager, db, requested=requested)
 
+    # A name the registry does not know is not an error — it falls through to
+    # the pin or the auto route, which is what lets a stock OpenAI client point
+    # at this gateway unmodified. But when a MANAGED caller does it, the model
+    # it asked for is being silently ignored, and the request looks like an
+    # ordinary auto route in every trace. That is how `steward_model` came to
+    # name a retired deployment and ride the auto route for weeks, visible only
+    # as 304 identical 503s once Red went to sleep. Say so, once, per request.
+    model_recognised = recognises(route.servers, requested)
+    if not model_recognised and _caller_is_declared(request):
+        logger.warning(
+            "llm-proxy: caller %s asked for unknown model %r; the registry does "
+            "not know that name, so routing ignored it and resolved %s (%s). "
+            "Fix the caller's configured model or register the deployment.",
+            caller, requested, route.slug or "nothing", route.reason,
+        )
+
     # Named a registered server that isn't resident? Make it resident. Only for
     # an explicit name — `route.unavailable` is set exactly in that case, and is
     # never set for the auto alias.
@@ -1126,6 +1159,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             error="backend unavailable",
             trace_id=trace_id,
             preamble=preamble,
+            model_recognised=model_recognised,
             routing_ms=round((time.monotonic() - started) * 1000, 2),
         )
         exc.headers = {**(exc.headers or {}), "X-Aria-Trace-ID": trace_id}
@@ -1190,6 +1224,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                 admission=admission_stats,
                 trace_id=trace_id,
                 preamble=preamble,
+                model_recognised=model_recognised,
                 routing_ms=routing_ms,
                 backend_ms=(
                     round((time.monotonic() - backend_started) * 1000, 2)
@@ -1227,6 +1262,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             admission=admission_stats,
             trace_id=trace_id,
             preamble=preamble,
+            model_recognised=model_recognised,
             routing_ms=routing_ms,
             backend_ms=(
                 round((time.monotonic() - backend_started) * 1000, 2)
@@ -1291,6 +1327,7 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
                 admission=admission_stats,
                 trace_id=trace_id,
                 preamble=preamble,
+                model_recognised=model_recognised,
                 routing_ms=routing_ms,
                 backend_ms=(
                     round((time.monotonic() - backend_started) * 1000, 2)

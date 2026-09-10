@@ -4,6 +4,9 @@ import json
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
+from fastapi import HTTPException
+
 import pytest
 from starlette.requests import Request
 
@@ -412,3 +415,74 @@ async def test_stream_proxy_records_final_trace_and_first_chunk(monkeypatch):
     assert doc["metadata"]["cache_hit_rate"] == 0.8
     assert doc["metadata"]["speculative_acceptance_rate"] == 0.75
     assert "private stream system" not in repr(doc)
+
+
+# ---------------------------------------------------------------------------
+# An unknown model name from a managed caller is a bug, not a passthrough
+# ---------------------------------------------------------------------------
+
+def test_recognises_separates_an_unknown_name_from_an_auto_alias():
+    """The distinction that makes a warning possible without false positives."""
+    from aria.infrastructure.llm_route import recognises
+
+    servers = [{"slug": "Red-Qwen3.8-27B-MXFP4", "model_file": None},
+               {"slug": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate", "model_file": None}]
+
+    # Auto aliases and an absent model are "recognised": routing is meant to choose.
+    for name in (None, "", "auto", "aria", "aria-resident", "default"):
+        assert recognises(servers, name), name
+
+    # Real names, including case/separator variants the router normalises.
+    assert recognises(servers, "Red-Qwen3.8-27B-MXFP4")
+    assert recognises(servers, "red_qwen3.8-27b-mxfp4")
+
+    # The retired slug that rode the auto route for weeks.
+    assert not recognises(servers, "qwen3.8-27b-rocmfp4-r9700")
+    assert not recognises(servers, "gpt-4")
+
+
+@pytest.mark.asyncio
+async def test_unknown_model_from_a_managed_caller_is_logged_and_recorded(monkeypatch, caplog):
+    """`steward_model` named a retired deployment and nothing said so.
+
+    An unrecognised name is legitimate from a stock OpenAI client, so it must
+    not raise — but a caller that identifies itself with X-Aria-Caller is a
+    managed client, and its configured model being silently ignored is always a
+    misconfiguration. The trace records it either way, because a request that
+    fell through looks exactly like a normal auto route.
+    """
+    import logging
+    recorded: dict = {}
+
+    async def fake_record(db, **kwargs):
+        recorded.update(kwargs)
+
+    route = llm_proxy._Route(
+        "Red-Qwen3.8-27B-MXFP4", "http://127.0.0.1:8094/v1", "largest resident",
+        [{"slug": "Red-Qwen3.8-27B-MXFP4", "model_file": None, "state": "running"}],
+    )
+    monkeypatch.setattr(llm_proxy, "_record_gateway_usage", fake_record)
+    monkeypatch.setattr(llm_proxy, "_pick_backend", AsyncMock(return_value=route))
+    monkeypatch.setattr(llm_proxy, "_backend_model_id_cached", AsyncMock(return_value="qwen"))
+    monkeypatch.setattr(llm_proxy.settings, "llm_proxy_autostart", False)
+
+    async def boom(*a, **k):
+        raise httpx.ConnectError("no backend in this test")
+    monkeypatch.setattr(llm_proxy, "_client", lambda: MagicMock(post=boom))
+
+    request = _request(
+        {"model": "qwen3.8-27b-rocmfp4-r9700", "messages": [], "stream": False},
+        caller="aria-background",
+    )
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(HTTPException):
+            await llm_proxy._proxy("chat/completions", request, AsyncMock(), AsyncMock())
+
+    assert recorded["model_recognised"] is False
+    assert any("unknown model" in r.getMessage() for r in caplog.records), caplog.text
+    # The warning has to name the caller and what it actually got, or it is not
+    # actionable — "some caller asked for something" sends nobody anywhere.
+    warning = next(r.getMessage() for r in caplog.records if "unknown model" in r.getMessage())
+    assert "aria-background" in warning
+    assert "qwen3.8-27b-rocmfp4-r9700" in warning
+    assert "Red-Qwen3.8-27B-MXFP4" in warning

@@ -43,6 +43,10 @@ def _inference_trace_row(doc: dict) -> dict:
         "status_code": metadata.get("status_code"),
         "outcome": metadata.get("outcome"),
         "route_reason": metadata.get("route_reason"),
+        # False = the caller named a model the registry does not know, so
+        # routing ignored it. Without this the trace looks like a normal auto
+        # route and the misconfiguration stays invisible.
+        "requested_model_recognised": metadata.get("requested_model_recognised"),
         "streamed": metadata.get("streamed", False),
         "latency_ms": metadata.get("latency_ms"),
         "routing_ms": metadata.get("routing_ms"),
