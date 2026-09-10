@@ -108,7 +108,7 @@ async def test_refusals_never_stop_or_start(setup_red, condition):
     if condition == "queued": f.queued = 1
     if condition == "unknown": f.unknown = True
     if condition == "pinned": f.pinned = f.old
-    if condition == "assigned": f.rows[f.old]["bound_agents"] = ["pi-coding-red"]
+    if condition == "assigned": f.rows[f.old]["bound_agents"] = ["pi-coding-red-qwen38-27b"]
     if condition == "missing_assignments": f.rows[f.old].pop("bound_agents")
     if condition == "binding_race": f.mutate_binding = True
     if condition == "loading": f.rows[f.old]["state"] = "starting"

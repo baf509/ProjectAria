@@ -936,7 +936,7 @@ class MetaSupervisor:
                 "model": settings.coding_routing_model_deep,
                 "llm": None,
             }
-        slug = {"ridge": "pi-coding-ridge", "red": "pi-coding-red"}.get(tier)
+        slug = {"ridge": "pi-coding-ridge", "red": "pi-coding-red-qwen38-27b"}.get(tier)
         if not slug:
             return None
         try:

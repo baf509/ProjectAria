@@ -754,6 +754,39 @@ async def list_models(
             },
         })
 
+    # Registered options that are simply not loaded are still real choices, so
+    # list them rather than making the catalogue mean "whatever happens to be up
+    # right now". A stopped Red entry is otherwise invisible to any client that
+    # discovers models here, even though Pi and Hermes can select it from their
+    # own config and ARIA can start it on request.
+    #
+    # They are advertised as NOT serving and carry no base_url: nothing routes
+    # to them until they are started. `n_ctx` is deliberately null — the served
+    # geometry is read from a live backend, and guessing it for a stopped one is
+    # how a client ends up promising a context the model was not launched with.
+    for server in route.servers:
+        if is_servable(server) or not server.get("catalog_visible"):
+            continue
+        if not server.get("startable"):
+            continue
+        data.append({
+            "id": server["slug"],
+            "object": "model",
+            "owned_by": "aria",
+            "aliases": [],
+            "meta": {
+                "n_ctx": None,
+                "context_length": None,
+                "resident_gib": server.get("resident_gib_estimate"),
+                "model_file": server.get("model_file"),
+                "backend_device": server.get("backend_device"),
+                "base_url": None,
+                "serving": False,
+                "state": server.get("state"),
+                "hint": "registered but not loaded; start it through ARIA before selecting it",
+            },
+        })
+
     # The auto entry advertises the SMALLEST eligible resident context, not the current
     # one: it can be served by any eligible model, so promising more than the
     # smallest would overflow the moment the auto pick moves.

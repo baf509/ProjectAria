@@ -156,7 +156,7 @@ The aggregate 943,581-token cache is distinct from the 262,144 per-request limit
 and eight-sequence scheduler limit. GPU allocations include reserved cache and
 are not a measurement of active KV occupancy or process-exclusive memory.
 
-`pi-coding-red` is the Red coding/escalation profile, with provider `aria`,
+`pi-coding-red-qwen38-27b` is the Red coding/escalation profile, with provider `aria`,
 16,384 output tokens and 262,144 context. Coding still executes on the Mac.
 The profile is available to both the escalation ladder and steward red tier.
 Start Red through Operate before using it when asleep (global gateway autostart
@@ -217,8 +217,20 @@ Re-binding one re-introduces the block.
 **Both Red options have a coding persona**, so neither is stale whichever is
 loaded:
 
-- `pi-coding-red` → `Red-Qwen3.8-27B-MXFP4`
-- `pi-coding-red-flashnext` → `Red-Qwen3.8-Flash-Next-MXFP4`
+- `pi-coding-red-qwen38-27b` → `Red-Qwen3.8-27B-MXFP4`
+- `pi-coding-red-qwen38-flashnext` → `Red-Qwen3.8-Flash-Next-MXFP4`
+
+Both appear in the cockpit's new-session sheet. Neither is bound to its model
+server, and the seeder no longer binds either: a binding makes
+`select_red_model` refuse the swap, so seeding one would block every future
+Red switch on a fresh database.
+
+`/llm/v1-identified/models` also lists registered options that are *not*
+loaded, marked `serving: false` with `base_url: null` and a `state`. Their
+`n_ctx` is null on purpose — served geometry is read from a live backend, and
+guessing it for a stopped model is how a client promises a context the model
+was never launched with. Clients that carry their own context config (Pi,
+Hermes) are unaffected.
 
 Pi's own `/model` menu lists all three current models from its local
 `models.json` regardless of what is loaded, so the operator picks the one ARIA

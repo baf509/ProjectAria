@@ -101,7 +101,7 @@ value; the previous file is backed up under
 `context_length` and both Pi installations now declare 262144.
 
 **Serving at 262144 is not yet verified.** Red Radiance was resident and
-`select_red_model` correctly refused to unload it while the `pi-coding-red`
+`select_red_model` correctly refused to unload it while the `pi-coding-red-qwen38-27b`
 agent is assigned. The next Flash Next start will pick up the new value; confirm
 with `status` (`served_ctx`) and the engine's `GPU KV cache size` line before
 treating 262144 as qualified. Qualification evidence remains at 131072.

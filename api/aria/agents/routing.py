@@ -583,7 +583,7 @@ def default_ladder() -> list[Rung]:
         Rung(tier=TIER_RIDGE, strength=1, label="pi on Ridge (Qwen, WoL)",
              backend="pi-code", profile="pi-coding-ridge"),
         Rung(tier=TIER_RED, strength=2, label="pi on RED (Qwen, WoL)",
-             backend="pi-code", profile="pi-coding-red"),
+             backend="pi-code", profile="pi-coding-red-qwen38-27b"),
         Rung(tier=TIER_CLOUD, strength=3, label="claude_code (standard tier)",
              backend=CLAUDE_PROVIDER, model=settings.coding_routing_model_standard),
         Rung(tier=TIER_CLOUD, strength=4, label="claude_code (deep tier)",

@@ -80,15 +80,16 @@ async def test_utilization_includes_only_verified_remote(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_red_seed_is_enabled_and_preserves_existing_profile():
-    from aria.db.migrations import _seed_pi_coding_red_agent
+    from aria.db.migrations import _seed_pi_coding_red_qwen38_27b_agent
     db = MagicMock()
     db.agents.find_one = AsyncMock(return_value=None)
     db.agents.insert_one = AsyncMock()
-    await _seed_pi_coding_red_agent(db)
+    await _seed_pi_coding_red_qwen38_27b_agent(db)
     row = db.agents.insert_one.await_args.args[0]
-    assert row['slug'] == 'pi-coding-red'
+    assert row['slug'] == 'pi-coding-red-qwen38-27b'
     assert row['llm']['backend'] == 'aria' and row['llm']['model'] == red.MODEL
-    assert row['model_server'] == red.MODEL
-    db.agents.find_one.return_value = {'slug': 'pi-coding-red', 'enabled': False}
-    await _seed_pi_coding_red_agent(db)
+    # Unbound on purpose: a binding blocks select_red_model's swap.
+    assert 'model_server' not in row
+    db.agents.find_one.return_value = {'slug': 'pi-coding-red-qwen38-27b', 'enabled': False}
+    await _seed_pi_coding_red_qwen38_27b_agent(db)
     db.agents.insert_one.assert_awaited_once()

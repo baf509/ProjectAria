@@ -95,7 +95,7 @@ LOCAL_AUTONOMY_CAP = 2
 TIER_BACKENDS = {
     "local": ("pi-code", "pi-coding"),
     "ridge": ("pi-code", "pi-coding-ridge"),
-    "red": ("pi-code", "pi-coding-red"),
+    "red": ("pi-code", "pi-coding-red-qwen38-27b"),
     "cloud": ("claude_code", None),
 }
 CLOUD_TIERS = {"cloud"}

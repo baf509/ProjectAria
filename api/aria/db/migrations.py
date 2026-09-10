@@ -35,7 +35,8 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
         logger.info("Search capability disabled; skipping mongot index migration")
     await _seed_pi_coding_agent(db)
     await _seed_pi_coding_ridge_agent(db)
-    await _seed_pi_coding_red_agent(db)
+    await _rename_red_pi_agents(db)
+    await _seed_pi_coding_red_qwen38_27b_agent(db)
     await _reconcile_pi_coding_profiles(db)
     await _normalize_project_status(db)
 
@@ -564,16 +565,33 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
     logger.info("Seeded Pi Coding Agent Flash compatibility profile through ARIA")
 
 
-async def _seed_pi_coding_red_agent(db: AsyncIOMotorDatabase) -> None:
+async def _rename_red_pi_agents(db: AsyncIOMotorDatabase) -> None:
+    """Rename the Red coding personas to name their model explicitly.
+
+    Renamed 2026-09-10: Red serves one model at a time and now has a persona
+    per option, so `pi-coding-red` was ambiguous about which one it meant.
+    Renames in place rather than reseeding so the agent id, and anything
+    holding it, survives.
+    """
+    for old, new in (("pi-coding-red", "pi-coding-red-qwen38-27b"),
+                     ("pi-coding-red-flashnext", "pi-coding-red-qwen38-flashnext")):
+        if await db.agents.find_one({"slug": new}):
+            continue
+        result = await db.agents.update_one({"slug": old}, {"$set": {"slug": new}})
+        if result.modified_count:
+            logger.info("Renamed agent %s -> %s", old, new)
+
+
+async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None:
     """Seed the Red escalation profile without changing existing Pi defaults."""
-    existing = await db.agents.find_one({"slug": "pi-coding-red"})
+    existing = await db.agents.find_one({"slug": "pi-coding-red-qwen38-27b"})
     if existing:
         return
 
     now = datetime.now(timezone.utc)
     agent = {
         "name": "Pi Coding Agent (Red Radiance via ARIA)",
-        "slug": "pi-coding-red",
+        "slug": "pi-coding-red-qwen38-27b",
         "description": (
             "Hands-on coding agent using Qwen3.8-27B Radiance on Red through "
             "ARIA's inference gateway. The Pi CLI runs on the Mac; only inference runs on Red."
@@ -616,7 +634,11 @@ async def _seed_pi_coding_red_agent(db: AsyncIOMotorDatabase) -> None:
         "updated_at": now,
     }
 
-    agent["model_server"] = "Red-Qwen3.8-27B-MXFP4"
+    # Deliberately NOT bound to its model server. select_red_model refuses to
+    # swap while an agent is assigned to the running Red model, and Red serves
+    # one model at a time — so binding this profile would make the seed itself
+    # block every future Red switch. The persona reaches its model through the
+    # gateway; the binding is only bookkeeping.
     await db.agents.insert_one(agent)
     logger.info("Seeded Pi Coding Agent Red Radiance profile through ARIA")
 

@@ -1777,7 +1777,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         remote_model_id="qwen3.8-27b",
         remote_ready_deadline=900.0,
         endpoint_override="http://127.0.0.1:8094/v1",
-        consumers_note="Qualified automatic fallback and pi-coding-red profile; also selectable in Pi and Hermes. "
+        consumers_note="Qualified automatic fallback and pi-coding-red-qwen38-27b profile; also selectable in Pi and Hermes. "
         "Start wakes Linux through Corsair's LAN relay; "
         "Sleep stops the model and suspends Red. Windows remains a separate boot mode.",
     ),

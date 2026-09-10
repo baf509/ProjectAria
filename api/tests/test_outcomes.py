@@ -313,7 +313,7 @@ async def test_reroute_promotes_one_rung_and_honours_the_charter():
 
 @pytest.mark.asyncio
 async def test_reroute_skips_missing_launch_profiles():
-    # pi-coding-red does not exist on this box; escalating into it would raise
+    # pi-coding-red-qwen38-27b does not exist on this box; escalating into it would raise
     # "subagent profile not found" and turn a stall into a hard failure.
     db = FakeDB(agents=[])
     verdict = await routing.reroute(db, _session(), tiers_allowed=["ridge", "red", "cloud"])
