@@ -116,7 +116,13 @@ async def test_experimental_start_is_blocked_before_any_process_mutation(monkeyp
     monkeypatch.setattr(ms, "_run", run)
     engine = ms.ModelServerManager().get_spec(ENGINE)
     assert engine.startable is False
-    assert engine.not_startable_reason == "Experimental runtime awaiting hardware and model qualification"
+    # Two gates stack here, and both must stay visible: the Corsair-loadout
+    # retirement prefix (every onbox spec outside CURRENT_MODEL_CHOICES gets it)
+    # and this engine's own qualification gate. Asserting the whole string meant
+    # the retirement prefix silently broke this test when it was added.
+    assert engine.not_startable_reason.endswith(
+        "Experimental runtime awaiting hardware and model qualification")
+    assert "Not a current Corsair option" in engine.not_startable_reason
     with pytest.raises(ms.ModelServerSafetyError, match="awaiting hardware and model qualification"):
         await ms.ModelServerManager().start(ENGINE)
     run.assert_not_called()
