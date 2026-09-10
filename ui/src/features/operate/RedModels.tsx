@@ -1,13 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Card, Notice, Text } from '@/components/ui/primitives'
 import { Button } from '@/components/ui/controls'
 import { Cluster, Stack } from '@/components/layout'
 import { api, hasAdminKey } from '@/lib/http'
 import { K, modelServerAction, setLlmRoute } from '@/lib/api/endpoints'
-import type { LlmRouteFull, ModelServerFull, ModelServersFullResponse, UtilizationResponse } from '@/lib/api/types'
+import type { InferenceTrace, LlmRouteFull, ModelServerFull, ModelServersFullResponse, UtilizationResponse } from '@/lib/api/types'
 import type { Resource } from '@/lib/swr'
 import { isResident, modelName } from './lib'
 
@@ -34,6 +34,7 @@ export function RedModels({ fleet, route, utilization }: {
   const [progress, setProgress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const [callers, setCallers] = useState<string>('')
   const inFlight = useRef(false)
   const models = RED_MODELS.map(slug => fleet.data?.servers.find(s => s.slug === slug))
   const loaded = models.find(s => s && isResident(s))
@@ -44,7 +45,36 @@ export function RedModels({ fleet, route, utilization }: {
   const loading = models.some(s => s?.state === 'loading' || s?.state === 'starting')
   const busy = Boolean(progress) || loading || activeRequests > 0 || activityUnknown
 
-  async function change(next: string | null) {
+  // Which clients have used Red recently. The operator may not know where a
+  // Pi session is running, and "Red is busy" without a name is not actionable.
+  const recentCallers = useCallback(async (): Promise<string> => {
+    try {
+      const traces = await api<InferenceTrace[]>(K.usageTraces(1, 200))
+      const callers = [...new Set(traces
+        .filter(t => t.model && RED_MODELS.includes(t.model as typeof RED_MODELS[number]))
+        .map(t => t.caller).filter((c): c is string => Boolean(c)))]
+      return callers.slice(0, 4).join(', ')
+    } catch {
+      return ''   // attribution is a convenience; never block the swap on it
+    }
+  }, [])
+
+  function confirmInterrupt(): boolean {
+    return window.confirm(
+      `Interrupt ${activeRequests} in-flight Red request${activeRequests === 1 ? '' : 's'}` +
+      `${callers ? ` from ${callers}` : ''}?\n\n` +
+      'Those requests fail immediately and the work in them is lost. ' +
+      'Their sessions stay open and can be retried once the new model is loaded.')
+  }
+
+  useEffect(() => {
+    if (activeRequests === 0) { setCallers(''); return }
+    let cancelled = false
+    void recentCallers().then(who => { if (!cancelled) setCallers(who) })
+    return () => { cancelled = true }
+  }, [activeRequests, recentCallers])
+
+  async function change(next: string | null, override = false) {
     if (inFlight.current) return
     inFlight.current = true
     setError(null); setDone(null); setProgress('Checking Red…')
@@ -61,8 +91,12 @@ export function RedModels({ fleet, route, utilization }: {
         throw new Error('This model is not available in the active Aria release yet.')
       if (red.some(s => s.state === 'loading' || s.state === 'starting'))
         throw new Error('Red is already loading a model. Wait for it to finish.')
-      if (util.servers?.some(s => RED_MODELS.includes(s.slug as typeof RED_MODELS[number]) && (s.busy_slots ?? 0) > 0))
-        throw new Error('Red is serving requests. Finish or stop those sessions before changing models.')
+      if (!override && util.servers?.some(s => RED_MODELS.includes(s.slug as typeof RED_MODELS[number]) && (s.busy_slots ?? 0) > 0)) {
+        const who = await recentCallers()
+        throw new Error(
+          `Red is serving requests${who ? ` for ${who}` : ''}. Finish or stop those sessions, ` +
+          'or use "Switch anyway" to interrupt them.')
+      }
       const previous = red.filter(isResident)
       // Route changes are admin-gated. Refuse before unloading, rather than
       // discovering the missing credential after a successful replacement.
@@ -74,7 +108,7 @@ export function RedModels({ fleet, route, utilization }: {
         return !activity?.reachable || activity.busy_slots == null
       })) throw new Error('Red activity is unavailable. Retry when its current requests can be checked.')
       for (const s of previous.filter(s => s.slug !== next)) {
-        if (s.bound_agents?.length) throw new Error(`${modelName(s.slug)} is assigned to ${s.bound_agents.join(', ')}. Release those assignments first.`)
+        if (s.bound_agents?.length && !override) throw new Error(`${modelName(s.slug)} is assigned to ${s.bound_agents.join(', ')}. Release those assignments, or use "Switch anyway".`)
         setProgress(`Unloading ${modelName(s.slug)}…`)
         await modelServerAction(s.slug, 'stop')
         await waitFor(s.slug, false)
@@ -107,7 +141,7 @@ export function RedModels({ fleet, route, utilization }: {
           <Cluster>
             <div className="min-w-0 flex-1">
               <b className="text-label">{modelName(slug)}</b>
-              <Text>{i === 0 ? '27B · 256K context · up to 8 requests' : 'Flash Next · 128K context · 1 request'}</Text>
+              <Text>{i === 0 ? '27B · 256K context · up to 8 requests' : 'Flash Next · 256K context · 1 request'}</Text>
             </div>
             <Button variant={resident ? 'default' : 'primary'}
               disabled={busy || !fleet.data || (!resident && server?.startable !== true)}
@@ -122,7 +156,20 @@ export function RedModels({ fleet, route, utilization }: {
         </section>
       })}
       <Text>Switch unloads the current Red model, then loads the selected one. Loading can take a few minutes.</Text>
-      {activeRequests > 0 && <Notice tone="info">Red is serving {activeRequests} request{activeRequests === 1 ? '' : 's'}. Switching is available when they finish.</Notice>}
+      {activeRequests > 0 && <Notice tone="info">
+        Red is serving {activeRequests} request{activeRequests === 1 ? '' : 's'}{callers ? ` for ${callers}` : ''}. Switching is available when they finish,
+        or interrupt them with Switch anyway on the model you want.
+      </Notice>}
+      {activeRequests > 0 && loaded && <Cluster>
+        {RED_MODELS.filter(slug => slug !== loaded.slug).map(slug =>
+          <Button key={slug} variant="default" disabled={Boolean(progress)}
+            aria-label={`Switch anyway to ${modelName(slug)}`}
+            onClick={() => { if (confirmInterrupt()) void change(slug, true) }}>
+            Switch anyway to {modelName(slug)}
+          </Button>)}
+        <Button variant="default" disabled={Boolean(progress)} aria-label="Unload Red anyway"
+          onClick={() => { if (confirmInterrupt()) void change(null, true) }}>Unload anyway</Button>
+      </Cluster>}
       {activityUnknown && <Notice tone="info">Checking Red activity before enabling model changes…</Notice>}
       {progress && <div role="status"><Notice tone="info">{progress}</Notice></div>}
       {done && <div role="status"><Notice tone="info">{done}</Notice></div>}
