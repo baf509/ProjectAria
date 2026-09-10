@@ -12,6 +12,12 @@ runs on mainline llama.cpp, but ROCmFP4/ROCmFPX-quantized files need their
 matching fork image. The templates below only reference images that already
 exist on this box (verified 2026-07-29) — provisioning never builds an image.
 
+HOST ASSUMPTION: this runs on the machine that serves the models. It writes the
+GGUF, the compose file and the container to local paths under
+`settings.infrastructure_root`. Since the 2026-08 migration ARIA runs on the Mac
+while the models live on Corsair, so provisioning refuses unless this host is
+the model host — see _require_model_host.
+
 Jobs are tracked in db.model_pulls and driven by an in-process asyncio task:
 if aria-api restarts mid-download, the job doc stays at its last phase with
 no worker behind it — surfaced as `stale: true` in the listing rather than
@@ -31,7 +37,11 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.config import settings
-from aria.infrastructure.model_servers import REGISTRY, ModelServerError
+from aria.infrastructure.model_servers import (
+    REGISTRY,
+    ModelServerError,
+    _corsair_forward_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +50,11 @@ _REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[\w.-]+$")
 # Ports below 8105 belong to existing services (see endpoints.env / the static
 # registry); generated services allocate upward from here.
 _PORT_RANGE = range(8105, 8130)
-_TAILNET_IP = "100.123.245.84"  # this node's stable Tailscale IP, same as every other compose file
+# The MODEL HOST's stable Tailscale IP, which generated compose files bind to.
+# It is not "this node": since the 2026-08 migration ARIA runs on the Mac
+# (100.125.251.55) while the models live on Corsair. Provisioning is refused
+# unless it runs on the model host itself — see _require_model_host.
+_TAILNET_IP = "100.123.245.84"
 
 
 # Each template only uses images already present on this box. `entrypoint`
@@ -139,6 +153,43 @@ def _compose_yaml(slug: str, runtime: str, model_filename: str, port: int, ctx: 
     return "\n".join(lines)
 
 
+def _require_model_host() -> None:
+    """Refuse to provision from a host that only *observes* the model host.
+
+    Everything this service produces has to live where the models are served:
+    the GGUF itself, the generated compose file, and the container that mounts
+    it. Before the 2026-08 migration ARIA ran ON Corsair, so "local" and "the
+    model host" were the same machine and nothing had to say so.
+
+    They are not the same machine any more. From the Mac,
+    `settings.infrastructure_root` resolves to a docs/planning checkout of the
+    Corsair model host repo — no `models/` directory at all — so an unguarded
+    pull downloads tens of GB into a source tree and then writes a compose unit
+    declaring Vulkan/ROCm GPUs this machine does not have. It would fail late,
+    after the download, or succeed at producing a unit that can never start.
+
+    `_corsair_forward_mode()` is the existing, authoritative answer to "are the
+    onbox models reached through SSH forwards rather than being local?", so it
+    is the right thing to gate on rather than a new guess.
+    """
+    if _corsair_forward_mode():
+        raise ModelServerError(
+            "Model provisioning must run on the model host. This ARIA reaches the "
+            "onbox models through SSH forwards (ARIA_CORSAIR_MODEL_FORWARDS), so a "
+            "pull here would download into "
+            f"{os.path.abspath(settings.infrastructure_root)} on this machine and "
+            "generate a compose unit for GPUs it does not have. Run the pull on the "
+            "model host, or provision there and register the result."
+        )
+    models_root = os.path.join(os.path.abspath(settings.infrastructure_root), "models")
+    if not os.path.isdir(models_root):
+        raise ModelServerError(
+            f"{models_root} does not exist, so this is not a model host root. "
+            "infrastructure_root must point at the tree the model servers actually "
+            "serve from before anything can be pulled into it."
+        )
+
+
 class ModelPullService:
     """Download + provision pipeline. One in-flight pull at a time — these
     are 20-60 GB files on one disk; parallel pulls just thrash."""
@@ -170,6 +221,11 @@ class ModelPullService:
             raise ModelServerError(f"A model server named {name!r} already exists")
         if self._active_task and not self._active_task.done():
             raise ModelServerError("Another pull is already in progress — one at a time")
+        # Request is well-formed; now check we are the machine that serves the
+        # models. Deliberately after the input checks so a bad filename reports
+        # the filename, and deliberately before port allocation, the job doc and
+        # the download — a refusal is worth nothing once 10 GB is on disk.
+        _require_model_host()
 
         used_ports = {s.port for s in REGISTRY if s.port}
         async for doc in db.model_servers.find({}):

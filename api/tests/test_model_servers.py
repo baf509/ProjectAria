@@ -839,7 +839,13 @@ class TestPullValidation:
             await svc._validate(db, "org/repo", "m.gguf", "taken", "mainline-cpu", None)
 
     @pytest.mark.asyncio
-    async def test_port_allocation_skips_used_ports(self):
+    async def test_port_allocation_skips_used_ports(self, monkeypatch, tmp_path):
+        # Allocation runs after the model-host preflight, so this test has to
+        # look like a model host to reach the code it is about.
+        from aria.config import settings as _settings
+        monkeypatch.setenv("ARIA_CORSAIR_MODEL_FORWARDS", "0")
+        (tmp_path / "models" / "llm").mkdir(parents=True)
+        monkeypatch.setattr(_settings, "infrastructure_root", str(tmp_path))
         svc = ModelPullService()
         db = FakeDBWithServers()
         db.model_servers.docs.append(_dynamic_doc(slug="taken", port=8107))
@@ -1957,3 +1963,63 @@ def test_paro_is_a_known_red_option_that_cannot_silently_serve():
     # exist yet, and a guessed number is one a preflight gate would trust.
     assert spec.resident_gib is None
     assert spec.weights_gib == 17.75
+
+
+def test_model_pull_refuses_to_provision_from_a_host_that_only_watches(monkeypatch, tmp_path):
+    """Provisioning writes files where the models are SERVED, not where ARIA runs.
+
+    Before the 2026-08 migration those were one machine, so nothing had to say
+    so. They are not any more: from the Mac, `infrastructure_root` resolves to a
+    docs checkout of the Corsair model host repo with no `models/` directory, so
+    an unguarded pull downloads tens of GB into a source tree and then writes a
+    compose unit declaring GPUs this machine does not have — failing after the
+    download, or worse, producing a unit that can never start.
+    """
+    from aria.config import settings
+    from aria.infrastructure import model_pull as mp
+    from aria.infrastructure.model_servers import ModelServerError
+
+    # The live Mac condition: onbox models reached through SSH forwards.
+    monkeypatch.setenv("ARIA_CORSAIR_MODEL_FORWARDS", "true")
+    with pytest.raises(ModelServerError, match="must run on the model host"):
+        mp._require_model_host()
+
+    # Not forwarding, but the root is not a model tree either.
+    monkeypatch.setenv("ARIA_CORSAIR_MODEL_FORWARDS", "0")
+    monkeypatch.setattr(settings, "infrastructure_root", str(tmp_path / "nope"))
+    with pytest.raises(ModelServerError, match="not a model host root"):
+        mp._require_model_host()
+
+    # A real model host root: allowed.
+    root = tmp_path / "host"
+    (root / "models" / "llm").mkdir(parents=True)
+    monkeypatch.setattr(settings, "infrastructure_root", str(root))
+    mp._require_model_host()
+
+
+@pytest.mark.asyncio
+async def test_model_pull_refuses_before_creating_a_job_or_downloading(monkeypatch, tmp_path):
+    """The refusal must land in validation, not partway through a 10 GB download."""
+    from aria.config import settings
+    from aria.infrastructure import model_pull as mp
+    from aria.infrastructure.model_servers import ModelServerError
+
+    monkeypatch.setenv("ARIA_CORSAIR_MODEL_FORWARDS", "true")
+    monkeypatch.setattr(settings, "infrastructure_root", str(tmp_path))
+
+    db = FakeDBWithServers()
+
+    async def _refuse_insert(*_a, **_kw):
+        raise AssertionError("a job doc must not be written when the host is refused")
+
+    monkeypatch.setattr(db.model_pulls, "insert_one", _refuse_insert, raising=False)
+
+    service = mp.ModelPullService()
+    with pytest.raises(ModelServerError, match="must run on the model host"):
+        await service.start_pull(
+            db, "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q8_0.gguf",
+            "Qwen3.5-9B-Aux", "mainline-vulkan",
+        )
+    # The point of refusing in validation: nothing was written and, above all,
+    # no multi-GB download was started.
+    assert service._active_task is None, "no download task may be started"

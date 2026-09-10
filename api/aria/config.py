@@ -562,8 +562,16 @@ class Settings(BaseSettings):
     heartbeat_interval_minutes: int = 30
     heartbeat_active_hours_start: int = 9
     heartbeat_active_hours_end: int = 22
-    heartbeat_backend: str = "openrouter"
-    heartbeat_model: str = "deepseek/deepseek-v4-flash"
+    # Local, on the Corsair candidate through ARIA's gateway. The live .env has
+    # pointed these at llamacpp since the cloud account lapsed, but the defaults
+    # still named an openrouter DeepSeek model, and the .env's model value
+    # (`qwen35b-a3b-mtp`) matches no registered deployment — an unrecognised name
+    # silently rides the auto route, which is how `steward_model` came to name a
+    # retired slug for weeks. This is a 512-token call, ~12s at the candidate's
+    # ~44 tok/s, so it fits its single slot without the budget/timeout problem
+    # that took the steward down (see _warn_if_budget_cannot_finish).
+    heartbeat_backend: str = "llamacpp"
+    heartbeat_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     heartbeat_ok_keyword: str = "HEARTBEAT_OK"
 
     # Dream Cycle
@@ -675,8 +683,11 @@ class Settings(BaseSettings):
     planning_ambient_capture_enabled: bool = True
     # Backend/model for ambient task extraction. Decoupled from the
     # conversation's chat model so the hot path can use a cheap fast model.
-    planning_ambient_backend: str = "openrouter"
-    planning_ambient_model: str = "deepseek/deepseek-v4-flash"
+    # Local, on the Corsair candidate — see heartbeat_model above for why the
+    # openrouter default and the .env's unregistered `qwen35b-a3b-mtp` were both
+    # wrong. Also a 512-token call.
+    planning_ambient_backend: str = "llamacpp"
+    planning_ambient_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     # Default geometry for new tmux sessions. tmux's built-in default is 80x24,
     # which makes Claude Code's TUI render at a width that mobile clients can't
     # display without ugly wrapping. Mobile/widget clients should call
