@@ -60,7 +60,6 @@ from aria.tools.builtin import (
     ListCodingSessionsTool,
     PiCodingAgentTool,
     ScreenshotTool,
-    SearchAgentTool,
     SendToCodingSessionTool,
     ShellTool,
     SoulTool,
@@ -166,7 +165,7 @@ async def lifespan(app: FastAPI):
     # Check LLM backends
     from aria.llm.manager import llm_manager
     available_backends = []
-    for backend_name in ("llamacpp", "context1", "anthropic", "openai", "openrouter"):
+    for backend_name in ("llamacpp", "anthropic", "openai", "openrouter"):
         avail, reason = llm_manager.is_backend_available(backend_name)
         if avail:
             available_backends.append(backend_name)
@@ -212,12 +211,6 @@ async def lifespan(app: FastAPI):
     # Compatibility delegation tool backed by the real external Pi CLI.
     tool_router.register_tool(PiCodingAgentTool(coding_manager))
     startup_logger.info("Pi Coding Agent shell tool registered")
-
-    # Search Agent — context-1 agentic retrieval over memory/web/files
-    ctx1_available, _ = llm_manager.is_backend_available("context1")
-    if ctx1_available:
-        tool_router.register_tool(SearchAgentTool(db))
-        startup_logger.info("Search Agent tool registered (context-1)")
 
     # Restore persisted MCP servers
     mcp_manager = get_mcp_manager()

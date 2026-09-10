@@ -21,7 +21,7 @@
  *     generation. Now: one silent retry ONLY for a network failure before the
  *     first byte; anything later surfaces the error and leaves retrying to a
  *     human (before-first-byte failures put the text back in the composer).
- *  4. Leaving the page kept the server generating on DS4's single pi slot. An
+ *  4. Leaving the page kept the server generating on the single pi slot. An
  *     AbortController is threaded through openSse: Send becomes Stop, and
  *     unmount/navigation aborts the fetch, which the BFF proxy propagates
  *     upstream.

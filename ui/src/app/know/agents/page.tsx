@@ -8,7 +8,7 @@
  * 1. The old write path was a controlled <select> whose value was the agent's
  *    bound slug. When that slug was NOT in the on-box startable list (Ridge,
  *    retired entries), React silently rendered the FIRST option selected — the
- *    page claimed "bound to DS4" for agents bound to nothing of the sort.
+ *    page claimed a binding for agents bound to nothing of the sort.
  *    Binding is now read-only text + state chip; changing it is an explicit
  *    "Rebind…" Sheet whose select starts on a placeholder option.
  *
@@ -178,7 +178,7 @@ export default function AgentsPage() {
           </p>
           <Field label="Bind to" hint="on-box startable servers only; binding does not start anything">
             <Select value={choice} onChange={(e) => setChoice(e.target.value)} className="coarse:text-title">
-              {/* The placeholder is the fix for the false-"bound to DS4" bug:
+              {/* The placeholder is the fix for the false-binding bug:
                   a select must never default to a real server. */}
               <option value="" disabled>
                 — choose a server —

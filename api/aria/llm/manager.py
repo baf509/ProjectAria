@@ -111,20 +111,6 @@ class LLMManager:
                         "Install with: pip install openai"
                     )
 
-            elif backend == "context1":
-                try:
-                    from aria.llm.context1 import ContextOneAdapter
-                    self.adapters[key] = ContextOneAdapter(
-                        base_url=base_url or settings.context1_url,
-                        model=model,
-                        api_key=settings.context1_api_key,
-                    )
-                    logger.info(f"Created context-1 adapter for model: {model}")
-                except ImportError:
-                    raise ImportError(
-                        "openai package not installed. Install with: pip install openai"
-                    )
-
             elif backend == "agentic":
                 # qwen-agentic — a second local llama.cpp server (:8093) tuned
                 # for tool-use. OpenAI-compatible, so reuse the llama.cpp adapter.
@@ -217,7 +203,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     f"Unknown backend: {backend}. "
-                    f"Supported: llamacpp, agentic, context1, ridge, anthropic, openai, openrouter"
+                    f"Supported: llamacpp, agentic, ridge, anthropic, openai, openrouter"
                 )
 
         return self.adapters[key]
@@ -247,15 +233,6 @@ class LLMManager:
                 return True, "llama.cpp is available (local)"
             except ImportError:
                 return False, "openai package not installed (required for llama.cpp)"
-
-        elif backend == "context1":
-            if not settings.context1_enabled:
-                return False, "context-1 is disabled (context1_enabled=false)"
-            try:
-                import openai
-                return True, "context-1 is available (local)"
-            except ImportError:
-                return False, "openai package not installed (required for context-1)"
 
         elif backend == "ridge":
             try:

@@ -31,7 +31,6 @@ from aria.research.models import Learning, ResearchConfig
 from aria.research.search import SearchResult, get_search_provider
 from aria.tasks.runner import TaskRunner
 from aria.tools.base import ToolStatus
-from aria.tools.builtin.search_agent import SearchAgentTool
 from aria.tools.builtin.web import WebTool
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,6 @@ class ResearchService:
         self.long_term_memory = LongTermMemory(db)
         self.search_provider = get_search_provider()
         self.web_tool = WebTool(timeout_seconds=20, max_response_size=512 * 1024)
-        self._search_agent_tool: Optional[SearchAgentTool] = None
         self.task_runner.register_recovery_handler("research", self._recover_research_task)
 
     async def start_research(
@@ -68,7 +66,7 @@ class ResearchService:
         `endpoint`/`force_local` are what make an unattended run safe to launch:
         the steward's ResearchPlanner refuses to start at all unless this
         signature accepts `endpoint` (`_launch_allowed`), because an unpinned
-        run resolves through /llm/v1 to DS4 -- pi's single coding slot.
+        run resolves through /llm/v1 to the resident local server -- pi's single coding slot.
         """
         config = await self._build_config(
             query=query,
@@ -93,7 +91,7 @@ class ResearchService:
             "model": config.llm_model,
             # Persisted so a task recovered after a restart is re-pinned to the
             # same endpoint. A recovered run that silently falls back to the
-            # auto-route is exactly the DS4 eviction this pin exists to prevent.
+            # auto-route is exactly the eviction this pin exists to prevent.
             "endpoint": config.endpoint,
             "force_local": config.force_local,
             "project_id": config.project_id,
@@ -332,11 +330,8 @@ class ResearchService:
         run_state: dict,
     ) -> None:
         depth_found = config.depth - remaining_depth
-        if config.llm_backend == "context1":
-            results, source_docs = await self._agentic_gather(branch_query, config.breadth)
-        else:
-            results = await self.search_provider.search(branch_query, max_results=min(config.breadth + 1, 5))
-            source_docs = await self._fetch_sources(results[: config.breadth])
+        results = await self.search_provider.search(branch_query, max_results=min(config.breadth + 1, 5))
+        source_docs = await self._fetch_sources(results[: config.breadth])
         learnings = await self._extract_learnings(
             config=config,
             branch_query=branch_query,
@@ -523,38 +518,6 @@ class ResearchService:
             confidence=0.75,
             source={"type": "research_report", "query": config.query},
         )
-
-    async def _agentic_gather(
-        self, query: str, breadth: int
-    ) -> tuple[list[SearchResult], list[dict]]:
-        """Retrieve sources via the context-1 search agent over memory/web/files."""
-        if self._search_agent_tool is None:
-            self._search_agent_tool = SearchAgentTool(self.db, self.long_term_memory)
-        tool_result = await self._search_agent_tool.execute({
-            "query": query,
-            "max_docs": max(breadth, 3),
-        })
-        if tool_result.status != ToolStatus.SUCCESS:
-            logger.warning("search_agent failed (%s); falling back to web provider", tool_result.error)
-            fallback = await self.search_provider.search(query, max_results=min(breadth + 1, 5))
-            return fallback, await self._fetch_sources(fallback[:breadth])
-
-        documents = (tool_result.output or {}).get("documents", []) or []
-        results: list[SearchResult] = []
-        source_docs: list[dict] = []
-        for doc in documents[:breadth]:
-            url = doc.get("url") or f"aria://{doc.get('id', 'unknown')}"
-            title = doc.get("title") or doc.get("id") or "document"
-            content = doc.get("content") or ""
-            snippet = content[:400]
-            results.append(SearchResult(title=title, url=url, snippet=snippet))
-            source_docs.append({
-                "title": title,
-                "url": url,
-                "snippet": snippet,
-                "content": content,
-            })
-        return results, source_docs
 
     async def _fetch_sources(self, results: list[SearchResult]) -> list[dict]:
         docs = []

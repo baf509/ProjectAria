@@ -221,7 +221,7 @@ class SchedulerService:
             # row only says WHICH project and WHEN; the ResearchPlanner owns
             # question generation, dedup/cool-down, the per-project budget, the
             # citation check and publishing — including the model rules (Qwen
-            # slot 2, heavy work 01:00-07:00 or when Hermes is idle, never DS4).
+            # slot 2, heavy work 01:00-07:00 or when Hermes is idle, never pi's slot).
             #
             # Put the cadence in cron_expr, not in params: "weekly sunday 02:00"
             # lands inside the night window, which is the only time a full-depth

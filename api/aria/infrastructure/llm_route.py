@@ -31,7 +31,7 @@ AUTO_ALIASES = frozenset({"auto", "aria", "aria-resident", "aria-auto", "default
 
 
 def _norm(value: Any) -> str:
-    """Casefold and unify separators so `DS4_0731.gguf` matches `ds4-0731`."""
+    """Casefold and unify separators so `Model_0731.gguf` matches `model-0731`."""
     if not isinstance(value, str):
         return ""
     out = value.strip().lower()
@@ -66,7 +66,7 @@ def is_servable(server: dict) -> bool:
 def base_url_for(server: dict) -> Optional[str]:
     """Prefer loopback; fall back to the tailnet form.
 
-    The fallback is load-bearing, not cosmetic: DS4 binds 100.123.245.84:8107
+    The fallback is load-bearing, not cosmetic: one retired bundle bound 100.123.245.84:8107
     ONLY, so `localhost:8107` is connection-refused even though a listener
     exists — a gotcha that has been misdiagnosed repeatedly on this box.
     """

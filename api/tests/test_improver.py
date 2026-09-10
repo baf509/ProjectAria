@@ -677,7 +677,7 @@ class TestPolicyVersionStore:
     async def test_empty_candidate_is_never_written(self, store, repo, cfg):
         """Qwen3.8 emits reasoning_content before content, so a tight budget
         returns empty content with finish_reason=length. Writing it would blank a
-        prompt file — the DS4 zero-entity failure with a bigger blast radius."""
+        prompt file — the zero-entity failure with a bigger blast radius."""
         cfg["improver_mutable_paths"] = ["api/prompts/*.md"]
         target = Target(kind=KIND_PROMPT_FILE, ref="api/prompts/steward.md")
         with pytest.raises(ImproverError, match="empty"):
@@ -1299,7 +1299,7 @@ class TestHelpers:
     @pytest.mark.parametrize("model,backend,family", [
         ("claude-sonnet-4-5", "anthropic", "claude"),
         ("qwen3.8-27b-rocmfp4-r9700", "llamacpp", "qwen"),
-        ("DS4-0731-UD-IQ3-XXS-Halo-DSpark", "llamacpp", "deepseek"),
+        ("deepseek-v4-flash", "openrouter", "deepseek"),
         ("gemma-4-e4b-it", "llamacpp", "gemma"),
         ("mystery-13b", "custom", "unknown"),
     ])
@@ -1319,7 +1319,7 @@ class TestHelpers:
 
     @pytest.mark.asyncio
     async def test_background_work_never_goes_to_ds4s_slot(self, db, repo):
-        """DS4 on :8108 is pi's single slot; a background call evicts its warm
+        """The resident server on :8108 is pi's single slot; a background call evicts its warm
         prefix (4.2 s warm vs 39.5 s cold)."""
         worker = Improver(db, Notifier(), repo_root_path=str(repo))
         with pytest.raises(ImproverError, match="8108"):

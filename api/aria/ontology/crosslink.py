@@ -270,7 +270,7 @@ def parse_json_object(raw: str) -> dict:
 
     Deliberately tolerant, because the model on the other end is NOT fixed:
     `llamacpp` resolves to ARIA's /llm/v1 passthrough, which follows whichever
-    server is resident. That is currently DS4, which emits
+    server is resident, which emits
     `<think>...</think>` ahead of its answer — a strict `json.loads` returned
     zero entities for every memory. Tomorrow it might be a model that fences
     its output or adds a preamble.
@@ -386,7 +386,7 @@ async def extract_entities_for_memory(
             messages=[Message(role="user", content=prompt)],
             temperature=0.0,
             # 256 was too small and failed SILENTLY in the worst way: a
-            # reasoning model (DS4, the resident server) spent the whole budget
+            # reasoning model (the resident server) spent the whole budget
             # thinking and got truncated before emitting any JSON, so every
             # memory came back with zero entities and no error. Budget for
             # reasoning even when the configured model doesn't do it, since

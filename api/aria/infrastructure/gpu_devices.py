@@ -32,7 +32,7 @@ This is the whole point of the dual-device topology Ben runs: a model on the
 R9700 lives in that card's own 32 GiB of VRAM and does NOT compete with a
 model on the Halo, which draws from the 124 GiB of shared system memory. Two
 models can be resident at once precisely because they are in different pools
-(see infrastructure/DUAL-SERVING.md — verified live 2026-08-14, DS4 on the
+(see infrastructure/DUAL-SERVING.md — verified live 2026-08-14, the Halo bundle on the
 Halo + Qwen3.8 on the R9700). Accounting them against one number would forbid
 the deployment that actually works.
 
@@ -89,7 +89,7 @@ _DISCRETE_VRAM_FLOOR_GIB = 8.0
 
 # Above this much GTT on a discrete card, it is spilling into system RAM and
 # has started competing with the Halo's pool. Same 1 GiB threshold the
-# deepseek-v4-safe-launch.sh uses before it will allowlist a co-resident dGPU model.
+# the safe-launch script uses before it will allowlist a co-resident dGPU model.
 _SPILL_THRESHOLD_GIB = 1.0
 
 
@@ -289,7 +289,7 @@ def process_gpu_bytes(pid: int) -> dict[str, int]:
 
     This is the measurement that works for BOTH runtimes on this box. The KFD
     tree (/sys/class/kfd) only sees HIP/ROCm processes — a RADV Vulkan server
-    has no KFD entry at all, so the DS4 deployments that run on Nathan's Vulkan
+    has no KFD entry at all, so the deployments that run on Nathan's Vulkan
     fork measured as zero while holding ~98 GiB. amdgpu's per-fd accounting
     covers both, and reports PER DEVICE, which is what makes a split
     deployment legible: measured live on 2026-08-14, one llama-server showed

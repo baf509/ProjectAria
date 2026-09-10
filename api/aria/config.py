@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # 2026-08-05: no longer a hardcoded model port at all — it points at ARIA's
     # own `/llm/v1` passthrough (api/routes/llm_proxy.py), which resolves to
     # whichever on-box server is currently resident. Pinning a port here is what
-    # broke this every time the resident model changed: DS4-0731 (:8107) landed
+    # broke this every time the resident model changed: the Halo bundle (:8107) landed
     # earlier today and is RAM-exclusive with :8103, so :8103 went permanently
     # down and `selfcheck` paged "llm (ConnectError)" every 10 minutes into the
     # Hermes alert-triage cron. The proxy makes that drift structurally
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     # go back to a 409 telling the caller to start it themselves.
     llm_proxy_autostart: bool = True
     # How long to hold a request open while an autostarted backend maps its
-    # weights. Ling Q5_K_M takes ~110s from cold; DS4 similar. Past this the
+    # weights. Ling Q5_K_M takes ~110s from cold; the big MoE bundles similar. Past this the
     # request is forwarded anyway so the caller sees the backend's own error
     # rather than a silent hang. Hermes' gateway_timeout is 1800s.
     llm_proxy_autostart_timeout: float = 300.0
@@ -107,21 +107,6 @@ class Settings(BaseSettings):
     ridge_url: str = "http://127.0.0.1:8092/v1"
     ridge_api_key: str = ""
     ridge_timeout_seconds: int = 420
-
-    # Chroma context-1 (local agentic search model served by a second llama.cpp).
-    # Off by default: the container is not part of the normal stack. With this
-    # false the backend is unavailable, the Search Agent tool is not registered,
-    # and health stops probing :8081 (no permanent DEGRADED).
-    context1_enabled: bool = False
-    context1_url: str = "http://localhost:8081/v1"
-    context1_api_key: str = ""
-    context1_model: str = "default"
-    context1_max_iterations: int = 8
-    context1_max_docs: int = 20
-    context1_fs_allowed_roots: list[str] = [
-        "/home/ben/Development/ProjectAria",
-        "/home/ben/Development/infrastructure",
-    ]
 
     # Cloud LLMs
     anthropic_api_key: str = ""
@@ -206,15 +191,15 @@ class Settings(BaseSettings):
     # Same reasoning as laguna above, different resource. Cloud backends are
     # not affected by this cap either.
     coding_max_concurrent_ridge_sessions: int = 1
-    # pi-code sessions land on the resident local server (DS4), where each one
+    # pi-code sessions land on the resident local server, where each one
     # occupies a llama.cpp SLOT for its whole life. The global cap above cannot
     # protect those slots: a claude_code session consumes a global slot but ZERO
     # local capacity, so four Claude sessions would block pi entirely while the
     # GPU idles, and four pi sessions would over-subscribe the slots reserved
     # for them. This is the cap that must track the server's -np.
     #
-    # Budget at -np 1 (rewritten 2026-08-15): pi's model is DS4-XXS on the Halo
-    # APU, served as exactly ONE 131K slot, and DS4 is MoE — concurrent slots
+    # Budget at -np 1 (rewritten 2026-08-15): pi's model is served as exactly
+    # ONE long-context slot, and it is MoE — concurrent slots
     # activate different experts, so multi-slot anti-scales (measured per-request
     # 10.06/6.97/5.58 t/s at 2/4/6 slots vs 30.69 single). Hermes moved to Qwen
     # on the R9700 on 2026-08-15, so nothing else contends for this slot, and the
@@ -247,7 +232,7 @@ class Settings(BaseSettings):
     # topology it described: laguna-slot-proxy (:8096-:8100, mapping consumers
     # to id_slot values on one shared server) is stopped and disabled, and
     # those ports have no listener. Prefix isolation now comes from one server
-    # per consumer class, and on DS4 from one llama.cpp slot per agent -- not
+    # per consumer class, and from one llama.cpp slot per agent -- not
     # from a proxy rewriting id_slot. Do not reintroduce it.
     pool_api_url: str = "http://127.0.0.1:8102"
     # Must match the alias Chadrock reports at /v1/models. llama-server ignores
@@ -439,7 +424,6 @@ class Settings(BaseSettings):
         "claude_agent",
         "pi_coding_agent",
         "deep_think",
-        "search_agent",
         # 2026-08-17: the scheduled runtime-update check. Read-only by
         # construction — it queries GitHub/Docker Hub and reads local git HEADs,
         # and never pulls, builds, or restarts anything. Allowlisted so ARIA's
@@ -953,7 +937,7 @@ class Settings(BaseSettings):
     # completion tokens, 17 of them reasoning; at max_tokens=24 content was ""
     # while reasoning_content was full). Every steward/research/triage call must
     # budget generously AND treat empty content as a failure — writing the empty
-    # result is exactly how DS4 silently labelled every memory with zero
+    # result is exactly how a mis-budgeted model silently labelled every memory with zero
     # entities (see CLAUDE.md, Ontology Memory Map).
     steward_max_tokens: int = 2048
     steward_idle_days_before_pause_proposal: int = 21

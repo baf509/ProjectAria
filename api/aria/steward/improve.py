@@ -59,9 +59,9 @@ except through a version row, and that row IS the undo (`rollback()` restores
 - Qwen3.8 is a REASONING model: it emits `reasoning_content` before `content`,
   so a tight `max_tokens` returns `finish_reason="length"` with EMPTY content.
   Every call here budgets generously and treats empty content as a FAILURE —
-  writing the empty result is exactly how DS4 silently labelled every memory
+  writing the empty result is exactly how a mis-budgeted model silently labelled every memory
   with zero entities (CLAUDE.md, *Ontology Memory Map*).
-- Nothing here may be sent to DS4 on `:8108`. That is pi's single slot, and a
+- Nothing here may be sent to pi's resident coding server. That is its single slot, and a
   background call evicts the coding agent's warm prefix (4.2 s warm vs 39.5 s
   cold).
 """
@@ -115,7 +115,7 @@ AUTO_APPLY_KINDS = (KIND_PROMPT_FILE, KIND_AGENT_PROMPT, KIND_THRESHOLD)
 
 # Fields on a db.agents row an improvement may rewrite. `system_prompt` only:
 # `llm.backend`/`model` would let a proposal re-route itself onto a model of its
-# own choosing (including DS4, pi's single slot), and `enabled` would let it
+# own choosing (including pi's single slot), and `enabled` would let it
 # switch off the agents that watch it.
 MUTABLE_AGENT_FIELDS = ("system_prompt",)
 
@@ -672,7 +672,7 @@ class PolicyVersionStore:
         if content is None or (isinstance(content, str) and not content.strip()):
             # An empty candidate is the Qwen reasoning-model failure mode
             # (content == "" while reasoning_content is full). Writing it would
-            # blank a prompt file — the same class of silent damage as DS4
+            # blank a prompt file — the same class of silent damage as the
             # labelling every memory with zero entities.
             raise ImproverError("refusing to apply empty content")
 
@@ -914,7 +914,7 @@ async def collect_baseline(db, *, days: Optional[int] = None) -> Baseline:
 _FAMILY_MARKERS: tuple[tuple[str, str], ...] = (
     ("claude", "claude"), ("anthropic", "claude"), ("opus", "claude"),
     ("sonnet", "claude"), ("haiku", "claude"),
-    ("qwen", "qwen"), ("deepseek", "deepseek"), ("ds4", "deepseek"),
+    ("qwen", "qwen"), ("deepseek", "deepseek"),
     ("gemma", "gemma"), ("gpt", "gpt"), ("openai", "gpt"), ("o3", "gpt"),
     ("llama", "llama"), ("ling", "ling"), ("step", "step"), ("laguna", "laguna"),
 )
@@ -1085,7 +1085,7 @@ class FixtureEvaluator:
             if not output.strip():
                 # An empty completion is a FAILURE, never a pass. Qwen3.8 emits
                 # reasoning_content first, so a tight budget returns
-                # finish_reason="length" with empty content — and the DS4
+                # finish_reason="length" with empty content — and the
                 # zero-entity incident is what happens when empty is accepted.
                 result.empty_outputs += 1
                 result.checks += len(case.get("checks") or [])
@@ -1643,7 +1643,7 @@ class Improver:
     async def _run_eval_suite(self) -> Optional[dict]:
         """The evalstack suite — OFF by default, and for a physical reason.
 
-        Running it starts and stops model servers: `agentic_core` against DS4
+        Running it starts and stops model servers: `agentic_core` against the resident server
         would evict pi's warm prefix (4.2 s warm vs 39.5 s cold) and take its
         only slot. So it is opt-in, and the target comes from configuration —
         never from the proposal, because the thing being verified must not
@@ -1843,16 +1843,16 @@ class Improver:
                         base_url=None, max_tokens: int = 2048) -> tuple[str, dict]:
         """One completion, with the two rules this box has learned.
 
-        1. Never DS4 `:8108` — that is pi's single slot.
+        1. Never pi's resident coding server — that is its single slot.
         2. Empty content is a FAILURE. Qwen3.8 emits `reasoning_content` before
            `content`; a tight budget yields finish_reason="length" and an empty
-           string, and accepting it is how DS4 labelled every memory with zero
+           string, and accepting it is how a mis-budgeted model labelled every memory with zero
            entities.
         """
         url = str(base_url or "")
         if ":8108" in url:
             raise ImproverError(
-                "refusing to send improver work to :8108 — DS4 is the pi coding "
+                "refusing to send improver work to :8108 — that is the pi coding "
                 "agent's single slot and a background call evicts its warm prefix"
             )
         from aria.llm.base import Message

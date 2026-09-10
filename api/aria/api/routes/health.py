@@ -104,7 +104,7 @@ async def health_check(
     # that forgot to update .env) was reported "available" forever. For the
     # two local backends that actually live on this box (llamacpp, agentic)
     # also require a real reachability probe, mirroring the one /health/services
-    # already does. Cloud backends and context1/ridge are left as config-only
+    # already does. Cloud backends and ridge are left as config-only
     # checks: ridge sleeps by design (see /health/services), and probing cloud
     # providers on every health check would add latency/cost for no benefit.
     _probe_urls = {"llamacpp": settings.llamacpp_url, "agentic": settings.agentic_url}
@@ -123,7 +123,7 @@ async def health_check(
     )) if _probe_urls else {}
 
     available_backends = []
-    for b in ("llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter"):
+    for b in ("llamacpp", "agentic", "ridge", "anthropic", "openai", "openrouter"):
         avail, _ = llm_manager.is_backend_available(b)
         if avail and b in reachability and not reachability[b]:
             avail = False
@@ -159,7 +159,7 @@ async def health_check(
 @router.get("/health/llm", response_model=list[LLMStatusResponse])
 async def llm_health_check():
     """Check status of all LLM backends."""
-    backends = ["llamacpp", "agentic", "context1", "ridge", "anthropic", "openai", "openrouter"]
+    backends = ["llamacpp", "agentic", "ridge", "anthropic", "openai", "openrouter"]
     statuses = []
 
     for backend in backends:
@@ -389,8 +389,6 @@ async def services_health(
         svc_ping("tts", f"{_base(settings.tts_url)}/health"),
         svc_ping("stt", f"{_base(settings.stt_url)}/health"),
     ]
-    if settings.context1_enabled:
-        tasks.append(http_ping("context-1", f"{settings.context1_url.rstrip('/')}/models"))
     results = list(await asyncio.gather(*tasks))
 
     # Registry-driven additions: the always_up services with no HTTP surface to

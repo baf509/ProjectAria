@@ -27,7 +27,7 @@ _service = BenchmarkService()
 
 class StartRunRequest(BaseModel):
     suites: list[str] = Field(description="Suite names, e.g. ['code','tool-use','performance']")
-    targets: list[str] = Field(description="evalstack target names, e.g. ['ds4-affine']")
+    targets: list[str] = Field(description="evalstack target names, e.g. ['affine-quality']")
     run_id: Optional[str] = Field(default=None, description="Run name; auto-generated if omitted")
     limit: Optional[int] = Field(default=None, ge=1, description="Cap samples per benchmark")
     allow_coresident: bool = Field(default=False, description="Skip evalstack's VRAM guard")

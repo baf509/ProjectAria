@@ -2,7 +2,7 @@
 
 Why this exists: consumers used to hardcode a port for "the local model"
 (`LLAMACPP_URL`), and every time the resident model changed — qwen -> laguna ->
-DS4 — every consumer silently pointed at a dead port. `endpoints.env` carries a
+a retired bundle — every consumer silently pointed at a dead port. `endpoints.env` carries a
 comment about exactly that failure lasting weeks.
 
 ARIA already owns the model-server control plane: it knows what is installed,
@@ -94,7 +94,7 @@ router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 # changes, and that swap restarts the backend and voids its cache anyway.
 identified_router = APIRouter(prefix="/llm/v1-identified", tags=["llm-proxy"])
 
-# Generation can be slow on a 2.58 BPW MoE at long context: DS4 decodes at
+# Generation can be slow on a 2.58 BPW MoE at long context: one bundle decoded at
 # ~11 tok/s at 32K, so a 2k-token answer is minutes. Connect fast, read slow.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=1800.0, write=60.0, pool=5.0)
 

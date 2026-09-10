@@ -19,7 +19,7 @@ Design notes:
   default KillMode=control-group, which SIGTERMs every pid in the unit's cgroup on
   stop/restart. `start_new_session=True` makes a new session but NOT a new cgroup,
   so an `aria-api` restart killed a live 2h23m benchmark mid-run (observed
-  2026-08-07: returncode -15 while ds4-affine was still on batch 0/1). We therefore
+  2026-08-07: returncode -15 while an affine target was still on batch 0/1). We therefore
   launch through `systemd-run --user --scope`, which places the child in its own
   transient scope cgroup so it survives API restarts.
 

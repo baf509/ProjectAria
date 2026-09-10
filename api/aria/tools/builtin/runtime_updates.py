@@ -15,9 +15,9 @@ that shape of loop, so it belongs here and is driven by ARIA's scheduler.
 
 WHY IT MATTERS ON THIS BOX SPECIFICALLY. Every one of these runtimes is pinned
 to something narrow and load-bearing:
-  - DwarfStar is the selected DS4 stack and is a young project moving fast.
-  - Nathan's llama.cpp fork implements DS4 kernels mainline Vulkan disables; it
-    is the ONLY reason DS4 ran here at all before DwarfStar.
+  - DwarfStar is a young project moving fast.
+  - Nathan's llama.cpp fork implements MoE kernels mainline Vulkan disables; it
+    is the ONLY reason some of these quants ran here at all.
   - vllm-radiance 0.5.8 is pinned, and a known-missing upstream commit (the
     Qwen3.8 chat template) is the reason the checkpoint's own template is used.
   - mainline llama.cpp is checked out on an UNMERGED PR branch for bailingmoe3
@@ -46,16 +46,16 @@ from ..base import BaseTool, ToolParameter, ToolResult, ToolStatus, ToolType
 #   "manual"         — nothing to query; surfaced so it is not silently forgotten
 TRACKED: list[dict[str, Any]] = [
     {
-        "name": "DwarfStar (antirez/ds4)",
+        "name": "DwarfStar",
         "kind": "github_branch",
         "repo": "antirez/ds4",
         "branch": "main",
         "local_path": "/home/ben/Development/dwarfstar",
-        "why": "The SELECTED DS4 stack (:8112). Young, fast-moving, and its own "
+        "why": "A selected runtime stack (:8112). Young, fast-moving, and its own "
                "STRIXHALO.md/gfx1151 backend is newer than the rest of the project — "
                "fixes there land for us first. Rebuild with `make strix-halo -j4`.",
         "upgrade_risk": "Rebuild is ~1 min and self-contained, but the GGUF it accepts "
-                        "is narrow: it already rejects other DS4 quants outright. Check "
+                        "is narrow: it already rejects unrelated quants outright. Check "
                         "release notes for quant-format changes before rebuilding.",
     },
     {
@@ -100,10 +100,10 @@ TRACKED: list[dict[str, Any]] = [
         "name": "Nathan's llama.cpp Strix Halo Vulkan fork",
         "kind": "manual",
         "current": "build 10350 (3be50ccc2)",
-        "why": "Binary drop at infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch — "
+        "why": "Binary drop at infrastructure/hybrid/runtime/mainline-hip-dualarch — "
                "there is NO source tree or tracked remote on this box, so it CANNOT be "
-               "checked automatically. Still serves :8108 (DS4 IQ3_XXS) and is the only "
-               "runtime here that implements the DS4 Vulkan kernels mainline disables.",
+               "checked automatically. Still serves :8108 and is the only "
+               "runtime here that implements the MoE Vulkan kernels mainline disables.",
         "upgrade_risk": "Unknown provenance for updates. Surfaced here so it is not "
                         "silently forgotten, not because ARIA can check it.",
     },

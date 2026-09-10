@@ -246,11 +246,11 @@ async def test_status_reports_live_docker_state(manager):
 @pytest.mark.asyncio
 async def test_status_includes_bound_agents(manager):
     db = FakeDB()
-    db.agents.docs.append(_agent("search-agent", model_server="context1-Q4"))
+    db.agents.docs.append(_agent("pi-coding", model_server="Ling-3.0-flash-Q6_K"))
     with patch.object(ms, "_run", FakeDocker()), patch.object(ms, "_read_gtt_gib", return_value=None):
         results = await manager.status(db)
     by_slug = {r["slug"]: r for r in results}
-    assert by_slug["context1-Q4"]["bound_agents"] == ["search-agent"]
+    assert by_slug["Ling-3.0-flash-Q6_K"]["bound_agents"] == ["pi-coding"]
     assert by_slug["Laguna-S-2.1"]["bound_agents"] == []
 
 
@@ -640,42 +640,42 @@ async def test_remote_stop_does_not_suspend_the_box(manager):
 @pytest.mark.asyncio
 async def test_bind_sets_model_server_on_agent(manager):
     db = FakeDB()
-    agent = _agent("search-agent")
+    agent = _agent("pi-coding")
     db.agents.docs.append(agent)
 
-    result = await manager.bind(db, "context1-Q4", "search-agent")
-    assert result["model_server"] == "context1-Q4"
-    assert agent["model_server"] == "context1-Q4"
+    result = await manager.bind(db, "Ling-3.0-flash-Q6_K", "pi-coding")
+    assert result["model_server"] == "Ling-3.0-flash-Q6_K"
+    assert agent["model_server"] == "Ling-3.0-flash-Q6_K"
 
 
 @pytest.mark.asyncio
 async def test_bind_conflict_without_force_raises(manager):
     db = FakeDB()
-    db.agents.docs.append(_agent("agent-a", model_server="context1-Q4"))
+    db.agents.docs.append(_agent("agent-a", model_server="Ling-3.0-flash-Q6_K"))
     db.agents.docs.append(_agent("agent-b"))
 
     with pytest.raises(ModelServerBindingConflict, match="agent-a"):
-        await manager.bind(db, "context1-Q4", "agent-b")
+        await manager.bind(db, "Ling-3.0-flash-Q6_K", "agent-b")
 
 
 @pytest.mark.asyncio
 async def test_bind_conflict_with_force_adds_extra_slot(manager):
     db = FakeDB()
-    a = _agent("agent-a", model_server="context1-Q4")
+    a = _agent("agent-a", model_server="Ling-3.0-flash-Q6_K")
     b = _agent("agent-b")
     db.agents.docs.extend([a, b])
 
-    result = await manager.bind(db, "context1-Q4", "agent-b", force=True)
+    result = await manager.bind(db, "Ling-3.0-flash-Q6_K", "agent-b", force=True)
     assert result["extra_slot"] is True
-    assert a["model_server"] == "context1-Q4"
-    assert b["model_server"] == "context1-Q4"
+    assert a["model_server"] == "Ling-3.0-flash-Q6_K"
+    assert b["model_server"] == "Ling-3.0-flash-Q6_K"
 
 
 @pytest.mark.asyncio
 async def test_bind_unknown_agent_raises(manager):
     db = FakeDB()
     with pytest.raises(ModelServerNotFound, match="Unknown agent"):
-        await manager.bind(db, "context1-Q4", "no-such-agent")
+        await manager.bind(db, "Ling-3.0-flash-Q6_K", "no-such-agent")
 
 
 @pytest.mark.asyncio
@@ -689,10 +689,10 @@ async def test_bind_unknown_slug_raises(manager):
 @pytest.mark.asyncio
 async def test_unbind_clears_field(manager):
     db = FakeDB()
-    agent = _agent("search-agent", model_server="context1-Q4")
+    agent = _agent("pi-coding", model_server="Ling-3.0-flash-Q6_K")
     db.agents.docs.append(agent)
 
-    result = await manager.unbind(db, "search-agent")
+    result = await manager.unbind(db, "pi-coding")
     assert result["model_server"] is None
     assert "model_server" not in agent
 
@@ -1038,7 +1038,7 @@ def test_effective_resident_gib_computed_from_served_ctx():
         slug="t", description="", runtime_repo="", runtime_ref="", backend_device="",
         weights_gib=85.26, kv_kib_per_token=6.71875, overhead_gib=2.1,
     )
-    # DS4 as actually deployed: 6 slots x 230400 = 1382400 tokens of KV.
+    # As actually deployed: 6 slots x 230400 = 1382400 tokens of KV.
     # Projected 96.2 GiB; the live server measured 94.56 -> conservative, which
     # is the correct direction for a gate that refuses overcommit.
     geo = ms.LaunchGeometry(n_ctx=230400, slots=6)
@@ -1064,20 +1064,6 @@ def test_effective_resident_gib_falls_back_to_declared():
     )
     assert ms.effective_resident_gib(characterised, ms.LaunchGeometry()) == 42.0
 
-
-def test_ds4_projection_tracks_its_live_unit():
-    """End-to-end against the real unit file: whatever -c it carries is what
-    the registry projects from."""
-    spec = ms._BY_SLUG["DS4-0731-ROCMFPX-affine-256k"]
-    geo = ms.read_launch_geometry(spec)
-    if geo.n_ctx is None:
-        pytest.skip("DS4 unit not installed on this host")
-    assert geo.ctx_per_slot == geo.n_ctx
-    assert geo.total_kv_tokens == geo.n_ctx * geo.slots
-    assert ms.effective_resident_gib(spec, geo) > spec.weights_gib
-
-
-# ────────────────────────────────────────────────── runtime utilisation ──
 
 def _candidate_profile_fixture(tmp_path):
     spec = ms._BY_SLUG["Qwen3.8-Flash-Next-CUDA-Halo-Candidate"]
@@ -1200,7 +1186,7 @@ def test_saturated_is_unknown_without_metrics():
 
 
 def test_base_url_for_spec_prefers_endpoint_override():
-    """DS4 binds the tailnet IP only; a port-derived localhost URL is refused."""
+    """A remote bundle binds the tailnet IP only; a port-derived localhost URL is refused."""
     override = ms.ModelServerSpec(
         slug="t", description="", runtime_repo="", runtime_ref="", backend_device="",
         port=8107, endpoint_override="http://100.123.245.84:8107/v1",
@@ -1816,6 +1802,6 @@ def test_cuda_halo_conflicts_with_existing_corsair_residency(manager):
     candidate = manager.get_spec("Qwen3.8-Flash-Next-CUDA-Halo-Candidate")
     for slug in ("Qwen3.8-Flash-Next-Hybrid-R9700-Halo", "Qwen3.8-Flash-Next-Engine-R9700-Halo",
                  "Qwen3.8-27B-R9700-Radiance", "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
-                 "context1-Q4"):
+                 "Ling-3.0-flash-Q6_K"):
         assert slug in candidate.exclusive_with
         assert candidate.slug in manager.get_spec(slug).exclusive_with

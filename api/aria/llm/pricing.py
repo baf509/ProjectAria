@@ -21,20 +21,20 @@ from typing import Optional
 # Backends whose inference runs on local hardware — always $0.
 # "ridge"/"red" are remote from corsair but still Ben's own hardware (Ridge's
 # RTX 3090, RED's 5090), so they cost nothing and must not be priced as cloud.
-# "pi-code" and the pi provider names ("ds4", "qwen") arrive on usage rows
+# "pi-code" and the pi provider names ("qwen") arrive on usage rows
 # written from pi's session JSONL (steward/outcomes.py), where the recorded
 # backend is pi's provider, not one of ARIA's LLM adapter names.
 LOCAL_BACKENDS = {
-    "llamacpp", "agentic", "context1", "ridge", "red", "pi-code", "ds4",
+    "llamacpp", "agentic", "ridge", "red", "pi-code",
 }
 
 # Substrings that identify a locally-served open-weights model by id. A local
 # model that reaches pricing with an unrecognised backend (pi records
-# `provider: ds4`, `model: DS4-0731-UD-IQ3-S-...`) would otherwise be billed at
+# a local provider and a local model id) would otherwise be billed at
 # UNKNOWN_CLOUD and quietly invent dollars for work that cost nothing —
 # precisely the number the weekly report divides by merged changes.
 LOCAL_MODEL_MARKERS = (
-    "ds4-", "deepseek-v4", "qwen", "gemma", "laguna", "chadrock", "glm-",
+    "deepseek-v4", "qwen", "gemma", "laguna", "chadrock", "glm-",
     "llama", "mistral", "ling-", "step-",
 )
 
@@ -94,7 +94,7 @@ def price_for(model: Optional[str], backend: Optional[str] = None) -> tuple[floa
     """Return ($/1M input, $/1M output) for a model. Local backends are free."""
     if backend in LOCAL_BACKENDS:
         return (0.0, 0.0)
-    # "default" is exclusively the local-model alias (llamacpp/agentic/context1)
+    # "default" is exclusively the local-model alias (llamacpp/agentic)
     # in this codebase, so treat it (and empty) as free even when the historical
     # usage doc has no backend recorded.
     if not model or model == "default":

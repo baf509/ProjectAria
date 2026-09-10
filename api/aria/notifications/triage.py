@@ -24,7 +24,7 @@ Three things are deliberately different from the cron:
    alert it was diagnosing.
 2. **An unusable classification leaves the alert alone.** Qwen3.8 is a reasoning
    model: it emits `reasoning_content` first, and a tight budget returns
-   finish_reason="length" with an EMPTY content string (this is exactly how DS4
+   finish_reason="length" with an EMPTY content string (this is exactly how a mis-budgeted model
    silently labelled every memory with zero entities — CLAUDE.md, Ontology
    Memory Map). Empty or ambiguous ⇒ no change ⇒ Ben still gets the alert.
 3. **DIAGNOSE-ONLY is enforced structurally, not by asking politely.** The

@@ -13,7 +13,7 @@ Two reviewers, deliberately different in kind:
   uncorrelated; stacking a second same-family reviewer mostly re-confirms the
   first one's blind spots (arXiv 2607.13918). So a local model's diff is
   reviewed by the cloud tier, and — once there is outcome data to justify it —
-  DS4's work by Qwen. `settings.outcome_review_family` picks the reviewer, and a
+  one family's work by another. `settings.outcome_review_family` picks the reviewer, and a
   reviewer that turns out to share the author's family is REFUSED rather than
   quietly run: a correlated review that reports "looks fine" is worse than no
   review, because the merge gate would then count it as a passed check.
@@ -40,18 +40,16 @@ REVIEWS_COLLECTION = "session_reviews"
 
 # Model families for the uncorrelated-reviewer rule. The unit is the family, not
 # the model: two Claude models share training data and failure modes, and so do
-# DS4 and a DS4 quant.
+# a base model and a quant of it.
 FAMILY_CLOUD = "cloud"      # Anthropic (claude_code / anthropic adapter)
 FAMILY_OPENAI = "openai"    # codex / gpt-*
 FAMILY_QWEN = "qwen"
-FAMILY_DS4 = "ds4"          # DeepSeek-V4 Flash, every quant
+FAMILY_DEEPSEEK = "deepseek"  # DeepSeek-V4, cloud via OpenRouter
 FAMILY_UNKNOWN = "unknown"
 
 # Preference order when the configured reviewer would be correlated with the
 # author. Cloud first: it is the only family that is always reachable and is not
-# competing for a local slot. DS4 is deliberately NOT a reviewer — it is pi's
-# single 131K slot, and a review sent there evicts the coding agent's warm
-# prefix (4.2 s warm vs 39.5 s cold). It stays a valid *author* family.
+# competing for a local slot.
 _REVIEWER_PREFERENCE = (FAMILY_CLOUD, FAMILY_QWEN)
 
 # The diff is the review's evidence, and a truncated diff produces a review of
@@ -237,7 +235,7 @@ class CodingReviewService:
             # ⚠️ Empty or unparseable content is a FAILURE, never a pass. Qwen3.8
             # emits reasoning_content before content, so a tight max_tokens
             # returns finish_reason=length with content="" — writing that as an
-            # approving review is exactly how DS4 silently labelled every memory
+            # approving review is exactly how a mis-budgeted model silently labelled every memory
             # with zero entities.
             return await self._store_review(session_id, {
                 "ran": False,
@@ -339,7 +337,7 @@ class CodingReviewService:
             backend, base_url, max_tokens = settings.coding_routing_judge_backend, None, 2048
         elif family == FAMILY_QWEN:
             # Explicit endpoint, never the /llm/v1 "largest resident" auto-route:
-            # that resolves to DS4, which is pi's single slot, so a review would
+            # that resolves to the resident local server, which is pi's single slot, so a review would
             # evict the coding agent's warm prefix (4.2s warm vs 39.5s cold).
             # ⚠️ Qwen3.8 is a reasoning model — it emits reasoning_content before
             # content, so a tight budget returns finish_reason=length with an
@@ -349,12 +347,6 @@ class CodingReviewService:
             model_id = settings.steward_model
             base_url = settings.steward_endpoint
             max_tokens = settings.steward_max_tokens
-        elif family == FAMILY_DS4:
-            raise RuntimeError(
-                "DS4 is pi's single coding slot — reviewing there would evict "
-                "the agent's warm prefix. Configure a second DS4 deployment "
-                "before naming it as a reviewer family."
-            )
         else:
             raise RuntimeError(f"no transport for reviewer family {family!r}")
 
@@ -477,8 +469,8 @@ def model_family(
     for text in (m, p):
         if "qwen" in text:
             return FAMILY_QWEN
-        if "ds4" in text or "deepseek" in text:
-            return FAMILY_DS4
+        if "deepseek" in text:
+            return FAMILY_DEEPSEEK
     return FAMILY_UNKNOWN
 
 

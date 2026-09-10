@@ -7,7 +7,7 @@ The invariants under test are the ones that were actually broken, not stylistic:
   is currently enough to read as `completed` even when pi crashed in 3 seconds)
 - an empty model reply is a FAILURE, never a passing review (a reasoning model
   spends its budget on reasoning_content and returns content="" — the exact bug
-  that made DS4 label every memory with zero entities)
+  that made a mis-budgeted model label every memory with zero entities)
 - a reviewer from the author's own model family is not an independent check
 - unknown token counts stay None, never 0, or "$ per merged change" silently
   reports a discount that did not happen
@@ -31,7 +31,7 @@ from aria.agents import review as review_mod
 from aria.agents import routing
 from aria.agents.review import (
     FAMILY_CLOUD,
-    FAMILY_DS4,
+    FAMILY_DEEPSEEK,
     FAMILY_QWEN,
     CodingReviewService,
     _parse_review,
@@ -139,8 +139,8 @@ def _session(**overrides) -> dict:
     doc = {
         "_id": "sess-1",
         "backend": "pi-code",
-        "llm": "ds4",
-        "model": "DS4-0731-UD-IQ3-XXS-Halo",
+        "llm": "openrouter",
+        "model": "deepseek-v4-flash",
         "workspace": "/home/ben/Development/ProjectAria",
         "status": "completed",
         "exit_code": 0,
@@ -175,11 +175,10 @@ class TestPricing:
         assert pricing.price_for("claude-sonnet-5[1m]") == (3.0, 15.0)
 
     def test_local_models_and_backends_are_free(self):
-        assert pricing.price_for("DS4-0731-UD-IQ3-XXS-Halo", "pi-code") == (0.0, 0.0)
-        # Unknown backend, but the model id is unmistakably local: pi records
-        # `provider: ds4`, which is not one of ARIA's adapter names.
+        assert pricing.price_for("Qwen3.8-Flash-Next-CUDA-Halo-Candidate", "pi-code") == (0.0, 0.0)
+        # Unknown backend, but the model id is unmistakably local.
         assert pricing.price_for("qwen3.8-27b-rocmfp4-r9700", "weird") == (0.0, 0.0)
-        assert pricing.cost_for("DS4-0731-UD-IQ3-XXS-Halo", 100_000, 5_000, "ds4") == 0.0
+        assert pricing.cost_for("Qwen3.8-Flash-Next-CUDA-Halo-Candidate", 100_000, 5_000, "aria") == 0.0
 
     def test_unknown_cloud_still_falls_back(self):
         assert pricing.price_for("some-vendor/mystery-model") == pricing.UNKNOWN_CLOUD
@@ -192,7 +191,7 @@ class TestPricing:
 class TestReviewFamilies:
     def test_family_detection(self):
         assert model_family("claude_code", "claude-sonnet-5") == FAMILY_CLOUD
-        assert model_family("pi-code", "DS4-0731-UD-IQ3-XXS-Halo", "ds4") == FAMILY_DS4
+        assert model_family("pi-code", "deepseek-v4-flash", "openrouter") == FAMILY_DEEPSEEK
         assert model_family("pi-code", "qwen3.8-27b-rocmfp4-r9700", "ridge") == FAMILY_QWEN
         assert model_family("codex", None) == "openai"
 
@@ -200,10 +199,10 @@ class TestReviewFamilies:
         # Configured reviewer is cloud; a cloud-authored diff must not be
         # "reviewed" by cloud — that cascade shares its blind spots.
         assert pick_reviewer_family(FAMILY_CLOUD, FAMILY_CLOUD) == FAMILY_QWEN
-        assert pick_reviewer_family(FAMILY_DS4, FAMILY_CLOUD) == FAMILY_CLOUD
+        assert pick_reviewer_family(FAMILY_DEEPSEEK, FAMILY_CLOUD) == FAMILY_CLOUD
 
     def test_parse_rejects_empty_and_junk(self):
-        # The DS4 bug: a reasoning model burns its budget on reasoning_content
+        # The empty-reasoning bug: a reasoning model burns its budget on reasoning_content
         # and returns "". That must never be read as an approval.
         assert _parse_review("") is None
         assert _parse_review("   ") is None
@@ -255,7 +254,7 @@ async def test_review_diff_records_verdict_and_usage():
 
     assert result["ran"] is True
     assert result["verdict"] == "approve"
-    assert result["author_family"] == FAMILY_DS4
+    assert result["author_family"] == FAMILY_DEEPSEEK
     assert result["reviewer_family"] == FAMILY_CLOUD
     assert result["independent"] is True
     stored = await db.session_reviews.find_one({"session_id": "sess-1"})
@@ -264,23 +263,6 @@ async def test_review_diff_records_verdict_and_usage():
     # changes — an unbooked review makes every merge look cheaper than it was.
     usage = await db.usage.find_one({"source": "coding:review"})
     assert usage["input_tokens"] == 900
-
-
-@pytest.mark.asyncio
-async def test_review_never_sends_work_to_pis_single_slot():
-    """DS4 is one 131K slot and pi lives in it — a review there evicts the
-    coding agent's warm prefix (4.2s warm vs 39.5s cold)."""
-    db = FakeDB()
-    session = _session(backend="claude_code", model="claude-sonnet-5", llm=None)
-    manager = SimpleNamespace(get_session=AsyncMock(return_value=session))
-    service = CodingReviewService(db, manager)
-    result = await service.review_diff(
-        "sess-1", reviewer_family=FAMILY_DS4, diff="--- a\n+++ b\n+x\n"
-    )
-    assert result["ran"] is False
-    assert "single coding slot" in result["reason"]
-    # ...and it is never *chosen* automatically either.
-    assert pick_reviewer_family(FAMILY_CLOUD, FAMILY_CLOUD) != FAMILY_DS4
 
 
 @pytest.mark.asyncio
@@ -305,7 +287,7 @@ def _ladder_without_remote():
 class TestClassifyTier:
     def test_tiers(self):
         assert routing.classify_tier({"backend": "claude_code", "model": "claude-opus-4-8"}) == "cloud"
-        assert routing.classify_tier({"backend": "pi-code", "llm": "ds4"}) == "local"
+        assert routing.classify_tier({"backend": "pi-code", "llm": "openrouter"}) == "local"
         assert routing.classify_tier({"backend": "pi-code", "llm": "ridge"}) == "ridge"
         # codex is hosted, not a slot on this box — classifying it local would
         # make the ladder "promote" a failed codex session onto Ridge.
@@ -533,18 +515,18 @@ def test_scan_pi_jsonl_sums_message_usage(tmp_path):
     path.write_text(
         json.dumps({"type": "session", "id": "x"}) + "\n"
         + json.dumps({"type": "message", "message": {
-            "role": "assistant", "model": "DS4-0731", "provider": "ds4",
+            "role": "assistant", "model": "deepseek-v4-flash", "provider": "openrouter",
             "usage": {"input": 1525, "output": 23, "cacheRead": 10},
         }}) + "\n"
         + json.dumps({"type": "message", "message": {
-            "role": "assistant", "model": "DS4-0731", "provider": "ds4",
+            "role": "assistant", "model": "deepseek-v4-flash", "provider": "openrouter",
             "usage": {"input": 2000, "output": 40},
         }}) + "\n"
         + "{ truncated line\n"  # a live session's last line is often partial
     )
     totals = scan_pi_jsonl(str(path))
     assert (totals["tokens_in"], totals["tokens_out"], totals["turns"]) == (3525, 63, 2)
-    assert totals["model"] == "DS4-0731"
+    assert totals["model"] == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
@@ -565,7 +547,7 @@ async def test_pi_transcript_usage_is_mirrored_into_db_usage_once(tmp_path):
     session_dir.mkdir()
     (session_dir / "2026-08-12T00-00-00-000Z_sess-1.jsonl").write_text(
         json.dumps({"type": "message", "message": {
-            "model": "DS4-0731", "provider": "ds4",
+            "model": "deepseek-v4-flash", "provider": "openrouter",
             "usage": {"input": 1000, "output": 100},
         }}) + "\n"
     )
@@ -591,7 +573,7 @@ async def test_load_transcript_is_the_preferred_path():
                     "cache_write": 0, "reasoning": 88, "total": 4510}
 
     transcript = SimpleNamespace(
-        usage=_Usage(), model="DS4-0731-UD-IQ3-XXS-Halo", provider="ds4",
+        usage=_Usage(), model="deepseek-v4-flash", provider="openrouter",
         turns=[object(), object()],
     )
 
@@ -604,8 +586,8 @@ async def test_load_transcript_is_the_preferred_path():
 
     assert (usage["tokens_in"], usage["tokens_out"]) == (4200, 310)
     assert usage["cache_read"] == 900
-    assert usage["model"] == "DS4-0731-UD-IQ3-XXS-Halo"
-    assert usage["backend"] == "ds4"
+    assert usage["model"] == "deepseek-v4-flash"
+    assert usage["backend"] == "openrouter"
     assert usage["turns"] == 2
     assert usage["source"] == "pi_transcript.load_transcript"
 
@@ -613,7 +595,7 @@ async def test_load_transcript_is_the_preferred_path():
 @pytest.mark.asyncio
 async def test_shared_pi_transcript_module_is_preferred_when_present():
     fake_module = SimpleNamespace(
-        session_usage=lambda sid: {"input_tokens": 7, "output_tokens": 3, "model": "DS4"}
+        session_usage=lambda sid: {"input_tokens": 7, "output_tokens": 3, "model": "deepseek-v4-flash"}
     )
     with patch.object(outcomes_mod, "_load_pi_transcript_module", lambda: fake_module):
         usage = await outcomes_mod.pi_usage("sess-1")
@@ -634,12 +616,12 @@ async def test_metrics_cover_the_weekly_report_set():
              "nudges": 2, "rungs_used": 0, "merged": True, "tokens_in": 1000,
              "tokens_out": 200, "cost_usd": 0.006, "time_to_first_diff_seconds": 120,
              "created_at": NOW},
-            {"session_id": "b", "project_slug": "aria", "model": "DS4-0731",
+            {"session_id": "b", "project_slug": "aria", "model": "deepseek-v4-flash",
              "tier": "local", "success": False, "verified": True, "gate_passed": False,
              "nudges": 6, "rungs_used": 2, "rolled_back": True, "tokens_in": 5000,
              "tokens_out": 400, "cost_usd": 0.0, "time_to_first_diff_seconds": 900,
              "created_at": NOW},
-            {"session_id": "c", "project_slug": "aria", "model": "DS4-0731",
+            {"session_id": "c", "project_slug": "aria", "model": "deepseek-v4-flash",
              "tier": "local", "success": False, "verified": False, "nudges": 0,
              "rungs_used": 0, "created_at": NOW},
         ],

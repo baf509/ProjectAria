@@ -16,7 +16,7 @@ def test_current_host_choices():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('slug', ['gemma-4-e4b-Q4', 'context1-Q4', 'DS4-0731-ROCmFPX-Affine-Quality'])
+@pytest.mark.parametrize('slug', ['gemma-4-e4b-Q4', 'Ling-3.0-flash-Q6_K'])
 @pytest.mark.parametrize('force', [False, True])
 async def test_retired_choice_cannot_reach_actuator(monkeypatch, slug, force):
     actuate = AsyncMock()

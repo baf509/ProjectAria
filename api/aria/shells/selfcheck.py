@@ -213,7 +213,7 @@ async def run_checks(db) -> list[dict]:
     # Since 2026-08-05 llamacpp_url is ARIA's own /llm/v1 passthrough, not a
     # fixed model port, so this check now means "is SOME local model resident
     # and serving" instead of "is one specific server up". That is the question
-    # worth paging about: the previous form pointed at :8103, which DS4-0731
+    # worth paging about: the previous form pointed at :8103, which a retired bundle
     # displaced (they are RAM-exclusive), so it reported ConnectError every 10
     # minutes about a server that was stopped on purpose — each one waking the
     # Hermes alert-triage cron to diagnose a non-incident. The proxy answers 503
@@ -248,7 +248,7 @@ async def run_checks(db) -> list[dict]:
     # minutes forever — and each one enqueued an alert that woke the Hermes
     # alert-triage cron, which spun up a diagnostic coding agent to
     # investigate a server that is off ON PURPOSE. A deliberately-stopped
-    # service is not an incident. Mirrors how context1_enabled and the
+    # service is not an incident. Mirrors how the disabled-capability flags and the
     # /health/services probes already omit disabled backends rather than
     # counting them unhealthy.
     if settings.pool_enabled:
@@ -275,7 +275,7 @@ async def run_checks(db) -> list[dict]:
     # Skipped entirely when the worker is switched off, for the same reason the
     # retrieval probes above are: a capability that is stopped ON PURPOSE must
     # never page. `SHELLS_EXTRACTION_ENABLED=false` has been set by the
-    # `deepseek-research-safety.conf` drop-in since the DS4 characterization, so
+    # the research-safety drop-in since that characterization, so
     # this check reported "last run 5096m ago" on every tick — and because the
     # cooldown lived in memory and aria-api restarted 37 times, it produced 31
     # duplicate `selfcheck/degraded` alerts. That queue is what Ben stopped

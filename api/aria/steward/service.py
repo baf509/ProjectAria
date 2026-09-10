@@ -20,7 +20,7 @@ The four rules this module is built around, each from a documented failure:
 2. **The model may return nothing, and nothing is not zero.** Qwen3.8 is a
    reasoning model: it emits `reasoning_content` first, so a tight token budget
    comes back `finish_reason="length"` with an EMPTY `content`. Writing that
-   empty result as an answer is exactly how DS4 silently labelled every memory
+   empty result as an answer is exactly how a mis-budgeted model silently labelled every memory
    with zero entities. Here an empty completion is an ERROR: the tick records
    the failure, takes no action, and says so in the plan.
 3. **Ben's edit always wins.** `handle_vault_events` applies what he typed on

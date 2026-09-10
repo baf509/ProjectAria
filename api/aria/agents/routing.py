@@ -546,7 +546,7 @@ class Rung:
     `profile` names a `db.agents` launch row rather than a backend/model pair
     because that is how the remote coders are actually configured (pi-coding-
     ridge pins provider=ridge AND its model). Passing a bare llm=ridge with no
-    model would inherit DS4's model id from the pi-coding profile — a session
+    model would inherit the resident server's model id from the pi-coding profile — a session
     pointed at Ridge asking for a model Ridge does not serve.
     """
 
@@ -577,8 +577,8 @@ def default_ladder() -> list[Rung]:
     new Sonnet/Opus id) is picked up without a process restart."""
     return [
         # Local: no model pinned — start_session fills provider+model from the
-        # pi-coding profile, which is the box's single DS4 slot.
-        Rung(tier=TIER_LOCAL, strength=0, label="pi on DS4 (local)",
+        # pi-coding profile, which is the box's single coding slot.
+        Rung(tier=TIER_LOCAL, strength=0, label="pi on local server",
              backend="pi-code"),
         Rung(tier=TIER_RIDGE, strength=1, label="pi on Ridge (Qwen, WoL)",
              backend="pi-code", profile="pi-coding-ridge"),

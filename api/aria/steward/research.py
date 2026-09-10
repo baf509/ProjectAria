@@ -169,7 +169,7 @@ class EmptyCompletion(RuntimeError):
 
     Qwen3.8 is a REASONING model: it emits `reasoning_content` first, so a tight
     max_tokens comes back with finish_reason="length" and content="". Treating
-    that as a valid answer is exactly how DS4 silently labelled every memory
+    that as a valid answer is exactly how a mis-budgeted model silently labelled every memory
     with zero entities — so an empty completion is an error here, never a
     result.
     """
@@ -238,7 +238,7 @@ class ResearchPlanner:
         self.web = web or WebTool(timeout_seconds=20, max_response_size=512 * 1024)
         self.poll_seconds = poll_seconds
         # Pinned, never the /llm/v1 auto-route: that resolves to the largest
-        # resident model, which is DS4 — pi's SINGLE coding slot. A research
+        # resident model — pi's SINGLE coding slot. A research
         # prefill there evicts a coding agent's warm prefix (4.2 s warm vs
         # 39.5 s cold). Research runs on Qwen slot 2 or it does not run.
         self.backend = _setting("steward_backend", "llamacpp")
@@ -886,12 +886,12 @@ class ResearchPlanner:
         return outcome
 
     def _launch_allowed(self, project: Project) -> tuple[bool, str]:
-        """Refuse to launch a run that would land on DS4.
+        """Refuse to launch a run that would land on pi's coding slot.
 
         `ResearchService` resolves its adapter through `llm_manager.get_adapter`
         with no base_url, which means `llamacpp_identified_url` — ARIA's own
         /llm/v1 proxy, which auto-routes to the LARGEST RESIDENT model. That is
-        DS4, pi's single coding slot, and a research prefill there evicts a
+        the resident local server, pi's single coding slot, and a research prefill there evicts a
         coding agent's warm prefix. Until ResearchService accepts an endpoint
         (see the INTEGRATION SPEC), the only safe launch is one that cannot
         reach the unpinned local adapter at all.

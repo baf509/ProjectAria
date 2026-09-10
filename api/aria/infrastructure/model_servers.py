@@ -121,7 +121,7 @@ class LaunchParam:
 
     These are NOT invented by ARIA. Every serve.sh under infrastructure/ is
     already written as `VAR="${VAR:-default}"`, and Ben already overrides them
-    by hand with systemd drop-ins (ds4-halo-xxs.service.d/context.conf sets
+    by hand with systemd drop-ins (a deployment's service.d/context.conf sets
     CTX, no-draft.conf sets DRAFT). A LaunchParam declares one of those
     existing env knobs so the same override can be made through ARIA — with
     validation, and visibly — instead of by editing a file.
@@ -282,7 +282,7 @@ class ModelServerSpec:
     # (localhost:8092 is connection-refused, a repeatedly-misdiagnosed gotcha).
     endpoint_override: Optional[str] = None
     # systemd --user unit, for servers that are NOT docker containers. The
-    # DS4 runtime is a sealed host bundle whose unit verifies
+    # retired Halo runtime was a sealed host bundle whose unit verified
     # `sha256sum -c manifest/bundle.sha256` on every start, so containerising
     # it would break that provenance chain. When set, start/stop/_inspect use
     # systemctl and container_name/compose_file are not required.
@@ -295,7 +295,7 @@ class ModelServerSpec:
     # Halo's shared system memory, so accounting them together would forbid
     # the dual-serving deployment that demonstrably works.
     memory_pool: str = POOL_HALO
-    # Additional pools a split deployment also consumes (ds4-hybrid puts 20%
+    # Additional pools a split deployment also consumes (a hybrid layout puts 20%
     # of its layers on the R9700). Display + conflict detection only; the gate
     # projects against `memory_pool`, which is where the bulk lands.
     also_uses: tuple[str, ...] = ()
@@ -323,7 +323,7 @@ class ModelServerSpec:
     # Set this only when the live server reports n_ctx_slot=-c/-np.
     ctx_is_total: bool = False
     # Unit body for a deployment that has a serve.sh but no systemd unit of
-    # its own (ds4-affine, ds4-hybrid). ARIA materialises `aria-<slug>.service`
+    # its own (the affine and hybrid layouts). ARIA materialises `aria-<slug>.service`
     # from these, so the guard env stays explicit and reviewable here instead
     # of being implied by the launcher's defaults.
     unit_environment: tuple[tuple[str, str], ...] = ()
@@ -348,67 +348,32 @@ class ModelServerSpec:
 # Only the pairs that ALWAYS overflow the box, per the compose-file headers
 # and arithmetic on the SWAGs below (92% of the 124 GiB GTT pool ≈ 114 GiB).
 # Laguna at ~87 GiB can't share the GPU pool with any other GPU model except
-# 16 GiB context1 (87+16=103, under margin — and their historical coexistence
-# was never contradicted); every other combination fits statically and is
+# a 16 GiB auxiliary model (87+16=103, under margin — and that historical
+# coexistence was never contradicted); every other combination fits statically and is
 # guarded by the live GTT gate instead. Deliberately NOT here:
 #   qwen-chat + qwen-agentic — designed to start together (`--profile qwen`,
 #     ~61 GiB combined per laguna's compose header);
 #   chadrock + ROCmFP4-qwen — the deliberate two-server split, measured
-#     ~89.4 GiB combined (qwen3.6-35b-a3b compose header, 2026-07-28);
-#   context1 + anything — it ran alongside both qwens historically.
+#     ~89.4 GiB combined (qwen3.6-35b-a3b compose header, 2026-07-28).
 _EXCLUSIVE_PAIRS: tuple[tuple[str, str], ...] = (
     ("Laguna-S-2.1", "Chadrock-Laguna-S-2.1"),        # chadrock compose: "CANNOT both be resident"
     ("Laguna-S-2.1", "qwen3.6-27b-Q8"),
     ("Laguna-S-2.1", "ROCmFP4-qwen3.6-35b-a3b"),      # 87+29 SWAG > margin; never validated together
     ("Laguna-S-2.1", "Chadrock-ROCmFP6-qwen3.6-27b"), # 87+30 > margin
-    # DS4 at ~86.5 GiB behaves like Laguna: it cannot share the GTT pool with
-    # any other resident GPU model. Measured 86.42 GiB at -c 131072 on
-    # 2026-08-05, leaving ~27 GiB under the 114 GiB margin.
-    ("DS4-0731-ROCMFPX-affine-256k", "Laguna-S-2.1"),
-    ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-Laguna-S-2.1"),
-    ("DS4-0731-ROCMFPX-affine-256k", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-ROCMFPX-affine-256k", "qwen3.6-27b-Q8"),
-    ("DS4-0731-ROCMFPX-affine-256k", "Chadrock-ROCmFP6-qwen3.6-27b"),
     # Ling-3.0-flash at ~70 GiB clears the 114 GiB margin against the small
-    # servers (qwen/chadrockv2/context1 all fit) but not against the
+    # servers (qwen/chadrockv2 all fit) but not against the
     # three big ones. Measured 64.81 GiB at -c 8192 on 2026-08-05; the entry's
     # 70 budgets the MLA KV at the served -c 131072.
-    ("Ling-3.0-flash-MXFP4", "DS4-0731-ROCMFPX-affine-256k"),
     ("Ling-3.0-flash-MXFP4", "Laguna-S-2.1"),
     ("Ling-3.0-flash-MXFP4", "Chadrock-Laguna-S-2.1"),
     # The ROCmFP4 Ling is 68 GiB — same class as the MXFP4 entry, so it clears
     # the small servers and collides only with the big three plus its sibling
     # Ling quants (which also share port 8108).
     ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Ling-3.0-flash-MXFP4"),
-    ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "DS4-0731-ROCMFPX-affine-256k"),
     ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Laguna-S-2.1"),
     ("Ling-3.0-flash-ROCmFP4-STRIX-MTP", "Chadrock-Laguna-S-2.1"),
-    # Optional DS4 throughput profile (2026-08-10): target + drafter occupy
-    # ~95.6 GiB GTT and left only ~15 GiB MemAvailable under six-way load.
-    # It is exclusive with every other large GPU model, including the affine
-    # DS4 fallback that shares its port.
-    ("DS4-0731-IQ2M-DSpark-64k", "DS4-0731-ROCMFPX-affine-256k"),
-    ("DS4-0731-IQ2M-DSpark-64k", "Laguna-S-2.1"),
-    ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-Laguna-S-2.1"),
-    ("DS4-0731-IQ2M-DSpark-64k", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-IQ2M-DSpark-64k", "qwen3.6-27b-Q8"),
-    ("DS4-0731-IQ2M-DSpark-64k", "Chadrock-ROCmFP6-qwen3.6-27b"),
-    ("DS4-0731-IQ2M-DSpark-64k", "Ling-3.0-flash-MXFP4"),
-    ("DS4-0731-IQ2M-DSpark-64k", "Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
-    # Qualified dual-Vulkan IQ3_S production profile. It spans the Strix Halo
-    # iGPU and the OCuLink 9700, so the one-device GTT projection is not a
-    # meaningful safety instrument; its systemd unit carries the 108/12 GiB
-    # MemAvailable circuit breakers. Gemma is intentionally absent: its CPU
-    # container is hard-capped at 8 GiB and was co-residency tested.
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "DS4-0731-IQ2M-DSpark-64k"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "DS4-0731-ROCMFPX-affine-256k"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Laguna-S-2.1"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-Laguna-S-2.1"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "ROCmFP4-qwen3.6-35b-a3b"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "qwen3.6-27b-Q8"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Chadrock-ROCmFP6-qwen3.6-27b"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Ling-3.0-flash-MXFP4"),
-    ("DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K", "Ling-3.0-flash-ROCmFP4-STRIX-MTP"),
+    # Gemma is intentionally absent: its CPU container is hard-capped at
+    # 8 GiB and was co-residency tested.
 )
 
 
@@ -432,17 +397,10 @@ def _pairs_between(
 # One Halo-resident big model at a time — each of these takes 86-100 GiB of a
 # 124 GiB pool, so any two of them overflow it.
 _HALO_BIG = (
-    "DS4-0731-Q8Protected-Halo-DwarfStar",
     "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     "Qwen3.8-Flash-Next-Engine-R9700-Halo",
     "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
-    "DS4-0731-REAP150B-MXFP4",
-    "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
-    "DS4-0731-ROCmFPX-Affine-Quality",
-    "DS4-0731-ROCMFPX-affine-256k",
-    "DS4-0731-IQ2M-DSpark-64k",
-    "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
     "Laguna-S-2.1",
     "Chadrock-Laguna-S-2.1",
     "Ling-3.0-flash-MXFP4",
@@ -465,7 +423,6 @@ _R9700_RESIDENT = (
 )
 
 _BOTH_GPU_RESIDENT = (
-    "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
     "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
     "Qwen3.8-Flash-Next-Engine-R9700-Halo",
     "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
@@ -484,7 +441,7 @@ _EXCLUSIVE_PAIRS = (
     # Mac-owned auxiliary models and remote GPU nodes are unaffected.
     + _pairs_between(
         ("Qwen3.8-Flash-Next-Engine-R9700-Halo", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
-        ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8", "context1-Q4",
+        ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8",
          "Chadrock-ROCmFP6-qwen3.6-27b"),
     )
 )
@@ -535,346 +492,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     # because the 2026-08-11..14 consolidation moved their runtimes into
     # these folders.
     # ══════════════════════════════════════════════════════════════════════
-    ModelServerSpec(
-        slug="DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
-        description="DeepSeek V4 Flash 0731 UD-IQ3_S (108 GiB) SPLIT ACROSS BOTH "
-        "GPUs — Strix Halo iGPU + Radeon AI PRO R9700 — on stock mainline llama.cpp "
-        "built dual-arch for gfx1151;gfx1201, with the compact DSpark drafter on the "
-        "dGPU. The higher-quality DS4 quant, bought by using both devices. Measured "
-        "2026-08-14: 28.88 t/s shallow / 17.95 t/s at ~10K depth, 184-242 t/s prefill, "
-        "adherence32 24/32, broad256 244/256.",
-        runtime_repo="https://github.com/ggml-org/llama.cpp.git",
-        runtime_ref="mainline pinned a94d563ed (build 10423), built dual-arch "
-        "gfx1151;gfx1201 at ds4-hybrid/runtime/mainline-hip-dualarch",
-        backend_device="ROCm1 (Strix Halo) + ROCm0 (R9700), HIP",
-        devices=("Strix Halo iGPU (ROCm1)", "R9700 dGPU (ROCm0)"),
-        memory_pool=POOL_HALO,
-        also_uses=(POOL_R9700,),
-        deployment="ds4-hybrid",
-        model_file="ds4-hybrid/model/UD-IQ3_S/"
-        "DeepSeek-V4-Flash-0731-UD-IQ3_S-00001-of-00004.gguf",
-        port=18211,
-        launch_script="ds4-hybrid/serve.sh",
-        parameters=(
-            LaunchParam(
-                name="min_start_kib", env="DS4_MIN_START_KIB",
-                label="Start-time MemAvailable floor (KiB)", kind="int",
-                default="113246208",
-                description="deepseek-v4-safe-launch.sh refuses to start below this. Its "
-                            "default is 113246208 KiB = 108 GiB, which is a conservative "
-                            "START gate, NOT the anti-OOM guard — DS4_MIN_RUN_KIB (12 GiB) "
-                            "is that, and it is unaffected by this knob. The split "
-                            "placement puts ~80% of a 109 GB model on the Halo, i.e. ~87 GB, "
-                            "so 108 GiB carries ~20 GiB of slack. Lower it only for a "
-                            "measured benchmark run and say so; DUAL-SERVING.md sets the "
-                            "precedent for adjusting these floors deliberately rather than "
-                            "silently. Empty = launcher default.",
-            ),
-            LaunchParam(
-                name="min_run_kib", env="DS4_MIN_RUN_KIB",
-                label="Run-time MemAvailable floor (KiB)", kind="int",
-                default="12582912",
-                description="THE anti-OOM guard: the launcher kills the server if "
-                            "MemAvailable falls below this while running (exit 42). Default "
-                            "12582912 KiB = 12 GiB. DUAL-SERVING.md already lowers it to "
-                            "7340032 (7 GiB) for co-residency and calls that a deliberate, "
-                            "measured trade — the same precedent applies to a solo benchmark "
-                            "run, where this model alone steadies at ~11.2 GiB free and "
-                            "would otherwise be killed at load. ⚠️ Only safe because "
-                            "serve.sh caps --cache-ram at 1024 MiB; llama.cpp's 8192 MiB "
-                            "default drains headroom at ~0.37 GiB/min and WILL trip any "
-                            "floor you set. Empty = launcher default.",
-            ),
-            LaunchParam(
-                name="runtime", env="RUNTIME_DIR", label="llama.cpp build", kind="enum",
-                default="/home/ben/Development/infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch",
-                choices=(
-                    ("/home/ben/Development/infrastructure/ds4-hybrid/runtime/mainline-hip-dualarch",
-                     "runtime/mainline-hip-dualarch — build 10423, commit a94d563ed"),
-                    ("/home/ben/Development/infrastructure/llamacpp-src/build-hip-cub/bin",
-                     "build-hip-cub — build 10432, commit 9ce67ae55 = a94d563ed + PR #26592 "
-                     "(hipCUB argsort/top_k), the arm for the ~16K prefill hang"),
-                ),
-                description="Both builds are dual-arch gfx1151;gfx1201 — a single-arch build "
-                            "cannot place layers on the R9700 at all. ⚠️ Verify with "
-                            "`llama-server --version`, not runtime/UPSTREAM_COMMIT.txt, which "
-                            "recorded the wrong commit until 2026-08-18.",
-            ),
-            LaunchParam(
-                name="placement", env="PLACEMENT", label="Device placement", kind="enum",
-                default="split",
-                choices=(
-                    ("split", "80/20 layer split — better at depth, ~8 GiB more Halo "
-                              "headroom. Use for long-context and agentic work."),
-                    ("hybrid", "all non-routed weight + experts of layers 0-2 on the "
-                               "R9700 — best shallow decode (31.56 t/s), but puts 93% "
-                               "of the routed stack on the Halo and is NOT memory-safe "
-                               "for 16K+ prefills."),
-                ),
-                description="The optimum is depth-dependent; there is no single winner.",
-            ),
-            LaunchParam(
-                name="ctx", env="CTX", label="Context per slot", kind="int",
-                default="65536",
-            ),
-            _PARAM_PORT,
-        ),
-        ctx_param="ctx",
-        # ~86 GiB of the 108 GiB model lands on the Halo at the default 80/20
-        # split; the remaining layers plus the 8.3 GiB drafter live in the
-        # R9700's own VRAM and are gated separately.
-        resident_gib=88,
-        startable=False,
-        not_startable_reason=(
-            "WEIGHTS AND DRAFTER DELETED 2026-08-26 (109 + 8.3 GiB reclaimed): ds4-hybrid/model/UD-IQ3_S/ and ds4-hybrid/draft/ are gone, and serve.sh hard-requires it (--spec-type draft-dspark). The split was superseded anyway: Flash-Next is the Halo resident and its own dual-GPU split measured only +10-20%. Runtime bundle intact."
-        ),
-        exclusive_with=_exclusive_with("DS4-0731-IQ3_S-Hybrid-ROCm-Dual"),
-        consumers_note="unbound — the quality-per-speed DS4 option when the R9700 "
-        "is free. Known limit: a single ~16K-token prefill can hang (both GPUs "
-        "idle, CPU spinning); upstream PR #26592 is built but the A/B never ran.",
-        # No unit of its own — ARIA materialises one from the fields below.
-        unit_environment=(
-            ("DS4_GUARD_STATUS", "/run/user/%U/ds4-hybrid-guard.status"),
-            ("DS4_MIN_START_KIB", "113246208"),   # 108 GiB, the standard start floor
-            ("DS4_MIN_RUN_KIB", "12582912"),      # 12 GiB, the production live floor
-            ("DS4_MAX_IDLE_GTT_BYTES", "2147483648"),
-        ),
-        unit_exec_start_pre=(
-            # The R9700 must be awake — it resets to 'auto' every boot — and the
-            # TTM pool must already be capped, or it retains a whole model's
-            # pages after teardown (measured: 110 GiB held with GTT at 0.03).
-            "/usr/bin/bash -c 'test \"$(cat /sys/bus/pci/devices/0000:c6:00.0/power/control)\" = on'",
-            "/usr/bin/bash -c 'test \"$(cat /sys/module/ttm/parameters/page_pool_size)\" -le 1048576'",
-        ),
-    ),
-    ModelServerSpec(
-        slug="DS4-0731-ROCmFPX-Affine-Quality",
-        description="DeepSeek V4 Flash 0731, Ben's hand-tuned ROCmFPX type-108 affine "
-        "quant (85.26 GiB, 2.58 BPW) on the sealed O5 runtime. The QUALITY reference: "
-        "238/256 broad and 24/24 long-context recall, the best long-recall of any DS4 "
-        "artifact here. It is slow (~19.5 t/s shallow, target-only, no drafter) and it "
-        "runs ONLY on the sealed O5 runtime — mainline llama.cpp cannot read type-108, "
-        "so it must not be pointed at the ds4-hybrid binaries.",
-        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
-        runtime_ref="sealed bundle o5-release (dr-xr-xr-x, permissions preserved on "
-        "relocation to ds4-affine/runtime/o5-release)",
-        backend_device="ROCm0, HIP",
-        # The sealed O5 runtime is a gfx1151-only build, so it does not
-        # enumerate the gfx1201 R9700 and its ROCm0 is the Halo. That is an
-        # inference from the build, not a measurement — hence the caveat the
-        # deployment README also carries.
-        devices=("Strix Halo iGPU (ROCm0 — gfx1151-only build; verify placement "
-                 "after any runtime change)",),
-        memory_pool=POOL_HALO,
-        deployment="ds4-affine",
-        model_file="ds4-affine/model/DS4-0731-ROCMFPX-affine.gguf",
-        port=8107,
-        launch_script="ds4-affine/serve.sh",
-        parameters=(
-            LaunchParam(
-                name="ctx", env="CTX", label="Context per slot", kind="int",
-                default="65536",
-                description="PER SEQUENCE. Total KV = ctx x slots, so raising this "
-                            "with 6 slots costs six times what it looks like.",
-            ),
-            LaunchParam(
-                name="slots", env="NP", label="Slots (-np)", kind="int",
-                default="6",
-                description="One slot per concurrent consumer. Six is the qualified "
-                            "geometry: Hermes, system pi-coding, three pi sub-agents, "
-                            "ARIA's background workers.",
-            ),
-            _PARAM_PORT,
-        ),
-        ctx_param="ctx",
-        slots_param="slots",
-        # The -c-invariant constants, so the footprint follows the chosen ctx
-        # and slot count instead of a hand-maintained number. Measured basis is
-        # unchanged from the retired 256k unit; see that entry's comments.
-        resident_gib=86.5,
-        weights_gib=85.26,
-        kv_kib_per_token=6.71875,
-        overhead_gib=15.6,
-        exclusive_with=_exclusive_with("DS4-0731-ROCmFPX-Affine-Quality"),
-        consumers_note="the quality/long-recall reference; unbound by default",
-        unit_environment=(
-            ("DS4_GUARD_STATUS", "/run/user/%U/ds4-affine-guard.status"),
-            ("DS4_MIN_START_KIB", "113246208"),
-            ("DS4_MIN_RUN_KIB", "12582912"),
-            ("DS4_MAX_IDLE_GTT_BYTES", "2147483648"),
-        ),
-        unit_exec_start_pre=(
-            "/usr/bin/bash -c 'test \"$(cat /sys/module/ttm/parameters/page_pool_size)\" -le 1048576'",
-        ),
-    ),
-    ModelServerSpec(
-        slug="DS4-0731-Q8Protected-Halo-DwarfStar",
-        runtime_family="dwarfstar",
-        bench_decode_tok_s=15.0,
-        bench_prefill_tok_s=210.0,
-        bench_at="2026-08-17",
-        bench_note="Decode re-measured 2026-08-18 on local-eval/qwen38-quant-ab/decode_probe.py: 15.8 tok/s median at both ctx 65536 and 131072 (flat, confirming the sweep below). ⚠️ --batched-session is worth ~40% and is load-bearing: 15.66 tok/s at 1 vs 11.18 at 0. DSpark speculative decoding was evaluated 2026-08-18 and REJECTED (inert on the server path, -27% on the engine path; see the dspark param). Original: ds4-bench sweep, ctx 2048-16384, single session. Decode is flat "
-        "across context (15.59 at 2k -> 14.47 at 16k); prefill 191-216 tok/s. "
-        "--prefill-chunk 8192 changed nothing, so this is the real ceiling, not a "
-        "tuning artefact. Ember measured 21.9 tok/s decode on the same box.",
-        description="DeepSeek V4 Flash 0731 on the Strix Halo iGPU via DwarfStar "
-        "(antirez/ds4), a native ROCm engine written specifically for DS4 rather than a "
-        "general GGUF runner. SELECTED 2026-08-17 as the APU resident after a six-way "
-        "measurement — see vault/infrastructure/Analysis/DS4_STACK_BAKEOFF_20260817.md.\n"
-        "Why it won: quality TIED at the top (13/15 LiveCodeBench medium with truncated "
-        "runs re-resolved at 16k tokens, level with Ember) and with the FEWEST genuine "
-        "wrong answers of any stack (1, vs Ember's 2); it is the only top-scoring stack "
-        "whose weights are neither ABLITERATED (Ember's are) nor EXPERT-PRUNED with "
-        "stale saliency maps (REAP's are); upstream is maintained and ships its own "
-        "validation tooling (ds4-eval, official-continuation NLL fixtures, logprob test "
-        "vectors); and it loads 80.76 GiB in ~40 SECONDS against ~15 min for llama.cpp's "
-        "97 GB IQ3_XXS.\n"
-        "⚠️ It is NOT the fastest. Ember decodes ~22 tok/s to this stack's ~15 and "
-        "finishes a 15-problem workload 26% sooner. That was traded away deliberately "
-        "for weights provenance and operability. The tok/s gap overstates it: this stack "
-        "writes ~36% fewer tokens per answer, so its MEDIAN problem is actually faster "
-        "(300s vs 320s); Ember wins on the hard tail, not the typical case.\n"
-        "⚠️ 'Not pruned' does not mean lossless — it avoids pruning by quantizing "
-        "harder (IQ2XXS/Q2K bulk, with Q8 protection on attention projections, shared "
-        "experts and output). The trade bought is damage you can reason about over "
-        "damage nobody has characterized.\n"
-        "Serves OpenAI /v1/chat/completions + /v1/completions, Anthropic /v1/messages, "
-        "and /v1/responses, with tool calls, streaming, seed, reasoning_effort, and real "
-        "prompt-cache telemetry (cached_tokens / cache_write_tokens) that llama.cpp does "
-        "not report.",
-        runtime_repo="https://github.com/antirez/ds4 (DwarfStar)",
-        runtime_ref="/home/ben/Development/dwarfstar — own git checkout, NOT vendored "
-        "into infrastructure. Built with `make strix-halo -j4` (ROCM_ARCH defaults "
-        "gfx1151); built clean first try. Prereqs from its STRIXHALO.md were ALREADY "
-        "satisfied on this box: kernel cmdline carries amd_iommu=off "
-        "amdgpu.gttsize=126976 ttm.pages_limit=32505856, and hipcc, /opt/rocm and the "
-        "rocWMMA internal headers are present.",
-        backend_device="Native ROCm on the Strix Halo iGPU (gfx1151), via HIP_VISIBLE_DEVICES=1",
-        devices=("Strix Halo iGPU (HIP device 1)",),
-        memory_pool=POOL_HALO,
-        deployment="dwarfstar-ds4",
-        model_file="models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/"
-        "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
-        port=8112,
-        launch_script="dwarfstar-ds4/serve.sh",
-        parameters=(
-            LaunchParam(
-                name="ctx", env="CTX", label="Context", kind="int", default="131072",
-                description="⚠️ NOT free — the cheap-scaling claim below was measured "
-                            "from ds4-server's own under-reported figures. REAL measured "
-                            "context buffers: 65536 -> ~1.70 GiB, 131072 -> ~2.93 GiB, "
-                            "262144 -> ~5.72 GiB PER RESIDENT SESSION, and it multiplies "
-                            "with batched_sessions. At 262144 the stack left 9 GiB free "
-                            "with nothing else running; radiance + gemma need ~4.2 more. "
-                            "131072 keeps ~7.6 GiB of headroom. Old note follows: "
-                            "measured 81.46 GiB at 16641, "
-                            "81.79 at 32768, 82.46 at 65536 — quadrupling context costs "
-                            "~1 GiB, because most of the KV is compressed rows (16386 "
-                            "compressed vs 4352 raw at 64k). 131k is reachable; --ctx "
-                            "takes an arbitrary integer and the README's 100000 is an "
-                            "example, not a ceiling.",
-            ),
-            LaunchParam(
-                name="kv_disk_mb", env="KV_DISK_MB", label="Disk KV budget (MB)",
-                kind="int", default="15360",
-                description="On-disk KV checkpoints. DwarfStar also does exact "
-                            "token-prefix reuse in front of this.",
-            ),
-            LaunchParam(
-                name="dspark", env="DSPARK", label="DSpark speculative decoding",
-                kind="enum", default="0",
-                choices=(
-                    ("0", "off — ordinary target decode, ~15.8 tok/s measured"),
-                    ("1", "on — REJECTED 2026-08-18; the support GGUF was also DELETED, "
-                           "so this now fails the launcher's existence check"),
-                ),
-                description="⚠️ EVALUATED AND REJECTED 2026-08-18 — leave at 0. On "
-                            "the SERVER path DSpark is INERT (15.66 tok/s with it, "
-                            "15.69 with --dspark-strict, 15.83 without; flat to 0.5% "
-                            "across repeat/code/math/json/prose), so it costs 5.6 GiB "
-                            "for nothing and reports no error. On the ENGINE path "
-                            "(ds4 -p) it engages and LOSES 27%: 12.09 vs 16.60 tok/s "
-                            "on `repeat`. Monotonic in confidence — 0.4 -> 11.55, "
-                            "0.7 -> 12.09, 0.9 -> 15.17, off -> 16.60 — i.e. pure "
-                            "overhead, the limit as speculation goes to zero is the "
-                            "baseline. The knobs stay only so a future DwarfStar "
-                            "release can be re-tested cheaply (40 s loads). Details: "
-                            "vault DS4_DSPARK_SPECULATION_EVAL_20260818. "
-                            "DeepSeek's auxiliary draft model for V4 Flash, verified "
-                            "by the target. ⚠️ MEMORY is the constraint, not "
-                            "compatibility: +5.6 GiB on a box whose steady state "
-                            "leaves ~5-8 GiB, with NO circuit breaker on this stack "
-                            "and ds4-server volunteering itself as first OOM victim "
-                            "(oom_score_adj=1000). Free room first — stopping "
-                            "gemma-4-e4b-Q4 is the cheapest lever. ⚠️ Output can "
-                            "DIVERGE from non-DSpark decode (batched verifier groups "
-                            "float ops differently); this is the coding-agent model, "
-                            "so weigh that. There is NO draft-depth knob — DwarfStar "
-                            "drafts up to five internally and dspark_confidence is "
-                            "the only dial.",
-            ),
-            LaunchParam(
-                name="dspark_confidence", env="DSPARK_CONFIDENCE",
-                # default=None (not "") is how this registry says "unset": an
-                # empty string fails validate(), so a declared "" could never
-                # actually be applied as an override.
-                label="DSpark confidence threshold", kind="float", default=None,
-                description="Pruning threshold 0..1. Empty = ds4's own default, "
-                            "which is 0.7 on ROCm (0.6 on Metal). Higher prunes more "
-                            "aggressively. This is the analogue of llama.cpp's "
-                            "--spec-draft-n-max, which DwarfStar does not have.",
-            ),
-            LaunchParam(
-                name="dspark_strict", env="DSPARK_STRICT",
-                label="DSpark strict (control arm)", kind="enum", default="0",
-                choices=(
-                    ("0", "normal — speculate"),
-                    ("1", "load the support model but keep target-only decode"),
-                ),
-                description="The measurement control: pays the full 5.6 GiB memory "
-                            "cost without speculating, so a DSpark-on vs "
-                            "DSpark-strict pair isolates the speculation effect from "
-                            "the memory pressure it introduces.",
-            ),
-            LaunchParam(
-                name="batched_sessions", env="BATCHED_SESSIONS",
-                label="Resident batched sessions", kind="int", default="1",
-                description="⚠️ MULTIPLIES WITH ctx — context buffers are PER RESIDENT "
-                            "SESSION. 6 @ ctx 262144 requested 34.31 GiB of buffers and "
-                            "CRASHED THE BOX on 2026-08-17 (hard power-cycle). Measured: "
-                            "~1.70 GiB/session at ctx 65536, ~5.72 GiB at ctx 262144, "
-                            "against a total buffer budget of roughly 5 GiB once weights "
-                            "(~98), radiance (~9), gemma (~4) and services (~8) are paid. "
-                            "Raise ONE of ctx/batched_sessions at a time and measure.",
-            ),
-            _PARAM_PORT,
-        ),
-        ctx_param="ctx",
-        # ⚠️ 100 GiB, MEASURED — do not trust DwarfStar's own accounting here. It logs
-        # "KV 1.20 + buffers 0.50 + resident model 80.76 = 82.46 GiB planned", but actual
-        # card1 GTT sits at 100 GiB in steady state (verified 2026-08-17: RSS is only
-        # 0.4 GiB because the weights live in GTT, not process memory). The self-report
-        # understates by ~17.5 GiB.
-        # CONSEQUENCE: this is a WASH with the 97 GiB IQ3_XXS it replaces, NOT the ~15 GiB
-        # saving an earlier version of this entry claimed. Measured co-residency:
-        # IQ3_XXS + radiance left 12 GiB available; DwarfStar + radiance + gemma leaves
-        # 8.8 GiB (gemma is 3.4 of that). It still co-exists with the dGPU model, but with
-        # ~8 GiB of headroom, not ~40 — treat it as tight, not comfortable.
-        # There is NO MemAvailable circuit breaker on this stack the way there is on the
-        # Nathan/llama.cpp units; ds4-server instead sets its own oom_score_adj=1000, so
-        # under pressure the kernel takes THIS down first (before radiance at 900 and
-        # gemma at 500). That is a deliberate volunteer, not an accident.
-        resident_gib=100,
-        weights_gib=80.76,
-        startable=False,
-        not_startable_reason=(
-            "WEIGHTS DELETED 2026-08-26 (80.76 GiB reclaimed): models/llm/DS4-0731-Flash-IQ2XXS-Q8Protected/ is gone. Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K replaced it as the Halo resident. The DwarfStar runtime checkout and dwarfstar-ds4/serve.sh are intact; re-download the GGUF to revive."
-        ),
-        exclusive_with=_exclusive_with("DS4-0731-Q8Protected-Halo-DwarfStar"),
-        consumers_note="⚠️ AS OF 2026-08-17 NO CONSUMER ROUTES HERE YET. Selected but "
-        "not cut over: Hermes, pi-coding and ARIA still point at :8108 "
-        "(DS4-0731-Q8Protected-Halo-DwarfStar). Cutover is a separate, deliberate step.",
-    ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
         startable=False,
@@ -1337,77 +954,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "Requests for an authorized test use this exact registry slug through the ARIA gateway.",
     ),
     ModelServerSpec(
-        slug="DS4-0731-REAP150B-MXFP4",
-        description="DeepSeek V4 Flash 0731 REAP-pruned to 150B total params, experts "
-        "at NATIVE MXFP4, on the Strix Halo iGPU via Nathan's Vulkan fork. Added "
-        "2026-08-16 as a CHALLENGER to the resident DS4, not a replacement. The thesis: "
-        "0731's experts ship natively at 4-bit, so quantizing below that stacks a second "
-        "and more expensive form of damage — REAP hits the size target the cheaper way, "
-        "by pruning experts, and this artifact keeps the survivors at native precision "
-        "instead of dropping to Q3/Q2. 79 GB vs the resident IQ3_XXS's 97 GB, which is "
-        "what lets it coexist with the dGPU model (see resident_gib note).\n"
-        "⚠️ UNVALIDATED PRUNE: every published 0731 REAP is pruned with saliency maps "
-        "transferred from a PRIOR observation run rather than a fresh observation of the "
-        "0731 weights — and 0731's value is post-training that moved Terminal Bench "
-        "61.8 -> 82.7, which shifts which experts fire on agentic traces. None have been "
-        "benchmarked against the unpruned model. Measure before trusting.",
-        runtime_repo="Nathan's Strix Halo llama.cpp Vulkan fork (shared with ds4-halo-xxs)",
-        runtime_ref="runtime/nathan-v0.6.1/vulkan, build 10350 (3be50ccc2) — verified to "
-        "know mxfp4. ⚠️ VULKAN ONLY: HIP segfaults on gfx1151 in the ROCmFPX tree "
-        "(rms_norm_mul_f32_cuda, architecture-level, reproduces with a plain Qwen3-1.7B).",
-        backend_device="Vulkan1 (Strix Halo iGPU, gfx1151)",
-        devices=("Strix Halo iGPU (Vulkan1)",),
-        memory_pool=POOL_HALO,
-        deployment="ds4-reap150b",
-        model_file="models/llm/DS4-0731-REAP150B-MXFP4/"
-        "DeepSeek-V4-Flash-0731-reap-150b-MXFP4_MOE.gguf",
-        port=8109,
-        launch_script="ds4-reap150b/serve.sh",
-        parameters=(
-            LaunchParam(
-                name="ctx", env="CTX", label="Context per slot", kind="int",
-                default="65536",
-                description="KV is allocated lazily, so what costs memory is a FILLED "
-                            "slot, not -c. Kept modest so the ~18 GB this artifact saves "
-                            "over the 97 GB resident stays available as headroom.",
-            ),
-            LaunchParam(
-                name="slots", env="NP", label="Slots (-np)", kind="int", default="1",
-            ),
-            LaunchParam(
-                name="kv", env="KV", label="KV cache type", kind="enum", default="q8_0",
-                choices=(("q8_0", "the qualified DSV4 setting"),
-                         ("f16", "~2x the memory"),
-                         ("q4_0", "smallest; never KL-gated on DSV4")),
-            ),
-            _PARAM_PORT,
-        ),
-        ctx_param="ctx",
-        slots_param="slots",
-        # ~79 GB weights + KV + buffers. THE POINT of this entry: at ~18 GB less than
-        # DS4-0731-Q8Protected-Halo-DwarfStar it leaves ~28 GiB of host headroom with the dGPU
-        # model resident, where the 97 GB one left ~0.4 GiB and tripped its OOM guard
-        # three times on 2026-08-16 under benchmark load.
-        resident_gib=84,
-        weights_gib=79.2,
-        startable=False,
-        not_startable_reason="WEIGHTS DELETED 2026-08-17 (79.2 GiB reclaimed) after "
-        "DS4-0731-Q8Protected-Halo-DwarfStar was selected as the APU resident. Kept as a "
-        "record because the prune question it answered is worth not re-litigating.\n"
-        "WHAT IT ESTABLISHED: the stale-saliency worry in this entry's description was "
-        "tested directly and paired against the unpruned IQ3_XXS on 15 LiveCodeBench "
-        "medium problems — REAP 10/15 vs unpruned 9/15, ONE discordant pair. No evidence "
-        "of prune damage. (An accidental duplicate leg also showed run-to-run noise is "
-        "+-1 question, i.e. the same size as that gap.)\n"
-        "⚠️ It lost on grounds OTHER than measured quality, and its re-resolve at 16k "
-        "tokens was STOPPED PART-WAY — so its corrected score is unknown and could well "
-        "have matched the finalists' 13/15. It was retired because DwarfStar's weights "
-        "are neither pruned nor abliterated, not because REAP was shown to be worse. "
-        "Re-download from the published REAP GGUF if that question is ever reopened.",
-        exclusive_with=_exclusive_with("DS4-0731-REAP150B-MXFP4"),
-        consumers_note="Benchmark challenger only — no consumer ever routed to :8109.",
-    ),
-    ModelServerSpec(
         slug="Qwen3.8-27B-R9700-Radiance",
         startable=False,
         allow_force_start=False,
@@ -1566,7 +1112,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # Hand-written, NOT ARIA-generated. _render_unit() emits no MemoryHigh, and this
         # deployment needs the same 24G page-cache guard the incumbent carries: streaming
         # an 18 GiB checkpoint counts against MemAvailable host-wide and twice on
-        # 2026-08-16 that OOM-killed DS4 on the other GPU.
+        # 2026-08-16 that OOM-killed the Halo model on the other GPU.
         systemd_unit="qwen3.8-radiance-g64.service",
         launch_script="qwen3.8-radiance-g64/serve.sh",
         parameters=(
@@ -1630,7 +1176,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "`serve-rocmfp4.sh` (drop-in `rocmfp4.conf`): the ROCmFPX HIP gfx1201 build "
         "serving the AMD-native ROCmFP4 weights (16.5 GiB) with `-fit off`. Lives "
         "entirely in the card's own 32 GiB of VRAM, so it runs CONCURRENTLY with a "
-        "Halo-resident DS4 — the dGPU half of the verified dual-serving deployment. "
+        "Halo-resident large model — the dGPU half of the verified dual-serving deployment. "
         "Standing geometry (2026-08-15T16:20, `context.conf`): ONE unified KV pool of "
         "327,680 tokens shared by 2 slots — Hermes's main conversation up to the "
         "model's native 262,144, a second slot for crons — measured 23.7 GiB VRAM. "
@@ -1700,7 +1246,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
                 name="cache_ram", env="CACHE_RAM", label="Prompt cache (MiB)", kind="int",
                 default="1024",
                 description="Host-RAM parked prompt cache — it WORKS on this model "
-                            "(unlike DS4) but the RAM is the Halo's budget; keep it "
+                            "(unlike the retired Halo bundle) but the RAM is the Halo's budget; keep it "
                             "small (<=2048).",
             ),
             _PARAM_PORT,
@@ -1712,8 +1258,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         resident_gib=24,
         exclusive_with=_exclusive_with("Qwen3.8-27B-R9700-HIP"),
         consumers_note="Hermes DEFAULT provider 'qwen38-r9700' -> :8080 since "
-        "2026-08-15T16:35 (declared 250000); pi provider 'qwen38-r9700' -> :8080. "
-        "DS4 on :8108 is now the coding-agent (pi) model.",
+        "2026-08-15T16:35 (declared 250000); pi provider 'qwen38-r9700' -> :8080.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-27B-Q6_K-R9700-Vulkan-MTP",
@@ -1778,149 +1323,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "correctly at ~0.4 tok/s.",
     ),
     ModelServerSpec(
-        slug="DS4-0731-IQ2M-DSpark-64k",
-        description="DeepSeek V4 Flash 0731, Unsloth UD-IQ2_M target plus Q8_0 "
-        "DSpark drafter at width 4. Six 65,536-token slots with unified KV and "
-        "prompt caching. Optional high-throughput profile: 63.83 aggregate tok/s "
-        "for six clients, but the frozen 256-case gate found three new scored "
-        "failures versus target-only. Affine is the quality-first default.",
-        runtime_repo="https://github.com/ggml-org/llama.cpp.git",
-        runtime_ref="08659901c43b51de735740f1cf61bb82fbe0c4e4 (ROCm 7.2.4, gfx1151)",
-        backend_device="ROCm0 (gfx1151)",
-        model_file="models/llm/unsloth-DS4-0731-IQ2M/UD-IQ2_M/"
-        "DeepSeek-V4-Flash-0731-UD-IQ2_M-00001-of-00003.gguf",
-        port=8107,
-        systemd_unit="deepseek-v4-iq2m-dspark-64k.service",
-        # Target (90.92 GB) + drafter (10.90 GB) are one inseparable serving
-        # profile. Keep the measured conservative whole-profile figure instead
-        # of pretending model_file alone describes the resident weights. The
-        # static systemd geometry still reports six 64K slots, while the launch
-        # wrapper independently enforces 108 GiB start / 12 GiB run tripwires.
-        resident_gib=109.0,
-        exclusive_with=_exclusive_with("DS4-0731-IQ2M-DSpark-64k"),
-        startable=False,
-        not_startable_reason="Runtime AND weights are gone: the unit's "
-        "~/ds4-mainline-dspark/ tree no longer exists (checked 2026-08-14). This "
-        "profile was not migrated in the infrastructure consolidation — nothing "
-        "under infrastructure/ carries the IQ2_M target or its Q8_0 drafter. Use "
-        "DS4-0731-Q8Protected-Halo-DwarfStar or DS4-0731-IQ3_S-Hybrid-ROCm-Dual instead.",
-        consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
-        endpoint_override="http://100.123.245.84:8107/v1",
-    ),
-    ModelServerSpec(
-        slug="DS4-0731-ROCMFPX-affine-256k",
-        description="DeepSeek V4 Flash 0731, ROCmFPX affine 2.58 BPW (85.26 GiB), "
-        "served as six guarded 65,536-token slots. Quality-first default selected "
-        "2026-08-10 after tying IQ2_M at 238/256 while recovering all three deepest "
-        "early-recall failures. The compatibility slug and unit filename retain "
-        "'256k', but launch geometry is parsed from the unit and is authoritative. "
-        "The sealed affine runtime, prompt caching, and 12 GiB live guard are active.",
-        runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
-        runtime_ref="branch decode-fusion (sealed bundle o5-release-86f0056d-20260803T231500-0400)",
-        backend_device="ROCm0 (gfx1151)",
-        # Production path, unchanged. Every on-box entry in this registry is also
-        # packaged as a model+runtime pair under ~/Development/model-distros/,
-        # one folder per slug, described by a pair.toml. Those are PUBLISHING
-        # artifacts, not live paths: each model/ is a hardlink to the production
-        # GGUF (same inode, no second copy) and each runtime/ is a copy. Moving
-        # or deleting a pair folder does not affect this service.
-        #
-        # The pair slug MUST equal this spec's slug — `pairs doctor` cross-checks
-        # model_file, port and systemd_unit between the two and fails on drift.
-        # Run it after editing either side.
-        model_file="models/llm/DS4-0731-ROCMFPX-affine.gguf",
-        port=8107,
-        systemd_unit="deepseek-v4-quality-256k.service",
-        # NOT hand-declared any more. The footprint is computed from the `-c`
-        # in deepseek-v4-quality-256k.service (see effective_resident_gib), so
-        # the 2026-08-05 staleness — declared 86.5 while really holding 94.08
-        # after a -c change — cannot recur. resident_gib is the fallback used
-        # only if that unit ever becomes unparseable.
-        #
-        # weights: 85.26 GiB (2.58 BPW affine quant, from the GGUF).
-        # kv: 6880 bytes/token = 6.71875 KiB, MEASURED 2026-08-09 — an OOM at
-        # -c 1382400 -np 6 named the exact buffer it could not allocate
-        # (57065472000 bytes = 1382400 * 6 * 6880), which is a cleaner reading
-        # than the two-GTT-snapshot estimate it replaces (that one said 11.0 and
-        # was wrong, because the snapshots differed by a 4 GiB prompt cache as
-        # well as by -c). KV totals over -c * -np, not -c.
-        resident_gib=86.5,
-        weights_gib=85.26,
-        kv_kib_per_token=6.71875,
-        # 15.6, not the 2.1 default. Compute buffers scale with how much work is
-        # in flight, so this was measured at the PEAK, not at rest — three
-        # readings on 2026-08-09, same weights:
-        #     94.56 GiB  loaded, idle              -> overhead  ~1.9
-        #    104.82 GiB  one slot, small request   -> overhead ~10.5
-        #    108.73 GiB  one slot, 56k prefill     -> overhead ~15.6
-        #        (108.73 - 85.26 weights - 7.87 KV at -c 204800)
-        # The gate exists to refuse overcommit, and overcommit happens at peak,
-        # so the peak is the number it must carry. An earlier pass set 10.7 from
-        # the middle reading; the box had already OOM-killed llama-server 8x that
-        # day, which is the cost of sizing this optimistically.
-        #
-        # ⚠️ This constant cannot fix the gate's real blind spot: _read_gtt_gib()
-        # sees GPU-visible memory ONLY, but on this unified-memory box the CPU
-        # side draws from the same 124 GiB. gemma-aux (~2.6), mongod/mongot/
-        # embeddings (~1.9) and the desk's claude sessions (~1.5) are invisible
-        # to it, so the gate reads ~15 GiB free when ~8 is the truth.
-        overhead_gib=15.6,
-        exclusive_with=_exclusive_with("DS4-0731-ROCMFPX-affine-256k"),
-        startable=False,
-        not_startable_reason="SUPERSEDED by DS4-0731-ROCmFPX-Affine-Quality. The "
-        "sealed O5 runtime moved from runtime-bundles/ into ds4-affine/runtime/ and "
-        "the GGUF into ds4-affine/model/, so this unit's ExecStart and -m both point "
-        "at paths that no longer exist. Same model, same runtime, same guards — the "
-        "new entry adds selectable ctx/slots.",
-        consumers_note="Hermes default provider 'ds4'; pi coding agent provider 'ds4'",
-        # Binds the TAILNET IP ONLY - there is no localhost listener, so the
-        # port-derived default would hand consumers a dead URL. Same gotcha as
-        # Ridge. Note :8107 is also claimed by the stopped qwen3.6-35b-a3b-Q4
-        # entry on localhost; see endpoints.env.
-        # _TAILNET_IP is defined below REGISTRY, so hardcode as Ridge does.
-        endpoint_override="http://100.123.245.84:8107/v1",
-    ),
-    ModelServerSpec(
-        slug="DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K",
-        description="DeepSeek V4 Flash 0731 quality/throughput profile: Unsloth "
-        "UD-IQ3_S target plus compact Q3-expert/Q8-dense DSpark drafter, split "
-        "80/20 over Radeon 8060S + OCuLink Radeon AI PRO R9700. Four unified-KV "
-        "slots, 131,072 tokens per slot, F16 KV, continuous batching, idle-slot "
-        "prompt preservation, and a 1 GiB reusable RAM prompt cache. The 4x256K "
-        "capacity profile loaded, but tripped the 12 GiB guard after real Pi "
-        "traffic while Gemma was resident; 4x128K is the co-resident profile.",
-        runtime_repo="https://github.com/Nathanw1014/strix-halo-llamacpp.git",
-        runtime_ref="Nathan-derived Vulkan runtime with dual-device DSpark support",
-        backend_device="Vulkan1 (Strix Halo) + Vulkan0 (R9700), 80/20 layer split",
-        model_file="ds4-sharded-experts/models-0731/UD-IQ3_S/"
-        "DeepSeek-V4-Flash-0731-UD-IQ3_S-00001-of-00004.gguf",
-        port=18211,
-        systemd_unit="deepseek-v4-iq3s-dspark-dual-production.service",
-        # Used for route ranking/documentation only. The footprint spans a
-        # discrete-VRAM device and shared system memory, so the legacy
-        # single-GTT projection cannot represent it. The launch wrapper's
-        # MemAvailable guard remains authoritative.
-        resident_gib=104.0,
-        gtt_resident=False,
-        exclusive_with=_exclusive_with(
-            "DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K"
-        ),
-        startable=False,
-        not_startable_reason="SUPERSEDED by DS4-0731-IQ3_S-Hybrid-ROCm-Dual. The "
-        "ds4-sharded-experts/ tree this unit launches from no longer exists; the "
-        "same UD-IQ3_S weights and compact DSpark drafter now live in ds4-hybrid/, "
-        "served by the mainline HIP dual-arch build over ROCm rather than the "
-        "Vulkan runtime that was removed with the old tree.",
-        consumers_note="Hermes primary; regular Pi; ARIA watched-shell Pi coding",
-        endpoint_override="http://127.0.0.1:18211/v1",
-    ),
-    ModelServerSpec(
         slug="Ling-3.0-flash-MXFP4",
         description="inclusionAI Ling-3.0-flash, MXFP4_MOE (65.05 GiB) — a 124B-total/"
         "5.1B-active hybrid-linear MoE: 35 KDA (Kimi Delta Attention) layers + 7 gated-MLA "
         "layers, 512 routed experts top-8 + 1 shared, plus a bundled MTP block. Served at "
         "131072 ctx (= the GGUF's context_length; the model card's 256K did NOT survive "
-        "the quant). Like DS4 this is NOT a docker container: it runs as the systemd --user "
+        "the quant). Like other bundle runtimes this is NOT a docker container: it runs as the systemd --user "
         "unit ling-3.0-flash.service from a runtime bundle, because its runtime is a "
         "host-built HIP fork with no image. Added 2026-08-05.",
         runtime_repo="https://github.com/baf509/rocmfpx-ds4.git",
@@ -1948,7 +1356,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         consumers_note="unbound — new, not yet validated beyond a smoke test",
         # Binds 127.0.0.1 only, so the port-derived localhost default is
         # correct and no endpoint_override is needed. Deliberately NOT the
-        # tailnet bind DS4 uses: nothing off-box consumes this yet, and the
+        # tailnet bind that bundle used: nothing off-box consumes this yet, and the
         # tailnet-only bind is the repeatedly-misdiagnosed dead-localhost
         # gotcha. To expose it, change --host in the unit AND add an override.
     ),
@@ -2102,27 +1510,6 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
             "WEIGHTS DELETED 2026-08-26 (27 GiB reclaimed): models/llm/Qwen3.6-27B/Qwen3.6-27B-Q8_0.gguf and the model-distros/qwen3.6-27b-Q8 link are gone. Superseded by Qwen3.8-27B Radiance on the R9700."
         ),
         exclusive_with=_exclusive_with("qwen3.6-27b-Q8"),
-    ),
-    ModelServerSpec(
-        slug="context1-Q4",
-        description="chromadb/context-1 20B Q4_K_M, same charlie12345 rocmfp4-llama "
-        "HIP runtime as qwen3.6-35b-a3b-Q4/qwen3.6-27b-Q8. Backed ARIA's Search Agent; "
-        "stopped and profile-gated (`optional`) since 2026-07-21, unused. Small enough "
-        "(16 GiB) to coexist with anything — guarded by the live GTT gate only. "
-        "Its port binding was 0.0.0.0 until 2026-07-30 (missed by the 07-21 "
-        "loopback+tailnet sweep because it was already stopped); now matches.",
-        runtime_repo="https://github.com/charlie12345/rocmfp4-llama.git",
-        runtime_ref="branch mtp-rocmfp4-strix",
-        backend_device="HIP (ROCm0)",
-        model_file="models/llm/context-1/chromadb-context-1-Q4_K_M.gguf",
-        port=8081,
-        compose_file="qwen-rocmfp4/docker-compose.yml",
-        service_name="context1",
-        container_name="context1",
-        profile="optional",
-        resident_gib=16,
-        exclusive_with=_exclusive_with("context1-Q4"),
-        consumers_note="ARIA Search Agent (context1 backend) — currently disabled",
     ),
     ModelServerSpec(
         slug="gemma-4-e4b-Q4",
@@ -2472,7 +1859,7 @@ _RAM_SAFETY_MARGIN = 0.92
 # resident at once, llama.cpp allocates KV LAZILY (so a server grows into its
 # neighbours long after it started), and the page cache competes for the same
 # bytes. Eight percent of headroom is cheap insurance there, and it has been
-# earned — DS4 has been OOM-killed on that pool, once by 18 MB.
+# earned — a large Halo model has been OOM-killed on that pool, once by 18 MB.
 #
 # The R9700 is none of those things. It is a DEDICATED 32 GiB card that holds
 # exactly one model at a time (see _R9700_RESIDENT), and everything on it is
@@ -2594,7 +1981,7 @@ def _rss_bytes_for_pid(pid: int) -> Optional[int]:
 # --------------------------------------------------------------------------
 # Served context used to live in five places and only one of them was
 # authoritative: the unit's ExecStart. The other four (this registry's
-# resident_gib, Hermes's `ds4` and `ds4-fast` provider context_length, and the
+# resident_gib, the per-provider context_length Hermes carries, and the
 # coding-session concurrency cap) were hand-copied, so every past `-c` change
 # silently invalidated them — see measure_resident_gib() below for the 7.6 GiB
 # under-count that produced, feeding the very gate meant to prevent overcommit.
@@ -2843,7 +2230,7 @@ def effective_resident_gib(
 # --------------------------------------------------------------------------
 # Every deployment folder under infrastructure/ is already parameterised the
 # same way: `VAR="${VAR:-default}"` in its serve.sh, overridden in practice by
-# a hand-written systemd drop-in (ds4-halo-xxs.service.d/context.conf sets CTX,
+# a hand-written systemd drop-in (a deployment's service.d/context.conf sets CTX,
 # no-draft.conf sets DRAFT). ARIA uses that SAME mechanism rather than building
 # its own command line, for three reasons:
 #
@@ -2974,8 +2361,8 @@ def _script_defaults(spec: "ModelServerSpec") -> dict[str, str]:
 def _script_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
     """`-c`/`-np` written as LITERALS in a deployment's serve.sh.
 
-    Several scripts hardcode what the unit cannot express — ds4-halo-xxs and
-    ds4-hybrid both pin `-np 1` because speculation and multi-slot serving do
+    Several scripts hardcode what the unit cannot express — some layouts
+    pin `-np 1` because speculation and multi-slot serving do
     not mix (upstream #26741). Only numeric literals are taken: a `$CTX` here
     is answered by the parameter layer instead, and guessing at a shell
     expansion would be worse than reporting nothing.
@@ -3149,7 +2536,7 @@ def _render_unit(spec: "ModelServerSpec", unit: str) -> str:
     if spec.unit_oom_score_adjust is not None:
         # Make the model the kernel's preferred OOM victim rather than mongod
         # or the Hermes gateway — the same reasoning as the hand-written
-        # ds4-halo-xxs oom.conf.
+        # the deployment's oom.conf.
         lines.append(f"OOMScoreAdjust={spec.unit_oom_score_adjust}")
     lines += ["", "[Install]", "WantedBy=default.target", ""]
     return "\n".join(lines)
@@ -3200,7 +2587,7 @@ def base_url_for_spec(spec: "ModelServerSpec") -> Optional[str]:
     """Where to reach this server, spec-side (llm_route.base_url_for is the
     dict-side twin, for status rows).
 
-    `endpoint_override` wins and is load-bearing: DS4 binds
+    `endpoint_override` wins and is load-bearing: one retired bundle bound
     100.123.245.84:8107 ONLY, so a port-derived localhost URL is
     connection-refused even with the server up."""
     if spec.endpoint_override:
@@ -3418,7 +2805,7 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
 
     Dispatches on `spec.runtime_family`. Until 2026-08-17 this spoke ONLY
     llama.cpp's `/slots` + `/metrics`, so the two newest deployments — Qwen3.8
-    on vllm-radiance and DS4 on DwarfStar — reported `null` for every field. In
+    on vllm-radiance and the Halo bundle on DwarfStar — reported `null` for every field. In
     an API where `null` means UNKNOWN rather than "fine", that made two of the
     three live models invisible to the endpoint whose whole job is showing load.
 
@@ -3659,7 +3046,7 @@ async def _unit_start_epoch(unit: str) -> float:
 
 
 async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeStats]:
-    """DwarfStar (antirez/ds4) exposes `/v1/models` and NOTHING else.
+    """DwarfStar exposes `/v1/models` and NOTHING else.
 
     Verified 2026-08-17 against the running server: `/metrics`, `/slots`,
     `/health`, `/stats` and `/status` all return 404. So there is no live
@@ -3744,14 +3131,14 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
 
 
 def check_pi_slot_budget(
-    slug: str = "DS4-0731-Q8Protected-Halo-DwarfStar",
+    slug: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
 ) -> Optional[str]:
     """Complaint string if the coding-session cap over-subscribes the server's
     slots, else None.
 
-    ⚠️ The default slug must name the server pi ACTUALLY runs on. Until
-    2026-08-15 it named `DS4-0731-UD-IQ3-S-Dual-Vulkan-DSpark-4x128K`, retired
-    with the rest of the :18211 deployment — `_BY_SLUG.get()` therefore returned
+    ⚠️ The default slug must name the server pi ACTUALLY runs on. It has twice
+    named a since-retired deployment (the :18211 bundle in 2026-08, and the
+    Halo bundle removed 2026-09-10) — `_BY_SLUG.get()` therefore returned
     None and this check silently returned "no complaint" for weeks while the cap
     (2 + 2 reserved) sat over a one-slot server. A budget check that cannot find
     its subject must not read as a pass; if you re-point pi's model, re-point
@@ -3792,7 +3179,7 @@ async def measure_resident_gib(spec: "ModelServerSpec") -> Optional[float]:
     """ACTUALLY measured footprint of a running server, in GiB, or None.
 
     Exists because `spec.resident_gib` is a hand-maintained SWAG that silently
-    goes stale: DS4 was declared 86.5 (measured at -c 131072) while really
+    goes stale: one model was declared 86.5 (measured at -c 131072) while really
     holding 94.08 after moving to -c 262144 with a 4 GiB prompt cache — a
     7.6 GiB under-count feeding the safety gate that is supposed to prevent
     overcommit. Prefer this over the declared value wherever it is available.
@@ -4924,7 +4311,7 @@ class ModelServerManager:
                     other = _BY_SLUG.get(other_slug)
                     # A systemd-bundle server has no container_name — gating on
                     # it alone silently skipped every exclusivity pair among the
-                    # BIGGEST models on the box (DS4 and both Lings), leaving the
+                    # BIGGEST models on the box (the Halo bundle and both Lings), leaving the
                     # GTT projection below as the only thing standing between a
                     # 93 GiB server and an 88 GiB one. _inspect() has handled
                     # systemd since it was added; only this filter lagged.
@@ -4943,7 +4330,7 @@ class ModelServerManager:
 
                 # Ports are a hard conflict independent of memory: two servers
                 # cannot bind the same port, and several entries here share one
-                # deliberately (the three :8110 Qwen variants, the DS4s on
+                # deliberately (the three :8110 Qwen variants, the retired bundles on
                 # :8107). Checked live rather than baked into exclusive_with,
                 # so it also covers dynamically-pulled entries.
                 if spec.port:

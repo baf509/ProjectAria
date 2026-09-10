@@ -57,7 +57,8 @@ def test_remote_shared_port_is_only_the_documented_red_transport():
     """Don't turn the remote proxy exception into a blanket collision waiver."""
     shared = {(m.slug, s.slug, m.port) for m in MODEL_SERVERS for s in REGISTRY
               if not m.onbox and m.port is not None and m.port == s.port}
-    assert shared == {("Red-Qwen3.8-27B-MXFP4", "red-proxy", 8094)}
+    assert shared == {("Red-Qwen3.8-27B-MXFP4", "red-proxy", 8094),
+                      ("Red-Qwen3.8-Flash-Next-MXFP4", "red-proxy", 8094)}
     red = next(m for m in MODEL_SERVERS if m.slug == "Red-Qwen3.8-27B-MXFP4")
     assert red.endpoint_override == "http://127.0.0.1:8094/v1"
 

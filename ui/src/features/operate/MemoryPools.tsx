@@ -118,7 +118,7 @@ export function MemoryPools({
 
           // Where the selected server's footprint lands. A dGPU server is
           // charged to VRAM *and* to system RAM for its host-side runtime —
-          // radiance holds 8-10 GiB permanently, which is what broke DS4's
+          // radiance holds 8-10 GiB permanently, which is what broke the Halo bundle's
           // preflight on 2026-08-16 despite the two sharing no VRAM.
           const add = selected?.resident_gib_estimate ?? 0
           const pool = selected?.memory_pool

@@ -6,7 +6,6 @@ Purpose: Export built-in tool implementations
 """
 
 from .claude_agent import ClaudeAgentTool
-from .search_agent import SearchAgentTool
 from .deep_think import DeepThinkTool
 from .pi_coding import PiCodingAgentTool
 from .coding import (
@@ -37,7 +36,6 @@ __all__ = [
     "GetCodingOutputTool",
     "ListCodingSessionsTool",
     "ScreenshotTool",
-    "SearchAgentTool",
     "SendShellInputTool",
     "SendToCodingSessionTool",
     "ShellTool",

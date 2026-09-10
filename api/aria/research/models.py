@@ -22,7 +22,7 @@ class ResearchConfig:
     conversation_id: Optional[str] = None
     # Where the completion actually goes. None = llm_manager's default, which
     # for `llamacpp` is ARIA's /llm/v1 auto-route -> the LARGEST resident model
-    # -> DS4, pi's single coding slot. The steward's research planner pins this
+    # -> the resident local server, pi's single coding slot. The steward's research planner pins this
     # to Qwen on :8080 so a research prefill cannot evict a coding agent's warm
     # prefix (4.2 s warm vs 39.5 s cold).
     endpoint: Optional[str] = None

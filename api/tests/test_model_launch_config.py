@@ -73,16 +73,16 @@ def test_overrides_refused_for_a_server_with_no_parameters():
 
 
 def test_unknown_override_names_are_rejected_with_the_available_set():
-    spec = ms._BY_SLUG["DS4-0731-IQ3_S-Hybrid-ROCm-Dual"]
+    spec = ms._BY_SLUG["Qwen3.8-Flash-Next-Engine-R9700-Halo"]
     with pytest.raises(ModelServerSafetyError, match="unknown parameter"):
-        ms.validate_overrides(spec, {"kv": "q8_0"})  # halo-only knob, not this one
+        ms.validate_overrides(spec, {"kv": "q8_0"})  # not a knob on this entry
 
 
 def test_validate_overrides_maps_names_to_env_vars():
-    spec = ms._BY_SLUG["DS4-0731-IQ3_S-Hybrid-ROCm-Dual"]
-    assert ms.validate_overrides(spec, {"placement": "hybrid", "ctx": "32768"}) == {
-        "PLACEMENT": "hybrid",
-        "CTX": "32768",
+    spec = ms._BY_SLUG["Qwen3.8-Flash-Next-Engine-R9700-Halo"]
+    assert ms.validate_overrides(spec, {"placement": "hybrid", "ctx": "262144"}) == {
+        "FLASHNEXT_PLACEMENT": "hybrid",
+        "CTX": "262144",
     }
 
 
@@ -337,43 +337,6 @@ def test_every_onbox_spec_names_a_real_pool():
 
 
 # ────────────────────────────────────────── cross-pool residency and ports ──
-
-def test_models_on_different_cards_are_not_mutually_exclusive():
-    """The whole point of the two-GPU topology: DS4 on the Halo and Qwen3.8 on
-    the R9700 were verified resident together on 2026-08-14. Forbidding that
-    would break the deployment Hermes and pi are currently wired to.
-
-    Re-pointed 2026-08-21 from the retired IQ3_XXS/HIP pair to the pair actually
-    serving — DwarfStar on the Halo, radiance on the R9700 — so this asserts the
-    live topology rather than two entries that no longer run."""
-    halo = ms._BY_SLUG["DS4-0731-Q8Protected-Halo-DwarfStar"]
-    dgpu = ms._BY_SLUG["Qwen3.8-27B-R9700-Radiance"]
-    assert dgpu.slug not in halo.exclusive_with
-    assert halo.slug not in dgpu.exclusive_with
-    assert halo.memory_pool != dgpu.memory_pool
-
-
-def test_the_dual_device_split_conflicts_with_both_pools():
-    """ds4-hybrid is the one deployment spanning both cards, so it is the one
-    Halo entry that must also conflict with every dGPU resident."""
-    hybrid = ms._BY_SLUG["DS4-0731-IQ3_S-Hybrid-ROCm-Dual"]
-    assert "Qwen3.8-27B-R9700-HIP" in hybrid.exclusive_with
-    assert "DS4-0731-Q8Protected-Halo-DwarfStar" in hybrid.exclusive_with
-    assert hybrid.memory_pool == gd.POOL_HALO
-    assert gd.POOL_R9700 in hybrid.also_uses
-
-
-def test_halo_resident_models_are_mutually_exclusive():
-    halo_entries = [
-        "DS4-0731-Q8Protected-Halo-DwarfStar",
-        "DS4-0731-ROCmFPX-Affine-Quality",
-        "DS4-0731-IQ3_S-Hybrid-ROCm-Dual",
-    ]
-    for slug in halo_entries:
-        others = set(ms._BY_SLUG[slug].exclusive_with)
-        assert others.issuperset(set(halo_entries) - {slug})
-
-
 @pytest.mark.asyncio
 async def test_start_refuses_when_the_port_is_already_held():
     """Two servers can be in different memory pools and still collide on a
