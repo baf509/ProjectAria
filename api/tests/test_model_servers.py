@@ -1918,3 +1918,42 @@ def test_unknown_remote_state_is_not_servable():
            "port": 8092, "endpoints": {"local": "http://127.0.0.1:8092/v1"}}
     assert not is_servable(row)
     assert is_servable({**row, "state": "running"})
+
+
+def test_paro_is_a_known_red_option_that_cannot_silently_serve():
+    """Registered so the checkpoint is recorded, not so it can be started.
+
+    Red's restricted forced command exposes a fixed verb set with no paroquant
+    entry, and there is no unit or serve script. Declaring start/stop commands
+    would make ARIA claim an actuation path it does not have — so the spec
+    declares none, which also keeps `remotely_operable` False (it requires both
+    directions; a model that starts but cannot stop strands a woken box).
+    """
+    from aria.infrastructure.llm_route import is_servable
+
+    spec = ms._BY_SLUG["Red-Qwen3.8-27B-PARO-MXFP4"]
+    assert spec.catalog_visible, "it must be visible as a Red option"
+    assert not spec.startable and spec.not_startable_reason
+    assert not spec.remotely_operable and not spec.auto_route
+    assert not spec.allow_force_start
+
+    # Three deployments share both GPUs and the single forwarded port, so
+    # exclusivity has to be symmetric or a start could evict nothing.
+    for other in ("Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-Flash-Next-MXFP4"):
+        assert other in spec.exclusive_with
+        assert spec.slug in ms._BY_SLUG[other].exclusive_with, other
+
+    # Identity is what keeps those three apart on :8094. Without a pinned
+    # remote_model_id it can never be routed to, even if something started it
+    # outside ARIA — that is the intended fail-safe, not an oversight.
+    assert spec.remote_model_id is None
+    assert not is_servable({
+        "slug": spec.slug, "state": "running", "onbox": False,
+        "remote_identity_verified": bool(spec.remote_model_id),
+        "port": spec.port, "endpoints": {"local": spec.endpoint_override},
+    })
+
+    # Footprint stays unmeasured: it depends on a KV/TP config that does not
+    # exist yet, and a guessed number is one a preflight gate would trust.
+    assert spec.resident_gib is None
+    assert spec.weights_gib == 17.75

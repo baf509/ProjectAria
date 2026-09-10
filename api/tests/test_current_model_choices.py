@@ -9,7 +9,14 @@ def test_current_host_choices():
     visible = {s.slug for s in ms.REGISTRY if s.catalog_visible}
     assert {s.slug for s in ms.REGISTRY if s.onbox and s.startable} == {
         'Qwen3.8-Flash-Next-CUDA-Halo-Candidate'}
+    # PARO joined 2026-09-10: weights downloaded and verified on Red, registered
+    # so the checkpoint is a known option rather than an unrecorded directory.
+    # Visible, but not startable — Red has no paroquant verb, unit or serve
+    # script (see test_paro_is_a_known_red_option_that_cannot_silently_serve).
     assert {s.slug for s in ms.REGISTRY if s.host_machine == 'machine:red' and s.catalog_visible} == {
+        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'}
+    assert {s.slug for s in ms.REGISTRY
+            if s.host_machine == 'machine:red' and s.startable} == {
         'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4'}
     assert 'gemma-4-e4b-Q4' not in visible
     assert {'catalog_visible', 'host_machine'} <= _LIST_VIEW_FIELDS

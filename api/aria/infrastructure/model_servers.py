@@ -1743,7 +1743,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
     ),
     ModelServerSpec(
         slug="Red-Qwen3.8-27B-MXFP4",
-        exclusive_with=("Red-Qwen3.8-Flash-Next-MXFP4",),
+        exclusive_with=("Red-Qwen3.8-Flash-Next-MXFP4", "Red-Qwen3.8-27B-PARO-MXFP4"),
         description="Qwen3.8-27B AMD AWQ MXFP4 on Red's two Radeon AI PRO R9700s. "
         "Native Ubuntu on the Lexar disk; Windows remains on the Samsung. "
         "TP2, W4A8, FP8 KV and DFlash2 depth 7 through ggz14 Radiance. "
@@ -1809,7 +1809,7 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         host_machine="machine:red",
         deployment="red-r9700/flash-next",
         container_name="red-flashnext-mxfp4",
-        exclusive_with=("Red-Qwen3.8-27B-MXFP4",),
+        exclusive_with=("Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-27B-PARO-MXFP4"),
         port=8094,
         wake_command=("/Users/ben/Services/apps/bin/wake-red-model",),
         remote_start_command=(
@@ -1830,6 +1830,60 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "Explicit selection only. Shares both GPUs and the restricted inference "
         "forward with Red Radiance; model identity is checked before routing.",
     ),
+    ModelServerSpec(
+        slug="Red-Qwen3.8-27B-PARO-MXFP4",
+        description="Qwen3.8-27B quantised with ParoQuant rotations plus OCP MXFP4 "
+        "(quant_method paroquant_mxfp4, 4 bits, group 128, krot 8) for Red's two R9700s. "
+        "Weights are downloaded and sha256-verified at "
+        "~/red-r9700/models/Qwen3.8-27B-PARO-MXFP4 (19,058,990,136 bytes, "
+        "sha256 7cd48495a5fa4af80c6142fa4f0be888f34c81c006361ece8c1391cd4fc60388, "
+        "HF revision 78e1c0a4b1e26354b341dff948f4781b8f222d76). Registered so the "
+        "checkpoint is a known Red option rather than an unrecorded directory; it "
+        "has no serving path yet.",
+        runtime_repo="https://codeberg.org/ggz14/radiance-vllm-mxfp4",
+        runtime_ref="paroquant variant: the model card requires ./setup-paroquant.sh then "
+        "./paroquant/run_paroquant.sh on top of radiance; not stock vLLM or transformers",
+        backend_device="2 x gfx1201 (Radeon AI PRO R9700, 32 GiB each)",
+        onbox=False,
+        # Not startable, and deliberately not wired: Red's restricted forced
+        # command (/opt/red-r9700/control.sh) exposes a fixed verb set — start,
+        # stop, start-flashnext, stop-flashnext, sleep, status — and there is no
+        # paroquant verb, no red-paro.service, and no serve script. Declaring
+        # start/stop commands that the key would refuse would make ARIA claim an
+        # actuation path it does not have, which is the drift this registry
+        # exists to prevent. `remotely_operable` stays False for the same reason:
+        # it requires BOTH directions, and a model that can be started but not
+        # stopped can strand a woken box holding VRAM.
+        startable=False,
+        not_startable_reason=(
+            "Weights present and verified on Red, but unserved: needs a paroquant "
+            "runtime under radiance, a red-paro.service unit, and start/stop verbs "
+            "in Red's restricted forced command. Not qualified."
+        ),
+        allow_force_start=False,
+        auto_route=False,
+        runtime_family="vllm",
+        memory_pool=POOL_REMOTE,
+        devices=("Red R9700 0000:03:00.0", "Red R9700 0000:06:00.0"),
+        host_machine="machine:red",
+        deployment="red-r9700/paro",
+        # All three Red deployments share both GPUs and the one forwarded port.
+        exclusive_with=("Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-Flash-Next-MXFP4"),
+        port=8094,
+        endpoint_override="http://127.0.0.1:8094/v1",
+        # Weights alone, from the downloaded artifact. Resident footprint stays
+        # unmeasured: it depends on a KV/TP configuration that does not exist yet,
+        # and guessing it is how a preflight gate ends up trusting a number nobody
+        # measured.
+        weights_gib=17.75,
+        # No remote_model_id on purpose. Identity is what keeps three deployments
+        # sharing :8094 apart, and `is_servable` needs remote_identity_verified —
+        # so until someone pins the id this deployment can never be routed to,
+        # which is the correct fail-safe for an unqualified checkpoint.
+        consumers_note="Downloaded for evaluation on 2026-09-10 and registered as a known "
+        "Red option; not selectable in Pi or Hermes and not offered by select_red_model "
+        "until it has a serving path. Exclusive with both other Red deployments.",
+    ),
 )
 
 # This node's stable Tailscale IP — same constant every compose file binds to.
@@ -1842,6 +1896,7 @@ CURRENT_MODEL_CHOICES = frozenset({
     "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
     "Red-Qwen3.8-27B-MXFP4",
     "Red-Qwen3.8-Flash-Next-MXFP4",
+    "Red-Qwen3.8-27B-PARO-MXFP4",
     "Ridge-Qwen3.8-27B",
 })
 REGISTRY = tuple(

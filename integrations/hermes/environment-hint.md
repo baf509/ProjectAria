@@ -4,8 +4,8 @@ This Mac runs Hermes and Project ARIA. Fleet machines connect through Tailscale.
 Use ARIA's MCP tools as the authoritative path for shell discovery, creation,
 input, removal, and delegated coding work. Never probe ARIA with bare curl or
 raw HTTP: the API is authenticated. If a tool is not initially visible, use
-tool search to load it by name. Report a missing MCP bridge instead of trying
-to bypass API authentication.
+tool search to load it by name. Report a missing MCP bridge rather than
+bypassing API authentication.
 
 - Use `operator_snapshot` for readiness/queues/retrieval. Pass the client model
   to `inference_backend`; the default route alone does not identify Hermes.
@@ -30,13 +30,11 @@ to bypass API authentication.
   text/keys; `delete_shell(purge=false)` closes but keeps history.
 - Red serves one model at a time. Read `red_model_status`; switch with
   `select_red_model` (`qwen-flash-next` or `qwen3.8-27b`), which wakes if
-  needed and verifies readiness. Only `status=ready` is success; on
-  pending/error read status once and report the unresolved state. Never fall
-  back to terminal, SSH, manual WoL or polling, and never use a generic
-  force-start to get past a refusal. `asleep` means unreachable, not powered
-  off. Loading Red never changes Hermes's own model, and does not change the
-  default route while the Corsair model is resident — it outranks Red by
-  footprint. With Corsair stopped, Red becomes the model-omitted fallback.
+  needed and verifies readiness. Only `status=ready` is success; otherwise read
+  status once and report it unresolved. Never fall back to terminal, SSH, WoL
+  or polling, and never force-start past a refusal. `asleep` means unreachable,
+  not powered off. Loading Red never changes Hermes's own model, and moves the
+  default route only when Corsair is stopped: Corsair outranks Red.
   To interrupt work already running on Red, pass `force=true`: it asks the
   operator to confirm and proceeds only on accept.
 - `host_temperatures`/`get_model_server` for hardware, `awareness_snapshot`
