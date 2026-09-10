@@ -70,7 +70,21 @@ async def _red_ready(request, slug):
     return row.get("state") == "running" and backend.get("backend") == slug
 
 
-async def _select_red(request, model):
+async def _red_callers(request, slug: str) -> str:
+    """Recent callers of a Red model, for a consent prompt that names names.
+
+    Attribution only, and best-effort: a failed lookup must not turn a
+    consented switch into a refusal.
+    """
+    try:
+        traces = await request("GET", "/api/v1/usage/traces", params={"hours": 1, "limit": 200})
+        callers = {t.get("caller") for t in traces if t.get("model") == slug and t.get("caller")}
+        return ", ".join(sorted(callers)[:4])
+    except Exception:
+        return ""
+
+
+async def _select_red(request, model, *, consent=None):
     slug = RED_MODELS[model]
     result = {"host": "red-linux", "model": model, "slug": slug,
               "routing_changed": False, "hermes_model_changed": False, "actions": []}
@@ -102,8 +116,14 @@ async def _select_red(request, model):
             if not isinstance(previous.get("bound_agents"), list):
                 return finish("blocked", "Current Red agent assignments are unknown; no model was stopped.")
             if previous.get("bound_agents"):
-                return finish("blocked", "Current Red model has agent assignments. Release those assignments before switching.",
-                              bound_agents=previous["bound_agents"])
+                if consent is None:
+                    return finish("blocked", "Current Red model has agent assignments. Release those assignments before switching.",
+                                  bound_agents=previous["bound_agents"])
+                if not await consent(
+                        f"{old} is assigned to {', '.join(previous['bound_agents'])}.\n"
+                        "Switching anyway leaves those assignments pointing at a model that is no longer loaded."):
+                    return finish("cancelled", "Switch declined; no model was stopped.",
+                                  bound_agents=previous["bound_agents"])
             route, util, backend = await asyncio.gather(
                 request("GET", "/api/v1/infrastructure/llm-route"),
                 request("GET", _RED_PATH + "/utilization"),
@@ -118,7 +138,18 @@ async def _select_red(request, model):
             if backend.get("backend") != old or not activity.get("reachable") or any(v is None for v in counts):
                 return finish("blocked", "Red request activity is unavailable; no model was stopped.")
             if any(v != 0 for v in counts):
-                return finish("blocked", "Red is serving or queueing requests. Wait for them to finish before switching.")
+                detail = (f"{old} is serving {activity.get('busy_slots')} request(s), "
+                          f"{admission.get('active')} active and {admission.get('queued')} queued.")
+                who = await _red_callers(request, old)
+                if who:
+                    detail += f"\nRecent callers: {who}."
+                if consent is None:
+                    return finish("blocked", "Red is serving or queueing requests. Wait for them to finish before switching.",
+                                  activity=detail)
+                if not await consent(
+                        detail + "\n\nSwitching now fails those requests immediately and the work in them is "
+                        "lost. Their sessions stay open and can be retried once the new model is loaded."):
+                    return finish("cancelled", "Switch declined; no model was stopped.", activity=detail)
             # Re-read bindings/residency immediately before the destructive step.
             current = await _red_rows(request)
             if any(current[k].get("state") != rows[k].get("state") or
@@ -200,13 +231,22 @@ def register(mcp, request):
                 "routing": "Loading Red does not change Hermes's own Corsair model or the default route."}
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False})
-    async def select_red_model(model: RedModel) -> dict:
+    async def select_red_model(model: RedModel, ctx: Context = None, force: bool = False) -> dict:
         """Preferred tool for 'wake Red and load Qwen', 'use Flash Next on Red',
         or 'switch Red models'. Choose qwen3.8-27b (256K, up to 8 requests) or
         qwen-flash-next (256K, 1 request). Wakes red-linux from sleep if needed,
         unloads an idle unassigned/unpinned Red model, then loads and verifies
         the chosen deployment. Refuses busy/queued/unknown activity and agent
-        assignments; never force-stops or changes routing/Hermes configuration.
+        assignments; never changes routing/Hermes configuration.
+
+        force=True offers to interrupt in-flight work instead of refusing. It
+        does NOT bypass the check — it turns it into an explicit consent prompt
+        naming the busy model, its request counts and its recent callers, and
+        only proceeds on accept. Ask for it when the operator has said to switch
+        anyway; never set it to get past a refusal on your own initiative. It
+        still will not touch unknown state, conflicting residency, or a model
+        that is mid-load. status='cancelled' means they declined and nothing
+        was stopped.
         Allow up to 640 seconds. Only status=ready confirms success. For pending
         or error, read red_model_status once, then report unresolved state.
         Do not retry start automatically or fall back to shell/SSH/WoL commands.
@@ -215,13 +255,24 @@ def register(mcp, request):
         what's available, use red_model_status instead of changing the host."""
         if model not in RED_MODELS:
             raise ValueError("Choose qwen3.8-27b or qwen-flash-next")
+        consent = None
+        if force:
+            # Interrupting someone's in-flight work is not undoable, so it needs
+            # a person's explicit accept — never the model's own say-so.
+            if ctx is None:
+                raise RuntimeError("force requires an MCP client supporting user consent")
+
+            async def consent(detail: str) -> bool:
+                outcome = await ctx.elicit(
+                    message="Interrupt work running on Red?\n\n" + detail, schema=Consent)
+                return outcome.action == "accept"
         with _red_selection_lock() as acquired:
             if not acquired:
                 return {"status": "pending", "host": "red-linux", "model": model, **_RED_RECOVERY,
                         "reason": "Another MCP Red selection is in progress. Check red_model_status; do not repeat it."}
             try:
                 async with asyncio.timeout(640):
-                    return await _select_red(request, model)
+                    return await _select_red(request, model, consent=consent)
             except TimeoutError:
                 return {"status": "pending", "host": "red-linux", "model": model, **_RED_RECOVERY,
                         "reason": "Selection deadline reached; an action may still be running. Check red_model_status before retrying."}

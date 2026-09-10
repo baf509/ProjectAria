@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 
 import pytest
+from types import SimpleNamespace
 from tests.test_mcp_operations import operations
 
 
@@ -66,7 +67,8 @@ async def test_schema_only_offers_supported_choices_and_readonly_status(setup_re
     _, server, fleet, _ = setup_red
     tools = {t.name: t for t in await server.list_tools()}
     schema = tools["select_red_model"].inputSchema
-    assert set(schema["properties"]) == {"model"}
+    # `force` is offered; `ctx` is injected by the server, not part of the schema.
+    assert set(schema["properties"]) == {"model", "force"}
     assert set(schema["properties"]["model"]["enum"]) == {"qwen3.8-27b", "qwen-flash-next"}
     assert tools["red_model_status"].annotations.readOnlyHint is True
     with pytest.raises(Exception):
@@ -116,6 +118,56 @@ async def test_refusals_never_stop_or_start(setup_red, condition):
     if condition == "retired": f.rows[f.new]["startable"] = False
     if condition == "two_residents": f.rows[f.new]["state"] = "running"
     assert (await select("qwen-flash-next"))["status"] in ("blocked", "pending")
+    assert f.posts == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("condition", ["busy", "assigned"])
+async def test_force_requires_consent_and_declining_stops_nothing(setup_red, condition):
+    """force is a prompt, not a bypass: declining must leave Red untouched."""
+    _, _, f, select = setup_red
+    f.rows[f.old]["state"] = "running"
+    if condition == "busy": f.busy = 1
+    if condition == "assigned": f.rows[f.old]["bound_agents"] = ["pi-coding-red-qwen38-27b"]
+
+    class Declines:
+        async def elicit(self, message, schema):
+            self.message = message
+            return SimpleNamespace(action="decline")
+
+    ctx = Declines()
+    assert (await select("qwen-flash-next", ctx=ctx, force=True))["status"] == "cancelled"
+    assert f.posts == []
+    assert "Red" in ctx.message
+
+
+@pytest.mark.asyncio
+async def test_force_with_consent_interrupts_and_switches(setup_red):
+    """Accepting must actually get through the guard that would otherwise refuse."""
+    _, _, f, select = setup_red
+    f.rows[f.old]["state"] = "running"
+    f.busy = 1
+
+    class Accepts:
+        async def elicit(self, message, schema):
+            self.message = message
+            return SimpleNamespace(action="accept")
+
+    ctx = Accepts()
+    result = await select("qwen-flash-next", ctx=ctx, force=True)
+    assert result["status"] != "blocked"
+    assert [p for p in f.posts if "stop" in p], f.posts
+    # The prompt has to say what is being destroyed, not just ask.
+    assert "lost" in ctx.message
+
+
+@pytest.mark.asyncio
+async def test_force_without_a_consent_capable_client_is_refused(setup_red):
+    _, _, f, select = setup_red
+    f.rows[f.old]["state"] = "running"
+    f.busy = 1
+    with pytest.raises(RuntimeError, match="consent"):
+        await select("qwen-flash-next", force=True)
     assert f.posts == []
 
 

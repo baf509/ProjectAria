@@ -208,6 +208,22 @@ Four operations, all verified 2026-09-10:
 `select_red_model` is preferred for swaps: it stops the other option first and
 verifies readiness. `sleep_model_server` suspends the box itself.
 
+**Interrupting in-flight work.** Both surfaces refuse by default while Red is
+serving or queueing, and both can be told to go ahead:
+
+- Cockpit: *Switch anyway* / *Unload anyway*, shown only while Red is busy,
+  behind a confirmation naming the request count and recent callers.
+- `select_red_model(force=True)`: does not bypass the check, it converts it into
+  an MCP consent prompt carrying the same detail and proceeds only on accept.
+  Declining returns `status="cancelled"` with nothing stopped, and a client that
+  cannot elicit consent is refused outright.
+
+Neither override touches the checks that exist because state is *unclear* —
+unknown residency, conflicting residency, or a model mid-load still refuse.
+Callers are read from the inference traces the gateway records for every
+request, so "Red is busy" can say for whom; attribution is best-effort and a
+failed lookup never blocks a consented switch.
+
 **Agent assignments block swaps.** `select_red_model` refuses while any agent
 is bound to the running Red model ("Current Red model has agent assignments").
 The Pi personas select their model through the gateway and do not need a
