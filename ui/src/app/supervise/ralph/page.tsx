@@ -8,6 +8,7 @@ import { Async } from '@/components/ui/Async'
 import { Stack, Cluster, ScrollX } from '@/components/layout'
 import { api } from '@/lib/http'
 import { useResource } from '@/lib/swr'
+import { middleTruncate } from '@/lib/format'
 
 type Task = {
   id: string; description: string; state: string; attempt_count: number
@@ -87,7 +88,14 @@ export default function RalphPage() {
       </Card>
       <Async r={runs}>{rows => <Card><Stack>{rows.length === 0 && <Text>No Ralph runs yet.</Text>}{rows.map(run =>
         <Cluster key={run._id}>
-          <Button onClick={() => { setSelected(run._id); setPlanEdit(''); setPlanVersion(null); setLogAttempt(null) }}>{run.project} · {run._id.slice(0, 8)}</Button>
+          {/* The project name is unbounded data in a control whose label is
+              assumed short: Button is deliberately `shrink-0 whitespace-nowrap`
+              (controls keep their intrinsic width, text wraps instead), so a
+              long name pushes the button past the viewport — a real 375px
+              overflow on `flashnext-control-preparation · 72323e7c`. Truncate
+              the NAME and keep the id whole; middle truncation because project
+              names discriminate at both ends. */}
+          <Button title={`${run.project} · ${run._id}`} onClick={() => { setSelected(run._id); setPlanEdit(''); setPlanVersion(null); setLogAttempt(null) }}>{middleTruncate(run.project, 18)} · {run._id.slice(0, 8)}</Button>
           <Chip>{run.state.replaceAll('_', ' ')}</Chip>
           {run.stop_reason && <Text>{run.stop_reason}</Text>}
         </Cluster>)}</Stack></Card>}</Async>
