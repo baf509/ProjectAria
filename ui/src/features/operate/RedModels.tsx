@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Card, Notice, Text } from '@/components/ui/primitives'
+import { Notice, Text } from '@/components/ui/primitives'
 import { Button } from '@/components/ui/controls'
 import { Cluster, Stack } from '@/components/layout'
 import { api, hasAdminKey } from '@/lib/http'
@@ -26,7 +26,12 @@ async function waitFor(slug: string, running: boolean) {
   throw new Error(`${modelName(slug)} did not become ${running ? 'ready' : 'stopped'} within 20 minutes. Check its details before retrying.`)
 }
 
-export function RedModels({ fleet, route, utilization }: {
+/**
+ * Red's controls, rendered bare so they sit inside the Red machine card. The
+ * card header already names the box and its Resident section already states
+ * what is loaded, so this is only the actions and their refusals.
+ */
+export function RedModelControls({ fleet, route, utilization }: {
   fleet: Resource<ModelServersFullResponse>
   route: Resource<LlmRouteFull>
   utilization: Resource<UtilizationResponse>
@@ -131,9 +136,10 @@ export function RedModels({ fleet, route, utilization }: {
     }
   }
 
-  return <Card title="Red models" hint="Two R9700s · one model at a time">
+  return <div className="min-w-0">
+    <h3 className="m-0 mb-1.5 text-micro font-medium uppercase tracking-[0.14em] text-ink-faint">Model</h3>
     <Stack gap="sm">
-      <Text>{loaded ? `Loaded: ${modelName(loaded.slug)}` : 'No model is loaded on Red.'}</Text>
+      <Text>One model at a time. Switching unloads the current one first.</Text>
       {RED_MODELS.map((slug, i) => {
         const server = models[i]
         const resident = Boolean(server && isResident(server))
@@ -175,5 +181,5 @@ export function RedModels({ fleet, route, utilization }: {
       {done && <div role="status"><Notice tone="info">{done}</Notice></div>}
       {error && <div role="alert"><Notice tone="warn">{error}</Notice></div>}
     </Stack>
-  </Card>
+  </div>
 }
