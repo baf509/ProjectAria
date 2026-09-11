@@ -176,6 +176,14 @@ class Settings(BaseSettings):
     coding_use_shell_substrate: bool = True
     coding_watchdog_interval_seconds: int = 5
     coding_stall_seconds: int = 60
+
+    # A model backend can report its slot busy while generating nothing
+    # (2026-09-11; llama.cpp issue 23268, open). The floor is well above the
+    # slowest legitimate silence — a 233k-token prefill measured 13m39s — so
+    # this is not a decode-latency threshold and should not be tuned down.
+    inference_stall_watch_enabled: bool = True
+    inference_stall_poll_seconds: int = 60
+    inference_stall_after_seconds: int = 1200
     coding_auto_respond_prompts: bool = False
     # Global concurrency limiter for coding sub-agents (Pi-Flow
     # --max-concurrent-subagents parity). A session holds a "slot" while it is
@@ -905,6 +913,7 @@ class Settings(BaseSettings):
     guard_min_mem_available_gib: float = 9.0
     # Git protocol.
     guard_worktree_default: bool = True        # every ARIA session gets its own worktree
+    guard_require_repo: bool = True            # refuse a coding session outside a git repo
     guard_checkpoint_enabled: bool = True      # real commits, not Mongo metadata
     guard_checkpoint_interval_seconds: int = 600
     guard_mirror_root: str = "~/git-safe"      # bare mirrors; push target for aria/* branches

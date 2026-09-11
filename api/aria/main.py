@@ -419,6 +419,27 @@ async def lifespan(app: FastAPI):
             await shell_adopter.start()
             app.state.shell_adopter = shell_adopter
 
+    if settings.inference_stall_watch_enabled:
+        # A backend can report its slot busy while producing nothing (observed
+        # 2026-09-11 on the CUDA/Halo candidate; llama.cpp issue 23268 is open
+        # for the same shape). The gateway's 1800s read timeout means that
+        # silently holds the only admission slot for half an hour, so detect it
+        # rather than wait for someone to notice the queue.
+        from aria.api.deps import get_model_server_manager
+        from aria.infrastructure.stall_watch import (
+            BackendStallWatcher, probe_running_backends,
+        )
+        from aria.notifications.service import NotificationService
+
+        stall_watcher = BackendStallWatcher(
+            probe=probe_running_backends(get_model_server_manager(), db),
+            alert=NotificationService().notify,
+            interval_seconds=settings.inference_stall_poll_seconds,
+            stall_after_seconds=settings.inference_stall_after_seconds,
+        )
+        await stall_watcher.start()
+        app.state.stall_watcher = stall_watcher
+
     # Coherence C3: Linear backlog sync + reconciliation (per-project opt-in
     # via linear_project_map; auto-resolve threshold-gated, logged, reversible).
     if settings.linear_enabled and settings.linear_api_key:
@@ -636,7 +657,7 @@ async def lifespan(app: FastAPI):
         "shell_adopter", "shell_worker", "linear_sync", "embedding_backfill",
         "relay_watchdog", "vault_reader", "steward", "meta_supervisor",
         "triage_worker", "nudge_worker", "outcome_worker", "research_planner",
-        "improver",
+        "improver", "stall_watcher",
     ):
         worker = getattr(app.state, attr, None)
         if worker is not None:
