@@ -520,11 +520,16 @@ def _routing_manager():
 
 @pytest.fixture
 def _no_safety_gates():
-    """start_session consults the killswitch and e-stop before spawning."""
+    """start_session consults the killswitch and e-stop before spawning.
+
+    It also refuses a workspace outside a git repository, which these tests are
+    not about: every real coding workspace is one, so resolve it as such here.
+    """
     estop = MagicMock()
     estop.is_active = AsyncMock(return_value=False)
     with patch("aria.api.deps.get_killswitch") as ks, \
-         patch("aria.api.deps.resolve_estop_manager", AsyncMock(return_value=estop)):
+         patch("aria.api.deps.resolve_estop_manager", AsyncMock(return_value=estop)), \
+         patch("aria.agents.session._git_repo_root", return_value="/tmp/ws"):
         ks.return_value.check_or_raise = MagicMock()
         yield
 

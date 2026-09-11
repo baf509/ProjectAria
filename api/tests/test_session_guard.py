@@ -126,6 +126,7 @@ class _Ctx:
             patch("aria.agents.session.record_event", AsyncMock(return_value={})),
             patch.object(settings, "guard_enabled", True),
             patch.object(settings, "guard_worktree_default", True),
+            patch.object(settings, "guard_require_repo", True),
             patch.object(settings, "guard_sandbox_enabled", False),
             patch.object(settings, "guard_checkpoint_enabled", False),
             patch.object(settings, "coding_routing_enabled", False),
@@ -212,11 +213,41 @@ class TestWorktreeDefault:
         assert doc["workspace"] == "/repo"
 
     @pytest.mark.asyncio
-    async def test_a_non_repo_workspace_degrades_instead_of_initialising_one(self):
-        """A default that silently `git init`s ~/Downloads is worse than no
-        worktree: the new repo has no history to roll back to either."""
+    async def test_a_non_repo_workspace_is_refused(self):
+        """An agent editing outside version control has no rollback point.
+
+        Every other control here assumes one exists, so the session does not
+        start at all rather than starting unguarded.
+        """
         mgr = _manager()
         with _Ctx(mgr), patch("aria.agents.session._git_repo_root", return_value=None):
+            with pytest.raises(RuntimeError, match="not a git repository"):
+                await mgr.start_session(workspace="/tmp/scratch", backend="claude_code",
+                                        prompt="fix it", model="x")
+
+        mgr._fake_git_guard.prepare_session.assert_not_awaited()
+        mgr.db.coding_sessions.insert_one.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_worktree_request_still_initialises_a_repo(self):
+        """`create_worktree=True` creates the repo during provision, so it ends
+        up inside a git tree and must not be refused on the way there."""
+        mgr = _manager()
+        with _Ctx(mgr), patch("aria.agents.session._git_repo_root", return_value=None):
+            await mgr.start_session(workspace="/tmp/scratch", backend="claude_code",
+                                    prompt="fix it", model="x", create_worktree=True)
+
+        mgr._fake_git_guard.prepare_session.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_non_repo_workspace_degrades_when_the_requirement_is_off(self):
+        """With `guard_require_repo` off, the older behaviour is unchanged: no
+        worktree, because a default that silently `git init`s ~/Downloads is
+        worse than none — the new repo has no history to roll back to either."""
+        mgr = _manager()
+        with _Ctx(mgr), \
+             patch.object(settings, "guard_require_repo", False), \
+             patch("aria.agents.session._git_repo_root", return_value=None):
             await mgr.start_session(workspace="/tmp/scratch", backend="claude_code",
                                     prompt="fix it", model="x")
 
@@ -524,6 +555,7 @@ class TestCheckpoints:
         mgr = _manager()
         with _Ctx(mgr), \
              patch.object(settings, "guard_checkpoint_enabled", True), \
+             patch.object(settings, "guard_require_repo", False), \
              patch("aria.agents.session._git_repo_root", return_value=None):
             await mgr.start_session(workspace="/tmp/scratch", backend="claude_code",
                                     prompt="fix it", model="x")

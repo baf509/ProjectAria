@@ -18,6 +18,18 @@ from aria.agents.backends.registry import BackendRegistry
 from aria.agents.backends.registry import CodingBackendUnavailableError
 
 
+@pytest.fixture(autouse=True)
+def _workspace_is_a_repo():
+    """The guard refuses a coding session outside a git repository.
+
+    These tests cover session lifecycle rather than the guard — see
+    `test_session_guard.py` for the requirement itself — and every real coding
+    workspace is a repository, so resolve the temp paths here as one.
+    """
+    with patch("aria.agents.session._git_repo_root", side_effect=lambda path: path):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

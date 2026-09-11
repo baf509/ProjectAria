@@ -1,5 +1,23 @@
 # ARIA Changelog
 
+## 2026-09-11 — Coding agents must work inside a git repository
+
+- `guard_require_repo` (default on) refuses a coding session whose workspace is
+  not a git repository. Previously `guard_worktree_default` wanted a worktree for
+  every session, but a non-repo workspace silently degraded to no worktree, no
+  rollback point and a warning event — the one case where every other guard
+  control lost the history it assumes exists.
+- The repo root is now resolved for every guarded session rather than only when a
+  worktree was requested, since the requirement is a fact about the workspace and
+  not about worktree isolation.
+- Unchanged: an explicit `create_worktree=True` still initialises the repository
+  during provision and is not refused; `guard_enabled=false` remains the
+  byte-for-byte escape hatch; remote sessions are still left to the node agent.
+  Setting `guard_require_repo=false` restores the previous degrade-and-warn path,
+  which stays observable rather than silent.
+- The refusal names the three ways out instead of failing blankly. API suite
+  2563 passed, 10 skipped.
+
 ## 2026-09-11 — Ralph renamed to Loop
 
 - The controller is now **Loop**: module `api/aria/loop/`, `LoopService`, routes

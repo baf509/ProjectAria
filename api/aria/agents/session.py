@@ -698,11 +698,13 @@ class CodingSessionManager:
         CLOSED: "just this once, unsandboxed" is how a safety control becomes
         decorative.
 
-        Scope of the gate: the guard refuses the spawns it GOVERNS. A workspace
-        that is not a git repo gets no worktree (see `_git_repo_root`) and, with
-        the sandbox off, nothing else to enforce — refusing those too would take
-        the whole coding surface down for a control with no rollback story
-        there. That is recorded as a guard event, not swallowed.
+        Scope of the gate: the guard refuses the spawns it GOVERNS. Since
+        `guard_require_repo`, that includes a workspace which is not a git
+        repository at all — an agent editing outside version control has no
+        rollback point, which is the one thing every other control here assumes
+        exists. The refusal names the three ways out rather than degrading
+        quietly, and an explicit `create_worktree=True` still initialises the
+        repo instead of being refused.
         """
         ctx: dict = {
             "active": False,
@@ -743,15 +745,37 @@ class CodingSessionManager:
             ctx["legacy"] = ctx["will_worktree"] = bool(want_worktree and ctx["explicit"])
             return ctx
 
-        repo_root = (
-            await asyncio.to_thread(_git_repo_root, ctx["workspace"])
-            if want_worktree else None
-        )
+        # Resolved unconditionally now: `guard_require_repo` is a fact about the
+        # WORKSPACE, not about whether a worktree was asked for, so the answer is
+        # needed even when the caller opted out of one.
+        repo_root = await asyncio.to_thread(_git_repo_root, ctx["workspace"])
         ctx["repo_root"] = repo_root
         ctx["will_worktree"] = want_worktree and (repo_root is not None or ctx["explicit"])
+        # An explicit create_worktree=True initialises the repo during provision
+        # (see `_guard_provision`), so that path still ends up inside a git tree
+        # and is not refused here.
+        creates_repo = ctx["explicit"] and want_worktree
+        if repo_root is None and not creates_repo and settings.guard_require_repo:
+            reason = f"{ctx['workspace']} is not a git repository"
+            await record_event(
+                self.db, "spawn:refused", reason, session_id=session_id,
+                path=ctx["workspace"], blocked=True, severity="critical",
+            )
+            await self._notify_guard(
+                "spawn_refused",
+                f"Refused a coding session in {ctx['workspace']}: {reason}",
+                ctx["workspace"],
+            )
+            raise RuntimeError(
+                f"Guard refused this coding session — {reason}. An agent working outside "
+                "version control has no rollback point. Initialise the repository, point "
+                "the session at one, or pass create_worktree=true to have ARIA create it."
+            )
         sandbox_possible = bool(settings.guard_sandbox_enabled)
         if not (ctx["will_worktree"] or sandbox_possible):
             if want_worktree:
+                # Only reachable with guard_require_repo off; kept so that
+                # configuration stays observable rather than silent.
                 await record_event(
                     self.db, "session:unguarded",
                     f"{ctx['workspace']} is not a git repository — no worktree, no "
