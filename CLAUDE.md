@@ -150,6 +150,11 @@ systemd/              historical pre-Mac control-plane units only
   deployment currently runs as `ben`.
 - A coding/model agent may start a registered model for an authorized repair or
   test, but may not silently create an unregistered deployment.
+- Every guarded coding session runs inside a git repository. `guard_require_repo`
+  (default on) refuses a workspace that is not one, because an agent editing
+  outside version control has no rollback point. An explicit `create_worktree=true`
+  still initialises the repo and is allowed; remote sessions are still left to the
+  node agent. See `ProjectAria/Specs/2026-09-11 CODING_SESSIONS_REQUIRE_A_GIT_REPOSITORY.md`.
 - Use worktrees/checkpoints/merge gates for ARIA-managed autonomous work. Direct
   interactive operator sessions use registered shells by default. Ben's explicit
   `--no-aria` (or Mac `--local`) opt-out runs a native terminal session without
