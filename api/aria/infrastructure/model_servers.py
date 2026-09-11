@@ -2702,12 +2702,19 @@ def base_url_for_spec(spec: "ModelServerSpec") -> Optional[str]:
     dict-side twin, for status rows).
 
     `endpoint_override` wins and is load-bearing: one retired bundle bound
-    100.123.245.84:8107 ONLY, so a port-derived localhost URL is
-    connection-refused even with the server up."""
+    100.123.245.84:8107 ONLY, so a port-derived loopback URL is
+    connection-refused even with the server up.
+
+    Use 127.0.0.1, not `localhost`. Every managed forward binds IPv4 loopback
+    ONLY, while macOS getaddrinfo returns ::1 first, so `localhost` pays a
+    refused IPv6 connect on every request: measured 2026-09-11, median 1.171ms
+    vs 0.231ms and a 10.7ms vs 2.8ms tail. It also matches the hardcoded
+    endpoint_override specs in this file, and the exact base_url that the
+    pinned author benchmark requires."""
     if spec.endpoint_override:
         return spec.endpoint_override.rstrip("/")
     if spec.port:
-        return f"http://localhost:{spec.port}/v1"
+        return f"http://127.0.0.1:{spec.port}/v1"
     return None
 
 
@@ -3726,7 +3733,7 @@ async def resolve_endpoint(slug: str, db: Optional[AsyncIOMotorDatabase] = None)
         return None
     if spec.endpoint_override:
         return spec.endpoint_override
-    return f"http://localhost:{spec.port}/v1" if spec.port else None
+    return f"http://127.0.0.1:{spec.port}/v1" if spec.port else None
 
 
 def _endpoints_for(spec: "ModelServerSpec") -> dict:
@@ -3739,7 +3746,7 @@ def _endpoints_for(spec: "ModelServerSpec") -> dict:
     if not spec.port:
         return {}
     return {
-        "local": f"http://localhost:{spec.port}/v1",
+        "local": f"http://127.0.0.1:{spec.port}/v1",
         "tailnet": f"http://{_TAILNET_IP}:{spec.port}/v1",
     }
 

@@ -940,7 +940,9 @@ async def test_sleep_refused_for_onbox_server(manager):
 @pytest.mark.asyncio
 async def test_resolve_endpoint_static_slug():
     from aria.infrastructure.model_servers import resolve_endpoint
-    assert await resolve_endpoint("Chadrock-ROCmFP6-qwen3.6-27b") == "http://localhost:8105/v1"
+    # 127.0.0.1, not localhost: managed forwards bind IPv4 loopback only and
+    # macOS resolves localhost to ::1 first (see base_url_for_spec).
+    assert await resolve_endpoint("Chadrock-ROCmFP6-qwen3.6-27b") == "http://127.0.0.1:8105/v1"
 
 
 @pytest.mark.asyncio
@@ -956,7 +958,7 @@ async def test_resolve_endpoint_dynamic_and_unknown():
     from aria.infrastructure.model_servers import resolve_endpoint
     db = FakeDB()
     db.model_servers.docs.append(_dynamic_doc(slug="pulled-x", port=8120))
-    assert await resolve_endpoint("pulled-x", db) == "http://localhost:8120/v1"
+    assert await resolve_endpoint("pulled-x", db) == "http://127.0.0.1:8120/v1"
     assert await resolve_endpoint("nope", db) is None
 
 
@@ -1193,7 +1195,7 @@ def test_saturated_is_unknown_without_metrics():
 
 
 def test_base_url_for_spec_prefers_endpoint_override():
-    """A remote bundle binds the tailnet IP only; a port-derived localhost URL is refused."""
+    """A remote bundle binds the tailnet IP only; a port-derived loopback URL is refused."""
     override = ms.ModelServerSpec(
         slug="t", description="", runtime_repo="", runtime_ref="", backend_device="",
         port=8107, endpoint_override="http://100.123.245.84:8107/v1",
@@ -1203,7 +1205,7 @@ def test_base_url_for_spec_prefers_endpoint_override():
         slug="t", description="", runtime_repo="", runtime_ref="", backend_device="",
         port=8104,
     )
-    assert ms.base_url_for_spec(plain) == "http://localhost:8104/v1"
+    assert ms.base_url_for_spec(plain) == "http://127.0.0.1:8104/v1"
     assert ms.base_url_for_spec(ms.ModelServerSpec(
         slug="t", description="", runtime_repo="", runtime_ref="", backend_device="",
     )) is None

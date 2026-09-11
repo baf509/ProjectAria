@@ -112,17 +112,32 @@ class BenchmarkService:
             "import json; from evalstack.cli import RUNNERS; "
             "print(json.dumps({k: bool(v.available()) for k,v in RUNNERS.items()}))",
             cwd=str(self.root), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        # 90s, was 15s. Importing evalstack.cli pulls in the whole runner stack
+        # (inspect_ai, lm_eval, datasets, torch) and MEASURED ~10.3s warm on
+        # 2026-09-11 — a cold page cache blows straight past 15s. `probe_ok`
+        # exists because the old code could not tell "every runner is missing"
+        # from "the probe never answered": a timeout produced availability={},
+        # which marked EVERY suite unavailable and made start_run refuse all
+        # work with "Suite dependencies unavailable: perf, inspect, lm-eval" —
+        # naming healthy, installed runners. Keep the two cases distinct.
+        probe_ok = True
         try:
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-            availability = json.loads(stdout) if proc.returncode == 0 else {}
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            probe_ok = proc.returncode == 0
+            availability = json.loads(stdout) if probe_ok else {}
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             availability = {}
+            probe_ok = False
+        except json.JSONDecodeError:
+            availability = {}
+            probe_ok = False
         out = []
         for name, ids in (cat.get("suites") or {}).items():
             out.append({
                 "name": name,
+                "availability_known": probe_ok,
                 "available": all(availability.get(benches.get(i, {}).get("runner"), False) for i in ids),
                 "unavailable_runners": sorted({benches.get(i, {}).get("runner", "unknown")
                                                for i in ids if not availability.get(benches.get(i, {}).get("runner"), False)}),
@@ -182,6 +197,15 @@ class BenchmarkService:
                                  f"available: {', '.join(sorted(known_suites))}")
         unavailable = [s for s in suite_catalog if s["name"] in suites and not s.get("available", True)]
         if unavailable:
+            # Do not blame the runners for a probe that never answered. `available`
+            # is False in BOTH cases, so check whether we actually learned anything.
+            if any(not s.get("availability_known", True) for s in unavailable):
+                raise BenchmarkError(
+                    "Could not determine runner availability: the evalstack import "
+                    "probe failed or timed out, so no suite can be confirmed "
+                    "installed. This is usually transient (cold page cache) — "
+                    "retry, or run `.venv/bin/evalstack doctor` in "
+                    f"{self.root} to see the real runner status.")
             raise BenchmarkError("Suite dependencies unavailable: " + "; ".join(
                 f"{s['name']}: {', '.join(s['unavailable_runners'])}" for s in unavailable))
         known_targets = {t["name"] for t in await self.list_targets()}
