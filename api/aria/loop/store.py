@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from aria.core.logging import scrub_secrets
 from aria.guard.policy import record_event
-from aria.ralph.git import OwnershipError
+from aria.loop.git import OwnershipError
 from pymongo.errors import DuplicateKeyError
 
 
@@ -16,28 +16,28 @@ def now():
 class RunStore:
     def __init__(self, db):
         self.db = db
-        self.runs = db.ralph_runs
+        self.runs = db.loop_runs
 
     async def initialize(self):
         await self.runs.create_index([("state", 1), ("updated_at", -1)])
         await self.runs.create_index([("target", 1), ("state", 1)])
-        await self.db.ralph_logs.create_index([("run_id", 1), ("attempt_id", 1), ("at", 1)])
+        await self.db.loop_logs.create_index([("run_id", 1), ("attempt_id", 1), ("at", 1)])
 
     async def get(self, run_id):
         run = await self.runs.find_one({"_id": run_id})
         if not run:
-            raise KeyError("Ralph run not found")
+            raise KeyError("Loop run not found")
         return run
 
     async def reserve_target(self, run, state_root, owner):
         key = {"_id": run["target"]}
         try:
-            await self.db.ralph_targets.update_one(key, {"$setOnInsert": {
+            await self.db.loop_targets.update_one(key, {"$setOnInsert": {
                 "host": run["host"], "state_root": str(state_root), "owner": None, "run_id": None,
             }}, upsert=True)
         except DuplicateKeyError:
             pass
-        result = await self.db.ralph_targets.update_one(
+        result = await self.db.loop_targets.update_one(
             {**key, "host": run["host"], "state_root": str(state_root), "owner": None},
             {"$set": {"owner": owner, "run_id": run["_id"]}},
         )
@@ -45,7 +45,7 @@ class RunStore:
             raise OwnershipError("Repository reserved by another run, or controller host/state root differs; recover its run first")
 
     async def release_target(self, run):
-        await self.db.ralph_targets.update_one(
+        await self.db.loop_targets.update_one(
             {"_id": run["target"], "run_id": run["_id"], "owner": run["owner"]},
             {"$set": {"owner": None, "run_id": None}},
         )
@@ -69,7 +69,7 @@ class RunStore:
         # This journal is the durable outbox/evidence; the existing guard event
         # stream is its best-effort cockpit projection, never acceptance authority.
         await self.save(run, acceptance=acceptance)
-        await record_event(self.db, "ralph." + kind, event["detail"], actor="ralph",
+        await record_event(self.db, "loop." + kind, event["detail"], actor="loop",
                            session_id=run.get("active_attempt"),
                            extra={"run_id": run["_id"], "revision": event["revision"]})
 
@@ -77,7 +77,7 @@ class RunStore:
         import json
         content = scrub_secrets(json.dumps(payload, default=str))
         truncated = len(content) > 1100000
-        await self.db.ralph_logs.insert_one({
+        await self.db.loop_logs.insert_one({
             "run_id": run_id, "attempt_id": attempt_id, "kind": kind, "at": now(),
             "content": content[:1100000] + ("\n[Record truncated at 1100000 characters]" if truncated else ""),
             "truncated": truncated,

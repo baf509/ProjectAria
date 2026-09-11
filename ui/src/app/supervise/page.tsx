@@ -41,7 +41,7 @@ export default function SupervisePage() {
         </>
       }
     >
-      <Link href="/supervise/ralph" className="mb-3 inline-flex min-h-control items-center text-micro text-accent underline">Ralph loops — plans and verified checkpoints</Link>
+      <Link href="/supervise/loop" className="mb-3 inline-flex min-h-control items-center text-micro text-accent underline">Loops — plans and verified checkpoints</Link>
       <ProjectsBoard />
     </AppShell>
   )

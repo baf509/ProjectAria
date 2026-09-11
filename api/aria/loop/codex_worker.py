@@ -2,7 +2,7 @@
 
 One app-server process/thread per attempt; subsequent bounded turns use that
 thread. Native environment access is disabled. Repository commands travel only
-through Ralph's existing executor, which owns containment and cancellation.
+through Loop's existing executor, which owns containment and cancellation.
 """
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from pathlib import Path
 from pydantic import Field, model_validator
 
 from aria.core.logging import scrub_secrets
-from aria.ralph.models import Plan, StrictModel, WorkerReport, safe_relative
-from aria.ralph.runtime import process
-from aria.ralph.worker import ContextLimit, ModelConfigurationError, ModelExecutionError
+from aria.loop.models import Plan, StrictModel, WorkerReport, safe_relative
+from aria.loop.runtime import process
+from aria.loop.worker import ContextLimit, ModelConfigurationError, ModelExecutionError
 
 
 class Step(StrictModel):
@@ -78,7 +78,7 @@ class CodexConnection:
         env = {k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "TMPDIR", "LANG", "CODEX_HOME"}}
         code, output = await process([self.binary, "--version"], env=env)
         if code or output.strip() != b"codex-cli 0.153.2":
-            raise ModelConfigurationError("Ralph Codex worker requires qualified codex-cli 0.153.2")
+            raise ModelConfigurationError("Loop Codex worker requires qualified codex-cli 0.153.2")
         self.proc = await asyncio.create_subprocess_exec(
             self.binary, "app-server", "--listen", "stdio://",
             cwd=self.directory, env=env, start_new_session=True,
@@ -93,7 +93,7 @@ class CodexConnection:
                 pass
         self.stderr_task = asyncio.create_task(drain())
         try:
-            await self.rpc("initialize", {"clientInfo": {"name": "aria_ralph", "version": "1"},
+            await self.rpc("initialize", {"clientInfo": {"name": "aria_loop", "version": "1"},
                                            "capabilities": {"experimentalApi": True}})
             await self.send({"method": "initialized", "params": {}})
             return self
@@ -125,8 +125,8 @@ class CodexConnection:
         if "method" in value and "id" in value:
             # No approval, MCP, native/dynamic tool or input request is ever
             # accepted. This worker returns proposed commands as data only.
-            await self.send({"id": value["id"], "error": {"code": -32601, "message": "Unavailable in Ralph"}})
-            raise ModelExecutionError("Codex requested a capability outside the Ralph worker contract")
+            await self.send({"id": value["id"], "error": {"code": -32601, "message": "Unavailable in Loop"}})
+            raise ModelExecutionError("Codex requested a capability outside the Loop worker contract")
         if value.get("method") in {"item/started", "item/completed"}:
             kind = value.get("params", {}).get("item", {}).get("type")
             if kind not in {"userMessage", "agentMessage", "reasoning"}:
@@ -171,11 +171,14 @@ class CodexConnection:
         })
         return result["thread"]["id"]
 
-    async def turn(self, thread, text):
-        await self.rpc("turn/start", {
-            "threadId": thread, "input": [{"type": "text", "text": text}],
-            "environments": [], "outputSchema": step_schema(),
-        })
+    async def turn(self, thread, text, *, structured=True):
+        # Worker turns must propose one Step; the controller's salvage turn asks
+        # for prose instead, and constraining it to the Step schema would force
+        # a summary into an action it is not allowed to take.
+        params = {"threadId": thread, "input": [{"type": "text", "text": text}], "environments": []}
+        if structured:
+            params["outputSchema"] = step_schema()
+        await self.rpc("turn/start", params)
         content, usage = None, None
         while True:
             event = await self.read()
@@ -200,12 +203,24 @@ class CodexWorker:
             binary = settings.codex_binary
         self.binary, self.connection_factory = binary, connection_factory
 
+    async def summarize(self, *, config, contract, text):
+        """One fresh ephemeral thread, one tool-less prose turn, then discarded.
+
+        Reported usage is the thread total, which for a single-turn thread is
+        this call's own cost.
+        """
+        with tempfile.TemporaryDirectory(prefix="aria-loop-salvage-") as directory:
+            async with self.connection_factory(self.binary, directory) as connection:
+                thread = await connection.start(config["model"], contract, config.get("reasoning_effort"))
+                content, total = await connection.turn(thread, text, structured=False)
+        return content, {"total_tokens": total} if type(total) is int else None
+
     async def run(self, *, session_id, task, specification, instructions, handoff,
                   config, limits, execute, meter, log, planning=False, check_ids=None):
         contract = Path(__file__).with_name("worker_prompt.txt").read_text()
         contract += (
             "\nNative environment access and native tools are disabled. Propose one action as JSON matching "
-            "the supplied output schema. Ralph executes permitted repository tools in /workspace and returns "
+            "the supplied output schema. Loop executes permitted repository tools in /workspace and returns "
             "their output on the next turn of this same conversation. Do not use native tools. "
             "For shell/read_file put the command/relative path in argument; otherwise argument is empty. "
             "Only report actions have a report; only plan actions have a plan; all other fields are null."
@@ -232,7 +247,7 @@ class CodexWorker:
                    "capabilities": {"workspace": "/workspace", "network": False, "read_only": planning}}
         text = json.dumps(context)
         chars, previous_tokens, inspected = len(contract) + len(text), 0, False
-        with tempfile.TemporaryDirectory(prefix="aria-ralph-reasoner-") as directory:
+        with tempfile.TemporaryDirectory(prefix="aria-loop-reasoner-") as directory:
             async with self.connection_factory(self.binary, directory) as connection:
                 thread = await connection.start(config["model"], contract, config.get("reasoning_effort"))
                 await log("provider_session", {"session_id": session_id, "provider_session_id": thread,

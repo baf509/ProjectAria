@@ -195,7 +195,7 @@ class Project(BaseModel):
     updated_at: datetime
     last_signal_at: Optional[datetime] = None
     # Coherence C1 Verification Gate: the shell command the watchdog runs in
-    # this project's workspace before honoring a Ralph-loop session's done
+    # this project's workspace before honoring a coding-loop session's done
     # token. None -> falls back to the server-wide coding_gate_command
     # default ("make check"); a project with no usable check either way is
     # skipped, not blocked.

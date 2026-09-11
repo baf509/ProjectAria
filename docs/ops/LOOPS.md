@@ -1,29 +1,28 @@
-# Ralph loops
+# Loops
 
-Ralph turns an **operator-approved plan** into independently checked local Git
+Loop turns an **operator-approved plan** into independently checked local Git
 checkpoints. The controller chooses one eligible task, starts a new logical
 conversation, stops the worker, verifies an immutable candidate, and accepts or
 retains it. A model report cannot mark a task verified.
 
 This is separate from the older `coding_loop_*` idle-nudge feature in the watched
 CLI sessions. That feature resumes a conversation and recognizes a completion
-marker; it is not an acceptance workflow. Ralph uses a small tool-enabled harness
+marker; it is not an acceptance workflow. Loop uses a small tool-enabled harness
 over Aria's existing `LLMManager`, or the controlled Codex connection below.
 
 ## Integration and setup
 
-Implementation: `api/aria/ralph/`; API: `/api/v1/ralph`; UI: **Supervise → Ralph
-loops** (`/supervise/ralph`). Mongo holds runs, tasks, attempts, ownership, budgets,
+Implementation: `api/aria/loop/`; API: `/api/v1/loop`; UI: **Supervise → Loops** (`/supervise/loop`). Mongo holds runs, tasks, attempts, ownership, budgets,
 and evidence. Existing `spawn_bg`, guard events, provider adapters, API auth,
 session admin-key controls, and cockpit components are reused.
 
-Ralph is disabled by default. Set these **API process environment variables**:
+Loop is disabled by default. Set these **API process environment variables**:
 
 ```text
-RALPH_ENABLED=true
-RALPH_POLICY_FILE=/Users/ben/.aria/ralph-policy.json
-RALPH_STATE_DIR=/Users/ben/.aria/ralph
-RALPH_DOCKER_BINARY=docker
+LOOP_ENABLED=true
+LOOP_POLICY_FILE=/Users/ben/.aria/loop-policy.json
+LOOP_STATE_DIR=/Users/ben/.aria/loop
+LOOP_DOCKER_BINARY=docker
 ```
 
 These fields use Aria's existing `Settings` environment and `.env` loading.
@@ -33,7 +32,7 @@ checkout does not activate the production service. No deployment is automatic.
 Use an existing trusted Docker engine on the control-plane Mac. The existing
 Lima engine can be selected with
 `DOCKER_HOST=unix:///Users/ben/.lima/mongot/sock/docker.sock` if it is available.
-Ralph copies files through the Docker API into private volumes; no Mac home or
+Loop copies files through the Docker API into private volumes; no Mac home or
 source-tree mount into the VM is needed. The engine must support init, private
 PID/network namespaces, resource limits, read-only mounts, and `no-new-privileges`.
 There is no unsandboxed fallback. Containers run on the configured engine, while
@@ -42,7 +41,7 @@ all orchestration, Mongo access, model calls, and Git acceptance remain on the M
 Preinstall a trusted, Linux-compatible toolchain image containing `/bin/sh`,
 `/bin/chown`, `sleep`, and the project's offline build/test dependencies. The
 policy requires its immutable `sha256:...` image ID or a digest-qualified image
-reference. Ralph never pulls an image or installs dependencies from the network
+reference. Loop never pulls an image or installs dependencies from the network
 during execution. Images must not contain secrets or application credentials.
 
 The operator-owned JSON policy maps project IDs to **exact Git repository roots**
@@ -54,9 +53,9 @@ arbitrary filesystem roots or controller shell commands.
 {
   "projects": {
     "calculator-example": {
-      "repository": "/Users/ben/Development/AgentWorkspaces/ralph-example",
+      "repository": "/Users/ben/Development/AgentWorkspaces/loop-example",
       "image": "sha256:REPLACE_WITH_64_HEX_IMAGE_ID",
-      "assets": "/Users/ben/.aria/ralph-checks/calculator-example",
+      "assets": "/Users/ben/.aria/loop-checks/calculator-example",
       "checks": {
         "addition": {
           "argv": ["python3", "/checks/check_addition.py"],
@@ -88,6 +87,51 @@ still applies. There is no automatic vendor switch or cloud fallback. Provider
 credentials stay in the controller. Only model content and scoped tool output
 flow through the adapter; worker and verifier containers receive no API keys.
 
+### Stopped attempts carry forward what they established
+
+An attempt stopped at a context, turn or wall-time limit never reaches its
+completion report, so before this change the next attempt inherited only the
+exception text and could repeat the approach that had just run out of room.
+
+The controller now makes one bounded salvage call on that path. It reads the
+stopped attempt's own recorded model output, asks the run's **already-approved
+backend and model** to state what the attempt was pursuing, what it established
+or ruled out, how far it got and what remained, then prefixes the stop reason to
+that summary as the next attempt's handoff. The handoff stays within its existing
+2000-character bound. Backend dispatch is the worker's, identical to execution, so
+a Codex run is summarized by Codex and never silently by another provider.
+
+This is advisory context, exactly like a worker's own handoff. It is untrusted,
+never reaches verification or acceptance, and cannot mark anything verified. The
+salvage prompt states that the transcript is data rather than instructions and
+must not be used to propose weakening acceptance criteria, checks or scope.
+
+Bounds and accounting:
+
+- It is a controller call, not a worker turn, so it never consumes the turn limit.
+  Its reported tokens are added to attempt and run usage; a total the provider
+  does not report increments `unknown_calls`, so a finite token limit still fails
+  closed rather than under-counting.
+- It is bounded by `min(120, attempt_seconds)` and runs at most once per stopped
+  attempt.
+- It is skipped when the attempt logged no model output, and when the run is
+  cancelled or an emergency stop is active. Every failure is recorded as a
+  `salvage_failed` log and leaves the original stop reason as the handoff,
+  unchanged; the run continues either way.
+- An attempt stopped before its first model output has nothing to summarize, so it
+  keeps the bare stop reason. This is the expected outcome, not a failure.
+
+**Codex.** `codex` has no `LLMManager` adapter, so its salvage runs over the same
+app-server interface as execution: a new private stdio process, a new ephemeral
+thread, one tool-less turn, then discarded. It neither resumes nor forks the
+stopped worker thread. The turn sends no `outputSchema`, because the worker's
+Step schema would force a summary into an action the salvage call is not permitted
+to take; native environment access, tools, apps, hooks, MCP servers and delegation
+stay disabled exactly as for a worker thread. Its reported thread total is the
+call's own cost, since the thread serves one turn.
+
+Planning attempts are unaffected: a planning failure still blocks the run.
+
 ### Codex workers
 
 Allow `codex` in a project's `allowed_backends` and select, for example,
@@ -101,7 +145,7 @@ for **each attempt**. It neither resumes nor forks an existing conversation.
 Successive controller turns retain that thread and receive compact tool results.
 The CLI only proposes structured actions. Native environment access is disabled
 on both the thread and its turns; native tools, apps, hooks, plugins, configured
-MCP servers and delegation are disabled. Only Ralph executes repository commands,
+MCP servers and delegation are disabled. Only Loop executes repository commands,
 through the same bounded Docker workspace as other workers. Provider thread IDs
 are recorded in `provider_session` logs alongside the attempt's session ID.
 
@@ -128,8 +172,8 @@ the existing Codex account, a real temporary Git repository and Docker checks:
 
 ```sh
 cd api
-RALPH_CODEX_INTEGRATION=1 RALPH_TEST_IMAGE=sha256:YOUR_INSTALLED_IMAGE_ID \
-  python -m pytest tests/test_ralph_codex.py -k live_codex -s
+LOOP_CODEX_INTEGRATION=1 LOOP_TEST_IMAGE=sha256:YOUR_INSTALLED_IMAGE_ID \
+  python -m pytest tests/test_loop_codex.py -k live_codex -s
 ```
 
 ### Flash Next preparation activation — 2026-09-06
@@ -141,8 +185,8 @@ control. Its shell/history remain intact; `no-nudge` prevents the legacy sweep
 from restarting it during the handoff.
 
 The original watched agent subsequently resumed its separately authorized
-engineering work at 21:17 UTC, while the Ralph run was exhausted. It has newer
-canonical runtime/tests and is preparing the remote control. The final Ralph
+engineering work at 21:17 UTC, while the Loop run was exhausted. It has newer
+canonical runtime/tests and is preparing the remote control. The final Loop
 attempt remains isolated on the earlier snapshot and does not supervise that
 session or remote job. Review its checkpoint against those newer changes before
 any application; never overwrite the canonical workspace with the snapshot.
@@ -163,7 +207,7 @@ with `total_attempt_limit`: three attempts, 30 cumulative turns and 567400
 reported tokens. No authoritative verification ran and no candidate was
 accepted. The worker's 76 passing development tests do not change that status.
 Its runtime/test changes and completed runbook are retained under
-`~/.aria/ralph/72323e7cc9de4171b2e0750dec9e34d2/task-prepare-mtp-graph-control`.
+`~/.aria/loop/72323e7cc9de4171b2e0750dec9e34d2/task-prepare-mtp-graph-control`.
 All worker containers stopped, ownership was released, and no further retry or
 budget reset was scheduled. `followup-limits/final-run.json` and
 `final-logs.json` preserve the outcome. This activation exposed a real task-size/
@@ -186,7 +230,7 @@ the runtime, launch a GPU test, or complete the wider delivery plan. Remote GPU
 verification/actuation remains an explicit integration gap, not a passing check.
 
 The isolated Git root is
-`/Users/ben/Development/AgentWorkspaces/flashnext-ralph-20260906`.
+`/Users/ben/Development/AgentWorkspaces/flashnext-loop-20260906`.
 Its starting revision `6eaf3a15123ec7075edcd3009aefd3d0f993ee1b` is an **unverified
 external handoff snapshot**, with file hashes and original revision recorded in
 `HANDOFF_PROVENANCE.json`. It contains the runtime module's uncommitted source,
@@ -196,46 +240,46 @@ snapshot is not acceptance evidence. Checkpoints contain only the run's scoped
 delta and are not automatically applied back to the canonical repository.
 
 Trusted checks live in
-`/Users/ben/.aria/ralph-checks/flashnext-control-preparation`, outside the worker.
+`/Users/ben/.aria/loop-checks/flashnext-control-preparation`, outside the worker.
 The operator policy protects the snapshot's profile, source/assets/toolchain pins
-and lifecycle files. Ralph has no remote actuator access and makes no changes to
+and lifecycle files. Loop has no remote actuator access and makes no changes to
 the deployed model. The original engineering session owns subsequent GPU work;
 consult its current evidence for live deployment state. September 7 delivery
 target / September 8 closeout remain.
 
 The Codex extension's release, rollback files, policy snapshots and JUnit reports
-are retained at `/Users/ben/Services/staging/ralph-codex-20260906T205515Z`.
+are retained at `/Users/ben/Services/staging/loop-codex-20260906T205515Z`.
 Validation: 155 regression tests passed (one paid test skipped), then 14 Codex
 tests passed with the live integration enabled, including real Git/Docker
 acceptance and a host-file containment canary. The follow-up context/limit change
 passed 37 tests (two live tests skipped), including restart and cancellation
 checks, and the live limits route rejects requests without the admin key. Only
-Ralph runtime/routes and the existing `CODEX_BINARY` setting changed in the
+Loop runtime/routes and the existing `CODEX_BINARY` setting changed in the
 deployed API; the existing launchd job restarted gracefully. Follow-up backups,
 hashes, JUnit results and before/after run state are in `followup-limits/` within
-that release. The existing Ralph UI requires no new build.
+that release. The existing Loop UI requires no new build.
 
-Startup creates indexes on `ralph_runs` and `ralph_logs`. `ralph_targets` uses
+Startup creates indexes on `loop_runs` and `loop_logs`. `loop_targets` uses
 Mongo's unique `_id` for repository reservations. There is no data backfill,
 second database, queue, or requirement for Mongo replica-set transactions. A run
 embeds bounded task and attempt state so accepting the task and advancing the
 accepted revision are one compare-and-set update. Full bounded log records live
-in `ralph_logs`; the run's durable event journal is projected into `guard_events`.
+in `loop_logs`; the run's durable event journal is projected into `guard_events`.
 
 ### Mac activation verified on 2026-09-06
 
-The deployed Mac API now enables Ralph for **`calculator-example`**. Open
-<http://127.0.0.1:3000/supervise/ralph> through the existing cockpit. Other
+The deployed Mac API now enables Loop for **`calculator-example`**. Open
+<http://127.0.0.1:3000/supervise/loop> through the existing cockpit. Other
 repositories require their own allowlisted policy and trusted acceptance assets.
 The source configuration still defaults to disabled.
 
-- Repository: `/Users/ben/Development/AgentWorkspaces/ralph-example`.
-- Policy: `/Users/ben/.aria/ralph-policy.json`.
-- Trusted checks: `/Users/ben/.aria/ralph-checks/calculator-example`.
-- Durable files: `/Users/ben/.aria/ralph`; records use the existing `aria` Mongo database.
+- Repository: `/Users/ben/Development/AgentWorkspaces/loop-example`.
+- Policy: `/Users/ben/.aria/loop-policy.json`.
+- Trusted checks: `/Users/ben/.aria/loop-checks/calculator-example`.
+- Durable files: `/Users/ben/.aria/loop`; records use the existing `aria` Mongo database.
 - Engine: the existing Lima `mongot` Docker socket described above. The example
   uses the Python 3.9 toolchain in the already-present community MongoDB image,
-  with Ralph's overridden entrypoint, pinned to
+  with Loop's overridden entrypoint, pinned to
   `sha256:379fc543bf3b60c8f815b7b53053fd4ae884056f797d4e989c78cf544c7bb8b4`.
 
 Live run `fd654cc837364704a743f82144582d0e` used the explicitly selected, already
@@ -243,36 +287,60 @@ running `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` through the identified gateway.
 It reached `ready_for_review` in one attempt, six model turns, and 35.376 seconds,
 with 9060 reported tokens. Independent task and final checks passed for the same
 commit, `12e0fbae0b2ca1c8433283524a47bdfd407b1300`. Its checkpoint repository is
-`/Users/ben/.aria/ralph/fd654cc837364704a743f82144582d0e/checkpoints.git`, branch
-`ralph/fd654cc837364704a743f82144582d0e`. The source repository remains at its
+`/Users/ben/.aria/loop/fd654cc837364704a743f82144582d0e/checkpoints.git`, branch
+`loop/fd654cc837364704a743f82144582d0e`. The source repository remains at its
 original baseline, with a clean working tree.
 
 The earlier resident-alias run `e31a4965d6c84ada9a1592f89af0fcd1` reached Gemma
 because the pinned fleet default was unavailable. That worker failed to repair
-its code within two attempts and twenty total turns. Ralph blocked the task,
+its code within two attempts and twenty total turns. Loop blocked the task,
 retained its workspace and all 30984 reported tokens of usage, and accepted
 nothing. It remains inspectable separately; selecting a different model did not
 reset or alter the failed run. Model availability and alias routing are live
 fleet state, not guaranteed by these historical example names.
 
-The deployed UI reports build ID `ralph-1c4a43888e5d`. The release manifest,
+The deployed UI reports build ID `loop-1c4a43888e5d`. The release manifest,
 JUnit results, live API evidence, screenshots, and rollback files are retained at
-`/Users/ben/Services/staging/ralph-20260906T191349Z` (private to the service account).
+`/Users/ben/Services/staging/loop-20260906T191349Z` (private to the service account).
 The release was staged against the deployed tree, with file-hash checks before
-installing Ralph's changes. It preserves the existing model-routing/UI changes.
-Only the four `RALPH_*` settings and `DOCKER_HOST` were added to the service
+installing Loop's changes. It preserves the existing model-routing/UI changes.
+Only the four `LOOP_*` settings and `DOCKER_HOST` were added to the service
 environment. The API restarted gracefully; launchd restarted the UI after its
 complete build was selected. Existing job definitions and fleet defaults remain
 the deployment mechanism. `make ui-deploy` is still intentionally disabled.
 
-For rollback, first pause/cancel active Ralph runs and confirm containment has
+For rollback, first pause/cancel active Loop runs and confirm containment has
 stopped. Verify current files against the release manifest before restoring the
 recorded files from `backup/`; remove only new files still matching that manifest.
 Restore `backup/ui/.next` and its matching `public/sw.js`/build metadata, and
 restore the five changed environment keys from the private environment backup.
 Preserve any subsequent operator edits. Restart the existing Mac API/UI jobs and
-verify health and `/api/build`. Keep Mongo records and Ralph state directories
+verify health and `/api/build`. Keep Mongo records and Loop state directories
 for evidence and later recovery. No rollback should delete accepted checkpoints.
+
+## Renamed from Ralph
+
+This controller was called Ralph. The source rename is complete; **live state is
+not migrated by deploying it**. With the API stopped, after deploying the renamed
+release and before starting it, run:
+
+```bash
+scripts/aria-loop-rename-migration           # dry run, prints every change
+scripts/aria-loop-rename-migration --apply
+```
+
+It renames `ralph_runs`/`ralph_logs`/`ralph_targets`, re-prefixes `ralph.*` guard
+events, rewrites controller-owned paths and container names inside run and target
+documents, moves `~/.aria/ralph`, `~/.aria/ralph-policy.json` and
+`~/.aria/ralph-checks`, renames `refs/heads/ralph/*` checkpoint refs, and updates
+`RALPH_*` to `LOOP_*` in the service environment (keeping a `.env.pre-loop-rename`
+backup). It refuses to run if any run is still active or if it has already run.
+
+Renaming the checks directory changes each project's policy digest, so a run
+approved under the old digest must be re-approved before it can resume. The two
+target repositories under `AgentWorkspaces/` keep "ralph" in their own directory
+names; they are outside this project, and renaming one changes that run's target
+identity, so do it separately if you want it.
 
 ## Small example
 
@@ -283,7 +351,7 @@ def add(a, b):
     return a - b
 ```
 
-Commit that baseline. Copy [check_addition.py](ralph-example/check_addition.py)
+Commit that baseline. Copy [check_addition.py](loop-example/check_addition.py)
 to the operator policy's external `assets` directory. Use a preinstalled Python
 image and obtain its immutable ID with `docker image inspect --format '{{.Id}}'
 followed by the image name. Configure the example project above.
@@ -314,23 +382,23 @@ Create a draft with the UI or save this as `run.json`:
 ```
 
 ```bash
-curl -fsS http://127.0.0.1:8200/api/v1/ralph/runs \
+curl -fsS http://127.0.0.1:8200/api/v1/loop/runs \
   -H "X-API-Key: $ARIA_API_KEY" -H "X-Admin-Key: $ARIA_ADMIN_KEY" \
   -H 'Content-Type: application/json' --data-binary @run.json
 ```
 
 Inspect the returned draft and approve its **current `version`** with
-`POST /ralph/runs/{id}/approve`, body `{"expected_version":0}`. Then
-`POST /ralph/runs/{id}/start`. All mutations require the existing `X-Admin-Key`;
+`POST /loop/runs/{id}/approve`, body `{"expected_version":0}`. Then
+`POST /loop/runs/{id}/start`. All mutations require the existing `X-Admin-Key`;
 the global API middleware also applies. Keys are provided by the operator, never
 embedded in a task or passed to a container. Aria's current auth model is a
 single-operator key split, not separate user tenants.
 
-To propose a plan, omit `plan` at creation and use `POST /ralph/runs/{id}/plan`.
+To propose a plan, omit `plan` at creation and use `POST /loop/runs/{id}/plan`.
 The planner gets only read-file/list-file tools and a read-only repository. It
 must successfully read a repository file before returning a schema-validated
 plan. It cannot implement application changes. Inspect/edit the proposal in the
-UI or `PUT /ralph/runs/{id}/plan` with `plan` and `expected_version`, then approve.
+UI or `PUT /loop/runs/{id}/plan` with `plan` and `expected_version`, then approve.
 Plan changes after approval require a new run; approved scope is never silently
 expanded. Planner attempts, turns, time, and usage count toward the same budgets.
 
@@ -373,8 +441,8 @@ work is blocked, never successful.
 * **Repeated failure:** blocks that task with evidence and a request to split or
   clarify it. It does not start unrelated work on its broken changes.
 
-Read operations: `GET /ralph/policy`, `/ralph/runs`, `/ralph/runs/{id}`, and
-`/ralph/runs/{id}/logs?attempt_id=...&offset=0&limit=50`. Inspection includes
+Read operations: `GET /loop/policy`, `/loop/runs`, `/loop/runs/{id}`, and
+`/loop/runs/{id}/logs?attempt_id=...&offset=0&limit=50`. Inspection includes
 budgets, metrics, event history, session IDs, handoffs, changed paths, exact
 candidate/checkpoint revisions, check argv/version/status/output excerpts, and
 final verification. Logs include model/tool records, full captured check output,
@@ -386,7 +454,7 @@ and diffs; large process output is stopped at 1 MiB. API log pages contain at mo
 1. Reserve the canonical Git common-directory target in Mongo; acquire its
    non-expiring local file lock. The target also records the controller host and
    state root, so another installation cannot bypass the lock with a different
-   directory. There is one writer per target across Ralph runs.
+   directory. There is one writer per target across Loop runs.
 2. Clone local Git objects into the run's private bare repository, preserving
    source ancestry without copying source configuration/hooks. The source
    checkout, branches, dirty files, and remotes are never written.
@@ -399,11 +467,11 @@ and diffs; large process output is stopped at 1 MiB. API log pages contain at mo
    blobs, including files that Git archive's `export-ignore` would omit. Run
    controller-defined checks against that exact candidate in separate containers.
 6. Atomically save task acceptance, evidence, and the new accepted revision in
-   Mongo. Only afterward update the convenience `refs/heads/ralph/{run_id}` ref.
+   Mongo. Only afterward update the convenience `refs/heads/loop/{run_id}` ref.
    Recovery can rebuild this ref from Mongo evidence. A commit message/ref alone
    is never verification evidence.
 
-On startup, enabled Ralph reconciles interrupted active runs under the same
+On startup, enabled Loop reconciles interrupted active runs under the same
 target lock. It terminates recorded containers, retains useful work, and pauses;
 it does **not** replay a possibly non-idempotent tool or model call automatically.
 `POST /runs/{id}/recover` performs the same reconciliation after an infrastructure
@@ -419,7 +487,7 @@ made by a human during a run do not enter its pinned baseline; review/rebase the
 explicitly later.
 
 `GET /runs/{id}` returns `checkpoint_repository` and `checkpoint_ref`. Review or
-fetch that local branch using ordinary Git. Ralph does not push, merge, deploy,
+fetch that local branch using ordinary Git. Loop does not push, merge, deploy,
 or publish. `ready_for_review` is the default finish line.
 
 ## Trust boundaries, bounds, and retention
@@ -457,7 +525,7 @@ enforcement. Cumulative usage survives recovery/resume. Elapsed run time include
 pauses and approval time after planning starts; resuming never extends a deadline.
 
 An operator can explicitly extend an idle approved, paused or budget-exhausted
-run through `PUT /api/v1/ralph/runs/{id}/limits` with the admin credential,
+run through `PUT /api/v1/loop/runs/{id}/limits` with the admin credential,
 `expected_version`, a complete `limits` object, and an optional concise `handoff`
 (2000 characters maximum). Limits may only increase; an existing finite token cap
 cannot be removed. Usage, attempts, failed candidates and acceptance evidence
@@ -495,12 +563,12 @@ existing host storage and keep run bounds conservative.
 ```bash
 cd api
 uv pip install --python .venv-test/bin/python -r requirements-test.txt
-.venv-test/bin/python -m pytest tests/test_ralph.py tests/test_ralph_recovery.py tests/test_ralph_adapters.py -q
+.venv-test/bin/python -m pytest tests/test_loop.py tests/test_loop_recovery.py tests/test_loop_adapters.py -q
 
 # Optional real sandbox tests. Use an already-present image with python3.
 DOCKER_HOST=unix:///Users/ben/.lima/mongot/sock/docker.sock \
-RALPH_TEST_IMAGE=sha256:YOUR_LOCAL_IMAGE_ID \
-.venv-test/bin/python -m pytest tests/test_ralph_containers.py -q
+LOOP_TEST_IMAGE=sha256:YOUR_LOCAL_IMAGE_ID \
+.venv-test/bin/python -m pytest tests/test_loop_containers.py -q
 ```
 
 Routine tests use deterministic fake providers/workers and fake Mongo, with real
@@ -517,7 +585,7 @@ integration, the actual provider message conversions and stream/usage handling,
 and cleanup after process exit as well as cancellation and timeouts. The UI
 passed 14 populated-page Playwright tests across all seven configured device
 profiles, TypeScript, class lint, and a production build under Node 22. Both
-error-layout and live API responsive checks passed on Supervise and Ralph.
+error-layout and live API responsive checks passed on Supervise and Loop.
 The live API rejects missing API credentials with 401 and mutations without an
 admin key with 403. The activation record above documents the separate live
 local-model runs and their independently observed outcomes.

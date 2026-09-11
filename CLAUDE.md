@@ -114,7 +114,7 @@ installation has exactly:
 No Fireworks provider, raw Corsair endpoint, cloud fallback, or additional Pi
 model is permitted. The legacy `pi-coding-ridge` profile name is retained only as a
 compatibility selector for Flash Next. ARIA owns the shell, worktree selection,
-capture, concurrency, watchdog, review, and Ralph loop; Pi owns its transcript
+capture, concurrency, watchdog, review, and Loop; Pi owns its transcript
 and coding tools.
 
 ## Repository map

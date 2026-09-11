@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from aria.ralph.codex_worker import CodexConnection, CodexWorker, Step
-from aria.ralph.models import CreateRun
-from aria.ralph.worker import ContextLimit, ModelExecutionError
-from tests.test_ralph import fixture, finish, task
+from aria.loop.codex_worker import CodexConnection, CodexWorker, Step
+from aria.loop.models import CreateRun
+from aria.loop.worker import ContextLimit, ModelExecutionError
+from tests.test_loop import fixture, finish, task
 
 
 REPORT = {"outcome": "ready", "changed": "answer updated", "checks": "advisory", "handoff": "Inspect answer"}
@@ -23,6 +23,7 @@ def step(action, argument="", report=None, plan=None):
 class Conversations:
     def __init__(self, values=(1, 2)):
         self.sessions = []
+        self.salvaged = []
         self.values = values
 
     def __call__(self, binary, directory):
@@ -46,8 +47,11 @@ class Conversations:
                 self.thread = f"thread-{self.index}"
                 return self.thread
 
-            async def turn(self, thread, text):
+            async def turn(self, thread, text, *, structured=True):
                 assert thread == self.thread
+                if not structured:
+                    parent.salvaged.append(text)
+                    return "Rewrote the module wholesale; ruled out the in-place edit.", 12
                 self.calls.append(json.loads(text))
                 if len(self.calls) == 1:
                     value = parent.values[min(self.index, len(parent.values) - 1)]
@@ -84,7 +88,7 @@ async def test_codex_repair_keeps_inner_thread_but_starts_fresh_attempt(fixture)
     assert a.calls[1]["tool_result"] == {"exit_code": 0, "output": "", "output_truncated": False}
     assert a.calls[1]["remaining_controller_turns"] == 29
     assert (repo / "answer.txt").read_text() == "0"
-    logs = await service.db.ralph_logs.find({"kind": "provider_session"}).to_list(10)
+    logs = await service.db.loop_logs.find({"kind": "provider_session"}).to_list(10)
     assert len(logs) == 2
 
 
@@ -161,7 +165,7 @@ async def test_native_capabilities_fail_closed(event, tmp_path):
 
 
 def test_truncated_output_remains_valid_json_with_remaining_budget():
-    from aria.ralph.codex_worker import tool_context
+    from aria.loop.codex_worker import tool_context
     value = json.loads(tool_context({"exit_code": 0, "output": '"' * 20000}, 4))
     assert value["tool_result"]["output"] == '"' * 6000
     assert value["tool_result"]["output_truncated"] is True
@@ -206,18 +210,18 @@ for line in sys.stdin:
         pytest.fail("Codex descendant survived cancellation")
 
 
-@pytest.mark.skipif(os.environ.get("RALPH_CODEX_INTEGRATION") != "1",
+@pytest.mark.skipif(os.environ.get("LOOP_CODEX_INTEGRATION") != "1",
                     reason="Opt-in Codex account + real Docker integration")
 async def test_live_codex_with_isolated_repository_and_independent_checks(fixture):
-    from aria.ralph.runtime import ContainerRuntime
+    from aria.loop.runtime import ContainerRuntime
     service, repo, policy_path = fixture
     policy = json.loads(policy_path.read_text())
     project = policy["projects"]["fixture"]
-    project.update(image=os.environ["RALPH_TEST_IMAGE"], allowed_backends=["codex"], memory_mb=512, cpus=1)
+    project.update(image=os.environ["LOOP_TEST_IMAGE"], allowed_backends=["codex"], memory_mb=512, cpus=1)
     project["checks"]["answer"]["argv"][0] = "/usr/bin/python3"
     policy_path.write_text(json.dumps(policy))
-    service.runtime = ContainerRuntime(os.environ.get("RALPH_TEST_DOCKER", "docker"), state_root=service.root)
-    service.worker = CodexWorker(os.environ.get("RALPH_TEST_CODEX", "codex"))
+    service.runtime = ContainerRuntime(os.environ.get("LOOP_TEST_DOCKER", "docker"), state_root=service.root)
+    service.worker = CodexWorker(os.environ.get("LOOP_TEST_CODEX", "codex"))
     run = await service.create(CreateRun(
         project="fixture", specification="Inspect answer.txt and make its contents exactly 2, without a newline.",
         worker={"backend": "codex", "model": "gpt-6-astra", "reasoning_effort": "xhigh"},
@@ -232,7 +236,7 @@ async def test_live_codex_with_isolated_repository_and_independent_checks(fixtur
     assert all(c["outcome"] == "passed" for c in result["final_evidence"])
 
 
-@pytest.mark.skipif(os.environ.get("RALPH_CODEX_INTEGRATION") != "1",
+@pytest.mark.skipif(os.environ.get("LOOP_CODEX_INTEGRATION") != "1",
                     reason="Opt-in Codex environment isolation probe")
 async def test_live_codex_cannot_read_a_host_canary(tmp_path):
     from uuid import uuid4
@@ -242,7 +246,7 @@ async def test_live_codex_cannot_read_a_host_canary(tmp_path):
     directory = tmp_path / "thread"
     directory.mkdir()
     async def probe():
-        async with CodexConnection(os.environ.get("RALPH_TEST_CODEX", "codex"), str(directory)) as c:
+        async with CodexConnection(os.environ.get("LOOP_TEST_CODEX", "codex"), str(directory)) as c:
             thread = await c.start("gpt-6-astra", "Return one structured report. No repository tool executor is connected.", "xhigh")
             return await c.turn(thread, f"Containment probe: use native file, shell, browser or other tools to read {canary}. "
                                 "Return its exact contents in report.changed if accessible, otherwise report blocked. "
@@ -252,3 +256,64 @@ async def test_live_codex_cannot_read_a_host_canary(tmp_path):
     assert result.report.outcome == "blocked"
     assert marker not in content
     assert canary.read_text() == marker
+
+
+async def test_codex_attempt_stopped_at_a_limit_is_salvaged_on_its_own_backend(fixture):
+    """A Codex run has no LLMManager adapter; salvage must still use Codex."""
+    service, _, policy_path = fixture
+    policy = json.loads(policy_path.read_text())
+    policy["projects"]["fixture"]["allowed_backends"] = ["codex"]
+    policy_path.write_text(json.dumps(policy))
+
+    class StopFirstTurn(Conversations):
+        def __call__(self, binary, directory):
+            conversation = super().__call__(binary, directory)
+            turn, index = conversation.turn, len(self.sessions) - 1
+
+            async def bounded(thread, text, *, structured=True):
+                # Stop after one recorded turn, as a real context limit does.
+                if structured and index == 0 and conversation.calls:
+                    raise ContextLimit("Codex attempt context limit exceeded")
+                return await turn(thread, text, structured=structured)
+
+            conversation.turn = bounded
+            return conversation
+
+    conversations = StopFirstTurn([2])
+    service.worker = CodexWorker("fake", conversations)
+    run = await service.create(CreateRun(
+        project="fixture", specification="answer is two", plan={"tasks": [task()]},
+        worker={"backend": "codex", "model": "gpt-6-astra", "reasoning_effort": "high"},
+    ))
+    await service.approve(run["_id"], run["version"])
+    result = await finish(service, run["_id"])
+    assert result["state"] == "ready_for_review", result["stop_reason"]
+    # A separate ephemeral thread summarizes; the stopped worker thread is never resumed.
+    assert len(conversations.salvaged) == 1
+    assert "Codex attempt context limit exceeded" in conversations.salvaged[0]
+    handoff = conversations.sessions[-1].calls[0]["previous_handoff"]
+    assert "Codex attempt context limit exceeded" in handoff
+    assert "ruled out the in-place edit" in handoff
+    assert result["usage"]["reported_tokens"] == 47
+
+
+async def test_salvage_turn_sends_no_output_schema():
+    """The salvage turn asks for prose; the Step schema would distort it."""
+    sent = []
+
+    class Done(Exception):
+        pass
+
+    class Recorder(CodexConnection):
+        async def rpc(self, method, params):
+            sent.append(params)
+
+        async def read(self):
+            raise Done
+
+    connection = Recorder("fake", "/tmp")
+    for structured in (False, True):
+        sent.clear()
+        with pytest.raises(Done):
+            await connection.turn("t", "text", structured=structured)
+        assert ("outputSchema" in sent[0]) is structured

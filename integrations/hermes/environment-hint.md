@@ -10,7 +10,7 @@ bypassing API authentication.
 - Use `operator_snapshot` for readiness/queues/retrieval. Pass the client model
   to `inference_backend`; the default route alone does not identify Hermes.
   `inference_traces`/`inference_usage` give cache and latency evidence,
-  `benchmark_status` indexed results, `ralph_status` controller progress.
+  `benchmark_status` indexed results, `loop_status` controller progress.
   Missing data is unknown.
 - Start fleet questions with `fleet_status`; use `list_nodes` when placement or
   connectivity matters. Treat semantic state (`working`, `blocked`, `done`,

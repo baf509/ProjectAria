@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     # Global concurrency limiter for coding sub-agents (Pi-Flow
     # --max-concurrent-subagents parity). A session holds a "slot" while it is
     # actively running; spawns beyond the cap sit in a `queued` state and launch
-    # as slots free. 0 = unbounded. Size it with looping (Ralph) sessions in
+    # as slots free. 0 = unbounded. Size it with looping (Loop) sessions in
     # mind — they hold a slot for their whole life.
     coding_max_concurrent_sessions: int = 4
     # laguna hosts ONE coding slot; a second concurrent laguna session evicts
@@ -243,11 +243,11 @@ class Settings(BaseSettings):
     # Hard cap on how many sessions may sit queued waiting for a slot. 0 = no
     # cap. Beyond it a spawn is refused (fail loud) rather than silently queued.
     coding_queue_max: int = 64
-    # Durable, approved-plan Ralph controller (separate from legacy nudges).
-    ralph_enabled: bool = False
-    ralph_policy_file: str = "~/.aria/ralph-policy.json"
-    ralph_state_dir: str = "~/.aria/ralph"
-    ralph_docker_binary: str = "docker"
+    # Durable, approved-plan Loop controller (separate from legacy nudges).
+    loop_enabled: bool = False
+    loop_policy_file: str = "~/.aria/loop-policy.json"
+    loop_state_dir: str = "~/.aria/loop"
+    loop_docker_binary: str = "docker"
 
     # Legacy idle-nudge loop: opt-in, per-session. When a coding session carries a
     # loop_config, the watchdog nudges it forward whenever it goes idle at its
@@ -256,12 +256,12 @@ class Settings(BaseSettings):
     coding_loop_idle_seconds: int = 45          # idle-at-prompt time before a nudge
     coding_loop_max_nudges: int = 40            # hard cap on nudges per session
     coding_loop_deadline_minutes: int = 180     # wall-clock cap on a looping session
-    coding_loop_done_regex: str = "RALPH_DONE"  # seen in output → loop is done
+    coding_loop_done_regex: str = "LOOP_DONE"  # seen in output → loop is done
     coding_loop_nudge_prompt: str = (
         "Continue the next step of the task. When the entire task is complete AND "
-        "verified (tests pass), reply with exactly RALPH_DONE and stop."
+        "verified (tests pass), reply with exactly LOOP_DONE and stop."
     )
-    # Verification Gate (Coherence C1): a Ralph-looped session's done-signal is
+    # Verification Gate (Coherence C1): a Loop-looped session's done-signal is
     # self-reported ("done" in the agent's head, not "verified"). When enabled,
     # the watchdog runs a check command in the workspace before honoring the
     # done token; failure re-nudges with the check's output instead of ending

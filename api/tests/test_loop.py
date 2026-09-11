@@ -16,12 +16,12 @@ from fastapi import FastAPI
 from mongomock_motor import AsyncMongoMockClient
 
 from aria.llm.base import ToolCall
-from aria.ralph.config import RalphSettings, load_project
-from aria.ralph.git import GitWorkspace, OwnershipError, TargetLock, git
-from aria.ralph.models import CreateRun, Plan, TaskSpec
-from aria.ralph.runtime import process
-from aria.ralph.service import RalphService
-from aria.ralph.worker import AgentWorker
+from aria.loop.config import LoopSettings, load_project
+from aria.loop.git import GitWorkspace, OwnershipError, TargetLock, git
+from aria.loop.models import CreateRun, Plan, TaskSpec
+from aria.loop.runtime import process
+from aria.loop.service import LoopService
+from aria.loop.worker import AgentWorker
 
 
 class TrustedProcessRuntime:
@@ -47,8 +47,15 @@ class TrustedProcessRuntime:
 
 
 class FakeWorker:
-    def __init__(self, values=(1, 2), callback=None):
+    def __init__(self, values=(1, 2), callback=None, summary=None, summary_usage=None):
         self.values, self.callback, self.calls = list(values), callback, []
+        self.summary, self.summary_usage, self.summarized = summary, summary_usage, []
+
+    async def summarize(self, *, config, contract, text):
+        self.summarized.append(text)
+        if isinstance(self.summary, Exception):
+            raise self.summary
+        return self.summary, self.summary_usage
 
     async def run(self, **kw):
         self.calls.append({k: copy.deepcopy(kw[k]) for k in ("session_id", "task", "handoff")})
@@ -88,10 +95,10 @@ async def fixture(tmp_path):
     }}}
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(policy))
-    settings = RalphSettings(enabled=True, policy_file=str(policy_path), state_dir=str(tmp_path / "state"))
-    db = AsyncMongoMockClient(tz_aware=True).ralph_test
+    settings = LoopSettings(enabled=True, policy_file=str(policy_path), state_dir=str(tmp_path / "state"))
+    db = AsyncMongoMockClient(tz_aware=True).loop_test
     runtime, worker = TrustedProcessRuntime(), FakeWorker()
-    service = RalphService(db, settings=settings, runtime=runtime, worker=worker)
+    service = LoopService(db, settings=settings, runtime=runtime, worker=worker)
     await service.store.initialize()
     return service, repo, policy_path
 
@@ -126,7 +133,7 @@ async def test_failed_candidate_repaired_real_git_real_process_verification(fixt
     assert run["usage"]["attempts"] == 2 and run["usage"]["reported_tokens"] == 20
     assert run["metrics"]["verification_failures"] == 1
     assert not service.runtime.containers
-    assert await service.db.ralph_logs.count_documents({"kind": "verification"}) == 3
+    assert await service.db.loop_logs.count_documents({"kind": "verification"}) == 3
 
 
 async def test_dependency_order_and_only_selected_task(fixture):
@@ -244,7 +251,7 @@ async def test_competing_runs_and_stale_controller_fencing(fixture):
     finally:
         lock.release()
     stale = await service.store.get(first["_id"])
-    await service.db.ralph_runs.update_one({"_id": first["_id"]}, {"$set": {"owner": "replacement"}})
+    await service.db.loop_runs.update_one({"_id": first["_id"]}, {"$set": {"owner": "replacement"}})
     stale["state"] = "ready_for_review"
     with pytest.raises(OwnershipError):
         await service.store.save(stale, acceptance=True)
@@ -286,7 +293,7 @@ async def test_restart_around_acceptance_is_idempotent(fixture, after):
     with pytest.raises(Crash):
         await finish(service, run["_id"])
     await asyncio.sleep(0)
-    replacement = RalphService(service.db, settings=service.settings, runtime=service.runtime, worker=FakeWorker([2]))
+    replacement = LoopService(service.db, settings=service.settings, runtime=service.runtime, worker=FakeWorker([2]))
     await replacement.recover(run["_id"])
     recovered = await replacement.recover(run["_id"])
     assert recovered["state"] == "paused"
@@ -317,23 +324,23 @@ def test_plan_validation_dependencies_and_paths():
 
 
 async def test_unregistered_workspace_and_admin_authorization(fixture, monkeypatch):
-    from aria.api.routes.ralph import router, get_ralph
+    from aria.api.routes.loop import router, get_loop
     from aria.config import settings
     service, _, _ = fixture
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_ralph] = lambda: service
+    app.dependency_overrides[get_loop] = lambda: service
     monkeypatch.setattr(settings, "admin_key", "operator-only-test-key")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
         request = {"project": "fixture", "specification": "Fix answer", "plan": {"tasks": [task()]}}
-        response = await client.post("/ralph/runs", json=request)
+        response = await client.post("/loop/runs", json=request)
         assert response.status_code == 403
-        response = await client.post("/ralph/runs", json={**request, "project": "unregistered"}, headers={"X-Admin-Key": settings.admin_key})
+        response = await client.post("/loop/runs", json={**request, "project": "unregistered"}, headers={"X-Admin-Key": settings.admin_key})
         assert response.status_code == 400
-        response = await client.post("/ralph/runs", json=request, headers={"X-Admin-Key": settings.admin_key})
+        response = await client.post("/loop/runs", json=request, headers={"X-Admin-Key": settings.admin_key})
         assert response.status_code == 201
         run = response.json()
-        response = await client.post(f"/ralph/runs/{run['_id']}/approve", json={"expected_version": run["version"] + 1}, headers={"X-Admin-Key": settings.admin_key})
+        response = await client.post(f"/loop/runs/{run['_id']}/approve", json={"expected_version": run["version"] + 1}, headers={"X-Admin-Key": settings.admin_key})
         assert response.status_code == 409
 
 

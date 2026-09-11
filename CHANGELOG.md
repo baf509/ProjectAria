@@ -1,5 +1,49 @@
 # ARIA Changelog
 
+## 2026-09-11 — Ralph renamed to Loop
+
+- The controller is now **Loop**: module `api/aria/loop/`, `LoopService`, routes
+  `/api/v1/loop`, UI **Supervise → Loops** at `/supervise/loop`, MCP tools
+  `loop_status`/`loop_policy`/`loop_run`/`loop_plan`/`loop_limits`/`loop_logs`,
+  env `LOOP_*`, runbook `docs/ops/LOOPS.md`. Go TUI changes are comments only;
+  its `loop_enabled` wire field was already named that.
+- The separate `coding_loop_*` idle-nudge feature keeps its own identity: its
+  completion token is now `LOOP_DONE`, and prose that said "Ralph loop" about it
+  now says "coding loop" so the two systems stay distinguishable.
+- Earlier changelog entries, dated `docs/ops/*_20260908.*` records and the
+  archived session transcript keep the old name; they describe what happened
+  under it.
+- Live state is NOT migrated by the code change. Run
+  `scripts/aria-loop-rename-migration` (dry run by default) with the API stopped,
+  after deploying the renamed release: it renames the three Mongo collections,
+  re-prefixes `ralph.*` guard events, rewrites controller-owned paths and
+  container names, moves `~/.aria/ralph{,-policy.json,-checks}`, renames
+  `refs/heads/ralph/*` checkpoint refs, and updates the service `.env`.
+  Renaming the checks directory changes each policy digest, so runs approved
+  under the old digest need re-approval. The two target repositories under
+  `AgentWorkspaces/` keep "ralph" in their own names and are out of scope.
+- Full API suite 2553 passed, 10 skipped; UI typecheck clean.
+
+## 2026-09-11 — Ralph carries forward what a stopped attempt established
+
+- An attempt stopped at a context, turn or wall-time limit previously handed the
+  next attempt only the exception text, discarding everything it had learned. The
+  controller now makes one bounded salvage call on that path, using the run's
+  already-approved backend, and prefixes the stop reason to the resulting summary
+  as the next handoff. Advisory only: it never reaches verification or acceptance.
+- Salvage is not a worker turn and never consumes the turn limit; its reported
+  tokens are accounted, and an unreported total still increments `unknown_calls`
+  so finite token limits keep failing closed. It is skipped on cancel/e-stop and
+  when the stopped attempt logged no model output.
+- Backend dispatch for salvage is the worker's, matching execution. Codex runs are
+  summarized by Codex over a new private process and ephemeral thread, one tool-less
+  turn, never resuming or forking the stopped worker thread; that turn sends no
+  `outputSchema` so the worker Step schema cannot distort the summary.
+- Worker contract now asks for an approach that fits the bounded attempt, for a
+  handoff written for a worker with no memory of it, recording what was ruled out
+  and why, and for a different approach rather than refining one already failed.
+- Full API suite: 2551 passed, 10 skipped. Source change only; not deployed.
+
 ## 2026-09-09 — Failed Red wake recovery
 
 - MCP pending/error results specify one status recheck and no automatic retry

@@ -16,7 +16,7 @@ import time
 LOG = logging.getLogger("aria.readiness")
 PREFIX = "mcp__aria__"
 REQUIRED = {PREFIX + name for name in ("fleet_status", "create_coding_session", "list_nodes",
-                                      "resume_coding_session", "ralph_policy", "benchmark_catalog",
+                                      "resume_coding_session", "loop_policy", "benchmark_catalog",
                                       "wait_for_shell_output", "host_temperatures", "get_memory",
                                       "store_memory", "awareness_observations", "get_research_report",
                                       "red_model_status", "select_red_model")}

@@ -486,7 +486,7 @@ class MetaSupervisor:
         return (signals, None)
 
     def _total_nudges(self, session: dict, state: dict) -> int:
-        """Ralph-loop nudges plus the ladder's own. Both re-feed the same agent
+        """Coding-loop nudges plus the ladder's own. Both re-feed the same agent
         through the same send_input, so both have to count against progress."""
         return int(session.get("loop_nudges") or 0) + int(session.get("meta_nudges") or 0)
 
@@ -654,7 +654,7 @@ class MetaSupervisor:
         # The killswitch and the e-stop gate NEW WORK, and every rung above L0
         # is new work aimed at a live agent: a nudge types into its terminal, a
         # restart and a re-route spawn a session, a decompose spawns several.
-        # `start_session` and the Ralph loop both re-check these gates for
+        # `start_session` and the Loop both re-check these gates for
         # exactly that reason (session.py, watchdog.py `_maybe_nudge`); a
         # supervisor that kept driving agents through a freeze would make the
         # stop button a lie — and the freeze is often engaged *because* an agent
@@ -711,7 +711,7 @@ class MetaSupervisor:
 
     async def _rung_nudge(self, session: dict, state: dict, signals: list[Signal]) -> dict:
         """A nudge that NAMES the signal. A generic "keep going" is what the
-        Ralph loop already sends; repeating it is why the agent echoes."""
+        Loop already sends; repeating it is why the agent echoes."""
         session_id = str(session["_id"])
         if int(state.get("nudges") or 0) >= MAX_L1_NUDGES:
             return {"action": "nudge", "ok": False, "reason": f"{MAX_L1_NUDGES} nudges spent"}
@@ -732,7 +732,7 @@ class MetaSupervisor:
 
         state["nudges"] = int(state.get("nudges") or 0) + 1
         # `meta_nudges` is a separate counter from `loop_nudges` on purpose: a
-        # Ralph loop ends at `max_nudges`, and letting the supervisor consume
+        # Loop ends at `max_nudges`, and letting the supervisor consume
         # that budget would silently shorten a healthy loop's life.
         try:
             await self.db.coding_sessions.update_one(

@@ -36,7 +36,7 @@ model data plane and runs only the thin node agent; it must not host a second
 ARIA API. Do not copy a broad ARIA key into Corsair.
 
 Important controls include Fleet, Health, Models, Memories, Usage, Search,
-Shells, and the opt-in Ralph loop. The exact key map is shown in the running
+Shells, and the opt-in coding loop. The exact key map is shown in the running
 client's help screen and should be treated as more current than copied prose.
 
 An Apple Silicon binary cross-compiled on Linux may need a one-time ad-hoc

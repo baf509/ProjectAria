@@ -84,8 +84,8 @@ export const AREAS: Area[] = [
 /** Extra destinations that live only in the More sheet. */
 export const MORE_LINKS: Area[] = [
   {
-    href: '/supervise/ralph',
-    label: 'Ralph loops',
+    href: '/supervise/loop',
+    label: 'Loops',
     blurb: 'plans, attempts, verified checkpoints',
     icon: Activity,
     phoneTab: false,

@@ -249,7 +249,7 @@ class CodingSessionManager:
 
     @staticmethod
     def _normalize_loop_config(raw: dict) -> dict:
-        """Fill a Ralph-loop config with settings defaults so the stored doc is
+        """Fill a coding-loop config with settings defaults so the stored doc is
         self-describing (what you read is what the watchdog runs)."""
         raw = raw or {}
         return {
@@ -274,7 +274,7 @@ class CodingSessionManager:
     async def set_loop_config(
         self, session_id: str, config: Optional[dict]
     ) -> Optional[dict]:
-        """Enable (config dict) or disable (None) the Ralph nudge loop on an
+        """Enable (config dict) or disable (None) the Loop nudge loop on an
         existing session. Enabling resets the nudge counter + deadline clock."""
         session = await self.get_session(session_id)
         if not session:
@@ -517,10 +517,10 @@ class CodingSessionManager:
             "shell_name": None,
             # Which machine this session runs on (None = this host). A remote
             # host runs the session on its aria-node; drive/get_output dispatch
-            # by the shell's host, so the watchdog + Ralph loop work over the wire.
+            # by the shell's host, so the watchdog + Loop work over the wire.
             "host": host,
             "node_id": host if host else None,
-            # Ralph loop bookkeeping (loop_config None = not looping).
+            # Loop bookkeeping (loop_config None = not looping).
             "loop_config": loop_config,
             "loop_nudges": 0,
             "last_nudge_at": None,
@@ -1040,7 +1040,7 @@ class CodingSessionManager:
         # Remote host: run the session on that machine's aria-node. The node
         # creates a claude-coding-* tmux shell locally (auto-captured back into
         # the fleet); we drive it via the host-aware ShellService dispatch, so
-        # the watchdog/checkpoint/review overlay + Ralph loop work unchanged.
+        # the watchdog/checkpoint/review overlay + Loop work unchanged.
         from aria.nodes import is_remote_host
         if is_remote_host(host):
             return await self._start_remote_shell_session(
@@ -1406,7 +1406,7 @@ class CodingSessionManager:
         session = await self.get_session(session_id)
         # Shell-substrate sessions (including the real Pi TUI): input is plain
         # tmux send-keys, exactly like Claude Code/Codex. The process is already
-        # running continuously, so start_session and Ralph-loop nudges are the
+        # running continuously, so start_session and coding-loop nudges are the
         # places where new-work safety gates apply.
         if session and session.get("shell_name") and self.shell_service:
             try:

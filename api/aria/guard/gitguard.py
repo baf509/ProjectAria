@@ -231,7 +231,7 @@ class GitGuard:
             extra={"hits": hits, "branch": record.get("branch")},
         )
         if fresh:
-            # Only new paths page: a Ralph-looped session checkpoints every few
+            # Only new paths page: a Loop-looped session checkpoints every few
             # minutes, and re-raising the same file forever trains Ben to ignore
             # the one alert that must never be ignored.
             await self._alert(

@@ -247,7 +247,7 @@ Do not apply the fix. Someone else decides whether it is applied."""
 async def _stops_engaged(db) -> bool:
     """True while the killswitch or e-stop is engaged. Uses the existing gates
     (deps.get_killswitch / resolve_estop_manager) — the same ones the reaper,
-    the Ralph loop and the nudge route honour. Fails CLOSED: if the gate cannot
+    the Loop and the nudge route honour. Fails CLOSED: if the gate cannot
     be read, treat it as engaged, because the alternative is spawning agents
     during an emergency stop."""
     from aria.api.deps import get_killswitch, resolve_estop_manager

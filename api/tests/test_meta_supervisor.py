@@ -677,7 +677,7 @@ class TestLadder:
         assert record["action"] == "nudge" and record["ok"] is True
         text = sup.session_manager.send_input.await_args.args[1]
         assert "tool_loop" in text and "identical arguments" in text
-        # A generic "keep going" is what the Ralph loop already sends.
+        # A generic "keep going" is what the Loop already sends.
         assert "Do NOT repeat the last action" in text
 
     @pytest.mark.asyncio
@@ -692,8 +692,8 @@ class TestLadder:
         assert state["rung"] == L2_RESTART
 
     @pytest.mark.asyncio
-    async def test_meta_nudges_are_counted_separately_from_ralph_nudges(self):
-        # Consuming loop_nudges would silently shorten a healthy Ralph loop.
+    async def test_meta_nudges_are_counted_separately_from_loop_nudges(self):
+        # Consuming loop_nudges would silently shorten a healthy Loop.
         db = FakeDB()
         await db.coding_sessions.insert_one({"_id": "s1", "loop_nudges": 1})
         sup = _make_supervisor(db)

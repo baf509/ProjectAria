@@ -8,14 +8,14 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from aria.ralph.models import StrictModel, safe_relative
+from aria.loop.models import StrictModel, safe_relative
 
 
-class RalphSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="RALPH_", extra="ignore")
+class LoopSettings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="LOOP_", extra="ignore")
     enabled: bool = False
-    policy_file: str = "~/.aria/ralph-policy.json"
-    state_dir: str = "~/.aria/ralph"
+    policy_file: str = "~/.aria/loop-policy.json"
+    state_dir: str = "~/.aria/loop"
     docker_binary: str = "docker"
 
 
@@ -71,11 +71,11 @@ def assets_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
-def load_project(settings: RalphSettings, slug: str) -> tuple[ProjectPolicy, str]:
+def load_project(settings: LoopSettings, slug: str) -> tuple[ProjectPolicy, str]:
     config_path = Path(settings.policy_file).expanduser().resolve(strict=True)
     policy = Policy.model_validate_json(config_path.read_text())
     if slug not in policy.projects:
-        raise ValueError("Project is not enabled in the operator's Ralph policy")
+        raise ValueError("Project is not enabled in the operator's Loop policy")
     project = policy.projects[slug]
     repo = Path(project.repository).expanduser().resolve(strict=True)
     assets = Path(project.assets).expanduser().resolve(strict=True)

@@ -144,11 +144,11 @@ ARIA must observe and reconcile the result.
 
 ## Development
 
-Ralph loops are available under **Supervise → Ralph loops** for approved-plan
+Loops are available under **Supervise → Loops** for approved-plan
 execution with fresh worker sessions, independent verification, and local Git
 checkpoints. They are disabled until an operator configures a trusted container
 image, repository allowlist, and verification assets. See
-[Ralph setup and lifecycle](docs/ops/RALPH_LOOPS.md).
+[Loop setup and lifecycle](docs/ops/LOOPS.md).
 
 ```bash
 # API tests from the canonical Mac source checkout

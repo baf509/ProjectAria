@@ -5,13 +5,27 @@ from pathlib import Path
 
 import pytest
 
-from aria.ralph.config import load_project
-from aria.ralph.git import GitWorkspace, OwnershipError, git
-from aria.ralph.models import CreateRun
-from aria.ralph.runtime import InfrastructureError
-from aria.ralph.service import RalphService
-from aria.ralph.worker import AgentWorker
-from tests.test_ralph import fixture, create, finish, task, FakeWorker
+from aria.loop.config import load_project
+from aria.loop.git import GitWorkspace, OwnershipError, git
+from aria.loop.models import CreateRun
+from aria.loop.runtime import InfrastructureError
+from aria.loop.service import LoopService
+from aria.loop.worker import AgentWorker, ContextLimit
+from tests.test_loop import fixture, create, finish, task, FakeWorker
+
+
+def stop_once(exc, transcript):
+    """Log one model turn, then stop the first attempt the way a real limit does."""
+    stopped = []
+
+    async def callback(kw):
+        if stopped:
+            return None
+        stopped.append(True)
+        await kw["log"]("model", {"session_id": kw["session_id"], "content": transcript})
+        raise exc
+
+    return callback
 
 
 async def test_export_ignore_cannot_hide_accepted_files(fixture):
@@ -33,20 +47,20 @@ async def test_reservation_cannot_be_bypassed_with_other_state_root(fixture):
     first = await create(service)
     await service.store.reserve_target(first, service.root, "occupied")
     settings = service.settings.model_copy(update={"state_dir": str(service.root / "different")})
-    competing = RalphService(service.db, settings=settings, runtime=service.runtime)
+    competing = LoopService(service.db, settings=settings, runtime=service.runtime)
     second = await create(service)
     with pytest.raises(OwnershipError):
         await competing.control(second["_id"], "start")
     # Crash after reservation but before claiming the run is recoverable.
     recovered = await service.recover(first["_id"])
     assert recovered["state"] == "paused"
-    assert (await service.db.ralph_targets.find_one({"_id": first["target"]}))["owner"] is None
+    assert (await service.db.loop_targets.find_one({"_id": first["target"]}))["owner"] is None
 
 
 async def test_run_deadline_survives_resume(fixture):
     service, _, _ = fixture
     run = await create(service)
-    await service.db.ralph_runs.update_one({"_id": run["_id"]}, {"$set": {
+    await service.db.loop_runs.update_one({"_id": run["_id"]}, {"$set": {
         "state": "paused", "started_at": run["created_at"], "deadline": 1,
     }})
     result = await finish(service, run["_id"], "resume")
@@ -211,14 +225,14 @@ async def test_invalid_provider_configuration_is_not_retried(fixture):
 
 async def test_process_timeout_keeps_partial_evidence():
     import sys
-    from aria.ralph.runtime import ProcessTimeout, process
+    from aria.loop.runtime import ProcessTimeout, process
     with pytest.raises(ProcessTimeout) as error:
         await process([sys.executable, "-u", "-c", "import time; print('useful failure'); time.sleep(60)"], timeout=1)
     assert b"useful failure" in error.value.output
 
 
 async def test_completed_process_does_not_signal_reaped_group(monkeypatch):
-    from aria.ralph import runtime
+    from aria.loop import runtime
 
     def no_longer_owned(*args):
         raise PermissionError("The completed process group is no longer owned")
@@ -231,7 +245,7 @@ async def test_completed_process_does_not_signal_reaped_group(monkeypatch):
 async def test_timeout_kills_descendants_after_leader_exits(tmp_path):
     import sys
     import psutil
-    from aria.ralph.runtime import process
+    from aria.loop.runtime import process
 
     pidfile = tmp_path / "descendant"
     program = (
@@ -248,10 +262,72 @@ async def test_timeout_kills_descendants_after_leader_exits(tmp_path):
 async def test_existing_aria_settings_configure_service(fixture, monkeypatch):
     from aria.config import settings
     service, _, policy_path = fixture
-    monkeypatch.setattr(settings, "ralph_enabled", True)
-    monkeypatch.setattr(settings, "ralph_policy_file", str(policy_path))
-    monkeypatch.setattr(settings, "ralph_state_dir", str(service.root))
-    configured = RalphService(service.db, runtime=service.runtime)
+    monkeypatch.setattr(settings, "loop_enabled", True)
+    monkeypatch.setattr(settings, "loop_policy_file", str(policy_path))
+    monkeypatch.setattr(settings, "loop_state_dir", str(service.root))
+    configured = LoopService(service.db, runtime=service.runtime)
     assert configured.settings.enabled
     assert configured.root == service.root
     assert configured.settings.policy_file == str(policy_path)
+
+
+async def test_attempt_stopped_at_a_limit_hands_forward_what_it_established(fixture):
+    service, _, _ = fixture
+    summary = "Rewrote the whole file; ruled out the greedy path."
+    service.worker = FakeWorker([2], summary=summary, summary_usage={"total_tokens": 7}, callback=stop_once(
+        ContextLimit("Attempt context limit reached; use compact handoff on next attempt"),
+        "Rewriting answer.txt wholesale; the greedy path does not terminate.",
+    ))
+    run = await finish(service, (await create(service))["_id"])
+    assert run["state"] == "ready_for_review", run["stop_reason"]
+    assert [a["outcome"] for a in run["attempts"]] == ["execution_failed", "accepted", "accepted"]
+    # The next fresh worker inherits the stop reason AND what the attempt established.
+    handoff = service.worker.calls[1]["handoff"]
+    assert "Attempt context limit reached" in handoff and summary in handoff
+    assert "advisory, unverified" in handoff
+    assert "greedy path does not terminate" in service.worker.summarized[0]
+    # Salvage is a controller call, not a worker turn, and its tokens are accounted.
+    assert run["usage"]["turns"] == 2 and run["usage"]["unknown_calls"] == 0
+    assert run["usage"]["reported_tokens"] == 27
+    assert run["attempts"][0]["reported_tokens"] == 17
+
+
+async def test_wall_time_stop_is_salvaged_and_unaccountable_usage_stays_unknown(fixture):
+    service, _, _ = fixture
+    service.worker = FakeWorker([2], summary="Partial refactor; the adapter seam is wrong.", callback=stop_once(
+        TimeoutError("Attempt or verification wall time exceeded"), "Partial refactor in progress.",
+    ))
+    run = await finish(service, (await create(service))["_id"])
+    assert run["state"] == "ready_for_review", run["stop_reason"]
+    assert "adapter seam is wrong" in service.worker.calls[1]["handoff"]
+    # A total the provider never reported must not be silently counted as zero.
+    assert run["usage"]["unknown_calls"] == 1 and run["usage"]["reported_tokens"] == 20
+
+
+async def test_failed_salvage_leaves_the_original_stop_reason_intact(fixture):
+    service, _, _ = fixture
+    service.worker = FakeWorker([2], summary=RuntimeError("backend unavailable"), callback=stop_once(
+        ContextLimit("Attempt context limit reached; use compact handoff on next attempt"), "Partial work.",
+    ))
+    run = await finish(service, (await create(service))["_id"])
+    assert run["state"] == "ready_for_review", run["stop_reason"]
+    assert service.worker.calls[1]["handoff"] == "Attempt context limit reached; use compact handoff on next attempt"
+    failure = await service.db.loop_logs.find_one({"kind": "salvage_failed"})
+    assert "backend unavailable" in failure["content"]
+
+
+async def test_salvage_is_skipped_when_the_attempt_logged_no_model_output(fixture):
+    service, _, _ = fixture
+    stopped = []
+
+    async def stop_without_logging(kw):
+        if stopped:
+            return None
+        stopped.append(True)
+        raise ContextLimit("Controller-enforced agent turn limit")
+
+    service.worker = FakeWorker([2], summary="unused", callback=stop_without_logging)
+    run = await finish(service, (await create(service))["_id"])
+    assert run["state"] == "ready_for_review", run["stop_reason"]
+    assert service.worker.summarized == []
+    assert service.worker.calls[1]["handoff"] == "Controller-enforced agent turn limit"

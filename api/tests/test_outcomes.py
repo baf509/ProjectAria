@@ -365,7 +365,7 @@ def test_build_reroute_prompt_carries_the_failure_history():
 async def test_self_report_is_not_evidence():
     """exit_code 0 + a done token + no diff is a FAILED session."""
     db = FakeDB(coding_sessions=[_session(
-        result_summary="RALPH_DONE - all tests pass",
+        result_summary="LOOP_DONE - all tests pass",
         created_at=NOW - timedelta(minutes=20),
     )])
     outcome = await OutcomeScorer(db).score_session("sess-1")

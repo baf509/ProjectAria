@@ -106,11 +106,11 @@ class ContainerRuntime:
         seed = name + "-seed"
         volumes = [name + "-work"] + ([name + "-checks"] if assets else [])
         for volume in volumes:
-            await self._docker("volume", "create", "--label", "aria.ralph=true", volume)
+            await self._docker("volume", "create", "--label", "aria.loop=true", volume)
         seed_args = ["create", "--pull=never", "--name", seed, "--network=none",
                      "--user", "0:0", "--read-only", "--cap-drop=ALL", "--cap-add=CHOWN",
                      "--security-opt=no-new-privileges", "--pids-limit=16",
-                     "--label", "aria.ralph=true", "--entrypoint", "/bin/chown",
+                     "--label", "aria.loop=true", "--entrypoint", "/bin/chown",
                      "--mount", f"type=volume,source={name}-work,target=/workspace"]
         if assets:
             seed_args += ["--mount", f"type=volume,source={name}-checks,target=/checks"]
@@ -123,9 +123,9 @@ class ContainerRuntime:
         await self._docker("rm", seed)
         args = [
             "run", "--detach", "--pull=never", "--name", name,
-            "--label", "aria.ralph=true", "--network=none", "--read-only", "--init",
-            "--label", f"aria.ralph.workspace={workspace}",
-            "--label", f"aria.ralph.readonly={str(readonly).lower()}",
+            "--label", "aria.loop=true", "--network=none", "--read-only", "--init",
+            "--label", f"aria.loop.workspace={workspace}",
+            "--label", f"aria.loop.readonly={str(readonly).lower()}",
             "--cap-drop=ALL", "--security-opt=no-new-privileges", "--pids-limit=128",
             f"--memory={policy.memory_mb}m", f"--cpus={policy.cpus}",
             "--user", f"{os.getuid()}:{os.getgid()}",
@@ -157,15 +157,15 @@ class ContainerRuntime:
             raise InfrastructureError("Could not inspect container for termination")
         if code == 0:
             doc = json.loads(output)[0]
-            if doc["Config"]["Labels"].get("aria.ralph") != "true":
+            if doc["Config"]["Labels"].get("aria.loop") != "true":
                 raise InfrastructureError("Refusing to terminate an unmanaged container")
             await self._docker("stop", "--time", "0", name)
             stopped = json.loads(await self._docker("inspect", name))[0]
             if stopped["State"]["Running"]:
                 raise InfrastructureError("Container descendants have not terminated")
             labels = doc["Config"]["Labels"]
-            if labels.get("aria.ralph.readonly") == "false":
-                destination = Path(labels["aria.ralph.workspace"]).resolve()
+            if labels.get("aria.loop.readonly") == "false":
+                destination = Path(labels["aria.loop.workspace"]).resolve()
                 if self.state_root is None or not destination.is_relative_to(self.state_root.resolve()):
                     raise InfrastructureError("Retained workspace is outside controller state root")
                 code, archive = await process([self.binary, "cp", name + ":/workspace/.", "-"],
@@ -206,7 +206,7 @@ class ContainerRuntime:
                 # The marker forces controller scope validation to reject a
                 # candidate whose full tree could not safely be materialized.
                 if invalid:
-                    (destination / ".ralph-invalid-archive").write_text("Unsupported worker archive entries; inspect retained tar")
+                    (destination / ".loop-invalid-archive").write_text("Unsupported worker archive entries; inspect retained tar")
         for container in (name, name + "-seed"):
             code, output = await process([self.binary, "rm", "--force", container])
             if code and b"no such container" not in output.lower():

@@ -1026,7 +1026,7 @@ class TestCheckpoint:
         assert alerts and alerts[0]["needs_human"] is True
         assert alerts[0]["source"] == "guard"
 
-        # A Ralph loop checkpoints every few minutes; re-raising the same path
+        # A Loop checkpoints every few minutes; re-raising the same path
         # forever is how the one alert that must not be ignored gets ignored.
         with open(target, "a") as handle:
             handle.write("# again\n")

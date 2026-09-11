@@ -450,7 +450,7 @@ func (c *Client) DeleteCodingSession(sessionID string) error {
 	return nil
 }
 
-// ToggleCodingLoop enables or disables the Ralph loop on a session (server
+// ToggleCodingLoop enables or disables the coding loop on a session (server
 // defaults fill in the loop config when enabling).
 func (c *Client) ToggleCodingLoop(sessionID string, enabled bool) error {
 	body := map[string]bool{"enabled": enabled}

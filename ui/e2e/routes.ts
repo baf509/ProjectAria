@@ -5,7 +5,7 @@
 export const ROUTES = [
   '/inbox',
   '/supervise',
-  '/supervise/ralph',
+  '/supervise/loop',
   '/supervise/shells',
   '/operate',
   '/converse',

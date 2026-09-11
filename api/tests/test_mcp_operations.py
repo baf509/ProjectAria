@@ -30,7 +30,7 @@ def operations(tmp_path, monkeypatch):
 async def test_real_mcp_schema_excludes_context_and_credential(operations):
     _, server, _ = operations
     tools = {tool.name: tool for tool in await server.list_tools()}
-    schema = tools["control_ralph_run"].inputSchema
+    schema = tools["control_loop_run"].inputSchema
     assert "ctx" not in schema["properties"]
     assert set(schema["properties"]["action"]["enum"]) == {"plan", "start", "pause", "resume", "cancel", "recover"}
     assert "secret" not in json.dumps([t.model_dump() for t in tools.values()])
@@ -40,7 +40,7 @@ async def test_real_mcp_schema_excludes_context_and_credential(operations):
 async def test_invalid_run_id_fails_before_http(operations):
     _, server, request = operations
     with pytest.raises(Exception):
-        await server.call_tool("get_ralph_run", {"run_id": "../../admin"})
+        await server.call_tool("get_loop_run", {"run_id": "../../admin"})
     request.assert_not_awaited()
 
 
@@ -68,7 +68,7 @@ async def test_review_and_deadline_validate_bounds(operations):
 async def test_admin_decline_never_mutates(operations, answer):
     _, server, request = operations
     ctx = SimpleNamespace(elicit=AsyncMock(return_value=SimpleNamespace(action=answer)))
-    fn = server._tool_manager.get_tool("control_ralph_run").fn
+    fn = server._tool_manager.get_tool("control_loop_run").fn
     result = await fn("test-run", "cancel", ctx)
     assert result == {"status": "cancelled", "executed": False}
     assert all(c.args[0] == "GET" for c in request.await_args_list)
@@ -78,9 +78,9 @@ async def test_admin_decline_never_mutates(operations, answer):
 async def test_admin_consent_scopes_header_and_version(operations):
     _, server, request = operations
     ctx = SimpleNamespace(elicit=AsyncMock(return_value=SimpleNamespace(action="accept")))
-    fn = server._tool_manager.get_tool("approve_ralph_run").fn
+    fn = server._tool_manager.get_tool("approve_loop_run").fn
     await fn("test-run", 2, ctx)
-    request.assert_awaited_with("POST", "/api/v1/ralph/runs/test-run/approve",
+    request.assert_awaited_with("POST", "/api/v1/loop/runs/test-run/approve",
                                json={"expected_version": 2}, timeout=120,
                                headers={"X-Admin-Key": "test-service-secret"})
     assert "test-service-secret" not in ctx.elicit.await_args.kwargs["message"]
@@ -94,7 +94,7 @@ async def test_run_changed_during_consent_refuses(operations):
     request.side_effect = [{"version": 2, "state": "draft"}, {"version": 3, "state": "draft"}]
     ctx = SimpleNamespace(elicit=AsyncMock(return_value=SimpleNamespace(action="accept")))
     with pytest.raises(ValueError, match="changed during approval"):
-        await server._tool_manager.get_tool("approve_ralph_run").fn("test-run", 2, ctx)
+        await server._tool_manager.get_tool("approve_loop_run").fn("test-run", 2, ctx)
     assert all(c.args[0] == "GET" for c in request.await_args_list)
 
 
@@ -122,8 +122,8 @@ async def test_unavailable_benchmark_catalog_stops_after_health(operations):
 @pytest.mark.asyncio
 async def test_logs_have_bounded_pagination(operations):
     _, server, request = operations
-    await server.call_tool("get_ralph_logs", {"run_id": "test-run", "offset": 3, "limit": 10})
-    request.assert_awaited_once_with("GET", "/api/v1/ralph/runs/test-run/logs",
+    await server.call_tool("get_loop_logs", {"run_id": "test-run", "offset": 3, "limit": 10})
+    request.assert_awaited_once_with("GET", "/api/v1/loop/runs/test-run/logs",
                                     params={"offset": 3, "limit": 10})
 
 
@@ -156,7 +156,7 @@ async def test_stdio_consent_roundtrip_against_isolated_http_server(tmp_path):
     key.write_text("isolated-admin-key")
     answers = iter(["accept", "decline"])
     async def consent(context, params):
-        assert "Approve this Aria Ralph operation" in params.message
+        assert "Approve this Aria Loop operation" in params.message
         assert "isolated-admin-key" not in params.message
         return ElicitResult(action=next(answers), content={})
     params = StdioServerParameters(command=sys.executable,
@@ -167,12 +167,12 @@ async def test_stdio_consent_roundtrip_against_isolated_http_server(tmp_path):
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write, elicitation_callback=consent) as client:
                 await client.initialize()
-                accepted = await client.call_tool("approve_ralph_run", {"run_id": "test-run", "expected_version": 2})
+                accepted = await client.call_tool("approve_loop_run", {"run_id": "test-run", "expected_version": 2})
                 assert not accepted.isError
-                declined = await client.call_tool("control_ralph_run", {"run_id": "test-run", "action": "cancel"})
+                declined = await client.call_tool("control_loop_run", {"run_id": "test-run", "action": "cancel"})
                 assert not declined.isError
         writes = [c for c in calls if c[0] == "POST"]
-        assert writes == [("POST", "/api/v1/ralph/runs/test-run/approve", "isolated-admin-key")]
+        assert writes == [("POST", "/api/v1/loop/runs/test-run/approve", "isolated-admin-key")]
         assert all(admin is None for method, _, admin in calls if method == "GET")
     finally:
         http.shutdown()

@@ -7,7 +7,7 @@ import os
 import stat
 from pathlib import Path
 
-from aria.ralph.runtime import process
+from aria.loop.runtime import process
 
 
 class OwnershipError(RuntimeError):
@@ -15,7 +15,7 @@ class OwnershipError(RuntimeError):
 
 
 class TargetLock:
-    """Local-host single writer, shared by all Ralph runs/controllers for a Git target.
+    """Local-host single writer, shared by all Loop runs/controllers for a Git target.
 
     flock is intentionally not a time-expiring lease: a stalled live owner
     cannot overlap its replacement. Mongo CAS additionally fences stale writes.
@@ -68,7 +68,7 @@ def validate_tree(path: Path, max_bytes=128 * 1024 * 1024):
         for name in dirs + files:
             item = Path(base) / name
             info = item.lstat()
-            if name in {".git", ".ralph-invalid-archive"} or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            if name in {".git", ".loop-invalid-archive"} or not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
                 raise ValueError("Git metadata, symlinks, and special files are not permitted")
             if stat.S_ISREG(info.st_mode):
                 count += 1
@@ -140,7 +140,7 @@ class GitWorkspace:
         await git(*args, "add", "--all", "--", ".", env=env)
         tree = (await git(*args, "write-tree", env=env)).decode().strip()
         commit = await git("--git-dir", self.git_dir, "commit-tree", tree, "-p", parent,
-                           stdin=f"Ralph candidate {attempt_id}\n".encode())
+                           stdin=f"Loop candidate {attempt_id}\n".encode())
         return commit.decode().strip()
 
     async def tree(self, revision: str) -> str:
@@ -156,4 +156,4 @@ class GitWorkspace:
     async def checkpoint_ref(self, run_id: str, revision: str):
         # Derived convenience ref. Mongo acceptance evidence is authoritative;
         # rebuilding this ref never means accepting an unverified commit.
-        await git("--git-dir", self.git_dir, "update-ref", "refs/heads/ralph/" + run_id, revision)
+        await git("--git-dir", self.git_dir, "update-ref", "refs/heads/loop/" + run_id, revision)

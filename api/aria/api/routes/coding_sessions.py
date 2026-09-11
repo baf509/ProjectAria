@@ -40,7 +40,7 @@ class SessionResumeRequest(BaseModel):
 
 
 class SessionLoopRequest(BaseModel):
-    """Toggle the Ralph loop on a session. enabled=false clears it; the other
+    """Toggle the Loop on a session. enabled=false clears it; the other
     fields (all optional) override the coding_loop_* defaults when enabling."""
     enabled: bool
     nudge_prompt: str | None = None
@@ -328,7 +328,7 @@ async def set_coding_loop(
     body: SessionLoopRequest,
     manager: CodingSessionManager = Depends(get_coding_session_manager),
 ):
-    """Enable or disable the per-session Ralph loop. When enabled, the watchdog
+    """Enable or disable the per-session Loop. When enabled, the watchdog
     nudges the session forward whenever it idles at its prompt, re-checking the
     killswitch/e-stop each nudge, until it emits the done token or hits a cap."""
     config = None

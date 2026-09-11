@@ -18,8 +18,8 @@ test('draft approval uses the displayed version and reveals execution controls',
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
     let body: unknown = {}
-    if (path.endsWith('/ralph/policy')) body = { enabled: true, projects: { 'calculator-example': { check_ids: ['addition'] } } }
-    else if (path.endsWith('/ralph/runs')) body = [run]
+    if (path.endsWith('/loop/policy')) body = { enabled: true, projects: { 'calculator-example': { check_ids: ['addition'] } } }
+    else if (path.endsWith('/loop/runs')) body = [run]
     else if (path.endsWith('/approve')) {
       approval = route.request().postDataJSON()
       run.state = 'approved'
@@ -28,7 +28,7 @@ test('draft approval uses the displayed version and reveals execution controls',
     } else if (path.endsWith(run._id)) body = run
     await route.fulfill({ json: body })
   })
-  await page.goto('/supervise/ralph')
+  await page.goto('/supervise/loop')
   await page.getByRole('button', { name: 'calculator-example · abcdef12' }).click()
   await expect(page.getByText('Add positive, negative, and zero integers correctly.')).toBeVisible()
   await page.getByRole('button', { name: 'Approve displayed plan' }).click()
@@ -51,13 +51,13 @@ test('failed verification exposes retained handoff, exact revision and logs', as
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
     let body: unknown = {}
-    if (path.endsWith('/ralph/policy')) body = { enabled: true, projects: {} }
-    else if (path.endsWith('/ralph/runs')) body = [run]
+    if (path.endsWith('/loop/policy')) body = { enabled: true, projects: {} }
+    else if (path.endsWith('/loop/runs')) body = [run]
     else if (path.endsWith('/logs')) body = [{ _id: 'log1', kind: 'verification', content: 'Trusted check: wrong answer' }]
     else if (path.endsWith(run._id)) body = run
     await route.fulfill({ json: body })
   })
-  await page.goto('/supervise/ralph')
+  await page.goto('/supervise/loop')
   await page.getByRole('button', { name: 'calculator-example · abcdef12' }).click()
   await expect(page.getByText('Retained useful work')).toBeVisible()
   await page.getByText('addition · verification_failed', { exact: true }).click()

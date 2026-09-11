@@ -1,6 +1,6 @@
 """Opt-in real production sandbox tests, using an already-present digest-pinned image.
 
-RALPH_TEST_IMAGE=sha256:... DOCKER_HOST=... pytest tests/test_ralph_containers.py
+LOOP_TEST_IMAGE=sha256:... DOCKER_HOST=... pytest tests/test_loop_containers.py
 No image pulls, service restarts, paid calls, or changes to source repositories.
 """
 import asyncio
@@ -12,19 +12,19 @@ from uuid import uuid4
 import pytest
 
 from aria.llm.base import ToolCall
-from aria.ralph.config import load_project
-from aria.ralph.runtime import ContainerRuntime, process
-from aria.ralph.worker import AgentWorker
-from tests.test_ralph import fixture, create, finish
+from aria.loop.config import load_project
+from aria.loop.runtime import ContainerRuntime, process
+from aria.loop.worker import AgentWorker
+from tests.test_loop import fixture, create, finish
 
 
-pytestmark = pytest.mark.skipif(not os.getenv("RALPH_TEST_IMAGE"), reason="Set RALPH_TEST_IMAGE to run real container containment checks")
+pytestmark = pytest.mark.skipif(not os.getenv("LOOP_TEST_IMAGE"), reason="Set LOOP_TEST_IMAGE to run real container containment checks")
 
 
 def configure(service, policy_path):
     policy = json.loads(policy_path.read_text())
     project = policy["projects"]["fixture"]
-    project["image"] = os.environ["RALPH_TEST_IMAGE"]
+    project["image"] = os.environ["LOOP_TEST_IMAGE"]
     project["checks"]["answer"]["argv"][0] = "/usr/bin/python3"
     project["memory_mb"] = 256
     project["cpus"] = 1
@@ -61,7 +61,7 @@ async def test_container_boundary_readonly_verifier_no_credentials_or_network(fi
     workspace.mkdir(parents=True)
     (workspace / "answer.txt").write_text("2")
     monkeypatch.setenv("ADMIN_KEY", "host-secret-must-not-enter-container")
-    name = "aria-ralph-v-" + uuid4().hex
+    name = "aria-loop-v-" + uuid4().hex
     try:
         await runtime.start(name, workspace, policy, readonly=True, assets=Path(policy.assets), seconds=60)
         script = """
@@ -69,7 +69,7 @@ import os, pathlib, socket
 assert 'ADMIN_KEY' not in os.environ
 assert not pathlib.Path('/var/run/docker.sock').exists()
 assert not pathlib.Path('/Users/ben').exists()
-for path in ['/workspace/answer.txt', '/checks/check.py', '/etc/ralph-probe']:
+for path in ['/workspace/answer.txt', '/checks/check.py', '/etc/loop-probe']:
     try:
         pathlib.Path(path).write_text('tamper')
     except OSError:
@@ -94,7 +94,7 @@ async def test_container_timeout_cancel_kills_detached_descendants(fixture, canc
     runtime, policy = configure(service, policy_path)
     workspace = service.root / "descendants"
     workspace.mkdir(parents=True)
-    name = "aria-ralph-w-" + uuid4().hex
+    name = "aria-loop-w-" + uuid4().hex
     try:
         await runtime.start(name, workspace, policy, seconds=30)
         script = """

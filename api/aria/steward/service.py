@@ -1642,7 +1642,7 @@ class StewardWorker:
         # `check_command` rides in the charter's frontmatter but is a PROJECT
         # field -- it is what the verification gate runs (C1). Dropping it left
         # every chartered project with no gate command, so at A2 a session's
-        # RALPH_DONE would have been accepted with nothing to verify it.
+        # LOOP_DONE would have been accepted with nothing to verify it.
         applied = sorted(patch)
         check_command = raw.get("check_command")
         if isinstance(check_command, str) and check_command.strip():

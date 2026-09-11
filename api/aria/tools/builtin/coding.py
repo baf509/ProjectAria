@@ -44,7 +44,7 @@ class StartCodingSessionTool(_CodingBaseTool):
             ToolParameter(name="llm", type="string", description="For pi-code: Pi provider/ARIA LLM name (llamacpp, agentic, or ridge).", required=False),
             ToolParameter(name="model", type="string", description="Model id to pin", required=False),
             ToolParameter(name="branch", type="string", description="Branch hint", required=False),
-            ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits RALPH_DONE or hits the nudge/deadline caps (Ralph loop). Default false.", required=False, default=False),
+            ToolParameter(name="loop", type="boolean", description="Keep the session going: nudge it forward whenever it idles, until it emits LOOP_DONE or hits the nudge/deadline caps (Loop). Default false.", required=False, default=False),
             ToolParameter(name="host", type="string", description="Run on a remote node (its aria-node id, e.g. a MacBook). Omit to run on this host.", required=False),
             ToolParameter(name="subagent_profile", type="string", description="Named specialist profile (a db.agents slug/name): applies its backend/model and prepends its system_prompt as the role. An explicit backend/model still wins.", required=False),
             ToolParameter(name="create_worktree", type="boolean", description="Run in a dedicated git worktree branched from `workspace` (the Guard's default) instead of the live checkout. Omit to follow guard_worktree_default; pass false only when the task must edit the checkout in place.", required=False),

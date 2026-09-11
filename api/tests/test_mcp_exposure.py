@@ -100,7 +100,7 @@ async def test_usage_allowlist(bridge, group, path):
     ("get_task", {"task_id": "../../keys"}), ("get_task", {"id": "task?other=yes"}),
     ("get_task", {"task_id": "a", "id": "b"}), ("get_task", {}),
     ("benchmark_status", {"limit": -1}), ("benchmark_status", {"run_id": "../../admin"}),
-    ("ralph_status", {"run_id": "https://untrusted"}), ("ralph_status", {"limit": 101}),
+    ("loop_status", {"run_id": "https://untrusted"}), ("loop_status", {"limit": 101}),
 ])
 async def test_bad_inputs_never_reach_api(bridge, tool, kwargs):
     bridge._request = AsyncMock()
@@ -141,15 +141,15 @@ async def test_benchmark_projection_bounds_and_redacts_logs(bridge):
 
 
 @pytest.mark.asyncio
-async def test_ralph_projection_never_exposes_plan_or_attempts(bridge):
+async def test_loop_projection_never_exposes_plan_or_attempts(bridge):
     row = {"_id": "r1", "state": "paused", "limits": {"max_attempts": 2},
            "plan": "private prompt", "attempts": ["transcript"], "events": ["log"]}
     bridge._request = AsyncMock(return_value=[row, row])
-    result = await bridge.ralph_status(limit=1)
+    result = await bridge.loop_status(limit=1)
     assert result["truncated"] is True
     assert result["runs"] == [{"_id": "r1", "state": "paused", "limits": {"max_attempts": 2}}]
     bridge._request.return_value = row
-    assert (await bridge.ralph_status("r1"))["runs"] == result["runs"]
+    assert (await bridge.loop_status("r1"))["runs"] == result["runs"]
     assert all(call.args[0] == "GET" for call in bridge._request.await_args_list)
 
 

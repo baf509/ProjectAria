@@ -10,9 +10,9 @@ from aria.llm.base import ToolCall
 from aria.llm.llamacpp import LlamaCppAdapter
 from aria.llm.openai import OpenAIAdapter
 from aria.llm.openrouter import OpenRouterAdapter
-from aria.ralph.models import WorkerReport
-from aria.ralph.worker import AgentWorker, structured_reply
-from tests.test_ralph import fixture, create, finish
+from aria.loop.models import WorkerReport
+from aria.loop.worker import AgentWorker, structured_reply
+from tests.test_loop import fixture, create, finish
 
 
 REPORT = {"outcome": "ready", "changed": "Updated answer", "checks": "development check", "handoff": ""}

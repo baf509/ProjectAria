@@ -224,7 +224,7 @@ class CodingWatchdog:
 
         Observation only — nothing here notifies, nudges or stops. Never raises:
         a signal that cannot be computed must not take down the stall detection,
-        the Ralph loop or the budget guard that share this tick.
+        the Loop or the budget guard that share this tick.
         """
         try:
             now = datetime.now(timezone.utc)
@@ -450,7 +450,7 @@ class CodingWatchdog:
                         cooldown_seconds=300,
                     )
 
-            # Ralph loop: nudge a looping session forward when it goes idle.
+            # Loop: nudge a looping session forward when it goes idle.
             if session.get("loop_config"):
                 try:
                     await self._maybe_nudge(session, state)
@@ -539,7 +539,7 @@ class CodingWatchdog:
                 await self.session_manager.send_input(session_id, "y")
                 return
 
-    # ----- Ralph loop: keep a session going, nudge it forward when idle -----
+    # ----- Loop: keep a session going, nudge it forward when idle -----
 
     @staticmethod
     def _loop_nudge_text(loop: dict) -> str:
@@ -563,12 +563,12 @@ class CodingWatchdog:
             {"_id": session_id},
             {"$set": {"loop_config": None, "updated_at": datetime.now(timezone.utc)}},
         )
-        logger.info("Ralph loop ended for %s: %s", session_id, reason)
+        logger.info("Loop ended for %s: %s", session_id, reason)
         try:
             await self.notification_service.notify(
                 source=f"coding:{session_id}",
                 event_type="loop:ended",
-                detail=f"Ralph loop ended: {reason}",
+                detail=f"Loop ended: {reason}",
                 cooldown_seconds=30,
             )
         except Exception:
@@ -718,7 +718,7 @@ class CodingWatchdog:
 
         nudge_text = (
             f"That wasn't verified — the check failed:\n{tail[-1500:]}\n\n"
-            "Fix the issue(s) above, then reply RALPH_DONE again once the "
+            "Fix the issue(s) above, then reply LOOP_DONE again once the "
             "check actually passes."
         )
         await self.session_manager.send_input(session_id, nudge_text)
@@ -731,7 +731,7 @@ class CodingWatchdog:
         )
         state["last_changed_at"] = now
         logger.info(
-            "Ralph loop gate failed for %s (attempt %d/%d), re-nudged",
+            "Loop gate failed for %s (attempt %d/%d), re-nudged",
             session_id, gate_failures, max_retries,
         )
         return False
@@ -745,7 +745,7 @@ class CodingWatchdog:
         # 1) Safety leash — re-checked on EVERY tick, not just at launch.
         from aria.api.deps import get_killswitch, resolve_estop_manager
         try:
-            get_killswitch().check_or_raise("ralph loop nudge")
+            get_killswitch().check_or_raise("loop nudge")
         except Exception:
             await self._end_loop(session_id, "killswitch engaged", stop=False)
             return
@@ -804,7 +804,7 @@ class CodingWatchdog:
         )
         # Reset the idle clock so the next nudge waits for a fresh stall.
         state["last_changed_at"] = now
-        logger.info("Ralph loop nudged session %s (nudge #%d)", session_id, nudges)
+        logger.info("Loop nudged session %s (nudge #%d)", session_id, nudges)
 
         notify_every = int(loop.get("notify_every") or 0)
         if notify_every and nudges % notify_every == 0:
@@ -812,7 +812,7 @@ class CodingWatchdog:
                 await self.notification_service.notify(
                     source=f"coding:{session_id}",
                     event_type="loop:nudge",
-                    detail=f"Ralph loop still running — {nudges} nudges so far",
+                    detail=f"Loop still running — {nudges} nudges so far",
                     cooldown_seconds=0,
                 )
             except Exception:

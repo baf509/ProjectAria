@@ -112,7 +112,7 @@ func (sv *SessionView) View() string {
 		title := fmt.Sprintf("%s Coding Session", icon)
 		headerParts = append(headerParts, styles.TitleStyle.Render(title))
 
-		// Loop indicator — shown when a Ralph loop is nudging this session.
+		// Nudge indicator — shown when the coding loop is nudging this session.
 		if sv.Session.LoopEnabled {
 			headerParts = append(headerParts,
 				lipgloss.NewStyle().Foreground(styles.Accent).Bold(true).Render("⟳ looping"))

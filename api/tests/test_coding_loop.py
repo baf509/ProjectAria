@@ -1,5 +1,5 @@
 """
-ARIA - Tests for the per-session Ralph loop
+ARIA - Tests for the per-session Loop
 
 Covers loop-config normalization + toggling on the session manager, and the
 watchdog's nudge decision logic (idle→nudge, done/cap/deadline→end, safety
@@ -111,7 +111,7 @@ def _loop_session(**overrides):
         "nudge_prompt": "keep going",
         "nudge_prompt_file": None,
         "idle_seconds": 45,
-        "done_regex": "RALPH_DONE",
+        "done_regex": "LOOP_DONE",
         "max_nudges": 40,
         "deadline_minutes": 180,
         "notify_every": 0,
@@ -170,7 +170,7 @@ async def test_no_nudge_before_idle_threshold():
 async def test_done_signal_ends_and_stops():
     wd, db, sm = _make_watchdog()
     session = _loop_session()
-    state = _idle_state(output="finished the work\nRALPH_DONE\n")
+    state = _idle_state(output="finished the work\nLOOP_DONE\n")
     with _patch_gates():
         await wd._maybe_nudge(session, state)
     sm.send_input.assert_not_awaited()

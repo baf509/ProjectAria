@@ -318,16 +318,16 @@ async def benchmark_status(run_id: Optional[str] = None, limit: int = 20) -> dic
 
 
 @mcp.tool(annotations=_READ_ONLY)
-async def ralph_status(run_id: Optional[str] = None, limit: int = 10) -> dict:
-    """Read bounded Ralph run state, limits and verification counts. No plans,
+async def loop_status(run_id: Optional[str] = None, limit: int = 10) -> dict:
+    """Read bounded Loop run state, limits and verification counts. No plans,
     transcripts or logs; never approves, starts, resumes or edits a controller.
-    Administrative Ralph controls remain outside this tool."""
+    Administrative Loop controls remain outside this tool."""
     _bounded(limit, "limit", 100)
     if run_id:
-        row = await _request("GET", f"/api/v1/ralph/runs/{_path_id(run_id)}")
+        row = await _request("GET", f"/api/v1/loop/runs/{_path_id(run_id)}")
         rows = [row]
     else:
-        rows = await _request("GET", "/api/v1/ralph/runs")
+        rows = await _request("GET", "/api/v1/loop/runs")
     fields = ("_id", "id", "project", "project_slug", "state", "status", "version", "created_at",
               "started_at", "finished_at", "limits", "usage", "metrics", "stop_reason")
     projected = []
@@ -1477,7 +1477,7 @@ async def create_coding_session(
     backend: 'claude_code' | 'codex' (deployment default) | 'pi-code' (alias 'pi') |
         'pool' (Poolside's agent against local Laguna; aliases 'pool-cli',
         'poolside').
-    loop=True: watchdog nudges on idle until RALPH_DONE or the nudge/deadline
+    loop=True: watchdog nudges on idle until LOOP_DONE or the nudge/deadline
         caps. Toggle later with set_coding_loop.
     llm/model: explicit Pi provider/model pins; normally use a specialist profile.
     host: an aria-node id to run remotely; omit to use deployment policy.
@@ -1599,10 +1599,10 @@ async def set_coding_loop(
     gate_timeout: Optional[int] = None,
     gate_max_retries: Optional[int] = None,
 ) -> dict:
-    """Turn the Ralph loop on/off for a running coding sub-agent.
+    """Turn the Loop on/off for a running coding sub-agent.
 
     enabled=True: the watchdog nudges the session whenever it idles (re-checking
-    the killswitch each nudge) until it emits `done_regex` (default RALPH_DONE)
+    the killswitch each nudge) until it emits `done_regex` (default LOOP_DONE)
     or hits max_nudges/deadline_minutes. enabled=False stops nudging, session
     stays alive. Unset options use the server's coding_loop_* defaults.
     `nudge_prompt_file` is re-read every nudge, so editing it steers a live run.

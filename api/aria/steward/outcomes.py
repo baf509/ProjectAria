@@ -13,7 +13,7 @@ self-improvement phase — not an analytics extra.
 
 The standing rule this module enforces: **a self-report is a claim, not a
 confirmation.** `success` is never read from the agent's own summary, its exit
-code, or its "RALPH_DONE". It is derived from things that happened outside the
+code, or its "LOOP_DONE". It is derived from things that happened outside the
 agent: did the guard's merge land, did the C1 gate pass, is there a diff at all,
 did an uncorrelated reviewer reject it, was anything rolled back or blocked.
 
@@ -465,7 +465,7 @@ class OutcomeScorer:
         function of how many projects have a `check_command`, not of how well
         the agents work.
 
-        Nothing here reads the agent's summary, its RALPH_DONE token, or its
+        Nothing here reads the agent's summary, its LOOP_DONE token, or its
         exit code as evidence of success. `exit_code == 0` appears once, as a
         *negative* signal (crash-as-completed), never as a positive one.
         """

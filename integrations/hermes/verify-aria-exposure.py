@@ -21,7 +21,7 @@ PROFILE = Path("/Users/ben/Services/data/hermes-home")
 DEPLOYED = Path("/Users/ben/Services/apps/aria-mcp/server.py")
 BRIDGE_PYTHON = "/Users/ben/Services/apps/aria-mcp/.venv/bin/python"
 ADDITIONS = {"operator_snapshot", "inference_backend", "inference_usage",
-             "inference_traces", "benchmark_status", "ralph_status", "get_task",
+             "inference_traces", "benchmark_status", "loop_status", "get_task",
              "host_temperatures", "get_model_server", "awareness_snapshot", "awareness_observations",
              "list_memories", "get_memory", "research_status", "get_research_report", "wait_for_shell_output",
              "red_model_status"}
@@ -151,7 +151,7 @@ def probe(args):
             if {"prompt", "messages", "content", "completion", "api_key"} & set(row):
                 raise ValueError("Trace includes content or credentials")
         benchmarks = call("benchmark_status", {"limit": 2})
-        ralph = call("ralph_status", {"limit": 2})
+        loop = call("loop_status", {"limit": 2})
         call("host_temperatures", {})
         model = call("get_model_server", {"slug": args.model})
         if model.get("slug") != args.model:
@@ -226,7 +226,7 @@ def probe(args):
                 "operations_file_sha256": dependency_sha,
                 "signal_platform_selected": True, "native_search_describe_passed": True,
                 "benchmark_harness_available": benchmarks.get("available"),
-                "ralph_rows": ralph.get("returned"), "trace_rows": len(traces),
+                "loop_rows": loop.get("returned"), "trace_rows": len(traces),
                 "calls": calls, "wall_seconds": round(time.monotonic() - started, 3),
                 "scope": "Fresh installed Hermes MCP registry/dispatch; no existing Signal process reload or LLM turn"}
     finally:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aria.llm.base import Message, Tool
 from aria.llm.manager import llm_manager
-from aria.ralph.models import Plan, WorkerReport, safe_relative
+from aria.loop.models import Plan, WorkerReport, safe_relative
 
 
 SHELL = Tool("shell", "Inspect, edit, and test in /workspace. No network or controller access.", {
@@ -55,10 +55,28 @@ class AgentWorker:
     def __init__(self, adapter_factory=None):
         self.adapter_factory = adapter_factory or llm_manager.get_adapter
 
+    async def summarize(self, *, config, contract, text):
+        """Summarize untrusted text on the run's own approved backend, tool-less.
+
+        Backend dispatch matches `run`, so a run configured for Codex is
+        summarized by Codex rather than silently by another provider.
+        """
+        if config["backend"] == "codex":
+            from aria.loop.codex_worker import CodexWorker
+            return await CodexWorker().summarize(config=config, contract=contract, text=text)
+        try:
+            adapter = self.adapter_factory(config["backend"], config["model"])
+        except (ValueError, ImportError) as exc:
+            raise ModelConfigurationError(str(exc)) from exc
+        content, _, usage = await adapter.complete(
+            [Message("system", contract), Message("user", text)], temperature=0.2, max_tokens=1024,
+        )
+        return content, usage
+
     async def run(self, *, session_id, task, specification, instructions, handoff,
                   config, limits, execute, meter, log, planning=False, check_ids=None):
         if config["backend"] == "codex":
-            from aria.ralph.codex_worker import CodexWorker
+            from aria.loop.codex_worker import CodexWorker
             return await CodexWorker().run(
                 session_id=session_id, task=task, specification=specification,
                 instructions=instructions, handoff=handoff, config=config, limits=limits,

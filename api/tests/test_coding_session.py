@@ -360,7 +360,7 @@ async def test_watch_session_real_crash_still_writes_checkpoint():
 # (the real Pi executable runs in tmux like every other backend). It is plain
 # tmux send-keys, not a new ARIA orchestrator turn, so it
 # does NOT re-check the killswitch/e-stop per call (those gate start_session
-# and the Ralph loop's per-nudge check, same as claude_code/codex/pool).
+# and the Loop's per-nudge check, same as claude_code/codex/pool).
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

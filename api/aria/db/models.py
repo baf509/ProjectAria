@@ -305,7 +305,7 @@ class ResearchResponse(BaseModel):
 # =============================================================================
 
 class CodingLoopConfig(BaseModel):
-    """Ralph-loop config: nudge an idle session forward until it signals done.
+    """Coding-loop config: nudge an idle session forward until it signals done.
 
     All fields are optional; unset fields fall back to the coding_loop_*
     defaults in settings when the loop is (re)enabled.
@@ -327,7 +327,7 @@ class CodingSessionCreate(BaseModel):
     llm: Optional[str] = None
     model: Optional[str] = None
     branch: Optional[str] = None
-    loop: Optional[CodingLoopConfig] = None  # opt-in Ralph loop; absent = one-shot
+    loop: Optional[CodingLoopConfig] = None  # opt-in Loop; absent = one-shot
     host: Optional[str] = None  # run on a remote node (aria-node id); None = this host
     subagent_profile: Optional[str] = None  # named db.agents specialist (backend/model + role)
     # When true, `workspace` names a SOURCE repo (not a run directory): a new
@@ -374,7 +374,7 @@ class CodingSessionResponse(BaseModel):
     shell_name: Optional[str] = None
     status: str
     host: Optional[str] = None   # remote node id, or None for this host
-    loop_enabled: bool = False  # true while a Ralph loop is nudging this session
+    loop_enabled: bool = False  # true while a Loop is nudging this session
     # How the model was chosen: {tier, why, confidence, source, judge_model,
     # decided_at}. None when the caller pinned the model explicitly.
     routing: Optional[dict] = None

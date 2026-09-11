@@ -67,7 +67,7 @@ def _is_safe_enter_prompt(prompt_line: Optional[str]) -> bool:
 
 async def safety_engaged(db) -> bool:
     """True if the killswitch or e-stop is active (same gate the reaper and
-    Ralph loop honor — never drive a shell under an engaged stop)."""
+    Loop honor — never drive a shell under an engaged stop)."""
     from aria.api.deps import get_killswitch, resolve_estop_manager
     try:
         if get_killswitch().is_active:

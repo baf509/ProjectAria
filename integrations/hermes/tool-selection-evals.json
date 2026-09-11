@@ -105,9 +105,9 @@
     ]
   },
   {
-    "id": "inspect-ralph-run",
-    "prompt": "Show the current status of the durable Aria Ralph runs without changing them.",
-    "first_tool": "ralph_status"
+    "id": "inspect-loop-run",
+    "prompt": "Show the current status of the durable Aria Loop runs without changing them.",
+    "first_tool": "loop_status"
   },
   {
     "id": "inspect-benchmark-options",

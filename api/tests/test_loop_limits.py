@@ -3,8 +3,8 @@ import copy
 
 import pytest
 
-from aria.ralph.git import OwnershipError
-from tests.test_ralph import fixture, create, finish, FakeWorker
+from aria.loop.git import OwnershipError
+from tests.test_loop import fixture, create, finish, FakeWorker
 
 
 async def test_exhausted_run_can_use_explicit_extension_without_resetting_usage(fixture):
@@ -76,18 +76,18 @@ async def test_cancellation_racing_amendment_wins(fixture, monkeypatch):
 async def test_limit_amendment_requires_admin_and_current_version(fixture, monkeypatch):
     import httpx
     from fastapi import FastAPI
-    from aria.api.routes.ralph import router, get_ralph
+    from aria.api.routes.loop import router, get_loop
     from aria.config import settings
 
     service, _, _ = fixture
     run = await create(service)
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_ralph] = lambda: service
+    app.dependency_overrides[get_loop] = lambda: service
     monkeypatch.setattr(settings, "admin_key", "operator-only-test-key")
     body = {"expected_version": run["version"], "limits": {**run["limits"], "turns": 31}}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
-        url = f"/ralph/runs/{run['_id']}/limits"
+        url = f"/loop/runs/{run['_id']}/limits"
         assert (await client.put(url, json=body)).status_code == 403
         client.headers["X-Admin-Key"] = settings.admin_key
         assert (await client.put(url, json=body)).status_code == 200

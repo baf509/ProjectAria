@@ -34,7 +34,7 @@ function Json({ value }: { value: unknown }) {
   return <ScrollX><pre className="m-0 whitespace-pre-wrap break-words text-micro text-ink-dim">{JSON.stringify(value, null, 2)}</pre></ScrollX>
 }
 
-export default function RalphPage() {
+export default function LoopPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [project, setProject] = useState('')
   const [specification, setSpecification] = useState('')
@@ -47,10 +47,10 @@ export default function RalphPage() {
   const [busy, setBusy] = useState(false)
   const [logAttempt, setLogAttempt] = useState<string | null>(null)
   const [logOffset, setLogOffset] = useState(0)
-  const runs = useResource<Run[]>('/ralph/runs', { tier: 'fast' })
-  const policy = useResource<Policy>('/ralph/policy', { tier: 'lazy' })
-  const detail = useResource<Run>(selected ? `/ralph/runs/${selected}` : null, { tier: 'fast' })
-  const logs = useResource<Log[]>(selected && logAttempt ? `/ralph/runs/${selected}/logs?attempt_id=${logAttempt}&offset=${logOffset}&limit=10` : null, { tier: 'slow' })
+  const runs = useResource<Run[]>('/loop/runs', { tier: 'fast' })
+  const policy = useResource<Policy>('/loop/policy', { tier: 'lazy' })
+  const detail = useResource<Run>(selected ? `/loop/runs/${selected}` : null, { tier: 'fast' })
+  const logs = useResource<Log[]>(selected && logAttempt ? `/loop/runs/${selected}/logs?attempt_id=${logAttempt}&offset=${logOffset}&limit=10` : null, { tier: 'slow' })
 
   async function act(operation: () => Promise<unknown>) {
     setBusy(true)
@@ -62,14 +62,14 @@ export default function RalphPage() {
     finally { setBusy(false) }
   }
 
-  return <AppShell title="Ralph loops" back={{ href: '/supervise', label: 'Supervise' }}>
+  return <AppShell title="Loops" back={{ href: '/supervise', label: 'Supervise' }}>
     <Stack>
       <Text>Turn an approved plan into verified local checkpoints. Each attempt works on one task in a fresh session. Review and approve the plan before starting.</Text>
       {error && <p role="alert" className="text-micro text-gone">{error}</p>}
       <Card>
         <Disclosure summary="Create a run">
           <Stack>
-            <Async r={policy}>{p => <Text>{p.enabled ? `Configured projects: ${Object.keys(p.projects).join(', ') || 'none'}` : 'Ralph is disabled. Configure the operator policy and enable Ralph on the API.'}</Text>}</Async>
+            <Async r={policy}>{p => <Text>{p.enabled ? `Configured projects: ${Object.keys(p.projects).join(', ') || 'none'}` : 'Loop is disabled. Configure the operator policy and enable Loop on the API.'}</Text>}</Async>
             <Field label="Project"><Input value={project} onChange={e => setProject(e.target.value)} placeholder="Registered project ID" /></Field>
             {policy.data?.projects[project] && <Text>Approved checks: {policy.data.projects[project].check_ids.join(', ')}</Text>}
             <Field label="Specification"><Textarea rows={5} value={specification} onChange={e => setSpecification(e.target.value)} /></Field>
@@ -80,13 +80,13 @@ export default function RalphPage() {
             <Field label="Existing plan JSON (optional)"><Textarea rows={8} value={plan} onChange={e => setPlan(e.target.value)} placeholder='{"version":1,"tasks":[...]}' /></Field>
             <Text>Leave the plan empty to ask the planner to inspect the repository and propose tasks. Defaults: 10 attempts, 3 per task, 30 turns, 15 minutes per attempt, 3 hours total. Use the API to configure limits.</Text>
             <Button variant="primary" busy={busy} disabled={!project || !specification || !policy.data?.enabled} onClick={() => void act(async () => {
-              const run = await api<Run>('/ralph/runs', { method: 'POST', body: { project, specification, worker: { backend, model }, ...(plan.trim() ? { plan: JSON.parse(plan) } : {}) } })
+              const run = await api<Run>('/loop/runs', { method: 'POST', body: { project, specification, worker: { backend, model }, ...(plan.trim() ? { plan: JSON.parse(plan) } : {}) } })
               setSelected(run._id)
             })}>Create draft</Button>
           </Stack>
         </Disclosure>
       </Card>
-      <Async r={runs}>{rows => <Card><Stack>{rows.length === 0 && <Text>No Ralph runs yet.</Text>}{rows.map(run =>
+      <Async r={runs}>{rows => <Card><Stack>{rows.length === 0 && <Text>No Loop runs yet.</Text>}{rows.map(run =>
         <Cluster key={run._id}>
           {/* The project name is unbounded data in a control whose label is
               assumed short: Button is deliberately `shrink-0 whitespace-nowrap`
@@ -105,14 +105,14 @@ export default function RalphPage() {
           {run.stop_reason && <p role="status" className="break-words text-micro text-ink-dim">{run.stop_reason}</p>}
           <Cluster>
             {run.state === 'draft' && <>
-              <Button busy={busy} onClick={() => void act(() => api(`/ralph/runs/${run._id}/plan`, { method: 'POST' }))}>Propose plan</Button>
-              <Button busy={busy} disabled={!run.plan} onClick={() => void act(() => api(`/ralph/runs/${run._id}/approve`, { method: 'POST', body: { expected_version: run.version } }))}>Approve displayed plan</Button>
+              <Button busy={busy} onClick={() => void act(() => api(`/loop/runs/${run._id}/plan`, { method: 'POST' }))}>Propose plan</Button>
+              <Button busy={busy} disabled={!run.plan} onClick={() => void act(() => api(`/loop/runs/${run._id}/approve`, { method: 'POST', body: { expected_version: run.version } }))}>Approve displayed plan</Button>
             </>}
-            {run.state === 'approved' && <Button busy={busy} variant="primary" onClick={() => void act(() => api(`/ralph/runs/${run._id}/start`, { method: 'POST' }))}>Start</Button>}
-            {run.state === 'paused' && <Button busy={busy} onClick={() => void act(() => api(`/ralph/runs/${run._id}/resume`, { method: 'POST' }))}>Resume</Button>}
-            {['running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} onClick={() => void act(() => api(`/ralph/runs/${run._id}/pause`, { method: 'POST' }))}>Pause after attempt</Button>}
-            {['draft', 'approved', 'paused', 'running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} variant="danger" onClick={() => void act(() => api(`/ralph/runs/${run._id}/cancel`, { method: 'POST' }))}>Cancel</Button>}
-            {['failed', 'running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} onClick={() => void act(() => api(`/ralph/runs/${run._id}/recover`, { method: 'POST' }))}>Reconcile after restart</Button>}
+            {run.state === 'approved' && <Button busy={busy} variant="primary" onClick={() => void act(() => api(`/loop/runs/${run._id}/start`, { method: 'POST' }))}>Start</Button>}
+            {run.state === 'paused' && <Button busy={busy} onClick={() => void act(() => api(`/loop/runs/${run._id}/resume`, { method: 'POST' }))}>Resume</Button>}
+            {['running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} onClick={() => void act(() => api(`/loop/runs/${run._id}/pause`, { method: 'POST' }))}>Pause after attempt</Button>}
+            {['draft', 'approved', 'paused', 'running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} variant="danger" onClick={() => void act(() => api(`/loop/runs/${run._id}/cancel`, { method: 'POST' }))}>Cancel</Button>}
+            {['failed', 'running', 'planning', 'verifying', 'final_verifying'].includes(run.state) && <Button busy={busy} onClick={() => void act(() => api(`/loop/runs/${run._id}/recover`, { method: 'POST' }))}>Reconcile after restart</Button>}
           </Cluster>
           <Text>Pause finishes the current attempt and verification. Cancel stops execution and prevents further acceptance. Controls require the existing session admin key.</Text>
           <p className="break-all text-micro">Accepted revision: {run.accepted_revision}</p>
@@ -121,7 +121,7 @@ export default function RalphPage() {
             {run.state === 'draft' && <Stack>
               <Button onClick={() => { setPlanEdit(JSON.stringify(run.plan, null, 2)); setPlanVersion(run.version) }}>Edit displayed draft</Button>
               {planVersion !== null && <><Field label="Plan JSON"><Textarea rows={12} value={planEdit} onChange={e => setPlanEdit(e.target.value)} /></Field>
-                <Button busy={busy} onClick={() => void act(async () => { await api(`/ralph/runs/${run._id}/plan`, { method: 'PUT', body: { plan: JSON.parse(planEdit), expected_version: planVersion } }); setPlanVersion(null) })}>Save draft</Button></>}
+                <Button busy={busy} onClick={() => void act(async () => { await api(`/loop/runs/${run._id}/plan`, { method: 'PUT', body: { plan: JSON.parse(planEdit), expected_version: planVersion } }); setPlanVersion(null) })}>Save draft</Button></>}
             </Stack>}
           </Disclosure>
           <Disclosure summary="Budgets and metrics"><Json value={{ limits: run.limits, usage: run.usage, metrics: run.metrics }} /></Disclosure>
