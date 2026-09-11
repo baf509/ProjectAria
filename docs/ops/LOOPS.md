@@ -318,30 +318,6 @@ Preserve any subsequent operator edits. Restart the existing Mac API/UI jobs and
 verify health and `/api/build`. Keep Mongo records and Loop state directories
 for evidence and later recovery. No rollback should delete accepted checkpoints.
 
-## Renamed from Ralph
-
-This controller was called Ralph. The source rename is complete; **live state is
-not migrated by deploying it**. With the API stopped, after deploying the renamed
-release and before starting it, run:
-
-```bash
-scripts/aria-loop-rename-migration           # dry run, prints every change
-scripts/aria-loop-rename-migration --apply
-```
-
-It renames `ralph_runs`/`ralph_logs`/`ralph_targets`, re-prefixes `ralph.*` guard
-events, rewrites controller-owned paths and container names inside run and target
-documents, moves `~/.aria/ralph`, `~/.aria/ralph-policy.json` and
-`~/.aria/ralph-checks`, renames `refs/heads/ralph/*` checkpoint refs, and updates
-`RALPH_*` to `LOOP_*` in the service environment (keeping a `.env.pre-loop-rename`
-backup). It refuses to run if any run is still active or if it has already run.
-
-Renaming the checks directory changes each project's policy digest, so a run
-approved under the old digest must be re-approved before it can resume. The two
-target repositories under `AgentWorkspaces/` keep "ralph" in their own directory
-names; they are outside this project, and renaming one changes that run's target
-identity, so do it separately if you want it.
-
 ## Small example
 
 Create a clean temporary Git repository containing `calculator.py`:
