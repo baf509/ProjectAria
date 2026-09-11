@@ -80,6 +80,7 @@ class FakeLLMAdapter(LLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         stream: bool = True,
+        agent_slug: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.call_log.append({
             "messages": messages,
@@ -104,6 +105,7 @@ class FakeLLMAdapter(LLMAdapter):
         tools: list[Tool] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        agent_slug: str | None = None,
     ) -> tuple[str, list[ToolCall], dict]:
         self.call_log.append({
             "messages": messages,

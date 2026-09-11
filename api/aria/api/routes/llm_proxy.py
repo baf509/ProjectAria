@@ -146,7 +146,7 @@ async def close_client() -> None:
 _STRIP = {
     "host", "content-length", "connection", "keep-alive", "transfer-encoding",
     "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer",
-    "accept-encoding", "x-aria-caller",
+    "accept-encoding", "x-aria-caller", "x-aria-agent",
 }
 
 _CALLER_SAFE = re.compile(r"[^a-zA-Z0-9_.:@/-]+")
@@ -365,6 +365,43 @@ def _caller_is_declared(request: Request) -> bool:
     return bool((request.headers.get("x-aria-caller") or "").strip())
 
 
+async def _resolve_agent_slug(
+    db: AsyncIOMotorDatabase, request: Request
+) -> Optional[str]:
+    """The registered agent this request belongs to, or None.
+
+    Two independent signals, checked in order:
+
+    * ``x-aria-agent`` — a client that knows its own agent identity says so
+      explicitly. This is the clean separation the ``caller`` label cannot
+      give: a soak harness driving a model is not the agent it drives, and
+      today's ``pi-coding-engine-soak`` conflates the two questions.
+    * ``x-aria-caller`` — resolved to an agent only when the declared label
+      IS a registered agent slug. A workload label (``pi-coding-engine-soak``,
+      ``benchmark-flashnext-engine``) is not an agent, so it stays
+      ``unattributed``.
+
+    Both are matched against the agent registry by exact slug. A value that
+    names no registered agent is not attributed: a dimension that silently
+    invents an agent is worse than an empty one, and a typo must read
+    ``unattributed``, not a phantom series. The raw declared header values are
+    used: the ``x-aria-agent`` header is not sanitised at all, and the
+    ``host:user-agent`` fallback that the ``caller`` label falls back to is not
+    a declared caller, so it must not be resolved either.
+    """
+    declared_agent = (request.headers.get("x-aria-agent") or "").strip()[:80]
+    if declared_agent:
+        doc = await db.agents.find_one({"slug": declared_agent}, {"slug": 1})
+        if doc:
+            return doc["slug"]
+    declared_caller = (request.headers.get("x-aria-caller") or "").strip()[:80]
+    if declared_caller:
+        doc = await db.agents.find_one({"slug": declared_caller}, {"slug": 1})
+        if doc:
+            return doc["slug"]
+    return None
+
+
 def _safe_context_id(value: Optional[str]) -> Optional[str]:
     """Bound a client-supplied correlation id without treating it as auth."""
     if not value:
@@ -501,11 +538,13 @@ async def _record_gateway_usage(
         fresh_input, output, cache_read, prompt = _usage_counts(response_payload)
         trace_timings = _trace_timings(response_payload)
         slug = route.slug if route and route.slug else None
+        agent_slug = await _resolve_agent_slug(db, request)
         await UsageRepo(db).record(
             model=slug or backend_model_id or requested_model or "unknown",
             source="llm-gateway",
             backend="local",
             caller=caller,
+            agent_slug=agent_slug,
             conversation_id=conversation_id,
             session_id=session_id,
             trace_id=trace_id,
