@@ -796,7 +796,7 @@ def test_routing_only_probes_servers_that_could_serve():
 # The steward's budget and its timeout are set independently — and must agree
 # ---------------------------------------------------------------------------
 
-def test_steward_budget_fits_inside_the_adapter_timeout():
+def test_steward_budget_fits_inside_the_deadline():
     """Two numbers in different files silently contradicted each other.
 
     `steward_max_tokens` (6144 live) and `llamacpp_timeout_seconds` (120) were
@@ -826,14 +826,91 @@ def test_steward_budget_fits_inside_the_adapter_timeout():
     rate = DECODE_TOK_S.get(model)
     assert rate, f"no measured decode rate for {model}; measure before routing to it"
 
+    # The steward states its own deadline rather than inheriting the short
+    # llamacpp_timeout_seconds, because the right timeout is a property of the
+    # budget and the backend's rate, not of the backend alone.
+    from aria.steward.service import LLM_TIMEOUT_SECONDS
+    deadline = LLM_TIMEOUT_SECONDS - 20
     needed = settings.steward_max_tokens / rate
-    assert needed < settings.llamacpp_timeout_seconds, (
+    assert needed < deadline, (
         f"{model} needs ~{needed:.0f}s to spend {settings.steward_max_tokens} tokens "
-        f"at {rate} tok/s, but the adapter gives up at "
-        f"{settings.llamacpp_timeout_seconds}s — the call dies with content=''"
+        f"at {rate} tok/s, but its deadline is {deadline}s — the call dies with content=''"
     )
 
     # Red also has the slots. Background work sharing pi's single coding slot
     # for minutes at a time is what made this expensive as well as broken.
+    # Sharing pi's slot is now a deliberate trade (Red sleeps; a steward pinned
+    # to a sleeping machine does not run). Gateway admission must therefore be
+    # the thing that protects the interactive path.
     spec = ms._BY_SLUG[model]
-    assert spec.slug != ms.PI_CODING_SLUG, "background work must not sit in pi's coding slot"
+    if spec.slug == ms.PI_CODING_SLUG:
+        from aria.config import settings as _s
+        assert _s.llm_proxy_admission_enabled, (
+            "the steward shares pi's single coding slot; admission control is "
+            "what keeps background work behind interactive work")
+
+
+# ---------------------------------------------------------------------------
+# "What is ARIA actually configured with?" must have an authoritative answer
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_effective_config_reports_value_source_and_usability(monkeypatch):
+    """Reconstructing config from a shell is what produced three wrong readings.
+
+    Importing Settings inherits whatever environment the shell carries. On
+    2026-09-10 a stale exported HEARTBEAT_MODEL / SHELLS_EXTRACTION_MODEL in an
+    operator shell was reported as live config three times, and once became a
+    bug report for a bug that did not exist. Reporting from the running process
+    removes the reconstruction entirely.
+    """
+    from aria.api.routes.health import effective_config
+    from aria.config import settings
+
+    # Pin every reported setting. This test is ABOUT ambient environment
+    # corrupting a config reading, and it was itself defeated by exactly that:
+    # a stale HEARTBEAT_MODEL exported in the developer's shell leaked into
+    # pytest and turned the assertion red. A test of hermeticity has to be
+    # hermetic.
+    for name in ("steward_model", "planning_ambient_model", "heartbeat_model",
+                 "ontology_extraction_model", "shells_extraction_model",
+                 "triage_classify_model"):
+        monkeypatch.setattr(settings, name, "Qwen3.5-9B-Aux-CPU")
+
+    data = await effective_config()
+    by = {r["setting"]: r for r in data["models"]}
+    assert data["misconfigured"] == [], "all six pinned to a startable deployment"
+    assert {"steward_model", "planning_ambient_model", "heartbeat_model",
+            "ontology_extraction_model", "shells_extraction_model",
+            "triage_classify_model"} <= set(by)
+    for row in data["models"]:
+        assert set(row) >= {"value", "source", "enabled", "resolves",
+                            "registered", "startable", "backend"}
+        assert row["source"] in ("env", "default")
+
+    # The two failure modes that actually happened, and why BOTH are needed:
+    #   a retired slug that routing does not know silently rides the auto route,
+    #   and a slug it DOES know can still be unstartable and 503.
+    monkeypatch.setattr(settings, "steward_model", "qwen3.8-27b-rocmfp4-r9700")
+    monkeypatch.setattr(settings, "shells_extraction_model", "gemma-4-e4b-Q4")
+    broken = await effective_config()
+    rows = {r["setting"]: r for r in broken["models"]}
+
+    unknown = rows["steward_model"]
+    assert unknown["resolves"] is False and unknown["registered"] is False
+
+    retired = rows["shells_extraction_model"]
+    assert retired["resolves"] is True, "a retired slug is still a known NAME"
+    assert retired["registered"] is True and retired["startable"] is False, (
+        "registered != startable — this is the case recognises() cannot see")
+
+    assert set(broken["misconfigured"]) == {"steward_model", "shells_extraction_model"}
+
+
+def test_effective_config_exposes_no_credentials():
+    """It is a read-only diagnostic; nothing in it may carry a secret."""
+    from aria.api.routes.health import _MODEL_SETTINGS
+
+    flat = " ".join(k for row in _MODEL_SETTINGS for k in row if k)
+    for forbidden in ("key", "token", "secret", "password", "credential"):
+        assert forbidden not in flat.lower(), f"{forbidden!r} must not be reported"

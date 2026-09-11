@@ -164,6 +164,10 @@ def test_get_adapter_llamacpp(mock_settings, manager):
         base_url="http://localhost:8080/v1-identified",
         model="local-model",
         api_key="",
+        # Always passed now; None means "use the backend default".
+        # The steward overrides it because its 6144-token budget cannot
+        # be delivered inside llamacpp_timeout_seconds on a slow backend.
+        timeout_seconds=None,
     )
 
 
@@ -188,6 +192,10 @@ def test_get_adapter_llamacpp_explicit_base_url_is_untouched(mock_settings, mana
         base_url="http://localhost:8108/v1",
         model="local-model",
         api_key="",
+        # Always passed now; None means "use the backend default".
+        # The steward overrides it because its 6144-token budget cannot
+        # be delivered inside llamacpp_timeout_seconds on a slow backend.
+        timeout_seconds=None,
     )
 
 

@@ -7,8 +7,17 @@ from aria.api.routes.infrastructure import _LIST_VIEW_FIELDS
 
 def test_current_host_choices():
     visible = {s.slug for s in ms.REGISTRY if s.catalog_visible}
+    # The auxiliary model joined 2026-09-10: Qwen3.5-9B Q8_0, CPU-only on
+    # Corsair, for ARIA's background extraction/heartbeat calls. Startable and
+    # onbox like the candidate, but CPU-only and outside automatic routing, so
+    # it contends with nothing — measured at zero effect on the candidate.
     assert {s.slug for s in ms.REGISTRY if s.onbox and s.startable} == {
-        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate'}
+        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Qwen3.5-9B-Aux-CPU'}
+    aux = ms._BY_SLUG['Qwen3.5-9B-Aux-CPU']
+    # The properties that keep it from ever competing with the coding slot.
+    assert aux.memory_pool == ms.POOL_HOST and not aux.gtt_resident
+    assert aux.exclusive_with == ()
+    assert not aux.auto_route, 'auxiliary model must be addressed by name, never auto-selected'
     # PARO joined 2026-09-10: weights downloaded and verified on Red, registered
     # so the checkpoint is a known option rather than an unrecorded directory.
     # Visible, but not startable — Red has no paroquant verb, unit or serve

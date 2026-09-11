@@ -261,8 +261,13 @@ class FakeLLMManager:
         self.adapter = adapter
         self.calls: list[tuple] = []
 
-    def get_adapter(self, backend, model, base_url=None):
+    def get_adapter(self, backend, model, base_url=None, timeout_seconds=None):
+        # Mirrors LLMManager.get_adapter. The steward passes its own deadline
+        # rather than inheriting llamacpp_timeout_seconds (120), which is too
+        # short for steward_max_tokens on a slow backend — the 2026-09-10
+        # outage. A fake that omits the parameter hides that it is being sent.
         self.calls.append((backend, model, base_url))
+        self.timeout_seconds = timeout_seconds
         return self.adapter
 
 
@@ -631,6 +636,24 @@ async def test_model_gets_a_generous_token_budget(tmp_path):
 
     assert adapter.calls[0]["max_tokens"] == settings.steward_max_tokens
     assert settings.steward_max_tokens >= 512
+
+    # The budget is only half the contract: it has to be deliverable before the
+    # request deadline. The steward therefore states its OWN deadline instead of
+    # inheriting llamacpp_timeout_seconds (120), which is tuned to bound a hung
+    # backend for short callers. On 2026-09-10 that mismatch killed it — 6144
+    # tokens at Corsair's ~44 tok/s needs ~140s, so every call returned
+    # finish_reason=length with empty content and both projects went
+    # model-failed. Assert the deadline is sent and that the budget fits inside.
+    from aria.steward.service import LLM_TIMEOUT_SECONDS
+
+    sent = worker._llm_manager.timeout_seconds
+    assert sent is not None, "the steward must state its own deadline"
+    assert sent < LLM_TIMEOUT_SECONDS, (
+        "the adapter deadline must sit under the outer wait_for so the timeout "
+        "surfaces as a clean adapter error naming the backend")
+    assert settings.steward_max_tokens / 44.0 < sent, (
+        "the budget must be deliverable on the slowest measured backend "
+        f"(~44 tok/s) within {sent}s")
 
 
 @pytest.mark.asyncio

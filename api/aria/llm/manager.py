@@ -71,13 +71,30 @@ class LLMManager:
             "failures": dict(self._failure_counts),
         }
 
-    def get_adapter(self, backend: str, model: str, base_url: str | None = None) -> LLMAdapter:
+    def get_adapter(
+        self,
+        backend: str,
+        model: str,
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> LLMAdapter:
         """
         Get or create an LLM adapter.
 
         Args:
             backend: Backend name ("llamacpp", "anthropic", "openai", "openrouter")
             model: Model name
+            timeout_seconds: Override the backend's default request timeout.
+
+        `timeout_seconds` exists because the right timeout is a property of the
+        CALL, not the backend. `llamacpp_timeout_seconds` (120) is deliberately
+        tight so a half-open server cannot hang a caller — but the steward asks
+        for up to 6144 tokens, and a backend decoding at ~44 tok/s needs ~140s
+        to deliver them. Sharing one number meant the steward's budget silently
+        depended on which deployment answered: it fit on Red (~90 tok/s) and
+        died on Corsair, returning finish_reason=length with empty content.
+        A caller that knows its own budget can now state its own deadline
+        instead of raising the ceiling for everyone.
 
         Returns:
             LLMAdapter instance
@@ -87,8 +104,11 @@ class LLMManager:
         """
         # base_url is part of the identity: an agent bound to a specific model
         # server must not be handed a cached adapter pointing at the backend's
-        # static default (or at another agent's server).
+        # static default (or at another agent's server). The timeout is part of
+        # it too — two callers with different deadlines must not share a client.
         key = f"{backend}:{model}" if base_url is None else f"{backend}:{model}@{base_url}"
+        if timeout_seconds is not None:
+            key = f"{key}#t{timeout_seconds:g}"
 
         if key not in self.adapters:
             if backend == "llamacpp":
@@ -103,6 +123,7 @@ class LLMManager:
                         base_url=base_url or settings.llamacpp_identified_url,
                         model=model,
                         api_key=settings.llamacpp_api_key,
+                        timeout_seconds=timeout_seconds,
                     )
                     logger.info(f"Created llama.cpp adapter for model: {model}")
                 except ImportError:

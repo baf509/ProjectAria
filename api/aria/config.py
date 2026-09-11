@@ -571,7 +571,7 @@ class Settings(BaseSettings):
     # ~44 tok/s, so it fits its single slot without the budget/timeout problem
     # that took the steward down (see _warn_if_budget_cannot_finish).
     heartbeat_backend: str = "llamacpp"
-    heartbeat_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    heartbeat_model: str = "Qwen3.5-9B-Aux-CPU"
     heartbeat_ok_keyword: str = "HEARTBEAT_OK"
 
     # Dream Cycle
@@ -687,7 +687,7 @@ class Settings(BaseSettings):
     # openrouter default and the .env's unregistered `qwen35b-a3b-mtp` were both
     # wrong. Also a 512-token call.
     planning_ambient_backend: str = "llamacpp"
-    planning_ambient_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    planning_ambient_model: str = "Qwen3.5-9B-Aux-CPU"
     # Default geometry for new tmux sessions. tmux's built-in default is 80x24,
     # which makes Claude Code's TUI render at a width that mobile clients can't
     # display without ugly wrapping. Mobile/widget clients should call
@@ -792,7 +792,11 @@ class Settings(BaseSettings):
     # passthrough, which follows whichever server is resident. Naming a port
     # here would break every time the resident model changes.
     ontology_extraction_backend: str = "llamacpp"
-    ontology_extraction_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    # Background extraction belongs on the auxiliary model, not in pi's single
+    # coding slot. Measured 2026-09-10: the real task_extraction prompt returns
+    # a correct 5-key object in ~11s on Qwen3.5-9B-Aux-CPU with no effect on
+    # the candidate, which is what an ambient call should cost.
+    ontology_extraction_model: str = "Qwen3.5-9B-Aux-CPU"
     # Require the memory text to actually contain an entity's name before
     # accepting the LLM's proposal. Measured on the first sample, this rejected
     # a wrong-quant model server, an unrelated container, and two entities that
@@ -943,24 +947,30 @@ class Settings(BaseSettings):
     # retired with the R9700 loadouts, so three separate comments claiming this
     # was pinned "never to the auto-route" described a pin that did not exist.
     #
-    # Background work runs on RED, not the Corsair candidate. Pointing it at
-    # Corsair (2026-09-10) killed the steward within the hour: both active
-    # projects returned model-failed, and eight consecutive calls burned 120s
-    # and returned zero tokens.
+    # The Corsair candidate, because Red is not always awake and a steward
+    # pinned to a sleeping machine is a steward that does not run.
     #
-    # The cause is decode, not prefill — these are small calls, ~1,031 prompt
-    # tokens. Qwen3.8 is a reasoning model that spends `reasoning_content`
-    # before `content`, so it uses most of steward_max_tokens (6144 live). At
-    # Corsair's ~44 tok/s that needs ~140s and dies on the 120s adapter timeout
-    # (llamacpp_timeout_seconds) with content=""; at Red's ~90 tok/s the same
-    # budget lands in ~68s. Red also has 8 slots against Corsair's 1, so
-    # background work no longer sits in pi's coding slot for minutes.
+    # Pointing it here on 2026-09-10 killed it within the hour — worth stating
+    # exactly why, because the reason was arithmetic, not the choice of host.
+    # These are small calls (~1,031 prompt tokens), but Qwen3.8 spends
+    # `reasoning_content` before `content`, so it uses most of
+    # steward_max_tokens (6144 live). At Corsair's ~44 tok/s that needs ~140s,
+    # and the adapter's deadline was llamacpp_timeout_seconds (120) — a number
+    # tuned to bound a hung backend for SHORT callers. Every call returned
+    # finish_reason=length with content="" and both projects reported
+    # model-failed.
     #
-    # Corsair remains the AUTO route, so model-omitted traffic still has a
-    # resident fallback when Red sleeps — that fix is unaffected.
-    # See test_steward_budget_fits_inside_the_adapter_timeout.
+    # The steward now states its own deadline (LLM_TIMEOUT_SECONDS - 20 = 220s)
+    # rather than inheriting that 120s, so 140s fits with room. See
+    # _warn_if_budget_cannot_finish, which checks the live budget against the
+    # live deadline at startup, and test_steward_budget_fits_inside_the_deadline.
+    #
+    # The cost of being here: Corsair has ONE slot, shared with pi's coding
+    # sessions. Gateway admission ranks background below interactive, and the
+    # deployment carries 32 context checkpoints, so a displaced prefix is a
+    # restore rather than a cold re-prefill.
     steward_backend: str = "llamacpp"
-    steward_model: str = "Red-Qwen3.8-27B-MXFP4"
+    steward_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
     steward_endpoint: str = "http://127.0.0.1:8200/llm/v1-identified"
     steward_max_actions_per_tick: int = 2
     # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before
@@ -1008,7 +1018,9 @@ class Settings(BaseSettings):
     # Classification remains a bounded call, separate from diagnosis. Gemma
     # is retired; route to the current model through the authenticated gateway.
     triage_classify_backend: str = "llamacpp"
-    triage_classify_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    # The auxiliary model: a 512-token classification is background work and has
+    # no business in the candidate's single coding slot, which pi shares.
+    triage_classify_model: str = "Qwen3.5-9B-Aux-CPU"
     triage_classify_endpoint: str = "http://127.0.0.1:8200/llm/v1"
     triage_classify_max_tokens: int = 512
     shells_nudge_worker_enabled: bool = False

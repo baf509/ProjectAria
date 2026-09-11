@@ -432,3 +432,78 @@ async def services_health(
 async def llm_telemetry():
     """Get LLM backend telemetry (fallback counts, success/failure rates)."""
     return llm_manager.get_telemetry()
+
+
+# Every setting that names a model, paired with the flag that decides whether
+# its subsystem runs at all. A value here is useless without knowing both.
+_MODEL_SETTINGS: tuple[tuple[str, str, str | None], ...] = (
+    ("steward_model", "steward_backend", "steward_enabled"),
+    ("planning_ambient_model", "planning_ambient_backend", "planning_ambient_capture_enabled"),
+    ("heartbeat_model", "heartbeat_backend", "heartbeat_enabled"),
+    ("ontology_extraction_model", "ontology_extraction_backend", "ontology_extraction_enabled"),
+    ("shells_extraction_model", "shells_extraction_backend", "shells_extraction_enabled"),
+    ("triage_classify_model", "triage_classify_backend", None),
+)
+
+
+@router.get("/health/config")
+async def effective_config():
+    """What this PROCESS is actually configured with, and where each value came from.
+
+    This exists because "what model is ARIA using?" had no authoritative answer.
+    The only way to ask was to import `Settings` in some shell and read it back —
+    and that reconstruction inherits whatever environment the shell happens to
+    carry. On 2026-09-10 a stale exported `HEARTBEAT_MODEL` in an operator shell
+    produced three separate wrong readings of live config, one of which became a
+    bug report for a bug that did not exist.
+
+    Reporting from the running process removes the reconstruction. `source` is
+    the part that actually settles arguments: pydantic knows whether a field was
+    explicitly set (env or .env) or fell through to its default, so "why is it
+    that value?" stops being an investigation.
+
+    `registered` and `startable` are separate on purpose. A retired slug still
+    resolves as a known NAME while being unstartable — so a setting can look
+    valid and still 503. Read-only; contains no credentials.
+    """
+    from aria.infrastructure.llm_route import recognises
+    from aria.infrastructure.model_servers import REGISTRY, _BY_SLUG
+
+    servers = [{"slug": s.slug, "model_file": s.model_file} for s in REGISTRY]
+    explicit = set(getattr(settings, "model_fields_set", set()) or set())
+
+    rows = []
+    for model_key, backend_key, enabled_key in _MODEL_SETTINGS:
+        value = getattr(settings, model_key, None)
+        spec = _BY_SLUG.get(value) if value else None
+        rows.append({
+            "setting": model_key,
+            "value": value,
+            # "env" covers a real environment variable and a .env line alike:
+            # pydantic cannot tell them apart, and for drift purposes they are
+            # the same thing — something outside the checked-in default won.
+            "source": "env" if model_key in explicit else "default",
+            "backend": getattr(settings, backend_key, None),
+            "backend_source": "env" if backend_key in explicit else "default",
+            "enabled": getattr(settings, enabled_key, None) if enabled_key else None,
+            # Does routing know this name at all? A miss silently rides the auto
+            # route instead of failing — see llm_route.recognises.
+            "resolves": bool(value) and recognises(servers, value),
+            "registered": spec is not None,
+            # None = not a registry slug (an auto alias, or an unknown string).
+            "startable": spec.startable if spec is not None else None,
+            "host": (spec.host_machine or ("corsair" if spec.onbox else None)) if spec else None,
+        })
+
+    problems = [
+        r["setting"] for r in rows
+        if r["value"] and (not r["resolves"] or (r["registered"] and not r["startable"]))
+    ]
+    return {
+        "models": rows,
+        # Named separately so a monitor can alert on it without re-deriving the
+        # rule: a setting that does not resolve, or resolves to something that
+        # cannot be started, is misconfigured whatever its value looks like.
+        "misconfigured": problems,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }

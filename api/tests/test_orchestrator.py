@@ -377,7 +377,7 @@ class TestProcessMessage:
 
         call_count = 0
 
-        def get_adapter_side_effect(backend, model, base_url=None):
+        def get_adapter_side_effect(backend, model, base_url=None, timeout_seconds=None):
             nonlocal call_count
             call_count += 1
             if call_count <= 1:

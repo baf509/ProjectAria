@@ -297,24 +297,23 @@ def _warn_if_budget_cannot_finish() -> None:
     tokens before the adapter gives up. Warn rather than refuse — a wrong floor
     here must not be able to stop the steward from running.
     """
+    deadline = float(LLM_TIMEOUT_SECONDS - 20)
     rate = _DECODE_FLOOR_TOK_S.get(settings.steward_model)
     if not rate:
         logger.warning(
             "steward: no measured decode rate for %s — cannot check that "
-            "steward_max_tokens=%d completes within the %ds adapter timeout",
-            settings.steward_model, settings.steward_max_tokens,
-            settings.llamacpp_timeout_seconds,
+            "steward_max_tokens=%d completes within its %.0fs deadline",
+            settings.steward_model, settings.steward_max_tokens, deadline,
         )
         return
     needed = settings.steward_max_tokens / rate
-    if needed >= settings.llamacpp_timeout_seconds:
+    if needed >= deadline:
         logger.error(
             "steward: %s needs ~%.0fs to spend steward_max_tokens=%d at %.0f tok/s, "
-            "but llamacpp_timeout_seconds=%d. Calls will time out with empty "
-            "content. Lower the budget, raise the timeout, or route to a faster "
-            "deployment.",
-            settings.steward_model, needed, settings.steward_max_tokens, rate,
-            settings.llamacpp_timeout_seconds,
+            "but its request deadline is %.0fs. Calls will time out with empty "
+            "content. Lower the budget, raise LLM_TIMEOUT_SECONDS, or route to a "
+            "faster deployment.",
+            settings.steward_model, needed, settings.steward_max_tokens, rate, deadline,
         )
 
 
@@ -943,6 +942,14 @@ class StewardWorker:
             settings.steward_backend,
             settings.steward_model,
             base_url=settings.steward_endpoint,
+            # State our own deadline instead of inheriting llamacpp_timeout_seconds
+            # (120), which is tuned to bound a hung backend for short callers. The
+            # steward asks for up to steward_max_tokens; whether that arrives in
+            # time is a property of the backend's decode rate, so the deadline has
+            # to come from the same arithmetic. Slightly under the outer wait_for
+            # so the adapter raises a clean timeout naming the backend, rather than
+            # the outer cancel losing that context.
+            timeout_seconds=float(LLM_TIMEOUT_SECONDS - 20),
         )
 
     async def _ask_model(

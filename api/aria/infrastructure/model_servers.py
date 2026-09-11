@@ -1522,6 +1522,54 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         exclusive_with=_exclusive_with("qwen3.6-27b-Q8"),
     ),
     ModelServerSpec(
+        slug="Qwen3.5-9B-Aux-CPU",
+        description="Qwen3.5-9B Q8_0 on mainline llama.cpp, CPU-only on Corsair. ARIA's "
+        "auxiliary model: ambient task extraction, heartbeat and Linear reconciliation — "
+        "small structured-JSON calls at max_tokens=512.\n"
+        "CPU ON PURPOSE. Measured 2026-09-10: 10.9s on the real task_extraction prompt "
+        "(127 output tokens, finish=stop), 12.2 tok/s decode, 1.3 GiB RSS, and NO effect on "
+        "the Flash Next candidate. On the Strix Halo iGPU it ran ~2x faster but cut the "
+        "candidate from 64 to 26 tok/s while generating — they share that iGPU, and the "
+        "candidate is pi's single coding slot. Background work must not charge its latency "
+        "to the interactive path.\n"
+        "⚠️ The unit passes --reasoning-budget 0 and --chat-template-kwargs "
+        "'{\"enable_thinking\":false}'. Those are load-bearing: Qwen3.5 thinks by default, "
+        "and with thinking on this prompt returns finish_reason=length with EMPTY content "
+        "after spending all 512 tokens in reasoning_content. ARIA's OpenAI adapter cannot "
+        "send chat_template_kwargs (no extra_body), so the SERVER enforces it.",
+        runtime_repo="https://github.com/ggml-org/llama.cpp.git",
+        runtime_ref="mainline (ghcr.io/ggml-org/llama.cpp:server image, no custom build)",
+        runtime_family="llamacpp",
+        backend_device="CPU only (AMD Ryzen AI Max+ 395, 12 threads)",
+        model_file="models/llm/Qwen3.5-9B-Q8_0-GGUF/Qwen3.5-9B-Q8_0.gguf",
+        port=8105,
+        systemd_unit="qwen35-aux.service",
+        container_name="qwen35-aux",
+        deployment="qwen35-aux",
+        onbox=True,
+        # CPU allocations never appear in mem_info_gtt_used, so projecting this
+        # against the GTT pool would be a category error — same reasoning as the
+        # retained Gemma entry.
+        memory_pool=POOL_HOST,
+        gtt_resident=False,
+        resident_gib=1.3,
+        weights_gib=8.9,
+        devices=("CPU only",),
+        startable=True,
+        allow_force_start=False,
+        # Never the automatic answer for a model-omitted request: this is a small
+        # auxiliary model chosen for specific background callers, not a general
+        # chat backend. It is addressed by name or not at all.
+        auto_route=False,
+        # Shares no GPU pool with anything, so it is exclusive with nothing —
+        # which is the entire point of putting it on the CPU.
+        exclusive_with=(),
+        endpoint_override="http://127.0.0.1:8105/v1",
+        consumers_note="ARIA background callers only: planning_ambient_model, heartbeat_model "
+        "and ontology_extraction_model. Not offered to Pi or Hermes, and deliberately outside "
+        "automatic routing.",
+    ),
+    ModelServerSpec(
         slug="gemma-4-e4b-Q4",
         description="Gemma 4 E4B-it Q4_0, CPU-only on mainline llama.cpp. Never "
         "contends with the GPU-resident servers.\n"
@@ -1898,6 +1946,7 @@ CURRENT_MODEL_CHOICES = frozenset({
     "Red-Qwen3.8-Flash-Next-MXFP4",
     "Red-Qwen3.8-27B-PARO-MXFP4",
     "Ridge-Qwen3.8-27B",
+    "Qwen3.5-9B-Aux-CPU",
 })
 REGISTRY = tuple(
     replace(
