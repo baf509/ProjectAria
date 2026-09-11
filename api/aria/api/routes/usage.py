@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from aria.api.deps import get_db
@@ -88,6 +88,30 @@ async def usage_summary(
     """Get usage summary for the given time window."""
     repo = UsageRepo(db)
     return await repo.summary(days=days)
+
+
+@router.get("/usage/series")
+async def usage_series(
+    days: int = Query(default=30, ge=1, le=365),
+    bucket: str = Query(default="day", pattern="^(hour|day)$"),
+    by: str = Query(default="model", pattern="^(model|caller|agent|none)$"),
+    top: int = Query(default=4, ge=1, le=8),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Token totals over time, for charting the usage history.
+
+    The same rows `/usage/summary` counts, bucketed by hour or day instead of
+    collapsed to one number. `top` caps how many series the dimension returns
+    before the rest fold into `Other`.
+
+    Buckets with no requests are ABSENT rather than zero-filled: a missing
+    bucket is a zero for tokens and a gap for `cache_hit_rate`, and only the
+    caller knows which it is drawing.
+    """
+    try:
+        return await UsageRepo(db).series(days=days, bucket=bucket, by=by, top=top)
+    except ValueError as exc:  # unreachable while the patterns above hold
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/usage/by-agent")

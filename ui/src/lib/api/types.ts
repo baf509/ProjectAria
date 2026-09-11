@@ -658,6 +658,31 @@ export type UsageRow = {
   cache_reporting?: 'reported' | 'partial' | 'unsupported'
 }
 
+/** One time bucket from `/usage/series`. */
+export type UsageBucket = {
+  /** Bucket start, ISO-8601. Buckets with no requests are ABSENT, not zeroed. */
+  t: string
+  total_tokens: number
+  input_tokens: number
+  output_tokens: number
+  requests: number
+  cache_read_tokens: number
+  /** Null when no backend in this bucket reported reuse — a gap, not a zero. */
+  cache_hit_rate?: number | null
+  cache_reporting?: 'reported' | 'partial' | 'unsupported'
+  /** Tokens split by the requested dimension; empty when `by=none`. */
+  by: Record<string, number>
+}
+
+export type UsageSeries = {
+  days: number
+  bucket: 'hour' | 'day'
+  by: 'model' | 'caller' | 'agent' | 'none'
+  /** Stable series order for the window. Anything folded arrives as `Other`. */
+  series: string[]
+  buckets: UsageBucket[]
+}
+
 export type InferenceTrace = {
   trace_id?: string | null
   timestamp?: string | null
@@ -849,6 +874,13 @@ export type LlmRouteFull = {
 export type UtilServer = {
   slug: string
   reachable?: boolean
+  /**
+   * Why the probe returned nothing. A probe that RAISED and a server that is
+   * DOWN both arrive as `reachable: false` and are otherwise indistinguishable
+   * — this is what separates them, and a null here has always meant UNKNOWN,
+   * never "not busy".
+   */
+  probe_error?: string | null
   busy_slots?: number | null
   total_slots?: number | null
   free_slots?: number | null
@@ -876,6 +908,8 @@ export type UtilServer = {
   prompt_cache_kind?: string | null
   prompt_cache_capacity?: string | null
   prompt_cache_used?: string | null
+  /** Lifetime mean time-to-first-token, where the runtime exposes it. */
+  mean_ttft_seconds?: number | null
   bench_decode_tok_s?: number | null
   bench_prefill_tok_s?: number | null
   benchmarked_at?: string | null

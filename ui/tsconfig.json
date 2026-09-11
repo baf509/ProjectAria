@@ -11,6 +11,10 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Unit tests run on `node --test` with native type stripping, which requires
+    // the explicit .ts specifier on relative imports. Legal here because the
+    // project is noEmit — Next transpiles, tsc only checks.
+    "allowImportingTsExtensions": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [

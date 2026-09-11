@@ -35,6 +35,13 @@ export const TOKEN_NAMES = [
   'idle',
   'gone',
   'track',
+  // Categorical chart slots. Reserved for series identity ONLY: the status
+  // hues (live/idle/gone) must never double as "series 4", or a chart legend
+  // starts arguing with the state chips beside it.
+  'cat-1',
+  'cat-2',
+  'cat-3',
+  'cat-4',
 ] as const
 
 export type TokenName = (typeof TOKEN_NAMES)[number]
@@ -63,6 +70,16 @@ export const dark: Record<TokenName, Triplet> = {
   // 5.59 on plain panel.
   gone: [238, 114, 131],
   track: [32, 37, 47],
+  // Validated as a SET against the dark panel (#171a21), not picked by eye:
+  // OKLCH L inside 0.48-0.67, chroma >= 0.1, >= 3:1 contrast, and every adjacent
+  // pair clearing both the CVD floor (worst 10.2 protan) and the normal-vision
+  // floor (worst 20.0). The indigo is load-bearing -- cyan and magenta collapse
+  // to deltaE 1.1 under deuteranopia at equal lightness, so the order matters
+  // as much as the hues.
+  'cat-1': [196, 135, 31],
+  'cat-2': [0, 166, 192],
+  'cat-3': [74, 95, 204],
+  'cat-4': [197, 106, 187],
 }
 
 /**
@@ -89,6 +106,13 @@ export const light: Record<TokenName, Triplet> = {
   idle: [104, 113, 126], // 4.6:1 on white
   gone: [176, 42, 63],
   track: [221, 227, 235],
+  // Same four hues re-stepped for the white panel and re-validated there --
+  // not the dark set lightened, which fails the band and the CVD floor.
+  // L inside 0.43-0.77, worst adjacent pair 9.3 protan / 18.8 normal.
+  'cat-1': [160, 106, 18],
+  'cat-2': [0, 144, 176],
+  'cat-3': [69, 74, 166],
+  'cat-4': [174, 85, 166],
 }
 
 /** What the OS chrome is painted with (theme-color / manifest). */

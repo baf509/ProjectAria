@@ -16,12 +16,17 @@ import { Async } from '@/components/ui/Async'
 import type { DevicesResponse, TemperatureHost, TemperatureSensor } from '@/lib/api/types'
 import type { Resource } from '@/lib/swr'
 import { useObservationClock } from '@/lib/swr'
+import { byHeadroom, headroomC } from './diagnose'
 
 function Sensor({ sensor }: { sensor: TemperatureSensor }) {
   const value = sensor.value_c
   const valid = value != null && Number.isFinite(value)
   const critical = valid && sensor.critical_c != null && value >= sensor.critical_c
   const high = valid && sensor.high_c != null && value >= sensor.high_c
+  // How much room is left, which is the question a temperature is asked in.
+  // Null when the sensor publishes no limit — most of them do not, and an
+  // absent limit must read as "cannot say", never as "plenty of room".
+  const room = headroomC(sensor)
   return (
     <li className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 py-1 text-micro">
       <span className="min-w-0 flex-1 wrap-anywhere" title={`${sensor.device} · ${sensor.source}`}>
@@ -31,6 +36,9 @@ function Sensor({ sensor }: { sensor: TemperatureSensor }) {
       <span className={`tnum shrink-0 ${critical || high ? 'text-gone' : 'text-ink'}`}>
         {valid ? `${value.toFixed(1)} °C` : 'Unavailable'}
         {critical ? ' · critical limit' : high ? ' · high limit' : ''}
+      </span>
+      <span className="tnum w-24 shrink-0 text-right text-ink-faint">
+        {room === null ? 'no limit given' : `${room.toFixed(1)} to limit`}
       </span>
     </li>
   )
@@ -45,8 +53,14 @@ export function HostTemps({ host, heading = false }: { host: TemperatureHost; he
   const age = (now - Date.parse(host.observed_at ?? '')) / 1000
   const fresh = Number.isFinite(age) && age >= -5 && age <= host.max_age_seconds
   const available = fresh && host.status === 'available'
-  const main = host.sensors.filter((s) => s.kind === 'cpu' || s.kind === 'gpu')
-  const other = host.sensors.filter((s) => s.kind !== 'cpu' && s.kind !== 'gpu')
+  // Ranked by headroom, not by kind. Red publishes 22 sensors, and grouping
+  // them cpu/gpu-first buries the real constraint: its two DIMMs sit ~17 °C
+  // from a 55 °C limit while every GPU on the box has 70+ °C of room. The
+  // tightest margins lead, whatever component they belong to, which is the
+  // same worst-news-first rule the rest of this page follows.
+  const ranked = byHeadroom(host.sensors)
+  const main = ranked.slice(0, 4)
+  const other = ranked.slice(4)
   return (
     <section key={host.node} aria-label={`${host.node} temperatures`} className="min-w-0">
       {heading && <p className="m-0 text-label text-ink">{host.node}</p>}
@@ -61,7 +75,7 @@ export function HostTemps({ host, heading = false }: { host: TemperatureHost; he
           {other.length > 0 && (
             <details>
               <summary className="flex min-h-11 cursor-pointer items-center text-micro text-ink-dim">
-                Other sensors ({other.length})
+                {other.length} more, with more room
               </summary>
               <ul className="m-0 list-none p-0">
                 {other.map((s) => (

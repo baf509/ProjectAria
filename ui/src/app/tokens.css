@@ -22,6 +22,10 @@
   --idle-rgb: 104 113 126;
   --gone-rgb: 176 42 63;
   --track-rgb: 221 227 235;
+  --cat-1-rgb: 160 106 18;
+  --cat-2-rgb: 0 144 176;
+  --cat-3-rgb: 69 74 166;
+  --cat-4-rgb: 174 85 166;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -41,6 +45,10 @@
     --idle-rgb: 138 148 166;
     --gone-rgb: 238 114 131;
     --track-rgb: 32 37 47;
+    --cat-1-rgb: 196 135 31;
+    --cat-2-rgb: 0 166 192;
+    --cat-3-rgb: 74 95 204;
+    --cat-4-rgb: 197 106 187;
   }
 }
 
@@ -60,6 +68,10 @@
   --idle-rgb: 138 148 166;
   --gone-rgb: 238 114 131;
   --track-rgb: 32 37 47;
+  --cat-1-rgb: 196 135 31;
+  --cat-2-rgb: 0 166 192;
+  --cat-3-rgb: 74 95 204;
+  --cat-4-rgb: 197 106 187;
 }
 
 :root[data-theme='light'] {
@@ -78,4 +90,8 @@
   --idle-rgb: 104 113 126;
   --gone-rgb: 176 42 63;
   --track-rgb: 221 227 235;
+  --cat-1-rgb: 160 106 18;
+  --cat-2-rgb: 0 144 176;
+  --cat-3-rgb: 69 74 166;
+  --cat-4-rgb: 174 85 166;
 }

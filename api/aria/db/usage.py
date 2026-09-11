@@ -153,6 +153,133 @@ class UsageRepo:
             )
         return rows
 
+    #: Bucket granularities `series()` accepts, and the $dateTrunc unit each maps to.
+    SERIES_BUCKETS = {"hour": "hour", "day": "day"}
+
+    #: What `series()` may group a bucket's tokens by. `none` returns bucket totals only.
+    SERIES_DIMENSIONS = {
+        "model": "$model",
+        "caller": "$caller",
+        "agent": "$agent_slug",
+        "none": None,
+    }
+
+    async def series(
+        self,
+        *,
+        days: int = 30,
+        bucket: str = "day",
+        by: str = "model",
+        top: int = 4,
+    ) -> dict:
+        """Token totals over time, bucketed, optionally split by one dimension.
+
+        The usage collection already carries a year of per-request rows on the
+        `usage_timestamp` TTL index, which doubles as the range index this
+        aggregation uses -- so the history is a `$group`, not a new collection.
+
+        Two things this deliberately does NOT do:
+
+        * It never invents a bucket. Only buckets that contain requests are
+          returned, and the caller decides whether a missing bucket is a gap or
+          a zero. For tokens it is a zero; for `cache_hit_rate` it is a GAP, and
+          conflating them is exactly the failure `cache_reporting` exists to
+          prevent.
+        * It never reports a cache-hit rate a backend did not supply.
+          `annotate_cache` is applied per bucket, so a bucket served only by
+          non-reporting backends returns `cache_hit_rate: None` /
+          `cache_reporting: "unsupported"` rather than a fabricated 0%.
+
+        `top` folds everything past the N largest series into a single `Other`,
+        because a chart with one colour per model stops being readable long
+        before the registry stops adding models.
+        """
+        unit = self.SERIES_BUCKETS.get(bucket)
+        if unit is None:
+            raise ValueError(f"unknown bucket {bucket!r}")
+        if by not in self.SERIES_DIMENSIONS:
+            raise ValueError(f"unknown dimension {by!r}")
+        field = self.SERIES_DIMENSIONS[by]
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        group_id: dict = {"t": {"$dateTrunc": {"date": "$timestamp", "unit": unit}}}
+        if field is not None:
+            group_id["k"] = field
+
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": cutoff}}},
+            {"$group": {
+                "_id": group_id,
+                "input_tokens": {"$sum": "$input_tokens"},
+                "output_tokens": {"$sum": "$output_tokens"},
+                "total_tokens": {"$sum": "$total_tokens"},
+                "requests": {"$sum": 1},
+                **self.CACHE_GROUP_FIELDS,
+            }},
+            {"$sort": {"_id.t": 1}},
+        ]
+        rows = await self.db.usage.aggregate(pipeline).to_list(length=20000)
+
+        # Rank the dimension over the WHOLE window, not per bucket: a series
+        # must keep its colour when it is small, or the legend lies.
+        totals: dict[str, int] = {}
+        for r in rows:
+            key = self._series_key(r, field)
+            totals[key] = totals.get(key, 0) + (r.get("total_tokens") or 0)
+        ranked = sorted(totals, key=lambda k: -totals[k])
+        keep = ranked[:top] if field is not None else ranked
+        folded = set(ranked[top:]) if field is not None else set()
+
+        buckets: dict = {}
+        for r in rows:
+            when = (r.get("_id") or {}).get("t")
+            slot = buckets.setdefault(when, {
+                "t": when,
+                "total_tokens": 0, "input_tokens": 0, "output_tokens": 0,
+                "requests": 0, "cache_read_tokens": 0,
+                "reported_input_tokens": 0, "reported_requests": 0,
+                "by": {},
+            })
+            for f in ("total_tokens", "input_tokens", "output_tokens", "requests",
+                      "cache_read_tokens", "reported_input_tokens", "reported_requests"):
+                slot[f] += r.get(f) or 0
+            if field is not None:
+                key = self._series_key(r, field)
+                name = "Other" if key in folded else key
+                slot["by"][name] = slot["by"].get(name, 0) + (r.get("total_tokens") or 0)
+
+        out = []
+        for slot in sorted(buckets.values(), key=lambda s: s["t"] or datetime.min):
+            self.annotate_cache(slot)
+            # The reporting breakdown is an implementation detail of the rate.
+            for f in ("reported_input_tokens", "reported_requests"):
+                slot.pop(f, None)
+            out.append(slot)
+
+        return {
+            "days": days,
+            "bucket": bucket,
+            "by": by,
+            "series": ([*keep, "Other"] if folded else list(keep)) if field is not None else [],
+            "buckets": out,
+        }
+
+    @staticmethod
+    def _series_key(row: dict, field: str | None) -> str:
+        """The dimension value for one grouped row, with absences named.
+
+        `agent_slug` and `caller` are frequently absent -- a gateway request
+        from a non-ARIA client has no agent, and that is not the same fact as a
+        request from an agent called "unknown". Name it `unattributed` so the
+        chart says which it is.
+        """
+        if field is None:
+            return "all"
+        value = (row.get("_id") or {}).get("k")
+        if value in (None, ""):
+            return "unattributed"
+        return str(value)
+
     async def by_model_cost(self, days: int = 7) -> list[dict]:
         """Token + cost totals grouped by (model, backend)."""
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)

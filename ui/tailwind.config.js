@@ -34,6 +34,10 @@ const colors = {
   idle: tokenColor('idle'),
   gone: tokenColor('gone'),
   track: tokenColor('track'),
+  'cat-1': tokenColor('cat-1'),
+  'cat-2': tokenColor('cat-2'),
+  'cat-3': tokenColor('cat-3'),
+  'cat-4': tokenColor('cat-4'),
 }
 
 /** @type {import('tailwindcss').Config} */

@@ -32,6 +32,7 @@ import type {
 } from '@/lib/api/types'
 import { Card, EmptyState, Notice, StatusDot, Text } from '@/components/ui/primitives'
 import { Temperatures } from './Temperatures'
+import { Diagnosis } from './Diagnosis'
 import { RedModelControls } from './RedModels'
 import { MachineCard } from './MachineCard'
 import { buildMachines, unclaimedTemperatureHosts, type Machine } from './machines'
@@ -252,6 +253,17 @@ export function Spine({
           </div>
         </Notice>
       )}
+
+      <Diagnosis
+        // A verdict is only as good as the resources behind it; until each has
+        // answered, the card says so rather than grading an empty fleet.
+        ready={![fleet, services, utilization, devices].some((r) => r.isLoading)}
+        machines={machines}
+        services={services.data?.services}
+        util={utilization.data?.servers}
+        route={route.data}
+        servers={fleet.data?.servers}
+      />
 
       {unhealthy.map((s) => (
         <ServiceAlarm key={s.slug} service={s} onDone={(t) => push('ok', t)} onError={(t) => setActionError(t)} />

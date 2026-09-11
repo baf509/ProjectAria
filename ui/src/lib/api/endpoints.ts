@@ -71,6 +71,8 @@ export const K = {
   tasks: '/tasks',
   usage: (days = 7) => `/usage/summary?days=${days}`,
   usageByModel: (days = 7) => `/usage/by-model?days=${days}`,
+  usageSeries: (days = 30, bucket: 'hour' | 'day' = 'day', by: 'model' | 'caller' | 'agent' | 'none' = 'model', top = 4) =>
+    `/usage/series?days=${days}&bucket=${bucket}&by=${by}&top=${top}`,
   usageByCaller: (days = 7) => `/usage/by-caller?days=${days}`,
   usageTraces: (hours = 24, limit = 50) => `/usage/traces?hours=${hours}&limit=${limit}`,
   benchRuns: (limit = 25) => `/benchmarks/runs?limit=${limit}`,
