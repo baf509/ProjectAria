@@ -66,6 +66,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+from aria.infrastructure import nvidia_gpu
+
 logger = logging.getLogger(__name__)
 
 _DRM_ROOT = "/sys/class/drm"
@@ -75,6 +77,7 @@ _GIB = 1024**3
 # the start-time memory gate reads that pool and no other.
 POOL_HALO = "halo-gtt"       # Strix Halo iGPU — shared system memory (GTT)
 POOL_R9700 = "r9700-vram"    # Radeon AI PRO R9700 — the card's own VRAM
+POOL_NVIDIA = "corsair-nvidia-vram"  # Corsair RTX 3090 after the hardware swap
 POOL_HOST = "host-ram"       # CPU-only servers — never touch a GPU pool
 POOL_REMOTE = "remote"       # off-box (Ridge) — no local pool to gate against
 
@@ -229,6 +232,16 @@ def read_pool(pool: str) -> Optional[MemoryPool]:
     """
     if pool == POOL_HOST:
         return _host_pool()
+    if pool == POOL_NVIDIA:
+        cards = nvidia_gpu.devices()
+        if not cards or len(cards) != 1:
+            return None  # Missing, unreadable or ambiguous is not free VRAM.
+        card = cards[0]
+        return MemoryPool(
+            pool=pool, label=f"{card.name} VRAM ({card.pci_address})",
+            used_gib=card.used_mib / 1024, total_gib=card.total_mib / 1024,
+            source=f"nvidia-smi:{card.uuid}",
+        )
 
     devices = discover_devices()
     if pool == POOL_R9700:
@@ -297,7 +310,7 @@ def process_gpu_bytes(pid: int) -> dict[str, int]:
     try:
         names = os.listdir(fdinfo_dir)
     except OSError:
-        return {}
+        names = []  # NVIDIA process telemetry can still be available.
     for name in names:
         try:
             with open(os.path.join(fdinfo_dir, name)) as fh:
@@ -328,6 +341,9 @@ def process_gpu_bytes(pid: int) -> dict[str, int]:
             continue
         held = sizes["drm-resident-vram"] if pool == POOL_R9700 else sizes["drm-resident-gtt"]
         out[pool] = out.get(pool, 0) + held
+    nvidia_bytes = nvidia_gpu.process_bytes(pid)
+    if nvidia_bytes is not None and nvidia_bytes > 0:
+        out[POOL_NVIDIA] = nvidia_bytes
     return out
 
 
@@ -347,6 +363,7 @@ POOL_BACKING = {
     POOL_HALO: "system",
     POOL_HOST: "system",
     POOL_R9700: "device",
+    POOL_NVIDIA: "device",
 }
 
 
@@ -398,7 +415,7 @@ def pool_snapshot() -> list[dict]:
     them, and their semantics are load-bearing.
     """
     out = []
-    for pool in (POOL_HALO, POOL_R9700, POOL_HOST):
+    for pool in (POOL_HALO, POOL_R9700, POOL_NVIDIA, POOL_HOST):
         live = read_pool(pool)
         if live is None:
             continue
@@ -415,7 +432,7 @@ def pool_snapshot() -> list[dict]:
             # Pools drawing on the same physical memory as this one.
             "overlaps": [
                 other for other, kind in POOL_BACKING.items()
-                if kind == backing and other != live.pool
+                if kind == backing == "system" and other != live.pool
             ],
         })
     return out
@@ -423,7 +440,7 @@ def pool_snapshot() -> list[dict]:
 
 def device_snapshot() -> list[dict]:
     """Every discovered card, for the API/UI device panel."""
-    return [
+    amd = [
         {
             "card": d.card,
             "pci_address": d.pci_address,
@@ -437,3 +454,15 @@ def device_snapshot() -> list[dict]:
         }
         for d in discover_devices()
     ]
+    nvidia = [
+        {
+            "card": d.uuid, "pci_address": d.pci_address, "label": d.name,
+            "pool": POOL_NVIDIA, "discrete": True,
+            "vram_used_gib": d.used_mib / 1024,
+            "vram_total_gib": d.total_mib / 1024,
+            # NVIDIA does not expose AMD GTT counters; unknown is not zero.
+            "gtt_used_gib": None, "gtt_total_gib": None,
+        }
+        for d in (nvidia_gpu.devices() or [])
+    ]
+    return amd + nvidia

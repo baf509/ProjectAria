@@ -26,7 +26,7 @@ from aria.core import readiness
 setup_logging(json_output=not settings.debug, level="DEBUG" if settings.debug else "INFO")
 from aria.db.migrations import run_migrations
 from aria.db.mongodb import connect_db, close_db, get_database
-from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology, guard, steward, improve
+from aria.api.routes import admin, capabilities, health, conversations, agents, memories, memory_api, tools, tts, stt, usage, signal, notifications, tasks, research, coding_sessions, routing, infrastructure, workflows, schedules, killswitch, skills, groupchat, autopilot, heartbeat, dreams, awareness, shells, planning, alerts, nodes, shared, digest, shell_nudge, obsidian, linear, benchmarks, llm_proxy, ontology, guard, steward, improve, ralph
 from aria.api.deps import (
     get_audit_service,
     get_coding_session_manager,
@@ -581,6 +581,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover - non-fatal
         startup_logger.warning("Planning index creation failed: %s", exc)
 
+    from aria.ralph.service import RalphService
+    app.state.ralph = RalphService(db)
+    if app.state.ralph.settings.enabled:
+        await app.state.ralph.initialize()
+
     readiness.mark_ready()
     startup_logger.info("ARIA readiness: ready")
 
@@ -592,6 +597,7 @@ async def lifespan(app: FastAPI):
     shutdown_logger = logging.getLogger("aria.shutdown")
     shutdown_logger.info("Initiating graceful shutdown...")
     readiness.mark_phase("shutting_down", "graceful worker drain")
+    await app.state.ralph.shutdown()
 
     # 1. Stop accepting new scheduled work
     from aria.api.deps import (
@@ -877,6 +883,7 @@ app.include_router(digest.router, prefix="/api/v1", tags=["cockpit"])
 app.include_router(planning.router, prefix="/api/v1", tags=["planning"])
 app.include_router(alerts.router, prefix="/api/v1", tags=["alerts"])
 app.include_router(guard.router, prefix="/api/v1", tags=["guard"])
+app.include_router(ralph.router, prefix="/api/v1", tags=["ralph"])
 app.include_router(steward.router, prefix="/api/v1", tags=["steward"])
 app.include_router(improve.router, prefix="/api/v1", tags=["improve"])
 

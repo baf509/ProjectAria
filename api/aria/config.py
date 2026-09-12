@@ -9,8 +9,16 @@ Related Spec Sections:
 """
 
 from pathlib import Path
+import sys
 
+from pydantic import Field
 from pydantic_settings import BaseSettings
+
+
+def _default_infrastructure_root() -> str:
+    if sys.platform == "darwin":
+        return str(Path.home() / "Development/Infrastructure/CorsairModelHost")
+    return "/home/ben/Development/infrastructure"
 
 
 class Settings(BaseSettings):
@@ -248,7 +256,13 @@ class Settings(BaseSettings):
     # Hard cap on how many sessions may sit queued waiting for a slot. 0 = no
     # cap. Beyond it a spawn is refused (fail loud) rather than silently queued.
     coding_queue_max: int = 64
-    # Ralph loop: opt-in, per-session. When a coding session carries a
+    # Durable, approved-plan Ralph controller (separate from legacy nudges).
+    ralph_enabled: bool = False
+    ralph_policy_file: str = "~/.aria/ralph-policy.json"
+    ralph_state_dir: str = "~/.aria/ralph"
+    ralph_docker_binary: str = "docker"
+
+    # Legacy idle-nudge loop: opt-in, per-session. When a coding session carries a
     # loop_config, the watchdog nudges it forward whenever it goes idle at its
     # prompt — re-checking the killswitch/e-stop each nudge — until it emits the
     # done token, or the nudge/deadline caps trip. Absent loop_config = no loop.
@@ -316,7 +330,10 @@ class Settings(BaseSettings):
     coding_routing_fallback_model: str = ""
     coding_routing_quota_cooldown_minutes: int = 60
 
-    infrastructure_root: str = "/home/ben/Development/infrastructure"
+    # The Mac reads canonical launch metadata locally; the Linux actuator
+    # reads its deployed model-host copy. Do not probe a nonexistent Linux
+    # tree on the control plane and silently lose slot/admission geometry.
+    infrastructure_root: str = Field(default_factory=_default_infrastructure_root)
 
     # Streaming
     stream_chunk_timeout_seconds: int = 60
