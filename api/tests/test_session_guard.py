@@ -272,6 +272,23 @@ class TestWorktreeDefault:
         assert "not a git repository" in doc["guard"]["degraded"]
 
     @pytest.mark.asyncio
+    async def test_a_co_located_node_is_guarded_even_though_it_routes_remotely(self, tmp_path):
+        """`mac-agents` runs on this machine but is driven through the command
+        queue. Keying the guard off routing skipped every session on this host,
+        including the default one — CODING_DEFAULT_HOST is that node."""
+        mgr = _manager()
+        with _Ctx(mgr), \
+             patch.object(settings, "node_shell_host_aliases",
+                          {"mac-agents": "bens-macbook-pro"}), \
+             patch("aria.nodes.local_node_id", return_value="bens-macbook-pro"), \
+             patch("aria.agents.session._git_repo_root", return_value=None):
+            with pytest.raises(RuntimeError, match="is not a git repository"):
+                await mgr.start_session(workspace=str(tmp_path), backend="claude_code",
+                                        prompt="fix it", model="x", host="mac-agents")
+
+        mgr.db.coding_sessions.insert_one.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_remote_sessions_are_left_alone(self):
         """The repo, bwrap and the systemd user bus are on the other machine."""
         mgr = _manager()

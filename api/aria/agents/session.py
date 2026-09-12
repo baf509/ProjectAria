@@ -725,13 +725,20 @@ class CodingSessionManager:
             "legacy": False,
         }
 
-        from aria.nodes import is_remote_host
+        from aria.nodes import is_remote_host, is_same_machine
 
-        if is_remote_host(host):
+        if is_remote_host(host) and not is_same_machine(host):
             # The repo, the bwrap binary and the systemd user bus are all on the
             # OTHER machine. A worktree cut here would guard a path the session
             # never sees, so remote sessions stay exactly as they are until the
             # node agent grows its own guard (see the report's deferred list).
+            #
+            # `is_same_machine` is the narrower question, and the one that
+            # matters here: a co-located node such as `mac-agents` is routed
+            # through the command queue (so it IS remote for routing) while its
+            # workspace sits on this filesystem. Testing routing instead of
+            # locality skipped the guard for every session on this host,
+            # including the default one.
             return ctx
 
         want_worktree = bool(

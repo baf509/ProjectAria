@@ -150,9 +150,11 @@ systemd/              historical pre-Mac control-plane units only
   deployment currently runs as `ben`.
 - A coding/model agent may start a registered model for an authorized repair or
   test, but may not silently create an unregistered deployment.
-- Every guarded coding session runs inside a git repository. NOTE: with
-  `CODING_DEFAULT_HOST=mac-agents`, default sessions are classified remote and skip
-  the guard entirely, so this does not yet hold on the default path. `guard_require_repo`
+- Every coding session on THIS machine runs inside a git repository and its own
+  worktree, including the default `mac-agents` host: the guard keys off physical
+  locality (`is_same_machine`), not command-queue routing. This requires
+  `GUARD_SANDBOX_ENABLED=false` on the Mac — bwrap is Linux-only and `preflight()`
+  fails closed without it, so leaving it true refuses every session. `guard_require_repo`
   (default on) refuses a workspace that is not one, because an agent editing
   outside version control has no rollback point. An explicit `create_worktree=true`
   still initialises the repo and is allowed; remote sessions are still left to the
