@@ -39,7 +39,13 @@ class TmuxClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            if proc.returncode is None:
+                proc.kill()
+            await proc.communicate()
+            raise
         return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
     async def list_sessions(self, prefix: Optional[str] = None) -> list[str]:
@@ -116,6 +122,13 @@ class TmuxClient:
             rc, _out, err = await self._run("send-keys", "-t", name, "Enter")
             if rc != 0:
                 raise TmuxError(f"tmux send-keys (enter) failed: {err.strip()}")
+
+    async def capture_screen(self, name: str) -> str:
+        """Visible pane only, exact session target, one tmux command."""
+        rc, out, err = await self._run("capture-pane", "-p", "-t", f"={name}:")
+        if rc != 0:
+            raise TmuxError(f"tmux capture-screen failed: {err.strip()}")
+        return out
 
     async def capture_pane(self, name: str, *, lines: int = 10000) -> str:
         """Capture the current pane contents for a session.

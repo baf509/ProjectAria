@@ -15,10 +15,8 @@
  *  - Every SSE line called setState on a 780-line component. The stream now
  *    writes into TermBuffer (rAF-coalesced, outside React) and rows are
  *    memoised, so a 500-line catch-up burst is one render.
- *  - The default pane is /screen (~1KB) polled at tier 'live' ONLY while this
- *    pane is mounted and visible; the pane component is memoised on the screen
- *    string, so an unchanged poll re-renders nothing (the old page replaced a
- *    75KB <pre> every 3s regardless).
+ *  - The default pane streams changed visible screens, shared at the server.
+ *    Hidden tabs disconnect; reconnect starts from the current screen.
  *  - The terminal was 209 unwrapped columns in a two-axis scroller nested in a
  *    scrolling page. Default is WRAPPED (persisted toggle) with a font
  *    stepper; unwrapped lives inside ScrollX. Height comes from the flush
@@ -38,7 +36,6 @@ import { K, resizeShell, sendShellKeys } from '@/lib/api/endpoints'
 import type {
   ShellEventWire,
   ShellInfo,
-  ShellScreenPayload,
   ShellSnapshotPayload,
 } from '@/lib/api/types'
 import { openSse } from '@/lib/stream'
@@ -48,6 +45,7 @@ import { Cluster, ScrollX } from '@/components/layout'
 import { relativeTime } from '@/lib/time'
 import { TermBuffer, type TermLine } from './termBuffer'
 import { useToasts } from './useToasts'
+import { useLiveScreen } from './useLiveScreen'
 
 /* ------------------------------------------------------------ persistence */
 
@@ -101,9 +99,7 @@ const FONT_MAX = 16
 /* ------------------------------------------------------------- components */
 
 /**
- * Memoised on the screen STRING: the 'live'-tier poll returns an identical
- * payload most ticks, and SWR's stable-hash compare keeps the same data
- * object, so this skips entirely when nothing changed on the pane.
+ * Memoised on the screen string; metadata changes do not repaint the pane.
  */
 const ScreenPane = memo(function ScreenPane({ text, wrapped }: { text: string; wrapped: boolean }) {
   if (wrapped) {
@@ -176,10 +172,7 @@ export function TerminalView({ name }: { name: string }) {
 
   // Screen mode: live pane while the shell runs; the stored snapshot is the
   // only pane view that survives a stop (`/screen` 409s without tmux).
-  const screen = useResource<ShellScreenPayload>(K.shellScreen(name), {
-    tier: 'live',
-    enabled: mode === 'screen' && status !== undefined && !isStopped,
-  })
+  const screen = useLiveScreen(name, mode === 'screen' && status !== undefined && !isStopped)
   const snapshot = useResource<ShellSnapshotPayload>(K.shellSnapshot(name), {
     tier: 'slow',
     enabled: mode === 'screen' && isStopped,
@@ -206,6 +199,7 @@ export function TerminalView({ name }: { name: string }) {
     if (mode !== 'follow' || !hasLineCount) return
     let stopped = false
     let ctrl: AbortController | null = null
+    let cancelVisibilityWait: (() => void) | undefined
 
     // Hidden tab = 0 open streams (gate requirement). Abort on hide; the loop
     // waits for visibility and resumes from buf.lastLine at a NEW url.
@@ -222,6 +216,10 @@ export function TerminalView({ name }: { name: string }) {
             document.removeEventListener('visibilitychange', h)
             resolve()
           }
+        }
+        cancelVisibilityWait = () => {
+          document.removeEventListener('visibilitychange', h)
+          resolve()
         }
         document.addEventListener('visibilitychange', h)
       })
@@ -261,6 +259,7 @@ export function TerminalView({ name }: { name: string }) {
       stopped = true
       ctrl?.abort()
       document.removeEventListener('visibilitychange', onHide)
+      cancelVisibilityWait?.()
       setConn('idle')
     }
   }, [mode, name, hasLineCount, buf])
@@ -306,17 +305,12 @@ export function TerminalView({ name }: { name: string }) {
   async function send(text: string, opts: { appendEnter?: boolean; clear?: boolean; key: string }) {
     if (!text || busyKey) return
     setBusyKey(opts.key)
-    const res = await run(() => sendShellKeys(name, text, { appendEnter: opts.appendEnter, waitMs: 400 }), {
+    const res = await run(() => sendShellKeys(name, text, { appendEnter: opts.appendEnter, waitMs: 0 }), {
       onError: (e) => push('warn', e.message),
     })
     setBusyKey(null)
     if (res !== undefined) {
       if (opts.clear) setInputText('')
-      // Act-and-observe: the response carries the pane wait_ms after the
-      // keystroke — surface it now instead of waiting for the next poll.
-      if (res.screen && mode === 'screen') {
-        void screen.mutate({ name, lines: 40, screen: res.screen }, { revalidate: false })
-      }
     }
   }
 
@@ -425,8 +419,8 @@ export function TerminalView({ name }: { name: string }) {
           )}
           {!isStopped && (
             <ConfirmButton
-              label="Fit"
-              confirmLabel="Resize shared tmux?"
+              label="Resize shared pane"
+              confirmLabel="Resize for everyone?"
               variant="default"
               className="shrink-0 whitespace-nowrap"
               onConfirm={fitPane}
@@ -458,7 +452,10 @@ export function TerminalView({ name }: { name: string }) {
                 <Skeleton rows={6} />
               )
             ) : screen.data ? (
-              <ScreenPane text={screen.data.screen} wrapped={wrapped} />
+              <>
+                {screen.error && <Notice tone="warn">{screen.error.message}</Notice>}
+                <ScreenPane text={screen.data.screen} wrapped={wrapped} />
+              </>
             ) : screen.error ? (
               <Notice tone="warn">
                 <span className="wrap-anywhere">{screen.error.message}</span>

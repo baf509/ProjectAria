@@ -18,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from pydantic import ValidationError
 
 from aria.config import settings
-from aria.nodes import local_node_id
+from aria.nodes import canonical_shell_host, local_node_id
 from aria.shells.ansi import matches_prompt, parse_prompt_patterns, strip_ansi
 from aria.shells.claude_trust import ensure_trusted
 from aria.shells.codex_trust import ensure_codex_trusted
@@ -84,7 +84,7 @@ class ShellService:
     @staticmethod
     def _shell_is_remote(shell) -> bool:
         from aria.nodes import is_remote_host
-        return is_remote_host(getattr(shell, "host", None))
+        return is_remote_host(canonical_shell_host(getattr(shell, "host", None)))
 
     async def _node_online(self, node_id: str) -> bool:
         doc = await self.db.nodes.find_one({"_id": node_id})
@@ -311,7 +311,7 @@ class ShellService:
         prefix = settings.shells_tmux_session_prefix
         short = _strip_prefix(name, prefix)
         explicit_host = host is not None
-        host = host or local_node_id()
+        host = canonical_shell_host(host)
 
         update = {
             "$setOnInsert": {
@@ -741,7 +741,7 @@ class ShellService:
         shell = await self.get_shell(name)
         if shell and self._shell_is_remote(shell):
             snap = await self.get_last_snapshot(name)
-            return snap.content if snap else None
+            return "\n".join(snap.content.splitlines()[-lines:])[-100_000:] if snap else None
         try:
             raw = await self.tmux.capture_pane(name, lines=lines)
         except TmuxSessionNotFoundError:

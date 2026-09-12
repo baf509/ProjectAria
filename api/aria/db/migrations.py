@@ -508,8 +508,8 @@ did not run.
 async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
     """Keep the old slug as a Flash-Next compatibility profile.
 
-    Pi inference is restricted to Corsair's two Qwen deployments through ARIA;
-    the historical Ridge route is no longer a valid Pi provider.
+    Managed Pi uses Corsair's RTX3090/Halo Flash Next through ARIA;
+    the historical Ridge and Corsair R9700 routes are retired.
     """
     existing = await db.agents.find_one({"slug": "pi-coding-ridge"})
     if existing:
@@ -529,7 +529,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         "context_instructions": None,
         "llm": {
             "backend": "aria",
-            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "model": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
             "temperature": 0.0,
             "max_tokens": 32768,
             "max_context_tokens": 262144,
@@ -638,10 +638,10 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
         "greeting": "Pi Coding Agent ready. What are we building?",
         "context_instructions": None,
         # This legacy db.agents row is a launch profile for the external Pi CLI.
-        # Pi carries the three approved Corsair Qwen profiles through ARIA.
+        # Pi carries the selected Corsair Flash Next and independent Red option.
         "llm": {
             "backend": "aria",
-            "model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+            "model": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
             "temperature": 0.0,
             "max_tokens": 32768,
             "max_context_tokens": 262144,
@@ -684,11 +684,21 @@ async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
     prompt and tool fields.
     """
     result = await db.agents.update_many(
-        {"slug": {"$in": ["pi-coding", "pi-coding-ridge"]}},
+        {
+            "slug": {"$in": ["pi-coding", "pi-coding-ridge"]},
+            "llm.backend": "aria",
+            # Do not overwrite an explicitly selected Red/custom deployment on
+            # every API restart. Only migrate the retired Flash contracts.
+            "llm.model": {"$in": [
+                "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+                "Qwen3.8-Flash-Next-Q4_K_XL-Halo-2x256K",
+                "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+            ]},
+        },
         {
             "$set": {
                 "llm.backend": "aria",
-                "llm.model": "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+                "llm.model": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
                 "llm.temperature": 0.0,
                 "llm.max_tokens": 32768,
                 "llm.max_context_tokens": 262144,
@@ -699,7 +709,7 @@ async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
     )
     if result.modified_count:
         logger.info(
-            "Reconciled %d Pi coding launch profile(s) to hybrid Flash Next",
+            "Reconciled %d Pi coding launch profile(s) to RTX3090/Halo Flash Next",
             result.modified_count,
         )
 

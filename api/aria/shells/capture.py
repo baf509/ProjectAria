@@ -18,10 +18,12 @@ import logging
 import os
 import signal
 import sys
-import time
-from typing import Optional
+import codecs
+from collections import deque
+from aria.shells.screen_stream import ScreenNotifier
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import BulkWriteError
 
 from aria.config import settings
 from aria.shells.ansi import strip_ansi
@@ -29,49 +31,71 @@ from aria.shells.ansi import strip_ansi
 logger = logging.getLogger("aria.shells.capture")
 
 
+class CaptureBuffer:
+    """Drop oldest operational history at a fixed byte/count budget."""
+    def __init__(self, max_bytes=4 * 1024 * 1024, max_items=10000):
+        self.records = deque()
+        self.bytes = 0
+        self.max_bytes = max_bytes
+        self.max_items = max_items
+        self.dropped = 0
+        self.ready = asyncio.Event()
+
+    def append(self, record):
+        size = len(record["text_raw"].encode()) + len(record["text_clean"].encode())
+        self.records.append((record, size))
+        self.bytes += size
+        while self.bytes > self.max_bytes or len(self.records) > self.max_items:
+            _, removed = self.records.popleft()
+            self.bytes -= removed
+            self.dropped += 1
+        self.ready.set()
+
+    def take(self, count):
+        batch = []
+        while self.records and len(batch) < count:
+            record, size = self.records.popleft()
+            self.bytes -= size
+            batch.append(record)
+        if not self.records:
+            self.ready.clear()
+        return batch
+
+
+async def drain_output(reader, buffer, shell_name, notifier):
+    """Read independently of Mongo writes/retries so capture cannot stall tmux."""
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    while True:
+        chunk = await reader.read(64 * 1024)
+        raw = decoder.decode(chunk, final=not chunk)
+        if raw:
+            buffer.append({"shell_name": shell_name, "kind": "output",
+                           "text_raw": raw, "text_clean": strip_ansi(raw).rstrip("\n"),
+                           "source": "pipe-pane"})
+            notifier.notify(shell_name)
+        if not chunk:
+            return
+
+
 async def _run_capture(shell_name: str) -> None:
     mongo_url = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/?directConnection=true&replicaSet=rs0")
-    mongo_db = os.environ.get("MONGODB_DATABASE", "aria")
-    flush_ms = int(os.environ.get("SHELLS_CAPTURE_FLUSH_MS", "500"))
-    batch_size = int(os.environ.get("SHELLS_CAPTURE_BATCH_SIZE", "50"))
-    max_buffer = int(os.environ.get("SHELLS_CAPTURE_MAX_BUFFER", "10000"))
-
-    client = AsyncIOMotorClient(mongo_url)
-    db = client[mongo_db]
-    shells = db.shells
-    events = db.shell_events
-
+    client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
+    db = client[os.environ.get("MONGODB_DATABASE", "aria")]
+    shells, events = db.shells, db.shell_events
+    flush_interval = max(0.05, int(os.environ.get("SHELLS_CAPTURE_FLUSH_MS", "500")) / 1000)
+    batch_size = max(1, int(os.environ.get("SHELLS_CAPTURE_BATCH_SIZE", "50")))
+    buffer = CaptureBuffer(max_items=int(os.environ.get("SHELLS_CAPTURE_MAX_BUFFER", "10000")))
+    notifier = ScreenNotifier()
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
-    loop = asyncio.get_event_loop()
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-
-    pending: list[dict] = []
-    last_flush = time.monotonic()
-    flush_interval = flush_ms / 1000.0
-    backoff = 1.0
-
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin)
     stop = asyncio.Event()
-
-    def _handle_signal(*_args):
-        stop.set()
-
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:  # pragma: no cover
-            pass
+        loop.add_signal_handler(sig, stop.set)
 
-    logger.info("capture: starting shell=%s flush=%sms batch=%d", shell_name, flush_ms, batch_size)
-
-    async def flush() -> None:
-        nonlocal pending, last_flush, backoff
-        if not pending:
-            last_flush = time.monotonic()
-            return
-        batch = pending
-        pending = []
-        try:
+    async def persist(batch):
+        if "line_number" not in batch[0]:
             now_utc = _utcnow()
             doc = await shells.find_one_and_update(
                 {"name": shell_name},
@@ -98,57 +122,61 @@ async def _run_capture(shell_name: str) -> None:
             for i, rec in enumerate(batch):
                 rec["line_number"] = start_line + i
                 rec["ts"] = now_utc
-            await events.insert_many(batch)
-            last_flush = time.monotonic()
-            backoff = 1.0
-        except Exception as exc:
-            logger.warning("capture: flush failed (%s), buffering and retrying", exc)
-            # Re-queue at the front, drop oldest on overflow.
-            pending = batch + pending
-            if len(pending) > max_buffer:
-                drop = len(pending) - max_buffer
-                pending = pending[drop:]
-                logger.warning("capture: buffer overflow, dropped %d events", drop)
-            await asyncio.sleep(min(backoff, 30.0))
-            backoff = min(backoff * 2, 30.0)
+        try:
+            await events.insert_many(batch, ordered=False)
+        except BulkWriteError as exc:
+            # Retried documents keep Mongo _ids and line numbers. Duplicates
+            # alone mean the preceding timed-out write actually succeeded.
+            if exc.details.get("writeConcernErrors") or any(
+                err.get("code") != 11000 for err in exc.details.get("writeErrors", [])
+            ):
+                raise
 
-    try:
-        while not stop.is_set():
-            try:
-                # A terminal is a byte stream, not a line protocol. TUIs often
-                # redraw more than asyncio's 64 KiB StreamReader line limit
-                # without emitting a newline; readline() then raises
-                # LimitOverrunError and tmux closes the pipe. Bounded reads
-                # preserve the exact stream while making huge redraws safe.
-                chunk = await asyncio.wait_for(reader.read(64 * 1024), timeout=flush_interval)
-            except asyncio.TimeoutError:
-                chunk = b""
-            if chunk:
-                # Preserve bytes as delivered by pipe-pane. xterm.js and the TUI
-                # process the stream as-is; chunks may end mid-line or mid-escape.
-                raw = chunk.decode("utf-8", errors="replace")
-                pending.append(
-                    {
-                        "shell_name": shell_name,
-                        "kind": "output",
-                        "text_raw": raw,
-                        # text_clean is for search/snapshot — keep it newline-free
-                        # so highlighting and substring matches work cleanly.
-                        "text_clean": strip_ansi(raw).rstrip("\n"),
-                        "source": "pipe-pane",
-                    }
-                )
-            else:
-                # EOF on stdin → tmux closed the pipe
-                if reader.at_eof():
+    idle = asyncio.Event()
+    idle.set()
+
+    async def writer():
+        backoff = 1.0
+        while True:
+            await buffer.ready.wait()
+            await asyncio.sleep(flush_interval)
+            idle.clear()
+            batch = buffer.take(batch_size)
+            if not batch:
+                continue
+            # Keep only one bounded batch in flight; input drains concurrently.
+            while True:
+                try:
+                    await asyncio.wait_for(persist(batch), timeout=5)
+                    backoff = 1.0
+                    idle.set()
                     break
-            now = time.monotonic()
-            if pending and (len(pending) >= batch_size or now - last_flush >= flush_interval):
-                await flush()
+                except Exception as exc:
+                    logger.warning("capture: persistence retry (%s); dropped=%d", type(exc).__name__, buffer.dropped)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
+
+    drain = asyncio.create_task(drain_output(reader, buffer, shell_name, notifier))
+    write = asyncio.create_task(writer())
+    stopping = asyncio.create_task(stop.wait())
+    try:
+        done, _ = await asyncio.wait([drain, stopping], return_when=asyncio.FIRST_COMPLETED)
+        if drain in done:
+            await drain
+            # A short EOF grace drains normal batches, but never waits forever
+            # for a database that is down during a capture upgrade/shutdown.
+            deadline = loop.time() + 2
+            while (buffer.records or not idle.is_set()) and loop.time() < deadline:
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.1)
     finally:
-        await flush()
+        for task in (drain, write, stopping):
+            task.cancel()
+        await asyncio.gather(drain, write, stopping, return_exceptions=True)
+        transport.close()
+        notifier.close()
         client.close()
-        logger.info("capture: exiting shell=%s", shell_name)
+        logger.info("capture: exiting shell=%s dropped=%d", shell_name, buffer.dropped)
 
 
 def _utcnow():

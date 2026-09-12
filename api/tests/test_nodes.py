@@ -517,3 +517,37 @@ async def test_remote_remove_is_durable_and_idempotent_while_offline(monkeypatch
     assert first["status"] == "pending"
     assert first["command_id"] == "command-1"
     assert enqueue.await_args.kwargs["idempotency_key"].endswith(":claude-x:1")
+
+
+@pytest.mark.asyncio
+async def test_command_worker_heartbeat_does_not_capture_or_replay(monkeypatch, tmp_path):
+    import asyncio
+    from aria.node.agent import NodeAgent
+    agent = NodeAgent("http://unused", "test", "mac-agents", capture_enabled=False,
+                      spool_path=str(tmp_path / "spool.sqlite3"))
+    agent.tmux.list_sessions = AsyncMock()
+    agent._flush_spool = AsyncMock()
+    agent._post = AsyncMock()
+    async def stop(_delay):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(asyncio, "sleep", stop)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await agent.heartbeat_loop()
+        agent._post.assert_awaited_once_with('/api/v1/nodes/mac-agents/heartbeat', {})
+        agent.tmux.list_sessions.assert_not_awaited()
+        agent._flush_spool.assert_not_awaited()
+        assert agent.command_mode == "full"
+    finally:
+        await agent.http.aclose()
+
+
+def test_shell_alias_does_not_change_logical_command_dispatch(monkeypatch):
+    from aria.nodes import canonical_shell_host
+    from types import SimpleNamespace
+    monkeypatch.setattr(settings, 'local_node_id', 'mac')
+    monkeypatch.setattr(settings, 'node_shell_host_aliases', {'mac-agents': 'mac'})
+    assert canonical_shell_host('mac-agents') == 'mac'
+    assert is_remote_host('mac-agents') is True
+    assert ShellService._shell_is_remote(SimpleNamespace(host='mac-agents')) is False
+    assert ShellService._shell_is_remote(SimpleNamespace(host='corsair')) is True

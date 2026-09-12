@@ -55,6 +55,7 @@ def test_repeat_launch_reattaches_to_existing_shell(
     script = _load_script()
     main = script["main"]
     globals_ = main.__globals__
+    monkeypatch.setitem(globals_, "_session_is_live", lambda _name: False)
 
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), tool])
     monkeypatch.setattr(globals_["os"], "getcwd", lambda: "/tmp/project")
@@ -195,6 +196,7 @@ def test_readiness_timeout_never_launches_tmux(monkeypatch):
     script = _load_script()
     main = script["main"]
     globals_ = main.__globals__
+    monkeypatch.setitem(globals_, "_session_is_live", lambda _name: False)
     monkeypatch.setattr(sys, "argv", [str(SCRIPT), "codex"])
     monkeypatch.setattr(globals_["os"], "getcwd", lambda: "/tmp/project")
     monkeypatch.setitem(globals_, "_load_key", lambda: "test-key")
@@ -246,3 +248,42 @@ def test_codex_launch_shim_makes_auto_resume_opt_in_and_keeps_fresh_fallback():
     # leave a dead pane, however long the failure took.
     assert "starting a fresh session" in source
     assert 'exec codex "${TUI_ARGS[@]}" "${CODEX_ARGS[@]}" "$@"' in source
+
+
+@pytest.mark.parametrize(("flag", "options"), [
+    (None, []), ("--aria-takeover", ["-d"]),
+    ("--aria-view", ["-f", "read-only,ignore-size"]),
+])
+def test_fast_attach_needs_no_api_key_or_launcher(monkeypatch, flag, options):
+    script = _load_script()
+    main = script["main"]
+    g = main.__globals__
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "codex", *([flag] if flag else [])])
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.setitem(g, "_session_is_live", lambda _: True)
+    monkeypatch.setitem(g, "_configure_tmux_session", lambda _: None)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("fast attach touched agent startup/API/key")
+    monkeypatch.setitem(g, "_load_key", forbidden)
+    monkeypatch.setitem(g, "_wait_for_readiness", forbidden)
+    monkeypatch.setattr(g["Path"], "is_file", forbidden)
+    calls = []
+    # A race where the pane disappears must return the attach failure without
+    # creating a fresh agent or waiting for the API.
+    monkeypatch.setattr(g["subprocess"], "call", lambda argv: calls.append(argv) or 1)
+    assert main() == 1
+    assert calls[0][0:2+len(options)] == ["tmux", "attach-session", *options]
+
+
+@pytest.mark.parametrize("dead,expected", [("0\n", True), ("1\n", False), ("", False)])
+def test_live_probe_checks_pane_not_only_session(monkeypatch, dead, expected):
+    script = _load_script()
+    probe = script["_session_is_live"]
+    g = probe.__globals__
+    from types import SimpleNamespace
+    def run(argv, **kwargs):
+        assert argv[3] == "=exact-name"
+        assert kwargs["timeout"] == 2
+        return SimpleNamespace(returncode=0, stdout=dead)
+    monkeypatch.setattr(g["subprocess"], "run", run)
+    assert probe("exact-name") is expected

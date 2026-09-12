@@ -15,9 +15,16 @@ shift 2
 # Placement flags are consumed here, but never bypass the managed tmux shell.
 # Every supported interactive coding session remains visible to ARIA.
 forwarded_args=()
+attach_args=()
+attach_mode=shared
 for arg in "$@"; do
     case "$arg" in
         --local|--no-aria|--corsair|--remote) ;;
+        --aria-view|--aria-takeover)
+            if [[ "$attach_mode" != shared && "$attach_mode" != "$arg" ]]; then
+                echo "choose either --aria-view or --aria-takeover" >&2; exit 2
+            fi
+            attach_mode=$arg ;;
         *) forwarded_args+=("$arg") ;;
     esac
 done
@@ -62,6 +69,9 @@ if tmux has-session -t "=$session" 2>/dev/null; then
 fi
 
 if [[ "${attach_existing:-0}" != 1 ]]; then
+    if [[ "$attach_mode" == --aria-view ]]; then
+        echo "no running shell to view in this directory" >&2; exit 1
+    fi
     tmux new-session -d -s "$session" -c "$workdir" -x 200 -y 50 \
         "$launcher" "${forwarded_args[@]}"
 fi
@@ -85,7 +95,11 @@ tmux set-option -w -t "$session:" window-size smallest 2>/dev/null || true
 # exit; keeping the remote pty alive briefly lets us discard late replies rather
 # than handing fragments such as `64;1;2...c` to the caller's prompt.
 rc=0
-tmux attach-session -t "=$session" || rc=$?
+case "$attach_mode" in
+    --aria-view) attach_args=(-f read-only,ignore-size) ;;
+    --aria-takeover) attach_args=(-d) ;;
+esac
+tmux attach-session "${attach_args[@]}" -t "=$session" || rc=$?
 if [[ -t 0 ]]; then
     stty -echo 2>/dev/null || true
     sleep 0.15

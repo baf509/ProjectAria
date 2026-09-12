@@ -19,7 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from aria.config import settings
 from aria.shells.ansi import strip_ansi
 from aria.shells.service import ShellService
-from aria.nodes import commands
+from aria.nodes import canonical_shell_host, commands
 from aria.nodes.models import EventBatchIn, NodeInfo, NodeRegisterRequest, SnapshotIn
 
 
@@ -61,7 +61,7 @@ class NodeService:
             live = set(live_shells)
             for name in sorted(live):
                 await self.shell_service.register_shell(name, host=node_id)
-            cursor = self.db.shells.find({"host": node_id, "status": {"$in": ["active", "idle"]}})
+            cursor = self.db.shells.find({"host": canonical_shell_host(node_id), "status": {"$in": ["active", "idle"]}})
             async for shell in cursor:
                 name = shell.get("name")
                 if name and name not in live:
@@ -110,7 +110,7 @@ class NodeService:
         n = 0
         if batch.events:
             n = await self.shell_service.insert_events_batch(
-                name, [e.model_dump() for e in batch.events], host=node_id
+                name, [e.model_dump() for e in batch.events], host=canonical_shell_host(node_id)
             )
         if batch.stopped:
             await self.shell_service.mark_stopped(name)
