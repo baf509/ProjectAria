@@ -98,3 +98,51 @@ class TestFakeLLMAdapter:
 
     def test_adapter_name(self, fake_llm):
         assert fake_llm.name == "fake"
+
+
+# ---------------------------------------------------------------------------
+# Adapter interface conformance
+# ---------------------------------------------------------------------------
+
+class TestAdapterSignatureContract:
+    """Every concrete adapter must accept the full base signature.
+
+    The orchestrator resolves an adapter from configuration and calls it with a
+    fixed keyword set, so a parameter added to one implementation and not the
+    others is a TypeError waiting on whichever backend an agent happens to be
+    pointed at. `agent_slug` was added to OpenAIAdapter alone and shipped green,
+    because the FakeLLMAdapter the suite exercises had been updated too — the
+    real adapters were never checked against each other.
+    """
+
+    @staticmethod
+    def _concrete_adapters():
+        from aria.llm.anthropic import AnthropicAdapter
+        from aria.llm.llamacpp import LlamaCppAdapter
+        from aria.llm.openai import OpenAIAdapter
+        from aria.llm.openrouter import OpenRouterAdapter
+
+        return [AnthropicAdapter, LlamaCppAdapter, OpenAIAdapter, OpenRouterAdapter,
+                FakeLLMAdapter]
+
+    @pytest.mark.parametrize("method", ["stream", "complete"])
+    def test_every_adapter_accepts_the_base_keywords(self, method):
+        import inspect
+
+        from aria.llm.base import LLMAdapter
+
+        base = inspect.signature(getattr(LLMAdapter, method)).parameters
+        required = {
+            name for name, p in base.items()
+            if name != "self" and p.kind is not p.VAR_KEYWORD
+        }
+        for cls in self._concrete_adapters():
+            params = inspect.signature(getattr(cls, method)).parameters
+            if any(p.kind is p.VAR_KEYWORD for p in params.values()):
+                continue  # **kwargs absorbs anything the base adds
+            missing = required - set(params)
+            assert not missing, (
+                f"{cls.__name__}.{method} is missing {sorted(missing)} from the "
+                f"LLMAdapter contract; the orchestrator passes them positionally "
+                f"by name to whichever adapter configuration resolved"
+            )
