@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Restart a registered model deployment through ARIA and wait for it to go idle.
+
+For the case where a client disconnected mid-generation and left the backend
+holding a slot: the admission queue then grows against a slot that never frees,
+which blocks every consumer and refuses `aria-deploy-mac activate` on its
+idleness check. Start/stop go through ARIA's actuator, never the model host
+directly, so ARIA observes and records the change (see AGENTS.md).
+
+    scripts/aria-model-restart <slug> [--wait 180]
+    scripts/aria-model-restart <slug> --status   # report, change nothing
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+API = os.environ.get("ARIA_API_URL", "http://127.0.0.1:8200").rstrip("/")
+ENV = os.path.expanduser("~/Services/apps/ProjectAria/.env")
+
+
+def api_key() -> str:
+    key = os.environ.get("ARIA_API_KEY")
+    if key:
+        return key
+    try:
+        with open(ENV) as handle:
+            for line in handle:
+                match = re.match(r"""\s*API_KEY\s*=\s*['"]?([^'"\s]+)""", line)
+                if match:
+                    return match.group(1)
+    except OSError:
+        pass
+    sys.exit("No API key: set ARIA_API_KEY or provide one in " + ENV)
+
+
+def call(path: str, key: str, method: str = "GET"):
+    request = urllib.request.Request(
+        API + path, method=method, headers={"X-API-Key": key})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            body = response.read()
+        return json.loads(body) if body else {}
+    except urllib.error.HTTPError as exc:
+        sys.exit(f"{method} {path} -> HTTP {exc.code}: {exc.read().decode(errors='replace')[:300]}")
+
+
+def state(slug: str, key: str) -> tuple[bool, int, float | None]:
+    """(busy, queued, tokens_predicted_total) — admission plus the backend's own view."""
+    admission = call(f"/llm/v1/backend?model={slug}", key).get("admission") or {}
+    predicted = None
+    busy = bool(admission.get("active"))
+    for server in call("/api/v1/infrastructure/model-servers/utilization", key).get("servers", []):
+        if server.get("slug") == slug:
+            predicted = server.get("tokens_predicted_total")
+            busy = busy or bool(server.get("busy_slots"))
+    return busy, int(admission.get("queued") or 0), predicted
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("slug")
+    parser.add_argument("--wait", type=int, default=180, help="seconds to wait for idle")
+    parser.add_argument("--status", action="store_true", help="report only, change nothing")
+    args = parser.parse_args()
+    key = api_key()
+
+    busy, queued, predicted = state(args.slug, key)
+    print(f"before: busy={busy} queued={queued} tokens_predicted_total={predicted}")
+    if args.status:
+        return 0
+    if not busy and not queued:
+        print("already idle; nothing to do")
+        return 0
+
+    print("stopping via ARIA actuator...")
+    call(f"/api/v1/infrastructure/model-servers/{args.slug}/stop", key, "POST")
+    print("starting...")
+    call(f"/api/v1/infrastructure/model-servers/{args.slug}/start", key, "POST")
+
+    deadline = time.time() + args.wait
+    while time.time() < deadline:
+        busy, queued, predicted = state(args.slug, key)
+        print(f"  busy={busy} queued={queued}")
+        if not busy and not queued:
+            print("idle — safe to activate a release")
+            return 0
+        time.sleep(5)
+    print(f"still busy={busy} queued={queued} after {args.wait}s; do not force a deploy over this",
+          file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
