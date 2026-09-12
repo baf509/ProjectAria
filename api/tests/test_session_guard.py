@@ -213,7 +213,7 @@ class TestWorktreeDefault:
         assert doc["workspace"] == "/repo"
 
     @pytest.mark.asyncio
-    async def test_a_non_repo_workspace_is_refused(self):
+    async def test_a_non_repo_workspace_is_refused(self, tmp_path):
         """An agent editing outside version control has no rollback point.
 
         Every other control here assumes one exists, so the session does not
@@ -221,11 +221,25 @@ class TestWorktreeDefault:
         """
         mgr = _manager()
         with _Ctx(mgr), patch("aria.agents.session._git_repo_root", return_value=None):
-            with pytest.raises(RuntimeError, match="not a git repository"):
-                await mgr.start_session(workspace="/tmp/scratch", backend="claude_code",
+            with pytest.raises(RuntimeError, match="is not a git repository"):
+                await mgr.start_session(workspace=str(tmp_path), backend="claude_code",
                                         prompt="fix it", model="x")
 
         mgr._fake_git_guard.prepare_session.assert_not_awaited()
+        mgr.db.coding_sessions.insert_one.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_missing_workspace_says_so_instead_of_blaming_git(self):
+        """`_git_repo_root` answers None for both, and sending someone to run
+        `git init` in a directory that does not exist wastes the operator's
+        first move."""
+        mgr = _manager()
+        with _Ctx(mgr), patch("aria.agents.session._git_repo_root", return_value=None):
+            with pytest.raises(RuntimeError, match="does not exist") as caught:
+                await mgr.start_session(workspace="/no/such/directory/here",
+                                        backend="claude_code", prompt="fix it", model="x")
+
+        assert "not a git repository" not in str(caught.value)
         mgr.db.coding_sessions.insert_one.assert_not_called()
 
     @pytest.mark.asyncio

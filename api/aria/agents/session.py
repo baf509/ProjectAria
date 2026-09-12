@@ -756,7 +756,14 @@ class CodingSessionManager:
         # and is not refused here.
         creates_repo = ctx["explicit"] and want_worktree
         if repo_root is None and not creates_repo and settings.guard_require_repo:
-            reason = f"{ctx['workspace']} is not a git repository"
+            # `_git_repo_root` answers None for both "no repo here" and "no such
+            # directory", and telling someone their typo is not a git repository
+            # sends them to fix the wrong thing.
+            exists = await asyncio.to_thread(os.path.isdir, ctx["workspace"])
+            reason = (
+                f"{ctx['workspace']} is not a git repository" if exists
+                else f"{ctx['workspace']} does not exist"
+            )
             await record_event(
                 self.db, "spawn:refused", reason, session_id=session_id,
                 path=ctx["workspace"], blocked=True, severity="critical",
@@ -766,10 +773,16 @@ class CodingSessionManager:
                 f"Refused a coding session in {ctx['workspace']}: {reason}",
                 ctx["workspace"],
             )
+            fix = (
+                "Initialise the repository, point the session at one, or pass "
+                "create_worktree=true to have ARIA create it."
+                if exists else
+                "Create the directory and initialise a repository, or point the session "
+                "at an existing one."
+            )
             raise RuntimeError(
                 f"Guard refused this coding session — {reason}. An agent working outside "
-                "version control has no rollback point. Initialise the repository, point "
-                "the session at one, or pass create_worktree=true to have ARIA create it."
+                f"version control has no rollback point. {fix}"
             )
         sandbox_possible = bool(settings.guard_sandbox_enabled)
         if not (ctx["will_worktree"] or sandbox_possible):
