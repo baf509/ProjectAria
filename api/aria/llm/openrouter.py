@@ -119,6 +119,10 @@ class OpenRouterAdapter(LLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         stream: bool = True,
+        # Accepted and unused: this provider is called directly, not through the
+        # ARIA gateway, so there is no gateway usage row to attribute. The
+        # orchestrator passes it to whatever adapter it resolved.
+        agent_slug: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream a completion from OpenRouter.
@@ -259,6 +263,7 @@ class OpenRouterAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        agent_slug: str | None = None,  # accepted and unused; see `stream`
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 

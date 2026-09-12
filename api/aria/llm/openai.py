@@ -102,6 +102,7 @@ class OpenAIAdapter(LLMAdapter):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         stream: bool = True,
+        agent_slug: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream a completion from OpenAI."""
 
@@ -109,7 +110,7 @@ class OpenAIAdapter(LLMAdapter):
         if not stream:
             try:
                 content, tool_calls_list, usage = await self.complete(
-                    messages, tools, temperature, max_tokens
+                    messages, tools, temperature, max_tokens, agent_slug=agent_slug
                 )
                 if content:
                     yield StreamChunk(type="text", content=content)
@@ -136,6 +137,11 @@ class OpenAIAdapter(LLMAdapter):
 
         if tools:
             request_params["tools"] = self._convert_tools(tools)
+        if agent_slug:
+            # Attribute the request to a registered agent for the gateway's
+            # usage accounting. The gateway resolves it against the agent
+            # registry; a value that names no registered agent is ignored.
+            request_params["extra_headers"] = {"x-aria-agent": agent_slug}
 
         try:
             # Stream the response
@@ -258,6 +264,7 @@ class OpenAIAdapter(LLMAdapter):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        agent_slug: str | None = None,
     ) -> tuple[str, list[ToolCall], dict]:
         """Non-streaming completion."""
 
@@ -265,7 +272,9 @@ class OpenAIAdapter(LLMAdapter):
         tool_calls = []
         usage = {}
 
-        async for chunk in self.stream(messages, tools, temperature, max_tokens):
+        async for chunk in self.stream(
+            messages, tools, temperature, max_tokens, agent_slug=agent_slug
+        ):
             if chunk.type == "text":
                 content_parts.append(chunk.content)
             elif chunk.type == "tool_call":

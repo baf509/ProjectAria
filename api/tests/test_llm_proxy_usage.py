@@ -199,6 +199,179 @@ def test_caller_priority_classifies_interactive_foreground_and_background():
     assert llm_proxy._caller_priority("evalstack-benchmark") == 2
 
 
+# ---------------------------------------------------------------------------
+# Agent attribution: x-aria-agent and exact-slug caller resolution
+# ---------------------------------------------------------------------------
+
+def _request_with_agent(
+    body: dict,
+    *,
+    agent: str | None = None,
+    caller: str | None = None,
+) -> Request:
+    headers = [(b"user-agent", b"gateway-test/1.0")]
+    if agent:
+        headers.append((b"x-aria-agent", agent.encode()))
+    if caller:
+        headers.append((b"x-aria-caller", caller.encode()))
+    raw = json.dumps(body).encode()
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/llm/v1/chat/completions",
+        "raw_path": b"/llm/v1/chat/completions",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 12345),
+        "server": ("127.0.0.1", 8200),
+    }
+    return Request(scope, receive)
+
+
+def _mock_agents(db, slugs):
+    """Make db.agents.find_one resolve only the given registered slugs."""
+    async def find_one(query, *a, **k):
+        slug = query.get("slug")
+        return {"slug": slug} if slug in slugs else None
+    db.agents.find_one = AsyncMock(side_effect=find_one)
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_slug_prefers_the_explicit_header():
+    db = make_mock_db()
+    _mock_agents(db, {"pi-coding", "aria"})
+    request = _request_with_agent(
+        {"model": "auto", "messages": []},
+        agent="pi-coding",
+        caller="aria",
+    )
+    assert await llm_proxy._resolve_agent_slug(db, request) == "pi-coding"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_slug_falls_back_to_an_exact_caller_slug():
+    db = make_mock_db()
+    _mock_agents(db, {"pi-coding"})
+    # No x-aria-agent; the declared caller IS a registered slug (option A).
+    request = _request_with_agent({"model": "auto", "messages": []}, caller="pi-coding")
+    assert await llm_proxy._resolve_agent_slug(db, request) == "pi-coding"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_slug_never_invents_an_agent():
+    db = make_mock_db()
+    _mock_agents(db, {"pi-coding"})
+    # A workload label that shares a prefix with a registered slug is NOT that
+    # agent (option C, rejected): no prefix matching, so it stays unattributed.
+    request = _request_with_agent(
+        {"model": "auto", "messages": []}, caller="pi-coding-engine-soak"
+    )
+    assert await llm_proxy._resolve_agent_slug(db, request) is None
+    # A typo in the explicit header is not a phantom series either.
+    request = _request_with_agent(
+        {"model": "auto", "messages": []}, agent="pi-coding-ridgee"
+    )
+    assert await llm_proxy._resolve_agent_slug(db, request) is None
+    # No headers at all: a stock OpenAI client is unattributed.
+    request = _request_with_agent({"model": "auto", "messages": []})
+    assert await llm_proxy._resolve_agent_slug(db, request) is None
+
+
+@pytest.mark.asyncio
+async def test_nonstream_proxy_records_the_agent_slug(monkeypatch):
+    db = make_mock_db()
+    _mock_agents(db, {"pi-coding"})
+    route = llm_proxy._Route(
+        "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+        "http://127.0.0.1:8004/v1",
+        "pinned",
+        [],
+    )
+    monkeypatch.setattr(llm_proxy, "_pick_backend", AsyncMock(return_value=route))
+    monkeypatch.setattr(
+        llm_proxy, "_backend_model_id_cached", AsyncMock(return_value="qwen-flash-next")
+    )
+    response = MagicMock(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        text="",
+    )
+    response.json.return_value = {
+        "choices": [{"message": {"content": "not persisted"}}],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+    }
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+    monkeypatch.setattr(llm_proxy, "_client", lambda: client)
+
+    await llm_proxy._proxy(
+        "chat/completions",
+        _request_with_agent(
+            {"model": "aria-resident", "messages": [{"role": "user", "content": "hi"}]},
+            agent="pi-coding",
+        ),
+        MagicMock(),
+        db,
+    )
+    doc = db.usage.insert_one.call_args.args[0]
+    assert doc["agent_slug"] == "pi-coding"
+    # No x-aria-caller was sent, so the workload label is the host:user-agent
+    # fallback — recorded separately from the agent identity.
+    assert doc["caller"] == "127.0.0.1:gateway-test/1.0"
+
+
+@pytest.mark.asyncio
+async def test_nonstream_proxy_leaves_agent_unattributed_for_a_workload_label(monkeypatch):
+    db = make_mock_db()
+    _mock_agents(db, {"pi-coding"})
+    route = llm_proxy._Route(
+        "Qwen3.8-Flash-Next-Hybrid-R9700-Halo",
+        "http://127.0.0.1:8004/v1",
+        "pinned",
+        [],
+    )
+    monkeypatch.setattr(llm_proxy, "_pick_backend", AsyncMock(return_value=route))
+    monkeypatch.setattr(
+        llm_proxy, "_backend_model_id_cached", AsyncMock(return_value="qwen-flash-next")
+    )
+    response = MagicMock(
+        status_code=200,
+        headers={"content-type": "application/json"},
+        text="",
+    )
+    response.json.return_value = {
+        "choices": [{"message": {"content": "not persisted"}}],
+        "usage": {"prompt_tokens": 20, "completion_tokens": 5},
+    }
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+    monkeypatch.setattr(llm_proxy, "_client", lambda: client)
+
+    await llm_proxy._proxy(
+        "chat/completions",
+        _request_with_agent(
+            {"model": "aria-resident", "messages": [{"role": "user", "content": "hi"}]},
+            caller="pi-coding-engine-soak",
+        ),
+        MagicMock(),
+        db,
+    )
+    doc = db.usage.insert_one.call_args.args[0]
+    assert doc["agent_slug"] is None
+    assert doc["caller"] == "pi-coding-engine-soak"
+
+
 @pytest.mark.asyncio
 async def test_admission_prioritizes_hermes_then_pi_then_background():
     admission = llm_proxy._PriorityAdmission(aging_seconds=60)

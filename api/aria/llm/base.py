@@ -86,12 +86,17 @@ class LLMAdapter(ABC):
         temperature: float = 0.7,
         max_tokens: int = 4096,
         stream: bool = True,
+        agent_slug: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """
         Stream a completion with optional tool use.
 
         Args:
             stream: If False, uses non-streaming API internally (for models with streaming issues)
+            agent_slug: Registered agent this call belongs to, for the ARIA
+                gateway's usage attribution. Adapters that do not route through
+                the gateway accept it and ignore it — it is part of the adapter
+                contract, so every implementation must take it.
         Yields StreamChunk objects.
         """
         pass
@@ -103,9 +108,16 @@ class LLMAdapter(ABC):
         tools: list[Tool] = None,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        agent_slug: str | None = None,
     ) -> tuple[str, list[ToolCall], dict]:
         """
         Non-streaming completion.
+
+        Args:
+            agent_slug: Registered agent this call belongs to, for the ARIA
+                gateway's usage attribution. Adapters that do not route through
+                the gateway accept it and ignore it — it is part of the adapter
+                contract, so every implementation must take it.
         Returns (content, tool_calls, usage).
         """
         pass

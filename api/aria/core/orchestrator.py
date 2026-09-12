@@ -423,6 +423,11 @@ class Orchestrator:
                         temperature=candidate_llm_config.get("temperature", 0.7),
                         max_tokens=candidate_llm_config.get("max_tokens", 4096),
                         stream=use_streaming,
+                        # Attribute the gateway's usage row to the agent. The
+                        # conversation row below is already attributed directly;
+                        # this keeps the two views consistent when the LLM call
+                        # goes through the gateway (the unbound llamacpp path).
+                        agent_slug=agent.get("slug"),
                     ).__aiter__()
                     received_first_chunk = False
                     while True:

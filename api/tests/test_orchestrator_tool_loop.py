@@ -87,7 +87,8 @@ class MultiRoundFakeLLM(FakeLLMAdapter):
         self.all_messages_received: list[list[Message]] = []
 
     async def stream(self, messages, tools=None, temperature=0.7,
-                     max_tokens=4096, stream=True) -> AsyncIterator[StreamChunk]:
+                     max_tokens=4096, stream=True,
+                     agent_slug=None) -> AsyncIterator[StreamChunk]:
         self.all_messages_received.append(list(messages))
         self._call_count += 1
 
