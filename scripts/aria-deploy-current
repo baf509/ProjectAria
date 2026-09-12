@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Stage the current checkout, activate it, and verify — with the guard preflight
+checked BEFORE anything is staged.
+
+`aria-deploy-mac` keeps stage and activate separate on purpose, and this does not
+change that: it performs both, in order, deliberately, as one operator action.
+
+The preflight exists because `guard_sandbox_enabled` without bwrap makes
+`preflight()` fail closed, so a deploy that activates the guard on a host with no
+bwrap refuses every coding session afterwards — a failure `aria-boot-check` does
+not catch, because it never spawns a session.
+
+    scripts/aria-deploy-current
+    scripts/aria-deploy-current --set GUARD_SANDBOX_ENABLED=false
+    scripts/aria-deploy-current --check-only
+
+Run `sudo -v` first: activation verifies the restart privilege and no password
+passes through this script.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEPLOY = REPO / "scripts/aria-deploy-mac"
+BOOT = REPO / "scripts/aria-boot-check"
+ENV = Path("/Users/ben/Services/apps/ProjectAria/.env")
+
+
+def env_value(key: str) -> str | None:
+    if not ENV.is_file():
+        return None
+    for line in ENV.read_text().splitlines():
+        match = re.match(rf"""\s*{re.escape(key)}\s*=\s*['"]?([^'"\s#]*)""", line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def set_env(assignment: str) -> None:
+    key, _, value = assignment.partition("=")
+    key, value = key.strip(), value.strip()
+    if not key or not _:
+        sys.exit(f"--set expects KEY=VALUE, got {assignment!r}")
+    current = env_value(key)
+    if current == value:
+        print(f"  {key} already {value}")
+        return
+    backup = ENV.with_suffix(ENV.suffix + ".pre-deploy")
+    shutil.copy2(ENV, backup)
+    lines = ENV.read_text().splitlines(keepends=True)
+    pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    replaced = False
+    for index, line in enumerate(lines):
+        if pattern.match(line):
+            lines[index] = f"{key}={value}\n"
+            replaced = True
+            break
+    if not replaced:
+        lines.append(f"{key}={value}\n")
+    ENV.write_text("".join(lines))
+    print(f"  {key}: {current} -> {value}   (backup: {backup.name})")
+
+
+def guard_preflight() -> list[str]:
+    """Refuse combinations that would deploy a service which cannot spawn sessions."""
+    problems = []
+    if (env_value("GUARD_ENABLED") or "true").lower() != "false":
+        sandbox = (env_value("GUARD_SANDBOX_ENABLED") or "false").lower() == "true"
+        binary = env_value("SHELL_SANDBOX_BINARY") or "bwrap"
+        if sandbox and not shutil.which(binary):
+            problems.append(
+                f"GUARD_SANDBOX_ENABLED=true but {binary!r} is not on PATH. preflight() "
+                "fails closed on this, so every coding session would be refused after "
+                f"activation. Re-run with --set GUARD_SANDBOX_ENABLED=false if this host "
+                "cannot sandbox (bwrap is Linux-only)."
+            )
+    return problems
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                        help="update the service environment before deploying (backed up)")
+    parser.add_argument("--check-only", action="store_true",
+                        help="run the preflight and stop")
+    args = parser.parse_args()
+
+    for assignment in args.set:
+        print("service environment:")
+        set_env(assignment)
+
+    print("guard preflight:")
+    problems = guard_preflight()
+    for problem in problems:
+        print("  REFUSED: " + problem, file=sys.stderr)
+    if problems:
+        return 2
+    print("  ok")
+    if args.check_only:
+        return 0
+
+    print("staging...")
+    staged = subprocess.run([sys.executable, str(DEPLOY), "stage", "--source", str(REPO)],
+                            capture_output=True, text=True)
+    if staged.returncode:
+        sys.stderr.write(staged.stdout[-3000:] + staged.stderr[-3000:])
+        return staged.returncode
+    release = json.loads(staged.stdout.strip().splitlines()[-1])["release"]
+    print(f"  {release}")
+
+    print("activating...")
+    if subprocess.run([sys.executable, str(DEPLOY), "activate", release]).returncode:
+        print("activation failed; the script rolls itself back — check the receipt above",
+              file=sys.stderr)
+        return 1
+
+    print("verifying...")
+    return subprocess.run([sys.executable, str(BOOT), "--wait", "300", "--canary-shell"]).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
