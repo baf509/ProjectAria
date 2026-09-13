@@ -1,0 +1,24 @@
+# NInfer-3090: Qwen3.8-27B on the Corsair RTX 3090 (ARIA registry slug
+# NInfer-3090-Qwen3.8-27B). Installed as a systemd --user unit so ARIA's
+# restricted actuator can start, stop and observe it like the other Corsair
+# model servers. It replaces the nohup launch of deploy/run-serve.sh, which
+# stays the single source of the launch flags (it execs ninfer-serve, so the
+# unit's MainPID is the server itself).
+#
+# No [Install] section on purpose: no boot autostart, matching the other
+# Corsair model servers. Restart=no: a crash must be seen, not hidden.
+[Unit]
+Description=NInfer-3090 ninfer-serve 0.6.1 Qwen3.8-27B on RTX 3090 (ARIA NInfer-3090-Qwen3.8-27B)
+
+[Service]
+Type=exec
+WorkingDirectory=/home/ben/staging/ninfer3090/release/ninfer-rtx3090-linux-x64-0.6.1-rtx3090
+# The 3090 holds one model: refuse to start beside any other CUDA process
+# (e.g. the CUDA/Halo candidate). Written without a dollar sign on purpose.
+ExecStartPre=/bin/sh -c "if /usr/bin/nvidia-smi --query-compute-apps=pid --format=csv,noheader | /usr/bin/grep -q .; then echo ninfer-3090 refused: the RTX 3090 already has a compute process >&2; exit 1; fi"
+ExecStart=/home/ben/staging/ninfer3090/deploy/run-serve.sh
+StandardOutput=append:/home/ben/staging/ninfer3090/logs/serve.log
+StandardError=append:/home/ben/staging/ninfer3090/logs/serve.log
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=no

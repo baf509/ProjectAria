@@ -450,6 +450,9 @@ _EXCLUSIVE_PAIRS = (
         ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8",
          "Chadrock-ROCmFP6-qwen3.6-27b"),
     )
+    # One model at a time on the RTX 3090 (24 GiB): NInfer holds ~20 GiB and the
+    # CUDA/Halo candidate puts its dense trunk, KV and drafter there.
+    + (("NInfer-3090-Qwen3.8-27B", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),)
 )
 
 
@@ -792,6 +795,41 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "route for requests that name no model; 256K context, 32K output budget and compaction "
         "at 75% (196608). Background callers share this one slot behind gateway admission "
         "priority. Hash-pinned operator acceptance is not a passed reliability qualification.",
+    ),
+    ModelServerSpec(
+        slug="NInfer-3090-Qwen3.8-27B",
+        description="Qwen3.8-27B on the Corsair RTX 3090 under the ninfer-serve 0.6.1 sm_86 "
+        "release (registered 2026-09-13). Serves the 18.2 GB model-card artifact "
+        "qwen3_8_27b_card.ninfer (sha256 eec39564993d6e9c…), because the 20.4 GB DFlash2 "
+        "artifact is not supported by this runtime. One 65,536-token KV region, one "
+        "concurrent request with up to 16 pending, MTP speculation active (observed in the "
+        "serve log); reasoning_effort is per request (none/low/medium/xhigh; the eval "
+        "default is medium). Uses its own staged CUDA 12.8 runtime via LD_LIBRARY_PATH.",
+        runtime_repo="ninfer-rtx3090-linux-x64-0.6.1-rtx3090 (prebuilt release tarball)",
+        runtime_ref="ninfer-serve 0.6.1-rtx3090; CUDA 12.8 libcudart staged under "
+        "/home/ben/staging/ninfer3090/cuda12; launcher /home/ben/staging/ninfer3090/deploy/run-serve.sh",
+        runtime_family="ninfer",
+        backend_device="RTX 3090 (CUDA sm_86, GPU-ab0d4675-0482-6860-8dd6-8b17ad126e6d, PCI C4:00.0)",
+        devices=("RTX 3090 (CUDA sm_86)",),
+        memory_pool=POOL_NVIDIA,
+        model_file="/home/ben/staging/ninfer3090/models/qwen3_8_27b_card.ninfer",
+        # Shares :8080 with two retired R9700 entries; /v1/models owned_by
+        # "ninfer" is what tells them apart in the fleet probe.
+        port=8080,
+        systemd_unit="ninfer-3090.service",
+        startable=True,
+        allow_force_start=False,
+        # Explicit selection only. Red stays the model-omitted fallback when the
+        # Halo model is down; this 20 GiB slot must not silently become it.
+        auto_route=False,
+        parameters=(),
+        # Measured: 20,074 MiB on the 3090 at 65,536 KV tokens (2026-09-13).
+        resident_gib=19.7,
+        exclusive_with=_exclusive_with("NInfer-3090-Qwen3.8-27B"),
+        consumers_note="Not a Hermes or Pi model (Pi stays fixed at its three). Reached through "
+        "the gateway by exact slug over the Mac's 127.0.0.1:8080 forward; ninfer-serve has auth "
+        "disabled, so it must stay loopback-only. Exclusive with the CUDA/Halo candidate, which "
+        "also allocates on the 3090.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
@@ -1948,6 +1986,8 @@ _TAILNET_IP = "100.123.245.84"
 # Ridge's independent on-demand contract is unchanged.
 CURRENT_MODEL_CHOICES = frozenset({
     "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+    # Registered by Ben 2026-09-13: Qwen3.8-27B on the RTX 3090 (explicit selection only).
+    "NInfer-3090-Qwen3.8-27B",
     "Red-Qwen3.8-27B-MXFP4",
     "Red-Qwen3.8-Flash-Next-MXFP4",
     "Red-Qwen3.8-27B-PARO-MXFP4",
@@ -2948,9 +2988,9 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
         return await _probe_vllm(spec, root, timeout)
     if family == "dwarfstar":
         return await _probe_dwarfstar(spec, base, timeout)
-    if family == "halogen":
-        # No llama.cpp /slots or /metrics to read; probing them only produces
-        # 404s. Occupancy stays UNKNOWN rather than a misleading zero.
+    if family in ("halogen", "ninfer"):
+        # No llama.cpp /slots or /metrics to read (both 404); probing them only
+        # produces errors. Occupancy stays UNKNOWN rather than a misleading zero.
         return None
     return await _probe_llamacpp(spec, root, timeout)
 
@@ -3776,6 +3816,8 @@ def _runtime_family_from_models(payload: object) -> Optional[str]:
         return "llamacpp"
     if "halogen" in owners:
         return "halogen"
+    if "ninfer" in owners:
+        return "ninfer"
     return None
 
 

@@ -1,0 +1,374 @@
+#!/usr/bin/env python3
+"""One operator action for the 2026-09-13 Corsair model change.
+
+Brings up, in order, everything the staged release needs so a single command
+leaves ARIA serving both new registrations:
+
+  * Halogen-Flash backend: forwarded /health budget per deployment, Mac-side
+    exclusivity for dynamic rows, and the `halogen` runtime family.
+  * NInfer-3090 Qwen3.8-27B: static registry entry (slug NInfer-3090-Qwen3.8-27B),
+    run under the systemd --user unit ninfer-3090.service, reached over the
+    Mac's 127.0.0.1:8080 forward, and startable through the Corsair actuator.
+
+    sudo -v
+    scripts/aria-activate-halogen-ninfer /Users/ben/Services/releases/ProjectAria/RELEASE
+
+Every precondition is checked read-only BEFORE anything changes. Each mutating
+phase verifies itself and undoes its own step on failure. The Mac activation is
+aria-deploy-mac's own (idle check, atomic pointer swap, self-rollback). Red's
+Qwen3.8-27B must serve through the gateway before AND after, or this fails.
+No credential is printed; no model other than NInfer is stopped or started.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+DEPLOY = REPO / "scripts/aria-deploy-mac"
+BOOT = REPO / "scripts/aria-boot-check"
+UNIT_SOURCE = REPO / "scripts/corsair/ninfer-3090.service"
+APP_ENV = Path("/Users/ben/Services/apps/ProjectAria/.env")
+SERVICE_PY = Path("/Users/ben/Services/apps/ProjectAria/api/.venv/bin/python")
+FORWARDS = Path("/Users/ben/Services/apps/bin/run-corsair-model-forwards")
+FORWARDS_JOB = "system/com.ben.devbox.corsair-forwards"
+PI_MODELS = Path("/Users/ben/.pi/agent/models.json")
+
+CORSAIR = "ben@100.123.245.84"
+ACTUATOR = "/home/ben/.local/share/aria-model-actuator"
+NINFER_ROOT = "/home/ben/staging/ninfer3090"
+NINFER_UNIT = "ninfer-3090.service"
+NINFER_SLUG = "NInfer-3090-Qwen3.8-27B"
+HALOGEN_SLUG = "Halogen-Qwen3.8-Flash-Next-W4B-Halo"
+RED_SLUG = "Red-Qwen3.8-27B-MXFP4"
+INCUMBENT_UNIT = "flashnext-cuda-halo.service"
+GUARD = "/home/ben/.config/systemd/user/flashnext-cuda-halo.service.d/zzz-halogen-exclusive-guard.conf"
+
+
+def say(message: str) -> None:
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def fail(message: str) -> "NoReturn":  # type: ignore[name-defined]
+    say("FAILED: " + message)
+    sys.exit(1)
+
+
+def corsair(command: str, timeout: float = 120, stdin: bytes | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", CORSAIR, command],
+        input=stdin, capture_output=True, timeout=timeout,
+        **({} if stdin is not None else {"stdin": subprocess.DEVNULL}),
+    )
+
+
+def corsair_ok(command: str, timeout: float = 120) -> str:
+    result = corsair(command, timeout)
+    if result.returncode:
+        raise RuntimeError(f"corsair: {command[:80]}… exit {result.returncode}: "
+                           f"{(result.stderr or result.stdout).decode(errors='replace')[-400:]}")
+    return result.stdout.decode(errors="replace")
+
+
+def gateway_probe(model: str, extra: dict | None = None) -> dict:
+    key = json.loads(PI_MODELS.read_text())["providers"]["aria"]["apiKey"]
+    body = {"model": model, "max_tokens": 64, "temperature": 0,
+            "messages": [{"role": "user", "content": "What is 17*23? Answer with the number only."}],
+            **(extra or {})}
+    request = urllib.request.Request(
+        "http://127.0.0.1:8200/llm/v1-identified/chat/completions", data=json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                 "X-Aria-Caller": "aria-activate-halogen-ninfer"})
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            payload = json.load(response)
+            message = payload["choices"][0]["message"]
+            return {"http": response.status, "backend": response.headers.get("X-Aria-Backend"),
+                    "answer": (message.get("content") or "").strip()[:24],
+                    "seconds": round(time.monotonic() - started, 2)}
+    except urllib.error.HTTPError as exc:
+        return {"http": exc.code, "backend": None, "answer": None,
+                "seconds": round(time.monotonic() - started, 2)}
+    except (OSError, ValueError, KeyError) as exc:
+        return {"http": None, "backend": None, "answer": type(exc).__name__,
+                "seconds": round(time.monotonic() - started, 2)}
+
+
+def require_red(stage: str) -> None:
+    result = gateway_probe(RED_SLUG, {"chat_template_kwargs": {"enable_thinking": False}})
+    say(f"Red {stage}: {result}")
+    if result["http"] != 200 or result["backend"] != RED_SLUG:
+        fail(f"Red-Linux Qwen3.8-27B is not serving through the gateway ({stage})")
+
+
+def api_key() -> str:
+    code = f"from dotenv import dotenv_values; print(dotenv_values('{APP_ENV}')['API_KEY'])"
+    return subprocess.check_output([str(SERVICE_PY), "-c", code], text=True).strip()
+
+
+def fleet_states(slugs: list[str]) -> dict[str, str]:
+    request = urllib.request.Request("http://127.0.0.1:8200/api/v1/infrastructure/model-servers",
+                                     headers={"X-API-Key": api_key()})
+    with urllib.request.urlopen(request, timeout=90) as response:
+        payload = json.load(response)
+    rows = payload if isinstance(payload, list) else payload.get("servers") or []
+    return {row["slug"]: row.get("state") for row in rows if row.get("slug") in slugs}
+
+
+# ── phase 0: read-only preconditions ────────────────────────────────────────
+
+ACTUATOR_PROBE = f"""
+set -e
+D=$(mktemp -d /tmp/aria-actuator-candidate-XXXXXX)
+trap 'rm -rf "$D"' EXIT
+mkdir -p "$D/api" && tar -C "$D/api" -xf - --warning=no-unknown-keyword
+cd "$D/api"
+for slug in {NINFER_SLUG} Qwen3.8-Flash-Next-CUDA-Halo-Candidate; do
+  SSH_ORIGINAL_COMMAND="status $slug" PYTHONPATH="$D/api" PYTHONUNBUFFERED=1 \\
+    env -u ARIA_CORSAIR_MODEL_FORWARDS {ACTUATOR}/.venv/bin/python -m aria.infrastructure.corsair_actuator | tail -1 | \\
+    python3 -c 'import sys,json; d=json.load(sys.stdin); r=d.get("result") or {{}}; print(d.get("ok"), r.get("slug"), r.get("state")); sys.exit(0 if d.get("ok") else 1)'
+done
+"""
+
+
+def aria_tar(release: Path) -> bytes:
+    env = {**os.environ, "COPYFILE_DISABLE": "1"}
+    return subprocess.run(["tar", "-C", str(release / "api"), "--no-xattrs", "--exclude", "__pycache__",
+                           "--exclude", "._*", "-cf", "-", "aria"],
+                          capture_output=True, check=True, env=env).stdout
+
+
+def preflight(release: Path, check_only: bool = False) -> dict:
+    say("phase 0: read-only preconditions")
+    subprocess.run([sys.executable, str(DEPLOY), "verify", str(release)], check=True)
+    manifest = json.loads((release / "release.json").read_text())
+    registry = (release / "api/aria/infrastructure/model_servers.py").read_text()
+    for marker in (f'slug="{NINFER_SLUG}"', "health_timeout_s", "_refuse_dynamic_exclusive_conflict"):
+        if marker not in registry:
+            fail(f"staged release lacks {marker!r}; re-stage from the halogen-flash checkout")
+    if subprocess.run(["sudo", "-n", "true"], capture_output=True).returncode:
+        if not check_only:
+            fail("run `sudo -v` in this terminal first (activation restarts system launchd jobs)")
+        say("note: no sudo timestamp; the real run needs `sudo -v` first")
+    say(f"release {manifest['build']} (source {manifest['source_head'][:12]}) verified")
+
+    require_red("before")
+
+    checks = corsair_ok(
+        "set -e; curl -fsS -m 10 http://127.0.0.1:8109/health >/dev/null && echo halogen=ok; "
+        "curl -fsS -m 5 http://127.0.0.1:8080/v1/models | grep -q '\"owned_by\":\"ninfer\"' && echo ninfer=ok; "
+        f"echo incumbent=$(systemctl --user is-active {INCUMBENT_UNIT} || true); "
+        f"test -f {GUARD} && echo guard=present; "
+        f"echo ninfer_unit=$(systemctl --user is-active {NINFER_UNIT} 2>/dev/null || true)")
+    say("corsair: " + " ".join(checks.split()))
+    facts = dict(line.split("=", 1) for line in checks.split() if "=" in line)
+    if facts.get("halogen") != "ok":
+        fail("halogen-flash is not healthy on Corsair")
+    if facts.get("ninfer") != "ok":
+        fail("ninfer-serve is not answering on Corsair 127.0.0.1:8080")
+    if facts.get("incumbent") == "active" or facts.get("guard") != "present":
+        fail("the CUDA/Halo incumbent is active or its Halogen guard is missing")
+
+    result = corsair(ACTUATOR_PROBE, timeout=180, stdin=aria_tar(release))
+    output = (result.stdout + result.stderr).decode(errors="replace").strip()
+    say("actuator compatibility (staged code, actuator venv, status only): " + " | ".join(output.splitlines()[-2:]))
+    if result.returncode:
+        fail("staged registry does not run under the Corsair actuator's environment")
+
+    listener = subprocess.run(["lsof", "-nP", "-iTCP:8080", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
+    if listener and "ssh" not in listener:
+        fail("Mac 127.0.0.1:8080 is held by something other than the Corsair forward")
+    return facts
+
+
+# ── phase 1: Corsair actuator registry ──────────────────────────────────────
+
+def update_actuator(release: Path, build: str) -> None:
+    say("phase 1: update the Corsair actuator's registry copy (backup first)")
+    script = f"""
+set -e
+R={ACTUATOR}; B=$R/backups/pre-{build}
+test -d $R/api/aria
+mkdir -p $B && cp -a $R/api/aria $B/aria
+rm -rf $R/api/aria.new && mkdir -p $R/api/aria.new
+tar -C $R/api/aria.new -xf - --warning=no-unknown-keyword --strip-components=1
+mv $R/api/aria $R/api/aria.prev && mv $R/api/aria.new $R/api/aria
+for slug in {NINFER_SLUG} Qwen3.8-Flash-Next-CUDA-Halo-Candidate; do
+  if ! SSH_ORIGINAL_COMMAND="status $slug" /home/ben/.local/bin/aria-model-actuator | tail -1 | grep -q '"ok":true'; then
+    rm -rf $R/api/aria && mv $R/api/aria.prev $R/api/aria; echo "restored previous actuator registry"; exit 3
+  fi
+done
+rm -rf $R/api/aria.prev
+echo "actuator updated; backup $B"
+"""
+    result = corsair(script, timeout=180, stdin=aria_tar(release))
+    say("  " + (result.stdout + result.stderr).decode(errors="replace").strip().replace("\n", " | "))
+    if result.returncode:
+        fail("actuator update did not verify (previous registry restored)")
+
+
+# ── phase 2: NInfer under systemd ───────────────────────────────────────────
+
+def adopt_ninfer() -> None:
+    say(f"phase 2: run NInfer under {NINFER_UNIT}")
+    unit = UNIT_SOURCE.read_bytes()
+    digest = hashlib.sha256(unit).hexdigest()
+    install = corsair(
+        f"set -e; U=/home/ben/.config/systemd/user/{NINFER_UNIT}; cat > $U.new; mv $U.new $U; "
+        f"systemctl --user daemon-reload; sha256sum $U | cut -c1-64", stdin=unit)
+    if install.returncode or install.stdout.decode().strip() != digest:
+        fail("could not install the ninfer-3090 unit")
+    if corsair_ok(f"systemctl --user is-active {NINFER_UNIT} || true").strip() == "active":
+        say("  already running under systemd")
+        return
+    script = f"""
+set -u
+S={NINFER_ROOT}
+P=$(cat $S/logs/serve.pid 2>/dev/null || true)
+if [ -n "$P" ] && grep -q ninfer-serve /proc/$P/cmdline 2>/dev/null; then
+  kill -TERM $P
+  for i in $(seq 1 60); do kill -0 $P 2>/dev/null || break; sleep 1; done
+  kill -0 $P 2>/dev/null && {{ echo "nohup ninfer-serve did not exit"; exit 4; }}
+fi
+for i in $(seq 1 30); do nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -q . || break; sleep 1; done
+if ! systemctl --user start {NINFER_UNIT}; then
+  echo "unit start refused; relaunching the previous nohup process"
+  setsid nohup $S/deploy/run-serve.sh >> $S/logs/serve.log 2>&1 < /dev/null & echo $! > $S/logs/serve.pid
+  exit 5
+fi
+for i in $(seq 1 180); do
+  curl -fsS -m 2 http://127.0.0.1:8080/v1/models 2>/dev/null | grep -q '"owned_by":"ninfer"' && break; sleep 1
+done
+if ! curl -fsS -m 2 http://127.0.0.1:8080/health >/dev/null; then
+  systemctl --user stop {NINFER_UNIT}
+  setsid nohup $S/deploy/run-serve.sh >> $S/logs/serve.log 2>&1 < /dev/null & echo $! > $S/logs/serve.pid
+  echo "unit did not become healthy; relaunched the previous nohup process"; exit 6
+fi
+M=$(systemctl --user show -p MainPID --value {NINFER_UNIT})
+echo $M > $S/logs/serve.pid
+echo "ninfer-3090.service active MainPID=$M after ${{i}}s"
+"""
+    result = corsair(script, timeout=300)
+    say("  " + (result.stdout + result.stderr).decode(errors="replace").strip().replace("\n", " | "))
+    if result.returncode:
+        fail("NInfer handover to systemd did not complete")
+
+
+# ── phase 3: Mac forward for :8080 ──────────────────────────────────────────
+
+def forward_ports(ports: list[int], timeout: float = 45) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        out = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
+        if all(re.search(rf"^ssh .*127\.0\.0\.1:{p} \(LISTEN\)", out, re.M) for p in ports):
+            return True
+        time.sleep(1)
+    return False
+
+
+def add_forward() -> None:
+    say("phase 3: Mac forward 127.0.0.1:8080 -> Corsair 127.0.0.1:8080")
+    text = FORWARDS.read_text()
+    line = "  -L 127.0.0.1:8080:127.0.0.1:8080 \\\n"
+    if line not in text:
+        anchor = "  -L 127.0.0.1:8081:127.0.0.1:8081 \\\n"
+        if text.count(anchor) != 1:
+            fail("forward launcher layout changed; not editing it")
+        backup = FORWARDS.with_name(FORWARDS.name + time.strftime(".pre-ninfer-%Y%m%dT%H%M%S"))
+        backup.write_text(text)
+        backup.chmod(0o755)
+        note = ("# 8080 added 2026-09-13: NInfer-3090 Qwen3.8-27B (ninfer-serve, auth disabled,\n"
+                "# Corsair loopback only). Already in the forward key's permitopen list.\n")
+        text = text.replace("exec /usr/bin/ssh -N", note + "exec /usr/bin/ssh -N", 1).replace(anchor, line + anchor, 1)
+        FORWARDS.write_text(text)
+        say(f"  launcher updated (backup {backup.name})")
+    restarted = subprocess.run(["launchctl", "kickstart", "-k", FORWARDS_JOB], capture_output=True, text=True)
+    if restarted.returncode:
+        # ssh exits 0 on SIGTERM and this job only restarts after a failure, so a
+        # plain signal leaves it stopped: stop it gracefully, then kickstart.
+        say(f"  kickstart -k refused ({restarted.stderr.strip()[:120]}); graceful stop + kickstart")
+        subprocess.run(["pkill", "-TERM", "-f", "ssh -N -p 2222 -i /Users/ben/Services/secrets/corsair_forward_ed25519"])
+        time.sleep(2)
+        subprocess.run(["launchctl", "kickstart", FORWARDS_JOB], check=True)
+    if not forward_ports([8080, 8109, 8131]):
+        fail("Corsair forwards did not come back with :8080, :8109 and :8131")
+    for port, name in ((8080, "ninfer"), (8109, "halogen")):
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as response:
+                say(f"  {name} via forward :{port}/health -> {response.status}")
+        except OSError as exc:
+            fail(f"{name} not reachable through the Mac forward :{port} ({type(exc).__name__})")
+
+
+# ── phase 4-6: activation, boot check, live verification ────────────────────
+
+def activate(release: Path) -> None:
+    say("phase 4: aria-deploy-mac activate (retries only while inference is busy)")
+    for attempt in range(1, 21):
+        result = subprocess.run([sys.executable, str(DEPLOY), "activate", str(release)],
+                                capture_output=True, text=True)
+        sys.stdout.write(result.stdout[-4000:])
+        sys.stderr.write(result.stderr[-4000:])
+        if result.returncode == 0:
+            return
+        if "after it drains" not in (result.stdout + result.stderr):
+            fail("activation failed (aria-deploy-mac restores the previous release itself)")
+        say(f"  inference busy; retry {attempt}/20 in 30 s")
+        time.sleep(30)
+    fail("inference stayed busy; nothing was activated")
+
+
+def verify_live() -> None:
+    say("phase 6: live verification")
+    require_red("after")
+    ninfer = gateway_probe(NINFER_SLUG, {"reasoning_effort": "none"})
+    say(f"NInfer via gateway: {ninfer}")
+    states = {}
+    for _ in range(12):
+        states = fleet_states([HALOGEN_SLUG, NINFER_SLUG, RED_SLUG, "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"])
+        if states.get(HALOGEN_SLUG) == "running" and states.get(NINFER_SLUG) == "running":
+            break
+        time.sleep(10)
+    say(f"ARIA fleet states: {states}")
+    if ninfer["http"] != 200 or ninfer["backend"] != NINFER_SLUG:
+        fail("NInfer is not served through the gateway by its registry slug")
+    if states.get(HALOGEN_SLUG) != "running" or states.get(NINFER_SLUG) != "running":
+        fail("ARIA does not observe both Halogen and NInfer as running")
+    say("done: Halogen-Flash and NInfer-3090 are registered and observed; Red still serves. "
+        "Pinning the default route to Halogen is the next, separate step.")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("release", type=Path)
+    parser.add_argument("--check-only", action="store_true", help="run phase 0 and stop")
+    args = parser.parse_args()
+    release = args.release.resolve()
+    preflight(release, args.check_only)
+    if args.check_only:
+        say("check-only: every precondition holds; nothing was changed")
+        return 0
+    build = json.loads((release / "release.json").read_text())["build"]
+    update_actuator(release, build)
+    adopt_ninfer()
+    add_forward()
+    activate(release)
+    say("phase 5: aria-boot-check")
+    boot = subprocess.run([sys.executable, str(BOOT), "--wait", "120"])
+    say(f"  boot check exit {boot.returncode}")
+    verify_live()
+    return 0 if boot.returncode == 0 else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

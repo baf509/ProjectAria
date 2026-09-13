@@ -11,8 +11,10 @@ def test_current_host_choices():
     # Corsair, for ARIA's background extraction/heartbeat calls. Startable and
     # onbox like the candidate, but CPU-only and outside automatic routing, so
     # it contends with nothing — measured at zero effect on the candidate.
+    # NInfer-3090 joined 2026-09-13: Qwen3.8-27B on the RTX 3090, explicit
+    # selection only and exclusive with the candidate (see test_ninfer_3090_registry).
     assert {s.slug for s in ms.REGISTRY if s.onbox and s.startable} == {
-        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Qwen3.5-9B-Aux-CPU'}
+        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Qwen3.5-9B-Aux-CPU', 'NInfer-3090-Qwen3.8-27B'}
     aux = ms._BY_SLUG['Qwen3.5-9B-Aux-CPU']
     # The properties that keep it from ever competing with the coding slot.
     assert aux.memory_pool == ms.POOL_HOST and not aux.gtt_resident
