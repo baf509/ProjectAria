@@ -5,9 +5,14 @@ Use the installed ARIA interpreter and configuration; imports use the installed
 release, with only the candidate spec read from this canonical source tree.
 No background controllers, migrations, startup hooks, or production routes
 are started. The normal gateway records requests in the existing usage store.
+Set RED_GPTQ_INCLUDE_OLD_FLASHNEXT=1 to expose the existing old Flash Next
+spec through this same gateway for an authorized sequential comparison.
+Both specs remain excluded from automatic routing and gateway start controls.
 """
 from contextlib import asynccontextmanager
 import importlib.util
+import os
+from dataclasses import replace
 from pathlib import Path
 import sys
 
@@ -22,9 +27,13 @@ loader = importlib.util.spec_from_file_location('red_gptq_qualification_spec', p
 candidate_module = importlib.util.module_from_spec(loader)
 loader.loader.exec_module(candidate_module)
 candidate = candidate_module.make_spec(model_servers.ModelServerSpec)
-model_servers.REGISTRY = (candidate,)
+comparison = ()
+if os.environ.get('RED_GPTQ_INCLUDE_OLD_FLASHNEXT') == '1':
+    old = model_servers._BY_SLUG['Red-Qwen3.8-Flash-Next-MXFP4']
+    comparison = (replace(old, auto_route=False, startable=False),)
+model_servers.REGISTRY = (candidate,) + comparison
 model_servers._BY_SLUG.clear()
-model_servers._BY_SLUG[candidate.slug] = candidate
+model_servers._BY_SLUG.update({spec.slug: spec for spec in model_servers.REGISTRY})
 
 from aria.main import app
 from aria.db.mongodb import connect_db, close_db
