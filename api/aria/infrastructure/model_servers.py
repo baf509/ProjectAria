@@ -249,10 +249,16 @@ class ModelServerSpec:
     #   "llamacpp"  — /slots + /metrics (the historical assumption; still default)
     #   "vllm"      — Prometheus /metrics with vllm:* names; NO /slots
     #   "dwarfstar" — /v1/models ONLY. No /metrics, no /slots, not even /health.
+    #   "halogen"   — /health + /v1/models + /cache; no llama.cpp /slots or /metrics
     # ⚠️ `null` in this API means UNKNOWN, never "fine". A family that cannot
     # report a field must say so via telemetry_hint rather than let a null be
     # read as a healthy zero.
     runtime_family: str = "llamacpp"
+    # Seconds the Mac's forwarded /health probe waits for this deployment.
+    # halogen-flash-server's /health round-trips a PONG through its engine and
+    # answers in ~1.02 s when idle (measured 2026-09-13), so the shared 0.75 s
+    # budget reported a serving backend as exited and routing never chose it.
+    health_timeout_s: float = 0.75
     # ── Last measured throughput, and WHEN ──────────────────────────────────
     # No backend here exposes a stable tok/s at rest: llama.cpp's rate gauges
     # read 0 while idle, vLLM gives a latency histogram, DwarfStar gives nothing
@@ -2942,6 +2948,10 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
         return await _probe_vllm(spec, root, timeout)
     if family == "dwarfstar":
         return await _probe_dwarfstar(spec, base, timeout)
+    if family == "halogen":
+        # No llama.cpp /slots or /metrics to read; probing them only produces
+        # 404s. Occupancy stays UNKNOWN rather than a misleading zero.
+        return None
     return await _probe_llamacpp(spec, root, timeout)
 
 
@@ -3764,11 +3774,16 @@ def _runtime_family_from_models(payload: object) -> Optional[str]:
         return "vllm"
     if any(owner in {"llamacpp", "llama.cpp", "llama-cpp"} for owner in owners):
         return "llamacpp"
+    if "halogen" in owners:
+        return "halogen"
     return None
 
 
+_FORWARDED_HEALTH_TIMEOUT = 0.75
+
+
 async def _forwarded_endpoint_status(
-    port: int, *, identify_runtime: bool = False, timeout: float = 0.75
+    port: int, *, identify_runtime: bool = False, timeout: float = _FORWARDED_HEALTH_TIMEOUT
 ) -> tuple[bool, Optional[str]]:
     """Probe one forwarded port and, when needed, identify its runtime.
 
@@ -3821,9 +3836,19 @@ async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
     }
     ambiguous = len(families) > 1
     healthy, family = await _forwarded_endpoint_status(
-        spec.port, identify_runtime=ambiguous
+        spec.port, identify_runtime=ambiguous, **_health_timeout_kwargs([spec])
     )
     return healthy and (not ambiguous or family == spec.runtime_family)
+
+
+def _health_timeout_kwargs(specs: list["ModelServerSpec"]) -> dict:
+    """The probe budget for a port, passed only when a deployment asks for more.
+
+    Every existing deployment keeps the probe's own 0.75 s default and an
+    unchanged call; a slower-/health backend (Halogen) widens only its port.
+    """
+    timeout = max((s.health_timeout_s for s in specs), default=_FORWARDED_HEALTH_TIMEOUT)
+    return {"timeout": timeout} if timeout > _FORWARDED_HEALTH_TIMEOUT else {}
 
 
 def is_routing_candidate(spec: "ModelServerSpec") -> bool:
@@ -3854,6 +3879,7 @@ async def _forwarded_fleet_states(
         _forwarded_endpoint_status(
             port,
             identify_runtime=len({s.runtime_family for s in by_port[port]}) > 1,
+            **_health_timeout_kwargs(by_port[port]),
         )
         for port in ports
     ))
@@ -4004,8 +4030,12 @@ class ModelServerManager:
     @staticmethod
     def _spec_from_doc(doc: dict) -> ModelServerSpec:
         """Build a spec from a dynamic db.model_servers doc (created by the
-        model-pull provisioning pipeline). Dynamic entries carry no static
-        exclusivity — their RAM safety rides on the live GTT gate."""
+        model-pull provisioning pipeline, or registered by an operator).
+
+        A dynamic row may declare `exclusive_with`. The Corsair actuator only
+        knows the static registry, so that declaration is enforced on the Mac by
+        `_refuse_dynamic_exclusive_conflict` before any Corsair start is sent;
+        without one, RAM safety rides on the live GTT gate alone."""
         return ModelServerSpec(
             slug=doc["slug"],
             description=doc.get("description", ""),
@@ -4027,7 +4057,37 @@ class ModelServerManager:
             # R9700 is gated against the right pool rather than the Halo's.
             memory_pool=doc.get("memory_pool", POOL_HALO),
             devices=tuple(doc.get("devices") or ()),
+            runtime_family=doc.get("runtime_family") or "llamacpp",
+            health_timeout_s=float(doc.get("health_timeout_s") or _FORWARDED_HEALTH_TIMEOUT),
+            exclusive_with=tuple(doc.get("exclusive_with") or ()),
         )
+
+    async def _refuse_dynamic_exclusive_conflict(
+        self, spec: ModelServerSpec, db: Optional[AsyncIOMotorDatabase]
+    ) -> None:
+        """Refuse a Corsair start that a running dynamic row declares exclusive.
+
+        The restricted actuator on Corsair resolves static slugs only and has
+        no database, so it cannot see an operator-registered deployment such as
+        Halogen. Its GTT gate is the only thing left, and that gate does not
+        count Halogen's ~68 GiB of locked host memory. Checked in both
+        directions, against the row's own forwarded /health budget.
+        """
+        if db is None:
+            return
+        async for doc in db.model_servers.find({}):
+            if doc["slug"] in _BY_SLUG or doc["slug"] == spec.slug:
+                continue
+            other = self._spec_from_doc(doc)
+            if spec.slug not in other.exclusive_with and other.slug not in spec.exclusive_with:
+                continue
+            if not other.onbox or not other.port:
+                continue
+            if await _forwarded_endpoint_open(other):
+                raise ModelServerSafetyError(
+                    f"{spec.slug} is mutually exclusive with running server {other.slug}. "
+                    "Stop it first, or pass force=True."
+                )
 
     async def resolve_spec(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> ModelServerSpec:
         """get_spec, extended to the dynamic (pulled) entries when a db is
@@ -4439,6 +4499,8 @@ class ModelServerManager:
                     f"{slug} runs on Corsair; launch overrides are not accepted "
                     "through the restricted remote actuator."
                 )
+            if not force:
+                await self._refuse_dynamic_exclusive_conflict(spec, db)
             return await _corsair_actuate("start", slug, force=force)
         if not spec.onbox:
             if not spec.remotely_operable:
