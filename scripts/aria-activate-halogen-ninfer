@@ -180,9 +180,10 @@ def preflight(release: Path, check_only: bool = False) -> dict:
         fail("the CUDA/Halo incumbent is active or its Halogen guard is missing")
 
     result = corsair(ACTUATOR_PROBE, timeout=180, stdin=aria_tar(release))
-    output = (result.stdout + result.stderr).decode(errors="replace").strip()
-    say("actuator compatibility (staged code, actuator venv, status only): " + " | ".join(output.splitlines()[-2:]))
+    lines = result.stdout.decode(errors="replace").strip().splitlines()
+    say("actuator compatibility (staged code, actuator venv, status only): " + " | ".join(lines[-2:]))
     if result.returncode:
+        say("  " + result.stderr.decode(errors="replace").strip()[-600:])
         fail("staged registry does not run under the Corsair actuator's environment")
 
     listener = subprocess.run(["lsof", "-nP", "-iTCP:8080", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
