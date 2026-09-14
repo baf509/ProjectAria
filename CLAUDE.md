@@ -3,7 +3,17 @@
 This file is the repository-local operating guide for coding agents. It does not
 override the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-09-08**.
+Last reconciled: **2026-09-14**.
+
+## Red default update
+
+Ben selected `Red-Qwen3.8-27B-PARO-INT5` as the Red and Hermes default.
+The prepared rollout adds it to both managed Pi installations and replaces the
+old Red model where that model was the selected default. Activation status and
+receipts are recorded in CorsairModelHost/red-r9700/paro-int5-isolated/results/promotion/. Existing explicit model
+choices are retained. Red uses the same private Mac forward 8094; native
+backend identity is `red-qwen3.8-27b-paro-int5-isolated`.
+The dated topology and Pi inventory descriptions below predate this update.
 
 ## Read first
 

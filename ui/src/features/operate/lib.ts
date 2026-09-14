@@ -66,6 +66,7 @@ export const isResident = (s: ModelServerFull) => {
 }
 
 export const MODEL_NAMES: Record<string, string> = {
+  'Red-Qwen3.8-27B-PARO-INT5': 'Qwen3.8-27B PARO int5',
   'Qwen3.8-Flash-Next-CUDA-Halo-Candidate': 'Qwen Flash Next',
   'Red-Qwen3.8-27B-MXFP4': 'Qwen3.8-27B',
   'Red-Qwen3.8-Flash-Next-MXFP4': 'Qwen Flash Next',

@@ -1,5 +1,11 @@
 # Hermes integration — standard upstream
 
+2026-09-14 update: Ben selected `Red-Qwen3.8-27B-PARO-INT5` as Hermes’s
+main/provider default. Prior Red-targeted auxiliary routes follow it; separately
+configured NInfer auxiliaries remain intact. `select_red_model` now accepts
+`qwen3.8-27b-paro-int5`. Existing explicit alternatives are retained.
+The dated deployment descriptions below are historical.
+
 As of September 8, 2026, CLI and Signal share one unmodified
 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) Git
 installation. Ben explicitly chose standard upstream approval behavior. ARIA

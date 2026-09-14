@@ -29,7 +29,7 @@ const CODING_AGENTS: Array<{ key: string; label: string; backend?: string; subag
   // Red serves one model at a time and does not autostart from the gateway, so
   // pick the profile matching whatever Operate → Red has loaded. Choosing the
   // other returns a 503 naming the model that is running.
-  { key: 'pi-coding-red-qwen38-27b', label: 'Pi Coding Agent (Red · Qwen3.8-27B)', subagent_profile: 'pi-coding-red-qwen38-27b' },
+  { key: 'pi-coding-red-qwen38-27b', label: 'Pi Coding Agent (Red · PARO int5)', subagent_profile: 'pi-coding-red-qwen38-27b' },
   { key: 'pi-coding-red-qwen38-flashnext', label: 'Pi Coding Agent (Red · Qwen Flash Next)', subagent_profile: 'pi-coding-red-qwen38-flashnext' },
   { key: 'codex', label: 'Codex', backend: 'codex' },
 ]

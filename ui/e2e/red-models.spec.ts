@@ -2,13 +2,15 @@ import { expect, test, type Page } from '@playwright/test'
 import { documentOverflow } from './lib'
 const C = 'Qwen3.8-Flash-Next-CUDA-Halo-Candidate'
 const R = 'Red-Qwen3.8-27B-MXFP4'
+const P = 'Red-Qwen3.8-27B-PARO-INT5'
 const F = 'Red-Qwen3.8-Flash-Next-MXFP4'
-async function setup(page: Page, opts: { pinned?: string; busy?: boolean; stopFails?: boolean; startFails?: boolean; missing?: boolean; stopped?: boolean; noAdmin?: boolean; unknownActivity?: boolean } = {}) {
+async function setup(page: Page, opts: { paroLoaded?: boolean; pinned?: string; busy?: boolean; stopFails?: boolean; startFails?: boolean; missing?: boolean; stopped?: boolean; noAdmin?: boolean; unknownActivity?: boolean } = {}) {
   const writes: string[] = []
   let pinned: string | null = opts.pinned ?? C
   const servers = [
+    { slug: P, state: opts.paroLoaded ? 'running' : 'stopped', startable: true, onbox: false, remotely_operable: true, host_machine: 'machine:red', catalog_visible: true },
     { slug: C, state: 'running', startable: true, onbox: true, host_machine: 'machine:corsair', catalog_visible: true },
-    { slug: R, state: opts.stopped ? 'stopped' : 'running', startable: true, onbox: false, remotely_operable: true, host_machine: 'machine:red', catalog_visible: true },
+    { slug: R, state: opts.stopped || opts.paroLoaded ? 'stopped' : 'running', startable: true, onbox: false, remotely_operable: true, host_machine: 'machine:red', catalog_visible: true },
     ...opts.missing ? [] : [{ slug: F, state: 'stopped', startable: true, onbox: false, remotely_operable: true, host_machine: 'machine:red', catalog_visible: true }],
     { slug: 'context1-Q4', state: 'stopped', startable: false, onbox: true, host_machine: 'machine:corsair', catalog_visible: false },
     { slug: 'gemma-4-e4b-Q4', state: 'stopped', startable: false, onbox: true, host_machine: 'machine:mac', catalog_visible: false },
@@ -18,7 +20,7 @@ async function setup(page: Page, opts: { pinned?: string; busy?: boolean; stopFa
     if (req.method() !== 'GET') writes.push(`${req.method()} ${path}`)
     let body: unknown = {}
     if (path === '/infrastructure/model-servers') body = { servers }
-    else if (path === '/infrastructure/model-servers/utilization') body = { servers: [{ slug: R, reachable: true, busy_slots: opts.unknownActivity ? null : opts.busy ? 1 : 0 }] }
+    else if (path === '/infrastructure/model-servers/utilization') body = { servers: [{ slug: opts.paroLoaded ? P : R, reachable: true, busy_slots: opts.unknownActivity ? null : opts.busy ? 1 : 0 }] }
     else if (path === '/infrastructure/model-servers/devices') body = { devices: [], pools: [] }
     else if (path === '/infrastructure/services') body = { services: [] }
     else if (path === '/infrastructure/llm-route') {
@@ -40,8 +42,8 @@ async function setup(page: Page, opts: { pinned?: string; busy?: boolean; stopFa
     await route.fulfill({ json: body })
   })
   await page.goto('/operate', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByText(opts.missing ? '2 available' : '3 available', { exact: true })).toBeVisible({ timeout: 45000 })
-  if (opts.pinned === R && !opts.noAdmin) {
+  await expect(page.getByText(opts.missing ? '3 available' : '4 available', { exact: true })).toBeVisible({ timeout: 45000 })
+  if ((opts.pinned === R || opts.pinned === P) && !opts.noAdmin) {
     const mobile = (page.viewportSize()?.width ?? 1280) < 1024
     if (mobile) await page.getByRole('button', { name: 'More', exact: true }).click()
     await page.locator('input[placeholder="X-Admin-Key"]:visible').fill('test-admin');
@@ -101,7 +103,7 @@ test('cold load starts only the selected Red model', async ({ page }) => {
 test('unload leaves Red empty and removes only its own route pin', async ({ page }) => {
   const x = await setup(page, { pinned: R })
   await page.getByRole('button', { name: 'Unload Qwen3.8-27B', exact: true }).click()
-  await expect(page.getByText('Red is unloaded. Both models remain available to load.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Red is unloaded. All models remain available to load.', { exact: true })).toBeVisible()
   expect(x.writes).toEqual([`POST /infrastructure/model-servers/${R}/stop`, 'PUT /infrastructure/llm-route'])
   expect(x.pinned()).toBe(null)
 })
@@ -125,5 +127,30 @@ test('unknown request activity is not treated as idle', async ({ page }) => {
   const x = await setup(page, { unknownActivity: true })
   await expect(page.getByRole('button', { name: 'Switch to Qwen Flash Next', exact: true })).toBeDisabled()
   await expect(page.getByText('Checking Red activity before enabling model changes…')).toBeVisible()
+  expect(x.writes).toEqual([])
+})
+
+
+test('PARO promotion unloads the existing 27B before loading int5', async ({ page }) => {
+  const x = await setup(page)
+  await page.getByRole('button', { name: 'Switch to Qwen3.8-27B PARO int5', exact: true }).click()
+  await expect(page.getByText('Qwen3.8-27B PARO int5 is loaded on Red.', { exact: true })).toBeVisible()
+  expect(x.writes).toEqual([`POST /infrastructure/model-servers/${R}/stop`, `POST /infrastructure/model-servers/${P}/start`])
+  expect(x.pinned()).toBe(C)
+  expect(await documentOverflow(page)).toBeLessThanOrEqual(1)
+})
+
+test('switching away from resident PARO unloads it and carries its explicit pin', async ({ page }) => {
+  const x = await setup(page, { paroLoaded: true, pinned: P })
+  await page.getByRole('button', { name: 'Switch to Qwen3.8-27B', exact: true }).click()
+  await expect(page.getByText('Qwen3.8-27B is loaded on Red.', { exact: true })).toBeVisible()
+  expect(x.writes).toEqual([`POST /infrastructure/model-servers/${P}/stop`, `POST /infrastructure/model-servers/${R}/start`, 'PUT /infrastructure/llm-route'])
+  expect(x.pinned()).toBe(R)
+})
+
+test('PARO in-flight requests prevent ordinary switching', async ({ page }) => {
+  const x = await setup(page, { paroLoaded: true, busy: true })
+  await expect(page.getByRole('button', { name: 'Switch to Qwen3.8-27B', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Unload Qwen3.8-27B PARO int5', exact: true })).toBeDisabled()
   expect(x.writes).toEqual([])
 })

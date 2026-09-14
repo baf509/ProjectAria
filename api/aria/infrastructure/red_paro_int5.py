@@ -6,7 +6,7 @@ def make_spec(spec_type):
     ssh = ('ssh', '-F', '/Users/ben/Services/config/red-model-ssh.conf', 'red-linux-model')
     return spec_type(
         slug=SLUG,
-        description='Isolated Launch80 Qwen3.8 27B PARO int5 candidate, '
+        description='Launch80 Qwen3.8 27B PARO int5 in its isolated runtime, '
                     'per-group int8 activations, zero-point epilogue, TP2 and DFlash2 FP8. '
                     'Qualified 2026-09-13: five functional checks and full throughput suite passed; '
                     'HumanEval+ 148/164 versus existing 27B 150/164 (inconclusive accuracy gap), lower throughput. '
