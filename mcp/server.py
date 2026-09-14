@@ -419,7 +419,11 @@ async def send_shell_input(
     wait_ms: int = 0,
 ) -> dict:
     """Type text into a shell. append_enter sends a newline (submission) after.
-    literal=True passes -l to tmux so key names aren't expanded.
+    Use literal=True for task prompts. Long prompts use verified bracketed paste.
+    For an interrupt use text='C-c', literal=False, append_enter=False;
+    never put a raw control character into a JSON argument string.
+    The returned byte count/hash acknowledges terminal transport, not worker acceptance
+    or task completion. Check the resulting screen for the worker's acknowledgement.
 
     Set wait_ms (e.g. 1500) to have the server wait that long after sending and
     return the resulting screen in the `screen` field — a single call to act and
@@ -434,11 +438,13 @@ async def send_shell_input(
         # The underlying tmux/API literal mode deliberately suppresses Enter.
         # Honor this tool's independent append_enter contract with a separate
         # key event, after the literal text succeeds, then observe the screen.
-        await _request("POST", f"/api/v1/shells/{name}/input",
+        receipt = await _request("POST", f"/api/v1/shells/{name}/input",
                        json={**body, "append_enter": False, "wait_ms": 0})
-        return await _request("POST", f"/api/v1/shells/{name}/input",
+        submitted = await _request("POST", f"/api/v1/shells/{name}/input",
                               json={"text": "", "append_enter": True,
                                     "literal": False, "wait_ms": wait_ms})
+        return {**submitted, **{k: receipt[k] for k in ("input_bytes", "input_sha256") if k in receipt},
+                "input_line_number": receipt.get("line_number")}
     return await _request("POST", f"/api/v1/shells/{name}/input", json=body)
 
 
@@ -472,7 +478,9 @@ async def create_shell(
     fleet node. Prefer profile='claude'|'codex'|'pi'|'shell'; use the lower-level
     launch_command only for a command not covered by those profiles. host is an
     online node id from list_nodes. Do not manually create/register tmux when
-    this tool can express the launch."""
+    this tool can express the launch. Supply an absolute workdir for project work.
+    The agent host is normally the Mac even when the task targets a Corsair model.
+    Keep the canonical returned shell name; its prefix is not a reliable model/profile label."""
     body: dict[str, Any] = {"name": name, "launch_claude": launch_claude}
     if workdir:
         body["workdir"] = workdir

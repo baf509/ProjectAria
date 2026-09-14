@@ -15,19 +15,27 @@ bypassing API authentication.
 - Start fleet questions with `fleet_status`; use `list_nodes` when placement or
   connectivity matters. Treat semantic state (`working`, `blocked`, `done`,
   `idle`) separately from connectivity (`local`, `online`, `unreachable`).
-- Use `create_shell` for a new interactive watched shell. Prefer its typed
-  `profile` (`claude`, `codex`, `pi`, `shell`); pass `host` only when the user
-  names a machine. Never register tmux by hand when `create_shell` can express
-  the request.
+- Use `create_shell` for a new interactive watched shell with its typed
+  `profile` (`claude`, `codex`, `pi`, `shell`) and an explicit absolute Mac
+  workspace. Agents run on this Mac; Corsair and Red are model targets.
+  A request to work on a Corsair model does not place the agent on Corsair.
+  Never register tmux by hand when `create_shell` can express the request.
 - Use `create_coding_session` for a self-contained coding task, with the full
   task and absolute workspace. Honor an explicit backend/model/host request;
   otherwise let ARIA apply policy. It returns promptly, so report the session
-  id. Wait only when asked to monitor it.
+  id. Preserve the accepted task until its requested outcome is verified.
+  When monitoring is requested, use bounded observations and an actual
+  registered follow-up job if the turn must end before the worker finishes.
 - Use the shell identifier ARIA returns. Short aliases work only when unique;
   on ambiguity present the canonical matches rather than guessing.
 - Monitor with `get_shell_screen`, `get_shell_events` and bounded
-  `wait_for_shell_output`; timeout is not completion. `send_shell_input` sends
-  text/keys; `delete_shell(purge=false)` closes but keeps history.
+  `wait_for_shell_output`; timeout is not completion. For task prompts use
+  `send_shell_input(literal=true, append_enter=true)` and inspect the returned
+  canonical shell name, byte count and hash. This confirms terminal delivery,
+  not worker acceptance: observe an acknowledgment or resulting action before
+  claiming the worker started. Use named keys such as `C-c` with
+  `literal=false, append_enter=false`; never send raw control bytes in JSON.
+  `delete_shell(purge=false)` closes but keeps history.
 - Red serves one model at a time. Read `red_model_status`; switch with
   `select_red_model` (`qwen-flash-next` or `qwen3.8-27b`), which wakes if
   needed and verifies readiness. Only `status=ready` is success; otherwise read
