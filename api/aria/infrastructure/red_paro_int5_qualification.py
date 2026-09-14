@@ -15,7 +15,9 @@ def make_spec(spec_type):
         slug=SLUG,
         description='Isolated Launch80 Qwen3.8 27B PARO int5 candidate, '
                     'per-group int8 activations, zero-point epilogue, TP2 and DFlash2 FP8. '
-                    'Qualification in progress; existing Red options are preserved.',
+                    'Qualified 2026-09-13: five functional checks and full throughput suite passed; '
+                    'HumanEval+ 148/164 versus existing 27B 150/164 (inconclusive accuracy gap), lower throughput. '
+                    'Existing Red options are preserved; no production default change.',
         runtime_repo='https://codeberg.org/ggz14/radiance-vllm-mxfp4',
         runtime_ref='9b8db2d497092c5020f9eff751578359df876e0d',
         runtime_family='vllm',
