@@ -134,8 +134,10 @@ def probe(args):
         if dependency_sha and contract.get("operations_sha256") != dependency_sha:
             raise ValueError("Wrong loaded operations dependency")
         red = call("red_model_status", {})
-        if {r.get("model") for r in red.get("models", [])} != {"qwen3.8-27b", "qwen-flash-next"}:
+        if {r.get("model") for r in red.get("models", [])} != {"qwen3.8-27b", "qwen-flash-next", "qwen3.8-27b-paro-int5"}:
             raise ValueError("Red supported-model choices are missing")
+        if red.get("default_model") != "qwen3.8-27b-paro-int5":
+            raise ValueError("Red default selector does not name PARO int5")
         snapshot = call("operator_snapshot", {"model": args.model})
         if not snapshot.get("complete"):
             raise ValueError("Incomplete live operator snapshot")
