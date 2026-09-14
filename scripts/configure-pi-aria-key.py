@@ -30,7 +30,9 @@ def approved_inventory(provider):
     if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
         return False
     ids = {item.get("id") for item in entries}
-    return ids in (APPROVED_MODELS, CURRENT_MODELS) and len(entries) == len(ids)
+    return ids in (APPROVED_MODELS, CURRENT_MODELS,
+                   CURRENT_MODELS | {"Red-Qwen3.8-Flash-Next-MXFP4"},
+                   CURRENT_MODELS | {"Red-Qwen3.8-Flash-Next-MXFP4", "Red-Qwen3.8-27B-PARO-INT5"}) and len(entries) == len(ids)
 
 
 def _dotenv_value(path: Path, name: str) -> str:

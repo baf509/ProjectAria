@@ -2009,6 +2009,17 @@ REGISTRY = tuple(
     replace(spec, catalog_visible=spec.slug in CURRENT_MODEL_CHOICES)
     for spec in REGISTRY
 )
+# Operator-selected Red default, 2026-09-14. Preserve existing explicit choices.
+from aria.infrastructure.red_paro_int5 import SLUG as RED_PARO_INT5, make_spec as make_red_paro_int5
+CURRENT_MODEL_CHOICES = CURRENT_MODEL_CHOICES | {RED_PARO_INT5}
+REGISTRY = tuple(
+    replace(spec,
+            exclusive_with=tuple(dict.fromkeys((*spec.exclusive_with, RED_PARO_INT5))),
+            auto_route=False if spec.slug == "Red-Qwen3.8-27B-MXFP4" else spec.auto_route)
+    if spec.slug in {"Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-Flash-Next-MXFP4",
+                     "Red-Qwen3.8-27B-PARO-MXFP4"} else spec
+    for spec in REGISTRY
+) + (make_red_paro_int5(ModelServerSpec),)
 _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
 # refuse start() if projected usage would exceed this fraction of the pool

@@ -19,8 +19,9 @@ from pydantic import BaseModel, Field
 
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,120}$")]
-RedModel = Literal["qwen3.8-27b", "qwen-flash-next"]
+RedModel = Literal["qwen3.8-27b", "qwen-flash-next", "qwen3.8-27b-paro-int5"]
 RED_MODELS = {
+    "qwen3.8-27b-paro-int5": "Red-Qwen3.8-27B-PARO-INT5",
     "qwen3.8-27b": "Red-Qwen3.8-27B-MXFP4",
     "qwen-flash-next": "Red-Qwen3.8-Flash-Next-MXFP4",
 }
@@ -216,7 +217,7 @@ def _id(value: str) -> str:
 def register(mcp, request):
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False})
     async def red_model_status() -> dict:
-        """Show Red Linux's two supported models, current state and assignments.
+        """Show Red Linux's supported models; PARO int5 is the default, current state and assignments.
         Use for 'what is loaded on Red?', checking a pending load, or choosing a
         Red model. Does not wake the machine or start inference. Use
         select_red_model to wake/load/switch; no registry slugs need guessing."""
@@ -226,9 +227,10 @@ def register(mcp, request):
                             ("slug", "state", "startable", "catalog_visible", "bound_agents")}}
                            for model, row in rows.items()],
                 "select_tool": "select_red_model",
+                "default_model": "qwen3.8-27b-paro-int5",
                 "wake": "Wake from sleep via the Corsair host relay; full shutdown power-on is not qualified.",
                 "unreachable_recovery": _RED_RECOVERY,
-                "routing": ("Loading Red does not change Hermes's own Corsair model. It does not "
+                "routing": ("Loading Red does not change Hermes's configured model. It does not "
                             "change the default route while the Corsair model is resident, which "
                             "outranks Red by footprint; with Corsair stopped, Red is the "
                             "model-omitted fallback.")}
@@ -236,7 +238,8 @@ def register(mcp, request):
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False})
     async def select_red_model(model: RedModel, ctx: Context = None, force: bool = False) -> dict:
         """Preferred tool for 'wake Red and load Qwen', 'use Flash Next on Red',
-        or 'switch Red models'. Choose qwen3.8-27b (256K, up to 8 requests) or
+        or 'switch Red models'. Choose qwen3.8-27b-paro-int5 (Red default, 256K, 8 requests),
+        qwen3.8-27b (existing MXFP4, 256K, 8 requests), or
         qwen-flash-next (256K, 1 request). Wakes red-linux from sleep if needed,
         unloads an idle unassigned/unpinned Red model, then loads and verifies
         the chosen deployment. Refuses busy/queued/unknown activity and agent
@@ -257,7 +260,7 @@ def register(mcp, request):
         If a user merely asks
         what's available, use red_model_status instead of changing the host."""
         if model not in RED_MODELS:
-            raise ValueError("Choose qwen3.8-27b or qwen-flash-next")
+            raise ValueError("Choose qwen3.8-27b-paro-int5, qwen3.8-27b or qwen-flash-next")
         consent = None
         if force:
             # Interrupting someone's in-flight work is not undoable, so it needs
