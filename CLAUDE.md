@@ -5,6 +5,13 @@ override the vault-root `Architecture_Charter.md`.
 
 Last reconciled: **2026-09-08**.
 
+## Current Red deployment
+
+PARO int5 is now the Red and Hermes default. Read
+[the deployment and source-branch handoff](docs/ops/RED_PARO_DEFAULT_20260914.md)
+before changing or deploying the registry; the older inventory below predates
+this promotion.
+
 ## Read first
 
 1. `/Users/ben/Obsidian/Architecture_Charter.md` — desired-state authority.
