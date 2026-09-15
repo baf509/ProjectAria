@@ -38,6 +38,7 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     await _rename_red_pi_agents(db)
     await _seed_pi_coding_red_qwen38_27b_agent(db)
     await _reconcile_pi_coding_profiles(db)
+    await _rename_legacy_web_tool(db)
     await _normalize_project_status(db)
 
 
@@ -555,7 +556,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         },
         # Legacy agent-schema fields retained for launch-profile compatibility;
         # external Pi supplies its own tools rather than ARIA's ToolRouter.
-        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -590,19 +591,19 @@ async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None
 
     now = datetime.now(timezone.utc)
     agent = {
-        "name": "Pi Coding Agent (Red Radiance via ARIA)",
+        "name": "Pi Coding Agent (Red PARO int5 via ARIA)",
         "slug": "pi-coding-red-qwen38-27b",
         "description": (
-            "Hands-on coding agent using Qwen3.8-27B Radiance on Red through "
+            "Hands-on coding agent using Qwen3.8-27B PARO int5 on Red through "
             "ARIA's inference gateway. The Pi CLI runs on the Mac; only inference runs on Red."
         ),
         "system_prompt": _PI_CODING_SYSTEM_PROMPT,
         "mode_category": "coding",
-        "greeting": "Pi Coding (Red Radiance via ARIA) ready. What are we building?",
+        "greeting": "Pi Coding (Red PARO int5 via ARIA) ready. What are we building?",
         "context_instructions": None,
         "llm": {
             "backend": "aria",
-            "model": "Red-Qwen3.8-27B-MXFP4",
+            "model": "Red-Qwen3.8-27B-PARO-INT5",
             "temperature": 0.0,
             "max_tokens": 16384,
             "max_context_tokens": 262144,
@@ -617,7 +618,7 @@ async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None
         "mode_metadata": {
             "icon": "code",
             "color": "#f97316",
-            "keywords": ["red", "radiance", "aria", "qwen", "code", "coding", "local-gpu"],
+            "keywords": ["red", "paro-int5", "aria", "qwen", "code", "coding", "local-gpu"],
             "keyboard_shortcut": None,
         },
         "memory_config": {
@@ -628,7 +629,7 @@ async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None
         },
         # Legacy agent-schema fields retained for launch-profile compatibility;
         # external Pi supplies its own tools rather than ARIA's ToolRouter.
-        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -640,7 +641,7 @@ async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None
     # block every future Red switch. The persona reaches its model through the
     # gateway; the binding is only bookkeeping.
     await db.agents.insert_one(agent)
-    logger.info("Seeded Pi Coding Agent Red Radiance profile through ARIA")
+    logger.info("Seeded Pi Coding Agent Red PARO int5 profile through ARIA")
 
 
 async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
@@ -686,7 +687,7 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
             "long_term_results": 5,
             "categories_filter": None,
         },
-        "enabled_tools": ["filesystem", "shell", "web", "claude_agent", "pi_coding_agent", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch", "pi_coding_agent"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -735,3 +736,14 @@ async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
         )
 
 
+
+
+async def _rename_legacy_web_tool(db: AsyncIOMotorDatabase) -> None:
+    """Migrate only the known web alias; preserve custom/optional tool choices."""
+    async for agent in db.agents.find({"enabled_tools": "web"}):
+        before = agent["enabled_tools"]
+        after = list(dict.fromkeys("web_fetch" if n == "web" else n for n in before))
+        await db.agents.update_one(
+            {"_id": agent["_id"], "enabled_tools": before},
+            {"$set": {"enabled_tools": after, "updated_at": datetime.now(timezone.utc)}},
+        )

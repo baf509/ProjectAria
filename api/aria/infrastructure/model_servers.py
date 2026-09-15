@@ -249,10 +249,16 @@ class ModelServerSpec:
     #   "llamacpp"  — /slots + /metrics (the historical assumption; still default)
     #   "vllm"      — Prometheus /metrics with vllm:* names; NO /slots
     #   "dwarfstar" — /v1/models ONLY. No /metrics, no /slots, not even /health.
+    #   "halogen"   — /health + /v1/models + /cache; no llama.cpp /slots or /metrics
     # ⚠️ `null` in this API means UNKNOWN, never "fine". A family that cannot
     # report a field must say so via telemetry_hint rather than let a null be
     # read as a healthy zero.
     runtime_family: str = "llamacpp"
+    # Seconds the Mac's forwarded /health probe waits for this deployment.
+    # halogen-flash-server's /health round-trips a PONG through its engine and
+    # answers in ~1.02 s when idle (measured 2026-09-13), so the shared 0.75 s
+    # budget reported a serving backend as exited and routing never chose it.
+    health_timeout_s: float = 0.75
     # ── Last measured throughput, and WHEN ──────────────────────────────────
     # No backend here exposes a stable tok/s at rest: llama.cpp's rate gauges
     # read 0 while idle, vLLM gives a latency histogram, DwarfStar gives nothing
@@ -444,6 +450,9 @@ _EXCLUSIVE_PAIRS = (
         ("ROCmFP4-qwen3.6-35b-a3b", "qwen3.6-27b-Q8",
          "Chadrock-ROCmFP6-qwen3.6-27b"),
     )
+    # One model at a time on the RTX 3090 (24 GiB): NInfer holds ~20 GiB and the
+    # CUDA/Halo candidate puts its dense trunk, KV and drafter there.
+    + (("NInfer-3090-Qwen3.8-27B", "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),)
 )
 
 
@@ -786,6 +795,41 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         "route for requests that name no model; 256K context, 32K output budget and compaction "
         "at 75% (196608). Background callers share this one slot behind gateway admission "
         "priority. Hash-pinned operator acceptance is not a passed reliability qualification.",
+    ),
+    ModelServerSpec(
+        slug="NInfer-3090-Qwen3.8-27B",
+        description="Qwen3.8-27B on the Corsair RTX 3090 under the ninfer-serve 0.6.1 sm_86 "
+        "release (registered 2026-09-13). Serves the 18.2 GB model-card artifact "
+        "qwen3_8_27b_card.ninfer (sha256 eec39564993d6e9c…), because the 20.4 GB DFlash2 "
+        "artifact is not supported by this runtime. One 65,536-token KV region, one "
+        "concurrent request with up to 16 pending, MTP speculation active (observed in the "
+        "serve log); reasoning_effort is per request (none/low/medium/xhigh; the eval "
+        "default is medium). Uses its own staged CUDA 12.8 runtime via LD_LIBRARY_PATH.",
+        runtime_repo="ninfer-rtx3090-linux-x64-0.6.1-rtx3090 (prebuilt release tarball)",
+        runtime_ref="ninfer-serve 0.6.1-rtx3090; CUDA 12.8 libcudart staged under "
+        "/home/ben/staging/ninfer3090/cuda12; launcher /home/ben/staging/ninfer3090/deploy/run-serve.sh",
+        runtime_family="ninfer",
+        backend_device="RTX 3090 (CUDA sm_86, GPU-ab0d4675-0482-6860-8dd6-8b17ad126e6d, PCI C4:00.0)",
+        devices=("RTX 3090 (CUDA sm_86)",),
+        memory_pool=POOL_NVIDIA,
+        model_file="/home/ben/staging/ninfer3090/models/qwen3_8_27b_card.ninfer",
+        # Shares :8080 with two retired R9700 entries; /v1/models owned_by
+        # "ninfer" is what tells them apart in the fleet probe.
+        port=8080,
+        systemd_unit="ninfer-3090.service",
+        startable=True,
+        allow_force_start=False,
+        # Explicit selection only. Red stays the model-omitted fallback when the
+        # Halo model is down; this 20 GiB slot must not silently become it.
+        auto_route=False,
+        parameters=(),
+        # Measured: 20,074 MiB on the 3090 at 65,536 KV tokens (2026-09-13).
+        resident_gib=19.7,
+        exclusive_with=_exclusive_with("NInfer-3090-Qwen3.8-27B"),
+        consumers_note="Not a Hermes or Pi model (Pi stays fixed at its three). Reached through "
+        "the gateway by exact slug over the Mac's 127.0.0.1:8080 forward; ninfer-serve has auth "
+        "disabled, so it must stay loopback-only. Exclusive with the CUDA/Halo candidate, which "
+        "also allocates on the 3090.",
     ),
     ModelServerSpec(
         slug="Qwen3.8-Flash-Next-Engine-R9700-Halo",
@@ -1952,6 +1996,8 @@ _TAILNET_IP = "100.123.245.84"
 # Ridge's independent on-demand contract is unchanged.
 CURRENT_MODEL_CHOICES = frozenset({
     "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+    # Registered by Ben 2026-09-13: Qwen3.8-27B on the RTX 3090 (explicit selection only).
+    "NInfer-3090-Qwen3.8-27B",
     "Red-Qwen3.8-27B-MXFP4",
     "Red-Qwen3.8-Flash-Next-MXFP4",
     "Red-Qwen3.8-27B-PARO-MXFP4",
@@ -1973,6 +2019,17 @@ REGISTRY = tuple(
     replace(spec, catalog_visible=spec.slug in CURRENT_MODEL_CHOICES)
     for spec in REGISTRY
 )
+# Operator-selected Red default, 2026-09-14. Preserve existing explicit choices.
+from aria.infrastructure.red_paro_int5 import SLUG as RED_PARO_INT5, make_spec as make_red_paro_int5
+CURRENT_MODEL_CHOICES = CURRENT_MODEL_CHOICES | {RED_PARO_INT5}
+REGISTRY = tuple(
+    replace(spec,
+            exclusive_with=tuple(dict.fromkeys((*spec.exclusive_with, RED_PARO_INT5))),
+            auto_route=False if spec.slug == "Red-Qwen3.8-27B-MXFP4" else spec.auto_route)
+    if spec.slug in {"Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-Flash-Next-MXFP4",
+                     "Red-Qwen3.8-27B-PARO-MXFP4"} else spec
+    for spec in REGISTRY
+) + (make_red_paro_int5(ModelServerSpec),)
 _BY_SLUG: dict[str, ModelServerSpec] = {spec.slug: spec for spec in REGISTRY}
 
 # refuse start() if projected usage would exceed this fraction of the pool
@@ -2952,6 +3009,10 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
         return await _probe_vllm(spec, root, timeout)
     if family == "dwarfstar":
         return await _probe_dwarfstar(spec, base, timeout)
+    if family in ("halogen", "ninfer"):
+        # No llama.cpp /slots or /metrics to read (both 404); probing them only
+        # produces errors. Occupancy stays UNKNOWN rather than a misleading zero.
+        return None
     return await _probe_llamacpp(spec, root, timeout)
 
 
@@ -3774,11 +3835,18 @@ def _runtime_family_from_models(payload: object) -> Optional[str]:
         return "vllm"
     if any(owner in {"llamacpp", "llama.cpp", "llama-cpp"} for owner in owners):
         return "llamacpp"
+    if "halogen" in owners:
+        return "halogen"
+    if "ninfer" in owners:
+        return "ninfer"
     return None
 
 
+_FORWARDED_HEALTH_TIMEOUT = 0.75
+
+
 async def _forwarded_endpoint_status(
-    port: int, *, identify_runtime: bool = False, timeout: float = 0.75
+    port: int, *, identify_runtime: bool = False, timeout: float = _FORWARDED_HEALTH_TIMEOUT
 ) -> tuple[bool, Optional[str]]:
     """Probe one forwarded port and, when needed, identify its runtime.
 
@@ -3831,9 +3899,19 @@ async def _forwarded_endpoint_open(spec: "ModelServerSpec") -> bool:
     }
     ambiguous = len(families) > 1
     healthy, family = await _forwarded_endpoint_status(
-        spec.port, identify_runtime=ambiguous
+        spec.port, identify_runtime=ambiguous, **_health_timeout_kwargs([spec])
     )
     return healthy and (not ambiguous or family == spec.runtime_family)
+
+
+def _health_timeout_kwargs(specs: list["ModelServerSpec"]) -> dict:
+    """The probe budget for a port, passed only when a deployment asks for more.
+
+    Every existing deployment keeps the probe's own 0.75 s default and an
+    unchanged call; a slower-/health backend (Halogen) widens only its port.
+    """
+    timeout = max((s.health_timeout_s for s in specs), default=_FORWARDED_HEALTH_TIMEOUT)
+    return {"timeout": timeout} if timeout > _FORWARDED_HEALTH_TIMEOUT else {}
 
 
 def is_routing_candidate(spec: "ModelServerSpec") -> bool:
@@ -3864,6 +3942,7 @@ async def _forwarded_fleet_states(
         _forwarded_endpoint_status(
             port,
             identify_runtime=len({s.runtime_family for s in by_port[port]}) > 1,
+            **_health_timeout_kwargs(by_port[port]),
         )
         for port in ports
     ))
@@ -4014,8 +4093,12 @@ class ModelServerManager:
     @staticmethod
     def _spec_from_doc(doc: dict) -> ModelServerSpec:
         """Build a spec from a dynamic db.model_servers doc (created by the
-        model-pull provisioning pipeline). Dynamic entries carry no static
-        exclusivity — their RAM safety rides on the live GTT gate."""
+        model-pull provisioning pipeline, or registered by an operator).
+
+        A dynamic row may declare `exclusive_with`. The Corsair actuator only
+        knows the static registry, so that declaration is enforced on the Mac by
+        `_refuse_dynamic_exclusive_conflict` before any Corsair start is sent;
+        without one, RAM safety rides on the live GTT gate alone."""
         return ModelServerSpec(
             slug=doc["slug"],
             description=doc.get("description", ""),
@@ -4037,7 +4120,37 @@ class ModelServerManager:
             # R9700 is gated against the right pool rather than the Halo's.
             memory_pool=doc.get("memory_pool", POOL_HALO),
             devices=tuple(doc.get("devices") or ()),
+            runtime_family=doc.get("runtime_family") or "llamacpp",
+            health_timeout_s=float(doc.get("health_timeout_s") or _FORWARDED_HEALTH_TIMEOUT),
+            exclusive_with=tuple(doc.get("exclusive_with") or ()),
         )
+
+    async def _refuse_dynamic_exclusive_conflict(
+        self, spec: ModelServerSpec, db: Optional[AsyncIOMotorDatabase]
+    ) -> None:
+        """Refuse a Corsair start that a running dynamic row declares exclusive.
+
+        The restricted actuator on Corsair resolves static slugs only and has
+        no database, so it cannot see an operator-registered deployment such as
+        Halogen. Its GTT gate is the only thing left, and that gate does not
+        count Halogen's ~68 GiB of locked host memory. Checked in both
+        directions, against the row's own forwarded /health budget.
+        """
+        if db is None:
+            return
+        async for doc in db.model_servers.find({}):
+            if doc["slug"] in _BY_SLUG or doc["slug"] == spec.slug:
+                continue
+            other = self._spec_from_doc(doc)
+            if spec.slug not in other.exclusive_with and other.slug not in spec.exclusive_with:
+                continue
+            if not other.onbox or not other.port:
+                continue
+            if await _forwarded_endpoint_open(other):
+                raise ModelServerSafetyError(
+                    f"{spec.slug} is mutually exclusive with running server {other.slug}. "
+                    "Stop it first, or pass force=True."
+                )
 
     async def resolve_spec(self, slug: str, db: Optional[AsyncIOMotorDatabase] = None) -> ModelServerSpec:
         """get_spec, extended to the dynamic (pulled) entries when a db is
@@ -4449,6 +4562,8 @@ class ModelServerManager:
                     f"{slug} runs on Corsair; launch overrides are not accepted "
                     "through the restricted remote actuator."
                 )
+            if not force:
+                await self._refuse_dynamic_exclusive_conflict(spec, db)
             return await _corsair_actuate("start", slug, force=force)
         if not spec.onbox:
             if not spec.remotely_operable:

@@ -56,8 +56,10 @@ async def test_shared_gpu_counters_but_only_matching_model_geometry():
     rows = [dict(slug=slug, state='running') for slug in red.MODELS]
     await red.enrich(rows, db)
     assert all(row['pool_used_gib'] == 60 for row in rows)
-    assert 'served_ctx' not in rows[0]
-    assert rows[1]['served_ctx'] == 131072 and rows[1]['slots'] == 1
+    matched = [row for row in rows if 'served_ctx' in row]
+    assert len(matched) == 1
+    assert matched[0]['slug'] == 'Red-Qwen3.8-Flash-Next-MXFP4'
+    assert matched[0]['served_ctx'] == 131072 and matched[0]['slots'] == 1
 
 
 @pytest.mark.asyncio
@@ -87,7 +89,7 @@ async def test_red_seed_is_enabled_and_preserves_existing_profile():
     await _seed_pi_coding_red_qwen38_27b_agent(db)
     row = db.agents.insert_one.await_args.args[0]
     assert row['slug'] == 'pi-coding-red-qwen38-27b'
-    assert row['llm']['backend'] == 'aria' and row['llm']['model'] == red.MODEL
+    assert row['llm']['backend'] == 'aria' and row['llm']['model'] == 'Red-Qwen3.8-27B-PARO-INT5'
     # Unbound on purpose: a binding blocks select_red_model's swap.
     assert 'model_server' not in row
     db.agents.find_one.return_value = {'slug': 'pi-coding-red-qwen38-27b', 'enabled': False}

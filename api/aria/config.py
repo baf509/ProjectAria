@@ -423,7 +423,7 @@ class Settings(BaseSettings):
     tool_allowed_names: list[str] = [
         "filesystem",
         "shell",
-        "web",
+        "web_fetch",
         "browse_page",
         "list_coding_sessions",
         "get_coding_output",
@@ -956,30 +956,14 @@ class Settings(BaseSettings):
     # retired with the R9700 loadouts, so three separate comments claiming this
     # was pinned "never to the auto-route" described a pin that did not exist.
     #
-    # The Corsair candidate, because Red is not always awake and a steward
-    # pinned to a sleeping machine is a steward that does not run.
-    #
-    # Pointing it here on 2026-09-10 killed it within the hour — worth stating
-    # exactly why, because the reason was arithmetic, not the choice of host.
-    # These are small calls (~1,031 prompt tokens), but Qwen3.8 spends
-    # `reasoning_content` before `content`, so it uses most of
-    # steward_max_tokens (6144 live). At Corsair's ~44 tok/s that needs ~140s,
-    # and the adapter's deadline was llamacpp_timeout_seconds (120) — a number
-    # tuned to bound a hung backend for SHORT callers. Every call returned
-    # finish_reason=length with content="" and both projects reported
-    # model-failed.
-    #
-    # The steward now states its own deadline (LLM_TIMEOUT_SECONDS - 20 = 220s)
-    # rather than inheriting that 120s, so 140s fits with room. See
-    # _warn_if_budget_cannot_finish, which checks the live budget against the
-    # live deadline at startup, and test_steward_budget_fits_inside_the_deadline.
-    #
-    # The cost of being here: Corsair has ONE slot, shared with pi's coding
-    # sessions. Gateway admission ranks background below interactive, and the
-    # deployment carries 32 context checkpoints, so a displaced prefix is a
-    # restore rather than a cold re-prefill.
+    # The Mac deployment uses Red PARO for stewardship and Qwen coding reviews.
+    # Hermes routine cron and vision have separate 3090 settings. Keep explicit
+    # model identity here so a retired Red quant does not trigger fallback.
+    # Reasoning calls need their own deadline: a 6144-token budget took ~140s
+    # on the earlier Corsair runtime and exceeded the short adapter deadline.
+    # See _warn_if_budget_cannot_finish and the steward budget regression test.
     steward_backend: str = "llamacpp"
-    steward_model: str = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    steward_model: str = "Red-Qwen3.8-27B-PARO-INT5"
     steward_endpoint: str = "http://127.0.0.1:8200/llm/v1-identified"
     steward_max_actions_per_tick: int = 2
     # ⚠️ Qwen3.8 is a REASONING model: it emits `reasoning_content` before

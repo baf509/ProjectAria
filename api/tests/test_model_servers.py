@@ -1645,7 +1645,9 @@ async def test_routing_skips_retired_specs_and_never_probes_their_ports(
     so no probe result could make it selectable. `status()` still checks every
     port — see the disambiguation test below.
     """
-    retired = ms._BY_SLUG["Qwen3.8-27B-R9700-HIP"]
+    # A retired spec whose port no routing candidate shares (:8080 is now also
+    # served by the startable NInfer-3090 deployment, so it is rightly probed).
+    retired = ms._BY_SLUG["Laguna-S-2.1"]
     assert not ms.is_routing_candidate(retired)
 
     probed: list[int] = []

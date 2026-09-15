@@ -118,6 +118,16 @@ async def list_tools(
     ]
 
 
+@router.get("/tools/health")
+async def tool_configuration_health(
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    router: ToolRouter = Depends(get_tool_router),
+):
+    """Registered versus configured tools; execution canaries run separately."""
+    from aria.tools.validation import tool_configuration_report
+    return await tool_configuration_report(db, router)
+
+
 # Stats endpoint MUST be before the {tool_name} path parameter route
 # to avoid being shadowed by it.
 @router.get("/tools/stats")

@@ -1,0 +1,119 @@
+{
+  "mode": "isolated ASGI with live read-only agent/tool inventory snapshot; no application lifespan or service starts",
+  "tool_health": {
+    "ok": true,
+    "checked_at": "2026-09-15T09:11:49.522795+00:00",
+    "registered": [
+      "browse_page",
+      "browser_click",
+      "browser_close",
+      "browser_console_messages",
+      "browser_drag",
+      "browser_drop",
+      "browser_evaluate",
+      "browser_file_upload",
+      "browser_fill_form",
+      "browser_handle_dialog",
+      "browser_hover",
+      "browser_navigate",
+      "browser_navigate_back",
+      "browser_network_request",
+      "browser_network_requests",
+      "browser_press_key",
+      "browser_resize",
+      "browser_run_code_unsafe",
+      "browser_select_option",
+      "browser_snapshot",
+      "browser_tabs",
+      "browser_take_screenshot",
+      "browser_type",
+      "browser_wait_for",
+      "check_runtime_updates",
+      "filesystem",
+      "generate_document",
+      "get_coding_diff",
+      "get_coding_output",
+      "list_coding_sessions",
+      "pi_coding_agent",
+      "screenshot_analyze",
+      "send_shell_input",
+      "send_to_coding_session",
+      "shell",
+      "start_coding_session",
+      "stop_coding_session",
+      "update_soul",
+      "web_fetch"
+    ],
+    "agents": [
+      {
+        "slug": "pi-coding-red-qwen38-flashnext",
+        "enabled": true,
+        "configured": [
+          "filesystem",
+          "shell",
+          "web_fetch"
+        ],
+        "unregistered": []
+      },
+      {
+        "slug": "pi-coding-red-qwen38-27b",
+        "enabled": true,
+        "configured": [
+          "filesystem",
+          "shell",
+          "web_fetch"
+        ],
+        "unregistered": []
+      },
+      {
+        "slug": "pi-coding-ridge",
+        "enabled": true,
+        "configured": [
+          "filesystem",
+          "shell",
+          "web_fetch"
+        ],
+        "unregistered": []
+      },
+      {
+        "slug": "pi-coding",
+        "enabled": true,
+        "configured": [
+          "filesystem",
+          "shell",
+          "web_fetch",
+          "pi_coding_agent",
+          "browser_*",
+          "browse_page"
+        ],
+        "unregistered": []
+      },
+      {
+        "slug": "aria",
+        "enabled": false,
+        "configured": [
+          "pi_coding_agent",
+          "filesystem",
+          "shell",
+          "web_fetch",
+          "browser_*",
+          "browse_page"
+        ],
+        "unregistered": []
+      }
+    ],
+    "problems": [],
+    "unregistered_allowlist": [],
+    "unavailable_optional": [
+      "claude_agent",
+      "deep_think"
+    ],
+    "execution_tested": false
+  },
+  "web_fetch": {
+    "status": "success",
+    "expected_text": true
+  },
+  "steward_default": "Red-Qwen3.8-27B-PARO-INT5",
+  "sensitive_api_enabled": false
+}

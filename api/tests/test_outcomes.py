@@ -741,7 +741,7 @@ def test_a_resident_model_always_answers_a_model_omitted_request():
         }
 
     corsair = ms._BY_SLUG[ms.PI_CODING_SLUG]
-    red = ms._BY_SLUG["Red-Qwen3.8-27B-MXFP4"]
+    red = ms._BY_SLUG["Red-Qwen3.8-27B-PARO-INT5"]
     assert corsair.auto_route, "the standing deployment must be eligible for the auto route"
 
     # Red asleep: the resident Corsair model still answers.
@@ -819,6 +819,9 @@ def test_steward_budget_fits_inside_the_deadline():
     # cannot serve the steward at the configured budget, whatever else is true.
     DECODE_TOK_S = {
         "Red-Qwen3.8-27B-MXFP4": 90.0,
+        # 250 W measurements (CorsairModelHost/red-r9700/paro-250w-20260915):
+        # ~196 tok/s mixed decode; use the older conservative 90 tok/s floor.
+        "Red-Qwen3.8-27B-PARO-INT5": 90.0,
         "Qwen3.8-Flash-Next-CUDA-Halo-Candidate": 44.0,
     }
     model = settings.steward_model

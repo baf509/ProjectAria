@@ -600,6 +600,14 @@ async def lifespan(app: FastAPI):
     if app.state.loop.settings.enabled:
         await app.state.loop.initialize()
 
+    # Validate after built-ins and saved MCP registrations are available. Do
+    # not erase unknown entries: a disconnected server may return later.
+    from aria.tools.validation import tool_configuration_report
+    tool_health = await tool_configuration_report(db, tool_router)
+    if not tool_health["ok"]:
+        startup_logger.warning("Tool configuration drift: agents=%s allowlist=%s",
+                               tool_health["problems"], tool_health["unregistered_allowlist"])
+
     readiness.mark_ready()
     startup_logger.info("ARIA readiness: ready")
 

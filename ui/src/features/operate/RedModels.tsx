@@ -11,7 +11,7 @@ import type { InferenceTrace, LlmRouteFull, ModelServerFull, ModelServersFullRes
 import type { Resource } from '@/lib/swr'
 import { isResident, modelName } from './lib'
 
-const RED_MODELS = ['Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4'] as const
+const RED_MODELS = ['Red-Qwen3.8-27B-PARO-INT5', 'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'] as const
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 async function waitFor(slug: string, running: boolean) {
@@ -127,7 +127,7 @@ export function RedModelControls({ fleet, route, utilization }: {
       // otherwise does not replace Corsair or change the user's routing choice.
       if (currentRoute.pinned && previous.some(s => s.slug === currentRoute.pinned) && currentRoute.pinned !== next)
         await setLlmRoute(next)
-      setDone(next ? `${modelName(next)} is loaded on Red.` : 'Red is unloaded. Both models remain available to load.')
+      setDone(next ? `${modelName(next)} is loaded on Red.` : 'Red is unloaded. All models remain available to load.')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -147,7 +147,7 @@ export function RedModelControls({ fleet, route, utilization }: {
           <Cluster>
             <div className="min-w-0 flex-1">
               <b className="text-label">{modelName(slug)}</b>
-              <Text>{i === 0 ? '27B · 256K context · up to 8 requests' : 'Flash Next · 256K context · 1 request'}</Text>
+              <Text>{slug === 'Red-Qwen3.8-27B-PARO-INT5' ? 'Red default · 27B int5 · 256K context · up to 8 requests' : slug === 'Red-Qwen3.8-27B-MXFP4' ? '27B MXFP4 · 256K context · up to 8 requests' : slug === 'Red-Qwen3.8-27B-PARO-MXFP4' ? '27B ParoQuant MXFP4 · 256K context · up to 8 requests' : 'Flash Next · 256K context · 1 request'}</Text>
             </div>
             <Button variant={resident ? 'default' : 'primary'}
               disabled={busy || !fleet.data || (!resident && server?.startable !== true)}

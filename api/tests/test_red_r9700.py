@@ -50,7 +50,8 @@ def test_red_runtime_is_exact_and_loopback_only():
     assert spec.runtime_family == "vllm"
     assert spec.endpoint_override == "http://127.0.0.1:8094/v1"
     assert spec.remote_model_id == "qwen3.8-27b"
-    assert spec.auto_route
+    assert not spec.auto_route  # Retained explicit option after PARO int5 promotion.
+    assert ms.ModelServerManager().get_spec("Red-Qwen3.8-27B-PARO-INT5").auto_route
     assert spec.remotely_operable
     assert ms.unit_name(spec) is None  # Lifecycle is remote; never run systemctl on the Mac.
 

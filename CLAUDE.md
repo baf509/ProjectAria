@@ -3,7 +3,25 @@
 This file is the repository-local operating guide for coding agents. It does not
 override the vault-root `Architecture_Charter.md`.
 
-Last reconciled: **2026-09-08**.
+Last reconciled: **2026-09-15**.
+
+## Canonical source reconciliation
+
+The deployed repair history and previously pending PARO-MXFP4 work are merged
+into `master`. PARO int5 remains the Red/Hermes default; PARO-MXFP4 is a separate
+explicit option. The active service release remains `029986d-1a274be96a53`;
+merging source does not deploy additional changes. See
+`docs/ops/master-reconciliation-20260915/REPORT.md` for verification and recovery.
+
+## Red default update
+
+Ben selected `Red-Qwen3.8-27B-PARO-INT5` as the Red and Hermes default.
+The active rollout added it to both managed Pi installations and replaced the
+old Red model where that model was the selected default. Activation status and
+receipts are recorded in CorsairModelHost/red-r9700/paro-int5-isolated/results/promotion/. Existing explicit model
+choices are retained. Red uses the same private Mac forward 8094; native
+backend identity is `red-qwen3.8-27b-paro-int5-isolated`.
+The dated topology and Pi inventory descriptions below predate this update.
 
 ## Current Red deployment
 

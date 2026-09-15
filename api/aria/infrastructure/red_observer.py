@@ -16,6 +16,8 @@ from aria.config import settings
 NODE = 'red-linux'
 MODEL = 'Red-Qwen3.8-27B-MXFP4'
 MODELS = {MODEL: 'qwen3.8-27b',
+          'Red-Qwen3.8-27B-PARO-MXFP4': 'red-qwen3.8-27b-paro-mxfp4',
+          'Red-Qwen3.8-27B-PARO-INT5': 'red-qwen3.8-27b-paro-int5-isolated',
           'Red-Qwen3.8-Flash-Next-MXFP4': 'red-qwen3.8-flash-next-mxfp4'}
 SSH_CONFIG = '/Users/ben/Services/config/red-model-ssh.conf'
 logger = logging.getLogger(__name__)

@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "execution_tested": true,
+  "command": [
+    "/Users/ben/Services/data/hermes-home/bin/browser-use"
+  ],
+  "navigation": true,
+  "screenshot": true,
+  "duration_ms": 15308
+}

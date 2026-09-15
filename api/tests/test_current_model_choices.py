@@ -11,8 +11,10 @@ def test_current_host_choices():
     # Corsair, for ARIA's background extraction/heartbeat calls. Startable and
     # onbox like the candidate, but CPU-only and outside automatic routing, so
     # it contends with nothing — measured at zero effect on the candidate.
+    # NInfer-3090 joined 2026-09-13: Qwen3.8-27B on the RTX 3090, explicit
+    # selection only and exclusive with the candidate (see test_ninfer_3090_registry).
     assert {s.slug for s in ms.REGISTRY if s.onbox and s.startable} == {
-        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Qwen3.5-9B-Aux-CPU'}
+        'Qwen3.8-Flash-Next-CUDA-Halo-Candidate', 'Qwen3.5-9B-Aux-CPU', 'NInfer-3090-Qwen3.8-27B'}
     aux = ms._BY_SLUG['Qwen3.5-9B-Aux-CPU']
     # The properties that keep it from ever competing with the coding slot.
     assert aux.memory_pool == ms.POOL_HOST and not aux.gtt_resident
@@ -20,17 +22,19 @@ def test_current_host_choices():
     assert not aux.auto_route, 'auxiliary model must be addressed by name, never auto-selected'
     # PARO joined 2026-09-10 as weights-only and became startable on 2026-09-12,
     # when it got a verb, a unit and a serve script
-    # (see test_paro_is_wired_end_to_end_or_not_offered_at_all). All three Red
+    # (see test_paro_is_wired_end_to_end_or_not_offered_at_all). All four Red
     # deployments are now visible AND startable — one at a time.
     assert {s.slug for s in ms.REGISTRY if s.host_machine == 'machine:red' and s.catalog_visible} == {
-        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'}
+        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4',
+        'Red-Qwen3.8-27B-PARO-INT5'}
     assert {s.slug for s in ms.REGISTRY
             if s.host_machine == 'machine:red' and s.startable} == {
-        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'}
-    # Exactly one of them may be reached automatically; the other two are
+        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4',
+        'Red-Qwen3.8-27B-PARO-INT5'}
+    # Exactly one of them may be reached automatically; the other three are
     # explicit-selection options sharing the same two GPUs and the same port.
     assert {s.slug for s in ms.REGISTRY
-            if s.host_machine == 'machine:red' and s.auto_route} == {'Red-Qwen3.8-27B-MXFP4'}
+            if s.host_machine == 'machine:red' and s.auto_route} == {'Red-Qwen3.8-27B-PARO-INT5'}
     assert 'gemma-4-e4b-Q4' not in visible
     assert {'catalog_visible', 'host_machine'} <= _LIST_VIEW_FIELDS
 

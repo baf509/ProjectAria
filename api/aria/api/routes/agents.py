@@ -14,7 +14,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from aria.api.deps import get_db
+from aria.api.deps import get_db, get_tool_router
 from aria.db.models import AgentCreate, AgentResponse, AgentUpdate
 
 router = APIRouter()
@@ -66,6 +66,7 @@ async def create_agent(
     body: AgentCreate, db: AsyncIOMotorDatabase = Depends(get_db)
 ):
     """Create a new agent."""
+    _validate_tools(body.enabled_tools)
     # Check if slug already exists
     existing = await db.agents.find_one({"slug": body.slug})
     if existing:
@@ -117,6 +118,9 @@ async def update_agent(
     if not existing:
         raise HTTPException(status_code=404, detail="Agent not found")
 
+    if "enabled_tools" in update_data:
+        _validate_tools(update_data["enabled_tools"])
+
     update_data["updated_at"] = datetime.now(timezone.utc)
     await db.agents.update_one({"_id": existing["_id"]}, {"$set": update_data})
 
@@ -135,3 +139,10 @@ async def delete_agent(agent_id: str, db: AsyncIOMotorDatabase = Depends(get_db)
     result = await db.agents.delete_one({"_id": valid_object_id(agent_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+
+def _validate_tools(names):
+    from aria.tools.validation import missing_tool_names
+    missing = missing_tool_names(names, [t.name for t in get_tool_router().list_tools()])
+    if missing:
+        raise HTTPException(status_code=422, detail={"unregistered_tools": missing})

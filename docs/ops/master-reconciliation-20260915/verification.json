@@ -1,0 +1,19 @@
+{
+  "checked_at": "2026-09-15T11:49:19.136102+00:00",
+  "api_tests_passed": 365,
+  "contract_tests_passed": 83,
+  "ui_tests_passed": 28,
+  "ui_projects": [
+    "phone",
+    "laptop"
+  ],
+  "ui_build": "passed",
+  "ui_typecheck": "passed",
+  "ui_class_lint": "passed",
+  "pending_files_preserved": 9,
+  "pending_files_commit": "eb5e71e",
+  "original_master": "4ceefdb",
+  "repair_branch_head": "440d776",
+  "recovery_snapshot": "/Users/ben/Services/backups/aria-master-reconciliation-20260915",
+  "active_release_unchanged": "029986d-1a274be96a53"
+}
