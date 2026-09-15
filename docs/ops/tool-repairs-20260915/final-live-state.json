@@ -9,5 +9,8 @@
     "ninfer-3090"
   ],
   "hermes_default": "Red-Qwen3.8-27B-PARO-INT5",
-  "api_activation_pending": true
+  "api_activation_pending": false,
+  "verified_at": "2026-09-15T11:17:15.839843+00:00",
+  "active_build": "029986d-1a274be96a53",
+  "functional_checks_passed": 9
 }
