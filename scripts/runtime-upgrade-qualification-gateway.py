@@ -26,7 +26,10 @@ candidate = replace(module.make_spec(model_servers.ModelServerSpec),
     description='Temporary source-only qualification; pinned Radiance 0.9.3/vLLM 0.27.1 and existing int5 weights.',
     container_name='red-paro-source-candidate-20260915',
     remote_model_id='red-paro-source-3368c48-test',
+    # Remote identity probes require both command fields. All lifecycle routes
+    # are removed below; these commands fail closed even if invoked directly.
     remote_start_command=('false',), remote_stop_command=('false',),
+    not_startable_reason='Temporary qualification: controlled by the bounded runtime-upgrades-20260915 test supervisor.',
     consumers_note='Task 6aa965a9c5fd25b265732450; isolated mutable paths; restore incumbent after tests.')
 halogen = model_servers.ModelServerSpec(
     slug='Halogen-Qwen3.8-Flash-Next-0102-Test',
