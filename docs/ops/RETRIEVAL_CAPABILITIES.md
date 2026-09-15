@@ -3,7 +3,7 @@
 Runbook for mongot search and the embeddings service. Production lives on the
 Mac control plane; old Corsair container commands are historical.
 
-Last verified: **2026-09-07**.
+Last verified: **2026-09-15**.
 
 ## Current state
 
@@ -11,12 +11,58 @@ Authenticated `GET /api/v1/capabilities/retrieval` reported:
 
 | Capability | State |
 |---|---|
-| search/mongot | disabled; Lima container `devbox-mongot` stopped |
-| embeddings | disabled at user request; local service stopped and launcher disabled |
-| retrieval mode | `fallback` (mongod-native scan) |
-| backfill | worker enabled but pauses while embeddings are disabled; inspect the endpoint for current counts |
+| search/mongot | enabled; Lima container `devbox-mongot` running with a 1 GiB heap cap |
+| embeddings | enabled; `com.ben.devbox.embeddings` running on the Apple GPU (MPS) |
+| retrieval mode | `hybrid` (text + vector) |
+| backfill | worker enabled; drained to zero on restore |
 
 Never copy a backlog count forward. The endpoint is the authority.
+
+## September 15 restoration
+
+Restored at Ben's request after profiling the Mac. Search was re-enabled first,
+then embeddings; the backfill embedded 24 memories and 56 ontology entities with
+zero failures. (50 of those entities were project entities written by the
+ontology projection minutes after the first pass; the projection deliberately
+does not embed, so expect entity counts to reappear briefly after projection runs.)
+
+Two changes live **outside this repository**. Each has a timestamped backup
+beside it; neither is captured by git.
+
+**mongot heap cap** — `~/mongo-config/compose.yml` inside the Lima `mongot` VM.
+The mongot command now passes `--jvm-flags -Xmx1g` (the launcher's supported
+flag; it sets no heap of its own). Without it the JVM defaults to 25% of the
+VM, about 2 GiB, in an 8 GiB VM with no swap that also holds mongod's 3 GB
+WiredTiger cache. The whole search index is about 200 MB. Recreate only this
+container, never mongod, which AgentBenchPlatform shares:
+
+```bash
+limactl shell mongot -- sh -c 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock; \
+  cd ~/mongo-config && docker compose up -d --no-deps mongot'
+```
+
+Lima maps guest `:8080` (mongot health) to Mac `:28080` and `:9946` to `:29946`,
+so it does not collide with the Mac's `:8080` NInfer forward.
+
+**Embedding batch cap** — `/Users/ben/Services/apps/embeddings/server.py`.
+Despite the service description, sentence-transformers selects the **Apple GPU
+(MPS)** in bfloat16, not the CPU. MPS memory lives in unified RAM but not in the
+process RSS, so `ps`/`top` showed about 0.2 GiB while the driver held about
+2 GiB — the likely reason this service was a memory problem without looking
+like one. Measured on the M1 Pro:
+
+| Configuration | GPU high-water | Speed |
+|---|---|---|
+| default batch (32) | 2.02 GiB | 102 ms/doc |
+| batch 4 + `torch.mps.empty_cache()` | **1.02 GiB** | 107 ms/doc |
+| CPU float32 | 2.3 GiB peak RSS | 2.3 s/doc |
+
+The server now encodes in batches of 4 and releases the GPU cache after each
+request. Vectors are unaffected: against batch 32, cosine ≥ 0.9963 and 100%
+nearest-neighbour agreement over 40 varied-length texts, so existing embeddings
+remain comparable. Measured production footprint after restore: 1,493 MB.
+
+The TTS and Gemma disable markers remain in place; no LLM runs on the Mac.
 
 ## Semantics
 
