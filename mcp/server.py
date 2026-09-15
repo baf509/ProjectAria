@@ -649,7 +649,7 @@ async def get_task(task_id: Optional[str] = None, id: Optional[str] = None) -> d
     return await _request("GET", f"/api/v1/todos/{ident}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def weekly_improvement_status(run_id: Optional[str] = None) -> dict:
     """Read the weekly platform review status, or a run and its report. Read-only."""
     if run_id:
