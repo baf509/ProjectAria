@@ -1,0 +1,32 @@
+{
+  "web_fetch": {
+    "tool_name": "web_fetch",
+    "status": "error",
+    "error": "Tool 'web_fetch' is not in the tool allowlist",
+    "duration_ms": null,
+    "metadata": {},
+    "output_present": false,
+    "output_type": "NoneType",
+    "elapsed_ms": 84.9243329721503
+  },
+  "browser_tabs": {
+    "tool_name": "browser_tabs",
+    "status": "error",
+    "error": "MCP tool reported error",
+    "duration_ms": 187,
+    "metadata": {
+      "mcp_result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "### Error\nError: Browser \"chrome-for-testing\" is not installed. Run `npx @playwright/mcp install-browser chrome-for-testing` to install"
+          }
+        ],
+        "isError": true
+      }
+    },
+    "output_present": true,
+    "output_type": "str",
+    "elapsed_ms": 207.25520903943107
+  }
+}

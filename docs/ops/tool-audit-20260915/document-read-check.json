@@ -1,0 +1,10 @@
+{
+  "response": {
+    "content": "1|## ARIA document test 7319",
+    "total_lines": 1,
+    "file_size": 1369,
+    "truncated": false,
+    "extracted_document": true
+  },
+  "expected_text_present": true
+}

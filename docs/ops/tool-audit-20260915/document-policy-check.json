@@ -1,0 +1,8 @@
+{
+  "tool_name": "generate_document",
+  "status": "error",
+  "output": null,
+  "error": "Tool 'generate_document' is not in the tool allowlist",
+  "duration_ms": null,
+  "metadata": {}
+}

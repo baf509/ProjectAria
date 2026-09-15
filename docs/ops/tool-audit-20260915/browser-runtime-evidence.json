@@ -1,0 +1,17 @@
+{
+  "managed_binaries": "/Users/ben/Services/data/hermes-home/bin/uv:  ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.6.32, BuildID[sha1]=141a3cb5b6aedc29195e4b73841e2da393c36245, stripped\n/Users/ben/Services/data/hermes-home/bin/uvx: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.6.32, BuildID[sha1]=419e2afcc5c52eb1acf59c66be180efc8dd08170, stripped\n",
+  "selected_command": [
+    "/Users/ben/Services/data/hermes-home/bin/uvx",
+    "browser-use"
+  ],
+  "version_probe": {
+    "returncode": 126,
+    "error": "exec format error"
+  },
+  "native_uvx_available": "/opt/homebrew/bin/uvx",
+  "observed_playwright_cache": [
+    "chromium-1234",
+    "chromium_headless_shell-1234",
+    "ffmpeg-1011"
+  ]
+}

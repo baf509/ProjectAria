@@ -1,0 +1,14 @@
+[
+  {
+    "trace_id": "71b945ce25f643219b10c4e4a79a7cbb",
+    "timestamp": "2026-09-15T07:31:14.476000+00:00",
+    "caller": "127.0.0.1:AsyncOpenAI/Python",
+    "model": "NInfer-3090-Qwen3.8-27B",
+    "status_code": 200,
+    "outcome": "ok",
+    "latency_ms": 2468.47,
+    "queue_wait_ms": 0.0,
+    "prompt_tokens": 336,
+    "output_tokens": 101
+  }
+]

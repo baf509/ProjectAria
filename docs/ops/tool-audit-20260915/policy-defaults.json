@@ -1,0 +1,28 @@
+{
+  "tool_execution_policy": "allowlist",
+  "tool_allowed_names": [
+    "filesystem",
+    "shell",
+    "web",
+    "browse_page",
+    "list_coding_sessions",
+    "get_coding_output",
+    "get_coding_diff",
+    "update_soul",
+    "claude_agent",
+    "pi_coding_agent",
+    "deep_think",
+    "check_runtime_updates"
+  ],
+  "tool_allowed_prefixes": [
+    "browser_"
+  ],
+  "tool_sensitive_names": [
+    "shell",
+    "filesystem"
+  ],
+  "tool_api_sensitive_enabled": false,
+  "screenshot_command": "scrot",
+  "docgen_output_dir": "~/Development/ProjectAria/aria-documents",
+  "linear_enabled": false
+}

@@ -1,0 +1,123 @@
+{
+  "list_nodes": {
+    "ok": true,
+    "latency_ms": 412.1206250274554,
+    "summary": {
+      "type": "list",
+      "count": 4
+    }
+  },
+  "fleet_status": {
+    "ok": true,
+    "latency_ms": 551.9662500009872,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "shells",
+        "active_count",
+        "awaiting_count",
+        "blocked_count",
+        "done_count",
+        "coding_concurrency",
+        "cache_hit_rate",
+        "cache_reporting"
+      ],
+      "list_counts": {
+        "shells": 14
+      },
+      "status_fields": {}
+    }
+  },
+  "guard_status": {
+    "ok": true,
+    "latency_ms": 427.6033329661004,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "enabled",
+        "preflight",
+        "policy",
+        "counts",
+        "mirror_root"
+      ],
+      "list_counts": {},
+      "status_fields": {
+        "enabled": true
+      }
+    }
+  },
+  "loop_policy": {
+    "ok": true,
+    "latency_ms": 467.6157089998014,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "enabled",
+        "projects"
+      ],
+      "list_counts": {},
+      "status_fields": {
+        "enabled": true
+      }
+    }
+  },
+  "benchmark_catalog": {
+    "ok": true,
+    "latency_ms": 5402.117624995299,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "health",
+        "suites",
+        "targets",
+        "gpu_budget_gb"
+      ],
+      "list_counts": {
+        "suites": 14,
+        "targets": 4
+      },
+      "status_fields": {}
+    }
+  },
+  "host_temperatures": {
+    "ok": true,
+    "latency_ms": 3450.1627080026083,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "available",
+        "hosts"
+      ],
+      "list_counts": {
+        "hosts": 4
+      },
+      "status_fields": {
+        "available": true
+      }
+    }
+  },
+  "research_status": {
+    "ok": true,
+    "latency_ms": 448.0169589514844,
+    "summary": {
+      "type": "dict",
+      "keys": [
+        "runs",
+        "returned",
+        "truncated"
+      ],
+      "list_counts": {
+        "runs": 0
+      },
+      "status_fields": {}
+    }
+  },
+  "search_memory": {
+    "ok": true,
+    "latency_ms": 605.9844170231372,
+    "summary": {
+      "type": "list",
+      "count": 3
+    }
+  }
+}

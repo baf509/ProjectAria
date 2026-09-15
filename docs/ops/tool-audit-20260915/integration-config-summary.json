@@ -1,0 +1,15 @@
+{
+  "source": "active ProjectAria release .env; omitted values use settings defaults",
+  "flags": {
+    "LINEAR_ENABLED": "<default>",
+    "OBSIDIAN_ENABLED": "true",
+    "TOOL_EXECUTION_POLICY": "<default>",
+    "TOOL_ALLOWED_NAMES": "<default>",
+    "TOOL_ALLOWED_PREFIXES": "<default>",
+    "TOOL_API_SENSITIVE_ENABLED": "<default>"
+  },
+  "credential_present": {
+    "LINEAR_API_KEY": false,
+    "BRAVE_SEARCH_API_KEY": true
+  }
+}

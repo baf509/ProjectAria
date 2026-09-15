@@ -1,0 +1,26 @@
+{
+  "id": "6aa8f94eb8ae5191e672e1c5",
+  "title": "Audit ARIA and Hermes tool configuration and recommend useful additions",
+  "notes": "Completed live ARIA/Hermes tool audit: 127 ARIA MCP tools; 39 internal router tools (16 built-in, 23 Playwright); Hermes Signal catalog 153 including 131 ARIA entries, with 20 initial visible definitions and native discovery. MCP read checks, Tavily search/extract, ARIA browse_page, PDF reading and prior same-day 3090 vision passed. Failures: ARIA Playwright selected chrome-for-testing not installed; Hermes managed uv/uvx are Linux x86-64 ELF on macOS and selected uvx fails exec format; web_fetch and generate_document blocked by allowlist. Internal agent records retain unregistered web/deep_think/claude_agent names. Enabled steward pinned to old Red MXFP4; benchmark catalog lacks PARO/3090 targets. Embeddings/search intentionally disabled, fallback recall works. Linear disabled/unconfigured. Recommend browser/tool/model repairs, then typed document export and research-start, current benchmark profiles, optional GitHub/Linear. No runtime/config changes. Full report: /Users/ben/Development/Infrastructure/ProjectAria/docs/ops/tool-audit-20260915/REPORT.md",
+  "status": "active",
+  "owner": "agent",
+  "due_at": null,
+  "project_id": null,
+  "tags": [
+    "aria",
+    "tools",
+    "audit"
+  ],
+  "source": {
+    "type": "manual",
+    "conversation_id": null,
+    "shell_name": null,
+    "message_ids": null,
+    "extracted_at": null,
+    "confidence": null
+  },
+  "content_hash": "0eb82dd252983e67ecbf4e766e626dae115e9c1f1895933719f0e8b086892e26",
+  "created_at": "2026-09-15T07:52:46.379000Z",
+  "updated_at": "2026-09-15T08:07:55.218000Z",
+  "completed_at": null
+}

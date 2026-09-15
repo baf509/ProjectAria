@@ -1,0 +1,16 @@
+{
+  "started_at": 1789457466.244122,
+  "model": "Red-Qwen3.8-27B-PARO-INT5",
+  "image_input_mode": "text",
+  "native_fast_path": false,
+  "aux_vision": {
+    "provider": "custom",
+    "model": "NInfer-3090-Qwen3.8-27B",
+    "base_url": "http://127.0.0.1:8200/llm/v1-identified"
+  },
+  "response": {
+    "success": true,
+    "analysis": "The image displays the text \u201cRIVER 582\u201d in black, sans-serif font at the top left. Below it are three distinct visual elements arranged horizontally:\n\n1. A large blue triangle on the left.\n2. A large orange square in the center.\n3. Three small green circles stacked vertically on the right.\n\n**Exact text shown:** RIVER 582  \n**Large colored shapes:** Blue triangle, Orange square  \n**Small circles count:** 3"
+  },
+  "ended_at": 1789457474.517251
+}

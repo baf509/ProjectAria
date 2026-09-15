@@ -1,0 +1,42 @@
+{
+  "browser_use_cli_command": [
+    "/Users/ben/Services/data/hermes-home/bin/uvx",
+    "browser-use"
+  ],
+  "browser_use_mode": true,
+  "search": {
+    "elapsed_ms": 1824.8637500219047,
+    "response": {
+      "success": true,
+      "data": {
+        "web": [
+          {
+            "title": "Python Documentation - How to Read and Browse the Python Docs",
+            "url": "https://www.youtube.com/watch?v=vYuvEWiffts",
+            "description": "[0:25] need to do is to go to python.org that is the official website of the Python programming language then you go to\n[0:33] documentation right here and you have two options you can either click on this button right here directly or you can\n[0:41] click right here where it says docs and that will require one more step to reach the documentation right now we are going to take the shortest path by clicking on [...] [0:50] this button python docs and welcome this is the documentation for python 3.9 this is the first screen that you will see\n[0:58] when you access the documentation these are the different parts of the documentation and usually you will go to\n[1:06] library reference the documentation states that you should keep this under your pillow and let me tell you that this is true this is the section of the [...] [3:25] string bite stuple list or range or a collection as you can see it is very detailed and it tells you exactly what\n[3:33] kind of values you can pass to the function we also have another important note about C python implementation detail that is more specialized and\n[3:42] usually you don't have to read this unless you're looking for more specific details about the implementation of the function well now that you know how the",
+            "position": 1
+          },
+          {
+            "title": "Python Documentation Index | Python.org",
+            "url": "https://www.python.org/doc/essays",
+            "description": "Warning: reading this document may cause your brain to explode.\n Built-in Package Support in Python 1.5\n\n  The most official documentation for the new package features in Python 1.5.\n Standard Exception Classes in Python 1.5\n\n  The most official documentation for the new exception features in Python 1.5. (Updated for Python 1.5.2 by Barry Warsaw.)\n Glue It All Together With Python [...] Notice: This page displays a fallback because interactive scripts did not run. Possible causes include disabled JavaScript or failure to load scripts or stylesheets.\n\nDonate\n\n\u2261 Menu\n\n A A\n  + Smaller\n  + Larger\n  + Reset\n\n Socialize\n  + LinkedIn\n  + Mastodon\n  + Chat on IRC\n  + Twitter\n\n Python>>>\n Documentation>>>\n Python Essays\n\n# Python Documentation Index\n\n# Python Essays [...] Written in 1996, this gives an overview of the early history and background of Python and some of my philosophy about software design and project management. See also my foreword to the 2nd edition.\n Implementing Graphs\n\n  An elegant and perhaps not obvious way to represent graphs using Python's most fundamental and versatile data types, lists and dictionaries.\n An Optimization Anecdote\n\n  Required reading if you find that your Python code runs too slow.\n Metaclass Programming in Python 1.5",
+            "position": 2
+          }
+        ]
+      }
+    }
+  },
+  "extract": {
+    "elapsed_ms": 382.17941694892943,
+    "response": {
+      "results": [
+        {
+          "url": "https://example.com",
+          "title": "Example Domain",
+          "content": "# Example Domain\n\nThis domain is for use in documentation examples without needing permission. Avoid use in operations.\n\n[Learn more](https://iana.org/domains/example)",
+          "error": null
+        }
+      ]
+    }
+  }
+}

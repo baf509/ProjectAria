@@ -1,0 +1,16 @@
+{
+  "pid": 23717,
+  "platform": "signal",
+  "updated_at": 1789458111.239682,
+  "configured": true,
+  "connection": "connected",
+  "connected": true,
+  "registered_count": 131,
+  "selected_count": 131,
+  "missing_required": [],
+  "ready": true,
+  "model_visible": null,
+  "model_visible_at": 1789458111.23981,
+  "session_id": "20260908_104045_656a7e05",
+  "model": "Red-Qwen3.8-27B-PARO-INT5"
+}

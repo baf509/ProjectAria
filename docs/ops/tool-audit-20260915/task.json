@@ -1,0 +1,26 @@
+{
+  "id": "6aa8f94eb8ae5191e672e1c5",
+  "title": "Audit ARIA and Hermes tool configuration and recommend useful additions",
+  "notes": "Inventory live API/MCP tools and Hermes exposure, verify representative read-only capabilities, identify broken or unconfigured integrations and practical additions. No integration enablement, deployments, messages or model changes.",
+  "status": "active",
+  "owner": "agent",
+  "due_at": null,
+  "project_id": null,
+  "tags": [
+    "aria",
+    "tools",
+    "audit"
+  ],
+  "source": {
+    "type": "manual",
+    "conversation_id": null,
+    "shell_name": null,
+    "message_ids": null,
+    "extracted_at": null,
+    "confidence": null
+  },
+  "content_hash": "0eb82dd252983e67ecbf4e766e626dae115e9c1f1895933719f0e8b086892e26",
+  "created_at": "2026-09-15T07:52:46.379986Z",
+  "updated_at": "2026-09-15T07:52:46.379986Z",
+  "completed_at": null
+}

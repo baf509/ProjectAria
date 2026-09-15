@@ -1,0 +1,95 @@
+[
+  {
+    "id": "6aa212700a17f333753950a8",
+    "name": "Pi Coding Agent (Red Flash Next via ARIA)",
+    "slug": "pi-coding-red-qwen38-flashnext",
+    "capabilities": {
+      "memory_enabled": true,
+      "tools_enabled": true,
+      "computer_use_enabled": false
+    },
+    "enabled_tools": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "6a9f740323d81357ddb312bd",
+    "name": "Pi Coding Agent (Red PARO int5 via ARIA)",
+    "slug": "pi-coding-red-qwen38-27b",
+    "capabilities": {
+      "memory_enabled": true,
+      "tools_enabled": true,
+      "computer_use_enabled": false
+    },
+    "enabled_tools": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "6a680f6b111edece41181400",
+    "name": "Pi Coding Agent (Flash Next via ARIA)",
+    "slug": "pi-coding-ridge",
+    "capabilities": {
+      "memory_enabled": true,
+      "tools_enabled": true,
+      "computer_use_enabled": false
+    },
+    "enabled_tools": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "69c6954bea8d493ecfe85876",
+    "name": "Pi Coding Agent (Local)",
+    "slug": "pi-coding",
+    "capabilities": {
+      "memory_enabled": true,
+      "tools_enabled": true,
+      "computer_use_enabled": false
+    },
+    "enabled_tools": [
+      "filesystem",
+      "shell",
+      "web",
+      "claude_agent",
+      "pi_coding_agent",
+      "deep_think",
+      "browser_*",
+      "browse_page"
+    ],
+    "enabled": true
+  },
+  {
+    "id": "6993987d6be1efb884ce5f47",
+    "name": "ARIA",
+    "slug": "aria",
+    "capabilities": {
+      "memory_enabled": true,
+      "tools_enabled": true,
+      "computer_use_enabled": false
+    },
+    "enabled_tools": [
+      "claude_agent",
+      "pi_coding_agent",
+      "deep_think",
+      "filesystem",
+      "shell",
+      "web",
+      "browser_*",
+      "browse_page"
+    ],
+    "enabled": false
+  }
+]

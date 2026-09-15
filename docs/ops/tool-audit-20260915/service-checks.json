@@ -1,0 +1,683 @@
+{
+  "/api/v1/health/services": {
+    "status": 200,
+    "data": {
+      "services": [
+        {
+          "name": "mongod",
+          "ok": true,
+          "latency_ms": 63,
+          "detail": "ping ok"
+        },
+        {
+          "name": "mongot",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "search capability disabled (not probed)"
+        },
+        {
+          "name": "local-llm (orchestrator)",
+          "ok": true,
+          "latency_ms": 313,
+          "detail": "http 200"
+        },
+        {
+          "name": "local-llm (coding)",
+          "ok": true,
+          "latency_ms": 283,
+          "detail": "http 200"
+        },
+        {
+          "name": "embeddings",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "capability disabled (User requested local embeddings shutdown to reduce Mac memory use on 2026-09-07. When re-enabled, rehydrate documents missing embeddings and drain/verify the embedding backfill backlog.)"
+        },
+        {
+          "name": "tts",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "shared-tts stopped (on demand)"
+        },
+        {
+          "name": "stt",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "aria-stt stopped (on demand)"
+        },
+        {
+          "name": "aria-api",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.aria-api)"
+        },
+        {
+          "name": "aria-tmux",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (process:tmux)"
+        },
+        {
+          "name": "aria-ui",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.aria-ui)"
+        },
+        {
+          "name": "hermes-gateway",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.hermes-gateway)"
+        },
+        {
+          "name": "signal-cli",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.signal-cli)"
+        },
+        {
+          "name": "ridge-llama-proxy",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.ridge-proxy)"
+        },
+        {
+          "name": "obsidian-livesync-bridge",
+          "ok": true,
+          "latency_ms": 0,
+          "detail": "running (com.ben.devbox.obsidian-bridge)"
+        }
+      ],
+      "healthy": 14,
+      "total": 14
+    }
+  },
+  "/api/v1/health/config": {
+    "status": 200,
+    "data": {
+      "models": [
+        {
+          "setting": "steward_model",
+          "value": "Red-Qwen3.8-27B-MXFP4",
+          "source": "env",
+          "backend": "llamacpp",
+          "backend_source": "default",
+          "enabled": true,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "machine:red"
+        },
+        {
+          "setting": "planning_ambient_model",
+          "value": "NInfer-3090-Qwen3.8-27B",
+          "source": "env",
+          "backend": "llamacpp",
+          "backend_source": "env",
+          "enabled": true,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "corsair"
+        },
+        {
+          "setting": "heartbeat_model",
+          "value": "Qwen3.5-9B-Aux-CPU",
+          "source": "env",
+          "backend": "llamacpp",
+          "backend_source": "env",
+          "enabled": false,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "corsair"
+        },
+        {
+          "setting": "ontology_extraction_model",
+          "value": "Qwen3.5-9B-Aux-CPU",
+          "source": "default",
+          "backend": "llamacpp",
+          "backend_source": "default",
+          "enabled": false,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "corsair"
+        },
+        {
+          "setting": "shells_extraction_model",
+          "value": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+          "source": "env",
+          "backend": "llamacpp",
+          "backend_source": "env",
+          "enabled": false,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "corsair"
+        },
+        {
+          "setting": "triage_classify_model",
+          "value": "NInfer-3090-Qwen3.8-27B",
+          "source": "env",
+          "backend": "llamacpp",
+          "backend_source": "env",
+          "enabled": null,
+          "resolves": true,
+          "registered": true,
+          "startable": true,
+          "host": "corsair"
+        }
+      ],
+      "misconfigured": [],
+      "checked_at": "2026-09-15T07:54:41.003165+00:00"
+    }
+  },
+  "/api/v1/capabilities/retrieval": {
+    "status": 200,
+    "data": {
+      "embeddings": {
+        "name": "embeddings",
+        "enabled": false,
+        "reason": "User requested local embeddings shutdown to reduce Mac memory use on 2026-09-07. When re-enabled, rehydrate documents missing embeddings and drain/verify the embedding backfill backlog.",
+        "changed_at": "2026-09-07T19:07:15.521000+00:00",
+        "changed_by": "ben via codex"
+      },
+      "search": {
+        "name": "search",
+        "enabled": false,
+        "reason": "Not needed for now; use Mongo-native fallback",
+        "changed_at": "2026-09-03T04:29:02.405000+00:00",
+        "changed_by": "operator via Codex"
+      },
+      "retrieval_mode": "fallback",
+      "services": {
+        "embeddings": {
+          "slug": "shared-embeddings",
+          "state": "stopped"
+        },
+        "search": {
+          "slug": "shared-mongot",
+          "state": "exited"
+        }
+      },
+      "backfill": {
+        "running": true,
+        "interval_seconds": 300,
+        "batch_size": 100,
+        "last_run_at": null,
+        "last_result": null,
+        "pending": {
+          "memories": 7,
+          "entities": 6
+        }
+      }
+    }
+  },
+  "/api/v1/benchmarks/targets": {
+    "status": 200,
+    "data": {
+      "targets": [
+        {
+          "name": "red-radiance",
+          "model": "Red-Qwen3.8-27B-MXFP4",
+          "base_url": "http://127.0.0.1:8200/llm/v1",
+          "vram_gb": 0,
+          "deployment": "",
+          "cloud": false,
+          "tags": [
+            "remote",
+            "aria",
+            "radiance",
+            "r9700"
+          ],
+          "manages_lifecycle": false
+        },
+        {
+          "name": "flash-next",
+          "model": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate",
+          "base_url": "http://127.0.0.1:8200/llm/v1",
+          "vram_gb": 0,
+          "deployment": "",
+          "cloud": false,
+          "tags": [
+            "remote",
+            "aria",
+            "flash-next"
+          ],
+          "manages_lifecycle": false
+        },
+        {
+          "name": "red-flash-next",
+          "model": "Red-Qwen3.8-Flash-Next-MXFP4",
+          "base_url": "http://127.0.0.1:8200/llm/v1",
+          "vram_gb": 0,
+          "deployment": "",
+          "cloud": false,
+          "tags": [
+            "remote",
+            "aria",
+            "flash-next",
+            "r9700"
+          ],
+          "manages_lifecycle": false
+        },
+        {
+          "name": "halogen",
+          "model": "Halogen-Qwen3.8-Flash-Next-W4B-Halo",
+          "base_url": "http://127.0.0.1:8200/llm/v1",
+          "vram_gb": 0,
+          "deployment": "",
+          "cloud": false,
+          "tags": [
+            "remote",
+            "aria",
+            "halogen"
+          ],
+          "manages_lifecycle": false
+        }
+      ],
+      "gpu_budget_gb": 0.0
+    }
+  },
+  "/api/v1/infrastructure/services": {
+    "status": 200,
+    "data": {
+      "services": [
+        {
+          "slug": "shared-mongod",
+          "description": "MongoDB database (mongod) \u2014 always required; hosted in the Mongo database VM.",
+          "kind": "datastore",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": 27018,
+          "guest_port": 27017,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Bound 127.0.0.1 only. Shared with AgentBenchPlatform \u2014 stopping it breaks both projects. The Lima VM is shared with mongot, but this row probes the devbox-mongod container itself. Mongo database VM is the role name; its historical Lima identifier is mongot. Stopping that VM stops the database too. See docs/ops/MONGO_DATABASE_VM.md.",
+          "depends_on": [],
+          "unit": "lima:mongot/devbox-mongod",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "shared-mongot",
+          "description": "MongoDB search (mongot) \u2014 optional sidecar inside the Mongo database VM.",
+          "kind": "datastore",
+          "state": "exited",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": true,
+          "needs_review": false,
+          "notes": "No host port \u2014 reachable only through mongod. Probed via $listSearchIndexes, not a socket. ARIA's use of it is gated by the `search` retrieval capability (memory/capabilities.py): with that switch off, recall degrades to a mongod-native scan and health stops probing this row, so a stopped container is not an incident. SWITCHED OFF 2026-09-03 and the devbox-mongot container is stopped. The Lima VM stays up because devbox-mongod shares it. See docs/ops/RETRIEVAL_CAPABILITIES.md.",
+          "depends_on": [
+            "shared-mongod"
+          ],
+          "unit": "lima:mongot/devbox-mongot",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "shared-embeddings",
+          "description": "voyage-4-nano (1024-dim MRL) via sentence-transformers, CPU.",
+          "kind": "service",
+          "state": "stopped",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": 8001,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Memory store/recall no longer BLOCK on this (they did before 2026-08-15): with the `embeddings` retrieval capability off, writes land flagged embedding_pending and are re-embedded by the backfill worker on re-enable, while recall degrades to lexical/fallback. STOPPED + SWITCHED OFF 2026-08-15. expected_state stays always_up because that is still the normal policy \u2014 health consults the capability switch, not this field, to tell 'off on purpose' apart from 'down'. See docs/ops/RETRIEVAL_CAPABILITIES.md.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.embeddings",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "aria-api",
+          "description": "ARIA FastAPI backend on :8200 (launchd on the Mac control plane).",
+          "kind": "app",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": 8200,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Not manageable from here \u2014 it would be restarting itself from inside its own request handler. Use the host service manager.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.aria-api",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "aria-tmux",
+          "description": "Owns the tmux server hosting every watched claude-* session.",
+          "kind": "app",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "LOAD-BEARING: if this dies and aria-api respawns the tmux server, the server lands in aria-api's cgroup and the next `systemctl restart aria-api` kills every watched session. Reports 'active (exited)' by design \u2014 it is a oneshot that leaves the server behind. Never start/stop from here.",
+          "depends_on": [],
+          "unit": "process:tmux",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "aria-ui",
+          "description": "Next.js web UI on :3000 (cockpit, operate, health pages).",
+          "kind": "app",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": 3000,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": null,
+          "depends_on": [],
+          "unit": "com.ben.devbox.aria-ui",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "shared-tts",
+          "description": "Qwen3-TTS 0.6B speech synthesis (CPU) on :8002.",
+          "kind": "service",
+          "state": "stopped",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": 8002,
+          "guest_port": null,
+          "disabled": true,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Intentionally disabled by the operator's launch marker; remove the marker only when restoring this service.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.tts",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "aria-stt",
+          "description": "whisper-large-v3-turbo transcription (CPU, int8) on :8003.",
+          "kind": "service",
+          "state": "not_applicable",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": 8003,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": true,
+          "notes": "Observed EXITED for 7 days as of 2026-08-07 while health.py probed it unconditionally \u2014 i.e. it has been quietly counted unhealthy for a week. Classified on_demand so that stops being noise; flip to always_up if transcription is meant to be continuously available.",
+          "depends_on": [],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "hermes-gateway",
+          "description": "Hermes agent gateway \u2014 the sole conversational path to ARIA.",
+          "kind": "app",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Hosts the aria MCP connection. Restart after editing mcp/server.py.",
+          "depends_on": [
+            "aria-api"
+          ],
+          "unit": "com.ben.devbox.hermes-gateway",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "hermes-webui",
+          "description": "Hermes browser/mobile UI backend (hermex app).",
+          "kind": "app",
+          "state": "not_applicable",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": null,
+          "depends_on": [
+            "hermes-gateway"
+          ],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "signal-cli",
+          "description": "signal-cli JSON-RPC daemon on 127.0.0.1:8090 \u2014 Hermes's Signal transport.",
+          "kind": "integration",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": 8090,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Alert triage and the Signal\u2192Linear capture path both die quietly without this.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.signal-cli",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "ridge-llama-proxy",
+          "description": "Mac \u2192 Ridge LLM proxy on :8092 (WoL wake + OpenAI passthrough).",
+          "kind": "proxy",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": 8092,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Mac loopback :8092 serves the private Ridge wake proxy. Clients use the Aria gateway; the raw model proxy is not published on the tailnet. Backend readiness is separate from proxy availability.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.ridge-proxy",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "red-proxy",
+          "description": "Mac SSH forward to Red's native Linux Radiance model on :8094.",
+          "kind": "proxy",
+          "state": "running",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": 8094,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Restricted SSH forwards Mac loopback :8094 to Red loopback :8081. Available in Linux boot mode; clients use the Aria gateway. Backend health and model identity determine inference readiness.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.red-proxy",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "ridge-waker",
+          "description": "Ridge TTS waker shim (WoL proxy for Railway over Tailscale).",
+          "kind": "proxy",
+          "state": "running",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": true,
+          "notes": null,
+          "depends_on": [],
+          "unit": "com.ben.devbox.wake-relay",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "obsidian-livesync-bridge",
+          "description": "Obsidian LiveSync bridge \u2014 propagates vault writes to every device.",
+          "kind": "integration",
+          "state": "running",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "Carries Ben's approval/autonomy edits back to ARIA (D10), so a stop is an incident. \u26a0\ufe0f Container state is NOT sufficient evidence this works: on 2026-08-17 the container stayed up while its `corsair-files` peer had died at startup on an EACCES, and sync was dead for two days with every check green. The functional check is the `vault` probe in shells/selfcheck.py, which tests the cause (a vault file the bridge's uid cannot read) rather than the symptom.",
+          "depends_on": [],
+          "unit": "com.ben.devbox.obsidian-bridge",
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "samba",
+          "description": "Samba file sharing (smbd) \u2014 LAN/NAS shares.",
+          "kind": "service",
+          "state": "not_applicable",
+          "expected_state": "always_up",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": false,
+          "notes": "System-level unit; ARIA has no root, so it reports state only.",
+          "depends_on": [],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "war-audio-game",
+          "description": "War Audio Game API (local Qwen models).",
+          "kind": "app",
+          "state": "not_applicable",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": true,
+          "notes": "A project service, not ARIA infrastructure. Running as of 2026-08-07.",
+          "depends_on": [],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "war-audio-model-download",
+          "description": "War Audio Game model download server.",
+          "kind": "app",
+          "state": "not_applicable",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": true,
+          "notes": null,
+          "depends_on": [],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        },
+        {
+          "slug": "ts-drop-capture",
+          "description": "Tailscale SSH drop capture (passive path + session state).",
+          "kind": "integration",
+          "state": "not_applicable",
+          "expected_state": "on_demand",
+          "healthy": true,
+          "port": null,
+          "guest_port": null,
+          "disabled": false,
+          "manageable": false,
+          "needs_review": true,
+          "notes": null,
+          "depends_on": [],
+          "unit": null,
+          "container": null,
+          "compose_file": null,
+          "service_name": null
+        }
+      ],
+      "healthy": 19,
+      "total": 19
+    }
+  },
+  "/api/v1/tts/health": {
+    "status": 200,
+    "data": {
+      "status": "unavailable"
+    }
+  },
+  "/api/v1/stt/health": {
+    "status": 200,
+    "data": {
+      "status": "error"
+    }
+  },
+  "/api/v1/health/ready": {
+    "status": 200,
+    "data": {
+      "boot_id": "91c8458df1db4d3c873462eca60f24e7",
+      "ready": true,
+      "phase": "ready",
+      "blocked_on": null,
+      "started_at": "2026-09-14T10:04:58.488352+00:00",
+      "ready_at": "2026-09-14T10:05:02.087643+00:00",
+      "error": null
+    }
+  }
+}
