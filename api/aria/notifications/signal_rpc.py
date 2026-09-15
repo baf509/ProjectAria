@@ -109,3 +109,22 @@ async def send_breakglass(message: str, *, kind: str) -> dict:
 
     logger.warning("break-glass Signal message SENT (kind=%s)", kind)
     return {"sent": True, "reason": "ok", "result": (body or {}).get("result")}
+
+
+async def send_weekly_summary(message: str, *, run_id: str) -> None:
+    """Operator-requested weekly report, separate from emergency alert classification.
+
+    The weekly controller owns durable send intent and ambiguous-ack handling.
+    This uses the existing daemon and configured recipient, never a new transport.
+    """
+    if not settings.signal_breakglass_account or not settings.signal_breakglass_recipient:
+        raise ValueError("Weekly Signal recipient is not configured")
+    payload = {"jsonrpc": "2.0", "id": run_id, "method": "send", "params": {
+        "account": settings.signal_breakglass_account,
+        "recipient": [settings.signal_breakglass_recipient], "message": message}}
+    async with httpx.AsyncClient(timeout=_RPC_TIMEOUT_SECONDS) as client:
+        response = await client.post(settings.signal_cli_rpc_url, json=payload)
+        response.raise_for_status()
+        answer = response.json()
+        if not isinstance(answer, dict) or answer.get("error") or "result" not in answer:
+            raise RuntimeError("Signal did not acknowledge the weekly summary")

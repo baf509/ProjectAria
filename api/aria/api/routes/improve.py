@@ -237,3 +237,87 @@ async def run_improver(
                    "the lifespan has not wired one — see the INTEGRATION SPEC).",
         )
     return await worker.run_once()
+
+
+# Weekly platform review retains the legacy policy-version routes above.
+class WeeklyTrigger(BaseModel):
+    policy_id: str = Field(default="platform", max_length=100)
+    report_only: bool = False
+
+
+class FindingDisposition(BaseModel):
+    status: str = Field(pattern="^(dismissed|deferred|suggested)$")
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+def _weekly(request, db):
+    from aria.steward.weekly.service import WeeklyImprovement
+    return getattr(request.app.state, 'weekly_improvement', None) or WeeklyImprovement(db)
+
+
+def _weekly_json(value):
+    from datetime import datetime
+    from bson import ObjectId
+    if isinstance(value, dict):
+        return {k: _weekly_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_weekly_json(v) for v in value]
+    if isinstance(value, (datetime, ObjectId)):
+        return value.isoformat() if isinstance(value, datetime) else str(value)
+    return value
+
+
+@router.get('/weekly')
+async def weekly_status(request: Request, db=Depends(get_db)):
+    return _weekly_json(await _weekly(request, db).status())
+
+
+@router.get('/runs')
+async def weekly_runs(db=Depends(get_db), limit: int = 20):
+    rows = await db.improver_runs.find({'schema_version': 2}, {'report': 0, 'events': 0}).sort('created_at', -1).limit(min(100, max(1, limit))).to_list(length=min(100, max(1, limit)))
+    return _weekly_json(rows)
+
+
+@router.get('/runs/{run_id}')
+async def weekly_run(run_id: str, db=Depends(get_db)):
+    row = await db.improver_runs.find_one({'_id': run_id, 'schema_version': 2})
+    if not row:
+        raise HTTPException(404, 'Weekly run not found')
+    return _weekly_json(row)
+
+
+@router.get('/runs/{run_id}/report')
+async def weekly_report(run_id: str, db=Depends(get_db)):
+    row = await weekly_run(run_id, db)
+    return {'report': row.get('report'), 'publication': row.get('publication'), 'notification': row.get('notification')}
+
+
+@router.post('/trigger', dependencies=[Depends(require_admin)])
+async def trigger_weekly(body: WeeklyTrigger, request: Request, db=Depends(get_db)):
+    try:
+        return _weekly_json(await _weekly(request, db).trigger(body.policy_id, report_only=body.report_only))
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/runs/{run_id}/cancel', dependencies=[Depends(require_admin)])
+async def cancel_weekly(run_id: str, db=Depends(get_db)):
+    result = await db.improver_runs.update_one({'_id': run_id, 'active_slot': 'platform'}, {'$set': {'cancel_requested': True}})
+    if not result.matched_count:
+        raise HTTPException(409, 'Run is not active')
+    return {'cancel_requested': True}
+
+
+@router.get('/findings')
+async def weekly_findings(db=Depends(get_db), limit: int = 50):
+    limit = min(100, max(1, limit))
+    return _weekly_json(await db.improvement_findings.find({}).sort('last_seen', -1).limit(limit).to_list(length=limit))
+
+
+@router.post('/findings/{finding_id}/disposition', dependencies=[Depends(require_admin)])
+async def set_weekly_disposition(finding_id: str, body: FindingDisposition, db=Depends(get_db)):
+    result = await db.improvement_findings.update_one({'_id': finding_id, 'watch.active': {'$ne': True},
+        'disposition': {'$nin': ['active', 'merged']}}, {'$set': {'disposition': body.status, 'feedback': body.reason}})
+    if not result.matched_count:
+        raise HTTPException(409, 'Finding missing or currently applying/watching')
+    return {'updated': True}

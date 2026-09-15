@@ -26,6 +26,10 @@ RELEASES = Path('/Users/ben/Services/releases/ProjectAria')
 BIN = Path('/Users/ben/Services/apps/bin')
 JOBS = ['com.ben.devbox.aria-api', 'com.ben.devbox.aria-ui', 'com.ben.devbox.aria-agent-node']
 
+# Use this release's trusted controller implementation, never staged candidate code.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'api'))
+from aria.deployment.restart import invoke as restart_helper, preflight as restart_preflight
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -158,7 +162,7 @@ def restart(label):
         else:
             raise TimeoutError(label + ' did not shut down; no force kill was attempted')
     # Next exits successfully on SIGTERM, so KeepAlive may not restart it.
-    run(['sudo', '-n', 'launchctl', 'kickstart', 'system/' + label], capture_output=True)
+    restart_helper('restart', label)
 
 
 def wait_ready(build):
@@ -194,9 +198,8 @@ def install_launchers(release, backup):
 
 def activate(release):
     manifest = verify(release)
-    # Verify the system-domain restart privilege BEFORE changing any live file.
-    # In Terminal, authorize once with sudo -v; no password enters this script.
-    run(['sudo', '-n', 'true'], capture_output=True)
+    # Verify the installed narrow entitlement before changing any live file.
+    restart_preflight(JOBS)
     key = api_key()
     require_idle(key)
     backup = Path('/Users/ben/Services/backups') / ('aria-release-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
@@ -239,13 +242,14 @@ def activate(release):
     finally:
         (backup / 'activation.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt), flush=True)
+    return receipt
 
 
 def rollback(backup):
     receipt = json.loads((backup / 'activation.json').read_text())
     if (APP / 'current').resolve() != Path(receipt['release']):
         raise ValueError('Active release changed; refuse to roll back a different deployment')
-    run(['sudo', '-n', 'true'], capture_output=True)
+    restart_preflight(JOBS)
     require_idle(api_key())
     for name in ['run-aria-api', 'run-aria-ui', 'run-aria-ui-server', 'run-aria-node']:
         if not (backup / name).is_file():

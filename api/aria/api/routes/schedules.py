@@ -10,10 +10,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 
-from aria.api.deps import get_scheduler
+from aria.api.deps import get_scheduler, require_admin
 from aria.scheduler.service import SchedulerService
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -25,6 +25,7 @@ class CreateScheduleRequest(BaseModel):
     action: str = Field(..., description="'remind', 'prompt', 'tool', 'notify', or 'autopilot'")
     params: dict = Field(default_factory=dict, description="Action-specific parameters")
     cron_expr: Optional[str] = Field(None, description="Simplified cron expression for recurring schedules")
+    timezone: Optional[str] = Field(None, description="IANA timezone for recurring wall-clock schedules")
     run_at: Optional[datetime] = Field(None, description="ISO datetime for one-shot schedules (UTC)")
 
 
@@ -55,9 +56,12 @@ async def list_schedules(
 @router.post("", status_code=201)
 async def create_schedule(
     body: CreateScheduleRequest,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
     """Create a new schedule or one-shot reminder."""
+    if body.action in {"improvement", "improvement_watch"}:
+        await require_admin(x_admin_key)
     try:
         schedule_id = await scheduler.create_schedule(
             name=body.name,
@@ -66,6 +70,7 @@ async def create_schedule(
             params=body.params,
             cron_expr=body.cron_expr,
             run_at=body.run_at,
+            timezone_name=body.timezone,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -87,9 +92,13 @@ async def get_schedule(
 @router.delete("/{schedule_id}")
 async def delete_schedule(
     schedule_id: str,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
     """Delete a schedule."""
+    existing = await scheduler.get_schedule(schedule_id)
+    if existing and existing.get("action") in {"improvement", "improvement_watch"}:
+        await require_admin(x_admin_key)
     deleted = await scheduler.delete_schedule(schedule_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -100,9 +109,13 @@ async def delete_schedule(
 async def toggle_schedule(
     schedule_id: str,
     body: ToggleScheduleRequest,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
     """Enable or disable a schedule."""
+    existing = await scheduler.get_schedule(schedule_id)
+    if existing and existing.get("action") in {"improvement", "improvement_watch"}:
+        await require_admin(x_admin_key)
     updated = await scheduler.toggle_schedule(schedule_id, body.enabled)
     if not updated:
         raise HTTPException(status_code=404, detail="Schedule not found")

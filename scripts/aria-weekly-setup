@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Prepare an operator-owned weekly policy and frozen API checks; never enables a schedule."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+TESTS = ['test_usage_repo.py', 'test_search_cache.py', 'test_outcomes.py', 'test_prune_selection.py', 'test_context_builder.py']
+
+
+def sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--source',type=Path,default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--destination',type=Path,default=Path.home()/'.aria/weekly-platform-controller')
+    parser.add_argument('--aria-repository',type=Path,default=Path('/Users/ben/Development/Infrastructure/ProjectAria'))
+    parser.add_argument('--hermes-repository',type=Path,default=Path('/Users/ben/Development/Infrastructure/Hermes'))
+    parser.add_argument('--model-repository',type=Path,default=Path('/Users/ben/Development/Infrastructure/CorsairModelHost'))
+    parser.add_argument('--image',help='Existing immutable Docker image ID; omit to build API test dependencies')
+    args=parser.parse_args()
+    source=args.source.resolve();root=args.destination.expanduser().resolve()
+    if root.exists():
+        raise SystemExit('Destination already exists; use a new versioned destination to preserve the existing policy')
+    root.mkdir(parents=True,mode=0o700)
+    assets=root/'checks';assets.mkdir()
+    for name in ['__init__.py','conftest.py',*TESTS]:
+        shutil.copy2(source/'api/tests'/name,assets/name)
+    (assets/'pytest.ini').write_text('[pytest]\nasyncio_mode = auto\n')
+    scripts=root/'scripts';scripts.mkdir()
+    for name in ['aria-weekly-deploy-adapter','aria-deploy-mac','aria-service-restart-helper','install-aria-restart-helper']:
+        shutil.copy2(source/'scripts'/name,scripts/name)
+    restart=root/'api/aria/deployment';restart.mkdir(parents=True)
+    for name in ['__init__.py','restart.py']:
+        shutil.copy2(source/'api/aria/deployment'/name,restart/name)
+    image=args.image
+    if image is None:
+        with tempfile.TemporaryDirectory(prefix='aria-weekly-image-') as context:
+            context=Path(context)
+            for name in ['requirements.txt','requirements-test.txt']:
+                shutil.copy2(source/'api'/name,context/name)
+            (context/'Dockerfile').write_text('FROM python:3.11-slim\nCOPY requirements*.txt /tmp/\nRUN pip install --no-cache-dir -r /tmp/requirements.txt -r /tmp/requirements-test.txt\n')
+            subprocess.run(['docker','build','-t','aria-weekly-checks:prepared',str(context)],check=True)
+        image=subprocess.check_output(['docker','image','inspect','aria-weekly-checks:prepared','--format','{{.Id}}'],text=True).strip()
+    checks={name.removeprefix('test_').removesuffix('.py'):{'version':sha(assets/name),'timeout_seconds':120,
+        'argv':['/bin/sh','-c',f'PYTHONPATH=/workspace/api python -m pytest -c /checks/pytest.ini -p no:cacheprovider -q /checks/{name}']} for name in TESTS}
+    # The outcomes module also contains model-routing and host-budget assertions.
+    # They are useful review diagnostics but are outside this adapter's mutation
+    # surface. Freeze explicit outcome-scoring/measurement contracts here.
+    checks['outcomes']['argv'][-1] += ' -k "self_report or crash_reported or gate_and_diff or failed_gate or merge_is or independent_review or unverified_is or metrics_"'
+    registry=root/'deployments.json'
+    registry.write_text(json.dumps({'state_dir':str(root/'receipts'),'targets':{'aria':{
+        'kind':'aria','repository':str(args.aria_repository.resolve()),'current':'/Users/ben/Services/apps/ProjectAria/current',
+        'controller':str(scripts/'aria-deploy-mac'),'controller_sha256':sha(scripts/'aria-deploy-mac'),
+        'health_url':'http://127.0.0.1:8200/api/v1/health/ready'}}},indent=2)+'\n')
+    targets={}
+    for key,repo,allowed in [('aria',args.aria_repository,['api/aria/db/usage.py','api/aria/api/routes/usage.py','api/aria/memory/','api/aria/steward/outcomes.py','api/aria/shells/prune.py','api/aria/core/context.py']),
+                             ('hermes',args.hermes_repository,['plugins/','configuration/']),
+                             ('models',args.model_repository,['configuration/'])]:
+        branch=subprocess.check_output(['git','-C',str(repo),'symbolic-ref','--short','HEAD'],text=True).strip()
+        targets[key]={'repository':str(repo.resolve()),'branch':branch,'allowed_paths':allowed,'assets':str(assets),'image':image}
+    targets['aria'].update(checks=checks,regression_check_ids=list(checks),acceptance_check_ids=list(checks),
+        check_descriptions={key:'Frozen existing behavioral test suite '+name+'; eligibility requires a reproduced baseline failure and every registered regression suite passing afterward.' for key,name in zip(checks,TESTS)},
+        deployment={'command':{'executable':str(scripts/'aria-weekly-deploy-adapter'),'sha256':sha(scripts/'aria-weekly-deploy-adapter'),
+            'configuration':str(registry),'configuration_sha256':sha(registry),'timeout_seconds':1200}})
+    policy=root/'policy.json'
+    policy.write_text(json.dumps({'id':'platform','hermes_database':'/Users/ben/Services/data/hermes-home/state.db',
+        'log_files':[f'/Users/ben/Services/logs/{name}' for name in ['aria-api.log','aria-api.error.log','hermes-gateway.log','hermes-gateway.error.log']],
+        'targets':targets},indent=2)+'\n')
+    for path in [registry,policy]:path.chmod(0o600)
+    print(json.dumps({'policy':str(policy),'image':image,'enabled':False,'automatic_targets':['aria'],
+        'report_only_targets':['hermes','models'],'administrator_setup':str(scripts/'install-aria-restart-helper')}))
+
+if __name__=='__main__':main()

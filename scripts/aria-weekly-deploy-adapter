@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Hash-pinned platform release/config adapter. Install outside candidate repositories.
+
+Protocol: OPERATION REQUEST_JSON REGISTRY_JSON. All destinations, types, restart
+commands and health probes come from the operator registry, never from Codex.
+"""
+from __future__ import annotations
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+import urllib.request
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def atomic(path, data, mode=0o600):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(path.name+'.new-'+str(os.getpid()))
+    fd = os.open(temporary, os.O_CREAT|os.O_WRONLY|os.O_TRUNC, mode)
+    with os.fdopen(fd,'wb') as stream:
+        stream.write(data)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary,path)
+
+
+def command(value):
+    executable = Path(value['executable']).resolve(strict=True)
+    if digest(executable.read_bytes()) != value['sha256']:
+        raise ValueError('Registered executable changed')
+    return subprocess.run([str(executable), *value.get('args',[])], check=True, capture_output=True,
+                          timeout=value.get('timeout_seconds',120), env={'PATH':'/usr/bin:/bin:/opt/homebrew/bin','HOME':str(Path.home())})
+
+
+def identity(target):
+    if target['kind']=='aria':
+        return str(Path(target['current']).resolve(strict=True))
+    return digest(json.dumps({p:digest(Path(p).read_bytes()) for p in target['destinations']},sort_keys=True).encode())
+
+
+def probe(target):
+    if 'health_command' in target:
+        result=command(target['health_command'])
+        value=json.loads(result.stdout.decode().splitlines()[-1])
+        if not isinstance(value.get('healthy'),bool):
+            raise ValueError('Health command must return a boolean healthy and measured samples')
+        return value
+    with urllib.request.urlopen(target['health_url'], timeout=10) as response:
+        data=json.load(response)
+    key=target.get('health_key','ready')
+    return {'healthy':data.get(key) is True,'samples':0}
+
+
+def read_blob(repo,revision,path):
+    if not path or path.startswith('/') or '..' in Path(path).parts:
+        raise ValueError('Invalid registered source path')
+    return subprocess.check_output(['git','-c','core.hooksPath=/dev/null','-C',repo,'show',revision+':'+path], timeout=30)
+
+
+def field_value(doc,path):
+    for key in path.split('.'):
+        doc=doc[key]
+    return doc
+
+
+def set_field(doc,path,value):
+    keys=path.split('.')
+    for key in keys[:-1]:
+        doc=doc[key]
+    doc[keys[-1]]=value
+
+
+def field_updates(before,after,rules):
+    # Source files contain only operator-declared settings, not secrets.
+    if set(before)!=set(after):
+        raise ValueError('Configuration structure changed')
+    updates={}
+    for name,rule in rules.items():
+        old,new=field_value(before,name),field_value(after,name)
+        if old==new:
+            continue
+        types={'int':int,'float':(int,float),'bool':bool,'string':str}
+        wanted=types[rule['type']]
+        if not isinstance(new,wanted) or isinstance(new,bool) and rule['type']!='bool':
+            raise ValueError('Invalid setting type: '+name)
+        if 'min' in rule and new<rule['min'] or 'max' in rule and new>rule['max']:
+            raise ValueError('Setting outside approved range: '+name)
+        if 'choices' in rule and new not in rule['choices']:
+            raise ValueError('Setting outside approved choices: '+name)
+        updates[name]=(old,new)
+    restored=json.loads(json.dumps(after))
+    for name,(old,new) in updates.items():
+        set_field(restored,name,old)
+    if restored!=before:
+        raise ValueError('Candidate changed an unlisted setting')
+    if not updates:
+        raise ValueError('No configuration changes')
+    return updates
+
+
+def load_release_controller(target):
+    path=Path(target['controller']).resolve(strict=True)
+    if digest(path.read_bytes())!=target['controller_sha256']:
+        raise ValueError('Release controller changed')
+    loader=importlib.machinery.SourceFileLoader('trusted_aria_release',str(path))
+    spec=importlib.util.spec_from_loader(loader.name,loader)
+    module=importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def main():
+    if len(sys.argv)!=4 or sys.argv[1] not in {'preflight','apply','health','rollback','reconcile'}:
+        raise ValueError('Expected OPERATION REQUEST_JSON REGISTRY_JSON')
+    operation=sys.argv[1]
+    request=json.loads(Path(sys.argv[2]).read_text())
+    registry=json.loads(Path(sys.argv[3]).read_text())
+    target=registry['targets'][request['target_id']]
+    root=Path(registry['state_dir']).expanduser().resolve()
+    root.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with (root/'deployment.lock').open('a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        if operation=='preflight':
+            if target['kind']=='aria':
+                controller=load_release_controller(target)
+                controller.restart_preflight(controller.JOBS)
+                controller.require_idle(controller.api_key())
+            elif target.get('preflight_command'):
+                command(target['preflight_command'])
+            if not probe(target)['healthy']:
+                raise ValueError('Target is not healthy before deployment')
+            print(json.dumps({'ok':True,'identity':identity(target)}));return
+        if operation=='health':
+            if identity(target)!=request['identity']:
+                raise ValueError('Live target changed since this deployment')
+            print(json.dumps({'ok':True,**probe(target)}));return
+        finding=request['finding_id']
+        if not finding.isalnum():
+            raise ValueError('Invalid finding ID')
+        receipt_path=root/(finding+'.json')
+        receipt=json.loads(receipt_path.read_text()) if receipt_path.exists() else None
+        if operation=='reconcile':
+            if not receipt:
+                print(json.dumps({'ok':True,'status':'not_applied'}));return
+            live_identity=identity(target)
+            if receipt.get('status')=='active' and live_identity==receipt.get('identity'):
+                print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}));return
+            if live_identity==receipt['previous']:
+                receipt['status']='rolled_back' if receipt.get('status')!='staging' else 'not_applied'
+            elif target['kind']=='aria':
+                if live_identity!=receipt.get('release'):
+                    raise ValueError('Reconciliation refused: a later deployment owns the target')
+                matches=[]
+                for file in Path('/Users/ben/Services/backups').glob('aria-release-*/activation.json'):
+                    activation=json.loads(file.read_text())
+                    if activation.get('release')==receipt['release']:
+                        matches.append((file,activation))
+                if len(matches)!=1:
+                    raise ValueError('Activation receipt identity is ambiguous')
+                file,activation=matches[0]
+                receipt['backup']=str(file.parent)
+                receipt['identity']=live_identity
+                if activation['status']=='active' and probe(target)['healthy']:
+                    receipt['status']='active'
+                else:
+                    load_release_controller(target).rollback(file.parent)
+                    receipt['status']='rolled_back'
+            else:
+                # Restore only bytes this transaction wrote, never a later edit.
+                for destination,backup in receipt['backups'].items():
+                    actual=digest(Path(destination).read_bytes())
+                    if actual not in {digest(Path(backup).read_bytes()),receipt.get('planned_hashes',{}).get(destination)}:
+                        raise ValueError('Reconciliation refused: later live edit at '+destination)
+                for destination,backup in receipt['backups'].items():
+                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                if target.get('restart_command'):
+                    command(target['restart_command'])
+                if not probe(target)['healthy']:
+                    raise ValueError('Recovered deployment is unhealthy')
+                receipt['status']='rolled_back'
+            atomic(receipt_path,json.dumps(receipt).encode())
+            print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}));return
+        if operation=='apply' and receipt and receipt.get('status')=='active':
+            if identity(target)!=receipt['identity']:
+                raise ValueError('A later deployment owns the live target')
+            print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}));return
+        if operation=='rollback':
+            if not receipt or identity(target)!=receipt['identity']:
+                raise ValueError('Rollback refused: another version owns the target')
+            if target['kind']=='aria':
+                load_release_controller(target).rollback(Path(receipt['backup']))
+            else:
+                for destination,backup in receipt['backups'].items():
+                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                if target.get('restart_command'):
+                    command(target['restart_command'])
+            if not probe(target)['healthy']:
+                raise ValueError('Rollback health check failed')
+            receipt['status']='rolled_back'
+            atomic(receipt_path,json.dumps(receipt).encode())
+            print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}));return
+        if receipt:
+            raise ValueError('Interrupted deployment requires receipt reconciliation before replay')
+        if identity(target)!=request['expected_identity']:
+            raise ValueError('Target changed after preflight')
+        if Path(request['repository']).resolve()!=Path(target['repository']).resolve():
+            raise ValueError('Candidate repository does not match registered target')
+        receipt={'status':'staging','previous':request['expected_identity'],'candidate':request['candidate'],
+                 'finding_id':finding,'backups':{},'modes':{}}
+        atomic(receipt_path,json.dumps(receipt).encode())
+        try:
+            if target['kind']=='aria':
+                controller=load_release_controller(target)
+                source=root/(finding+'-source')
+                subprocess.run(['git','-c','core.hooksPath=/dev/null','clone','--local','--no-hardlinks','--no-checkout',target['repository'],str(source)],check=True,capture_output=True,timeout=60)
+                subprocess.run(['git','-c','core.hooksPath=/dev/null','-C',str(source),'checkout','--detach',request['candidate']],check=True,capture_output=True,timeout=60)
+                release=controller.stage(source)
+                receipt['release']=str(release)
+                receipt['status']='activating'
+                atomic(receipt_path,json.dumps(receipt).encode())
+                # The release controller persists its own rollback receipt before restarting.
+                activation=controller.activate(release)
+                receipt['backup']=activation['backup']
+            else:
+                planned={}
+                if target['kind']=='json_fields':
+                    before=json.loads(read_blob(target['repository'],request['base_revision'],target['source_file']))
+                    after=json.loads(read_blob(target['repository'],request['candidate'],target['source_file']))
+                    updates=field_updates(before,after,target['fields'])
+                    destination=target['destinations'][0]
+                    live=json.loads(Path(destination).read_text())
+                    for name,(old,new) in updates.items():
+                        if field_value(live,name)!=old:
+                            raise ValueError('Live setting changed since baseline: '+name)
+                        set_field(live,name,new)
+                    planned[destination]=(json.dumps(live,indent=2)+'\n').encode()
+                elif target['kind']=='files':
+                    for source,destination in target['files'].items():
+                        if destination not in target['destinations']:
+                            raise ValueError('Destination is not registered')
+                        planned[destination]=read_blob(target['repository'],request['candidate'],source)
+                else:
+                    raise ValueError('Unqualified deployment kind')
+                for i,(destination,data) in enumerate(planned.items()):
+                    backup=root/(finding+'-before-'+str(i))
+                    atomic(backup,Path(destination).read_bytes())
+                    receipt['backups'][destination]=str(backup)
+                    receipt['modes'][destination]=Path(destination).stat().st_mode&0o777
+                receipt['planned_hashes']={destination:digest(data) for destination,data in planned.items()}
+                receipt['status']='activating'
+                atomic(receipt_path,json.dumps(receipt).encode())
+                for destination,data in planned.items():
+                    atomic(destination,data,receipt['modes'][destination])
+                if target.get('restart_command'):
+                    command(target['restart_command'])
+                if not probe(target)['healthy']:
+                    raise ValueError('Post-deployment health failed')
+            receipt.update(status='active',identity=identity(target))
+            atomic(receipt_path,json.dumps(receipt).encode())
+            print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}))
+        except BaseException:
+            if target['kind']!='aria' and receipt['backups']:
+                for destination,backup in receipt['backups'].items():
+                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                if target.get('restart_command'):
+                    command(target['restart_command'])
+                receipt['status']='rolled_back' if probe(target)['healthy'] else 'rollback_unhealthy'
+            else:
+                receipt['status']='failed_review_activation_receipt'
+            atomic(receipt_path,json.dumps(receipt).encode())
+            raise
+
+
+if __name__=='__main__':
+    main()

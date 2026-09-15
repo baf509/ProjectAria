@@ -1,0 +1,28 @@
+#!/bin/sh
+# Run once from an administrator terminal; routine deployments never invoke this installer.
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+source_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ "$(id -u)" -ne 0 ]; then
+    exec /usr/bin/sudo /bin/sh "$source_dir/install-aria-restart-helper"
+fi
+helper=/Library/PrivilegedHelperTools/com.aria.service-restart
+/bin/mkdir -p /Library/PrivilegedHelperTools /private/etc/sudoers.d
+/usr/sbin/chown root:wheel /Library/PrivilegedHelperTools /private/etc/sudoers.d
+/bin/chmod 755 /Library/PrivilegedHelperTools /private/etc/sudoers.d
+stage=$(/usr/bin/mktemp /private/etc/sudoers.d/aria-restart.XXXXXX)
+trap '/bin/rm -f "$stage"' EXIT HUP INT TERM
+for operation in check restart; do
+    for target in aria-api aria-ui aria-node hermes; do
+        printf 'ben ALL=(root) NOPASSWD: %s %s %s\n' "$helper" "$operation" "$target" >> "$stage"
+    done
+done
+/usr/sbin/visudo -cf "$stage"
+/usr/bin/install -o root -g wheel -m 755 "$source_dir/aria-service-restart-helper" "$helper.new"
+/bin/mv -f "$helper.new" "$helper"
+/usr/sbin/chown root:wheel "$stage"
+/bin/chmod 440 "$stage"
+/bin/mv -f "$stage" /private/etc/sudoers.d/aria-service-restart
+/usr/sbin/visudo -c
+printf 'Installed the fixed service restart helper. Routine deployments no longer need sudo -v.\n'

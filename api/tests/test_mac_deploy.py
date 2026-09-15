@@ -39,6 +39,7 @@ def test_busy_inference_prevents_any_activation_changes(tmp_path, monkeypatch):
     module = load()
     monkeypatch.setattr(module, 'verify', lambda *a: {'build': 'test'})
     monkeypatch.setattr(module, 'run', lambda *a, **kw: None)
+    monkeypatch.setattr(module, 'restart_preflight', lambda *a: None)
     monkeypatch.setattr(module, 'api_key', lambda: 'test')
     def busy(*a):
         raise ValueError('busy')
@@ -77,6 +78,7 @@ def test_failed_initial_activation_restores_launchers_and_legacy_tree(tmp_path, 
     monkeypatch.setattr(module, 'Path', lambda p: backups if str(p) == '/Users/ben/Services/backups' else Path(p))
     monkeypatch.setattr(module, 'verify', lambda *a: {'build': 'new'})
     monkeypatch.setattr(module, 'run', lambda *a, **kw: None)
+    monkeypatch.setattr(module, 'restart_preflight', lambda *a: None)
     monkeypatch.setattr(module, 'api_key', lambda: 'test')
     monkeypatch.setattr(module, 'require_idle', lambda *a: None)
     monkeypatch.setattr(module, 'get', lambda *a, **kw: {'sha': 'old'})

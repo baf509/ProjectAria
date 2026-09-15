@@ -13,7 +13,6 @@ Run these commands as `ben` on the Mac, from the canonical checkout:
 scripts/aria-deploy-mac stage
 # Use the exact release path printed by stage:
 scripts/aria-deploy-mac verify /Users/ben/Services/releases/ProjectAria/RELEASE
-sudo -v
 scripts/aria-deploy-mac activate /Users/ben/Services/releases/ProjectAria/RELEASE
 scripts/aria-boot-check --wait 120
 ```
@@ -25,8 +24,11 @@ spare loopback port before activation. Do not install test packages into the
 production virtualenv. Dependency upgrades are a separate reviewed operation;
 this release mechanism deliberately reuses the existing installed dependencies.
 
-Activate verifies system-domain restart privilege before changing files. The
-interactive `sudo -v` happens in your Terminal; the script never handles a password.
+One-time setup: run `scripts/install-aria-restart-helper` in an administrator
+terminal. It installs a root-owned helper and exact-command sudo rules for the
+registered Aria/Hermes services. Routine activation and rollback run as `ben`
+without `sudo -v` or a password prompt, including after reboot. Activation checks
+the helper entitlement before changing files; missing setup fails before mutation.
 It verifies all manifest hashes and checks both model admission and backend
 utilization for active/queued work. If busy, it refuses: retry after work drains.
 It saves launchers and the previous pointer, changes the current symlink atomically,

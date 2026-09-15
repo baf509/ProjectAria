@@ -1,0 +1,25 @@
+#!/bin/sh -p
+# Installed root-owned outside application releases. No caller-supplied code runs as root.
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+unset ENV BASH_ENV CDPATH
+[ "$#" -eq 2 ] || exit 64
+case "$1" in check|restart) operation=$1 ;; *) exit 64 ;; esac
+case "$2" in
+    aria-api) label=com.ben.devbox.aria-api ;;
+    aria-ui) label=com.ben.devbox.aria-ui ;;
+    aria-node) label=com.ben.devbox.aria-agent-node ;;
+    hermes) label=com.ben.devbox.hermes-gateway ;;
+    *) exit 64 ;;
+esac
+[ "$(/usr/bin/id -u)" -eq 0 ] || exit 77
+plist=/Library/LaunchDaemons/$label.plist
+[ ! -L "$plist" ] || exit 77
+[ "$(/usr/bin/stat -f %u "$plist")" = 0 ] || exit 77
+mode=$(/usr/bin/stat -f %Lp "$plist")
+case "$mode" in 600|644|640|400|444|440) ;; *) exit 77 ;; esac
+[ "$(/usr/libexec/PlistBuddy -c 'Print :UserName' "$plist")" = ben ] || exit 77
+/bin/launchctl print "system/$label" >/dev/null
+[ "$operation" = restart ] || exit 0
+exec /bin/launchctl kickstart "system/$label"

@@ -15,6 +15,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -129,6 +130,7 @@ class SchedulerService:
                 next_run = self._compute_next_run(
                     schedule.get("cron_expr") or "",
                     anchor=schedule.get("next_run_at"),
+                    timezone_name=schedule.get("timezone"),
                 )
             except ValueError as e:
                 logger.error(
@@ -145,7 +147,16 @@ class SchedulerService:
                 )
                 return
 
-        if action == "remind":
+        if action in {"improvement", "improvement_watch"}:
+            from aria.steward.weekly.service import WeeklyImprovement
+            service = WeeklyImprovement(self.db)
+            if action == "improvement":
+                await service.trigger(params.get("policy_id", "platform"),
+                    occurrence=f"{schedule['_id']}:{schedule['next_run_at'].isoformat()}")
+            elif service.config.enabled:
+                from aria.core.bg import spawn_bg
+                spawn_bg(service.maintenance(), name="weekly-improvement-maintenance")
+        elif action == "remind":
             await self.notification_service.notify(
                 source="scheduler",
                 event_type="reminder",
@@ -306,7 +317,7 @@ class SchedulerService:
         )
 
     @staticmethod
-    def _compute_next_run(cron_expr: str, anchor: Optional[datetime] = None) -> datetime:
+    def _compute_next_run(cron_expr: str, anchor: Optional[datetime] = None, timezone_name: Optional[str] = None) -> datetime:
         """Compute the next run time from a simplified cron expression.
 
         Supported formats:
@@ -321,6 +332,11 @@ class SchedulerService:
         now, so a backlog/latency doesn't cause the cadence to drift.
         Time-of-day schedules interpret HH:MM in the server's LOCAL timezone.
         """
+        if timezone_name:
+            try:
+                ZoneInfo(timezone_name)
+            except (KeyError, ValueError) as exc:
+                raise ValueError("Unknown IANA timezone") from exc
         now = datetime.now(timezone.utc)
         if anchor is not None and anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
@@ -335,7 +351,7 @@ class SchedulerService:
         def _local_time_utc(hour: int, minute: int, weekday: Optional[int] = None) -> datetime:
             # Interpret HH:MM (and optional weekday) in the server's local
             # timezone, return the next future occurrence as tz-aware UTC.
-            local_now = now.astimezone()
+            local_now = now.astimezone(ZoneInfo(timezone_name)) if timezone_name else now.astimezone()
             candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if weekday is not None:
                 days_ahead = (weekday - candidate.weekday()) % 7
@@ -386,6 +402,7 @@ class SchedulerService:
         params: dict,
         cron_expr: Optional[str] = None,
         run_at: Optional[datetime] = None,
+        timezone_name: Optional[str] = None,
     ) -> str:
         """Create a new schedule or one-shot reminder.
 
@@ -411,7 +428,7 @@ class SchedulerService:
         elif schedule_type == "recurring":
             if not cron_expr:
                 raise ValueError("cron_expr is required for recurring schedules")
-            next_run = self._compute_next_run(cron_expr)
+            next_run = self._compute_next_run(cron_expr, timezone_name=timezone_name)
         else:
             raise ValueError(f"Unknown schedule_type: {schedule_type}")
 
@@ -421,6 +438,7 @@ class SchedulerService:
             "action": action,
             "params": params,
             "cron_expr": cron_expr,
+            **({"timezone": timezone_name} if timezone_name else {}),
             "enabled": True,
             "next_run_at": next_run,
             "last_run_at": None,
@@ -435,7 +453,7 @@ class SchedulerService:
     async def get_schedule(self, schedule_id: str) -> Optional[dict]:
         """Get a single schedule by ID."""
         try:
-            oid = ObjectId(schedule_id)
+            oid = schedule_id if schedule_id in {"weekly-platform-improvement", "weekly-platform-watch"} else ObjectId(schedule_id)
         except Exception:
             return None
         return await self.db.schedules.find_one({"_id": oid})
@@ -443,7 +461,7 @@ class SchedulerService:
     async def delete_schedule(self, schedule_id: str) -> bool:
         """Delete a schedule by ID."""
         try:
-            oid = ObjectId(schedule_id)
+            oid = schedule_id if schedule_id in {"weekly-platform-improvement", "weekly-platform-watch"} else ObjectId(schedule_id)
         except Exception:
             return False
         result = await self.db.schedules.delete_one({"_id": oid})
@@ -461,14 +479,14 @@ class SchedulerService:
     async def toggle_schedule(self, schedule_id: str, enabled: bool) -> bool:
         """Enable or disable a schedule."""
         try:
-            oid = ObjectId(schedule_id)
+            oid = schedule_id if schedule_id in {"weekly-platform-improvement", "weekly-platform-watch"} else ObjectId(schedule_id)
         except Exception:
             return False
         updates: dict = {"enabled": enabled, "updated_at": datetime.now(timezone.utc)}
         if enabled:
             doc = await self.db.schedules.find_one({"_id": oid})
             if doc and doc.get("schedule_type") == "recurring" and doc.get("cron_expr"):
-                updates["next_run_at"] = self._compute_next_run(doc["cron_expr"])
+                updates["next_run_at"] = self._compute_next_run(doc["cron_expr"], timezone_name=doc.get("timezone"))
         result = await self.db.schedules.update_one({"_id": oid}, {"$set": updates})
         return result.matched_count > 0
 

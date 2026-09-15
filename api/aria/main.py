@@ -559,7 +559,11 @@ async def lifespan(app: FastAPI):
         await research_planner.start()
         app.state.research_planner = research_planner
 
-    if settings.improver_enabled:
+    from aria.steward.weekly.service import WeeklyImprovement
+    app.state.weekly_improvement = WeeklyImprovement(db)
+    await app.state.weekly_improvement.initialize()
+
+    if settings.improver_enabled and not app.state.weekly_improvement.config.enabled:
         from aria.steward.improve import Improver
         improver = Improver(db, notifier=get_notification_service())
         await improver.start()

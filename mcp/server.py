@@ -650,6 +650,14 @@ async def get_task(task_id: Optional[str] = None, id: Optional[str] = None) -> d
 
 
 @mcp.tool()
+async def weekly_improvement_status(run_id: Optional[str] = None) -> dict:
+    """Read the weekly platform review status, or a run and its report. Read-only."""
+    if run_id:
+        return await _request("GET", f"/api/v1/improve/runs/{_path_id(run_id)}")
+    return await _request("GET", "/api/v1/improve/weekly")
+
+
+@mcp.tool()
 async def create_task(
     title: str,
     project_slug: Optional[str] = None,

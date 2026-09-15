@@ -14,8 +14,8 @@ not catch, because it never spawns a session.
     scripts/aria-deploy-current --set GUARD_SANDBOX_ENABLED=false
     scripts/aria-deploy-current --check-only
 
-Run `sudo -v` first: activation verifies the restart privilege and no password
-passes through this script.
+Install `scripts/install-aria-restart-helper` once. Activation checks the narrow
+restart entitlement; subsequent deployments need no sudo prompt or cached ticket.
 """
 from __future__ import annotations
 

@@ -45,6 +45,7 @@ import type {
   Observation,
   SoulProposalDetail,
 } from '@/lib/api/types'
+import { WeeklyImprovementCard } from '@/features/autonomy/WeeklyImprovementCard'
 import { SoulProposalCard } from '@/features/autonomy/SoulProposalCard'
 import { relativeTime } from '@/lib/time'
 
@@ -228,6 +229,7 @@ export default function AutonomyPage() {
       }
     >
       <Stack>
+        <WeeklyImprovementCard />
         {pending.length > 0 && (
           <Card title={`Soul proposals · ${pending.length}`} hint="changes ARIA wants to make to itself">
             <Stack gap="sm">

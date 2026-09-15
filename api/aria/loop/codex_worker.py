@@ -65,8 +65,9 @@ def tool_context(result, remaining_turns):
 class CodexConnection:
     """Private stdio JSON-RPC connection; no daemon, socket, or resumed thread."""
 
-    def __init__(self, binary, directory):
+    def __init__(self, binary, directory, *, qualified_version="0.153.2"):
         self.binary, self.directory = binary, directory
+        self.qualified_version = qualified_version
         self.proc = None
         self.counter = 0
         self.stderr_task = None
@@ -77,8 +78,8 @@ class CodexConnection:
         # integration. A CLI upgrade needs a fresh containment qualification.
         env = {k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "TMPDIR", "LANG", "CODEX_HOME"}}
         code, output = await process([self.binary, "--version"], env=env)
-        if code or output.strip() != b"codex-cli 0.153.2":
-            raise ModelConfigurationError("Loop Codex worker requires qualified codex-cli 0.153.2")
+        if code or output.strip() != f"codex-cli {self.qualified_version}".encode():
+            raise ModelConfigurationError(f"Codex worker requires qualified codex-cli {self.qualified_version}")
         self.proc = await asyncio.create_subprocess_exec(
             self.binary, "app-server", "--listen", "stdio://",
             cwd=self.directory, env=env, start_new_session=True,
@@ -171,13 +172,13 @@ class CodexConnection:
         })
         return result["thread"]["id"]
 
-    async def turn(self, thread, text, *, structured=True):
+    async def turn(self, thread, text, *, structured=True, output_schema=None):
         # Worker turns must propose one Step; the controller's salvage turn asks
         # for prose instead, and constraining it to the Step schema would force
         # a summary into an action it is not allowed to take.
         params = {"threadId": thread, "input": [{"type": "text", "text": text}], "environments": []}
         if structured:
-            params["outputSchema"] = step_schema()
+            params["outputSchema"] = output_schema if output_schema is not None else step_schema()
         await self.rpc("turn/start", params)
         content, usage = None, None
         while True:
