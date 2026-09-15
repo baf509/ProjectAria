@@ -1,0 +1,85 @@
+{
+  "checked_at": "2026-09-15T09:30:57.245954+00:00",
+  "checks": {
+    "aria_tool_configuration": {
+      "status": "passed",
+      "execution_tested": false,
+      "registered": 39,
+      "enabled_agents_valid": true,
+      "unavailable_optional": [
+        "claude_agent",
+        "deep_think"
+      ],
+      "duration_ms": 425
+    },
+    "model_defaults": {
+      "status": "passed",
+      "execution_tested": false,
+      "main": "Red-Qwen3.8-27B-PARO-INT5",
+      "cron": "NInfer-3090-Qwen3.8-27B",
+      "vision": "NInfer-3090-Qwen3.8-27B",
+      "steward": "Red-Qwen3.8-27B-PARO-INT5",
+      "duration_ms": 96
+    },
+    "aria_web_fetch": {
+      "status": "passed",
+      "execution_tested": true,
+      "expected_text_present": true,
+      "duration_ms": 164
+    },
+    "aria_playwright": {
+      "status": "passed",
+      "execution_tested": true,
+      "navigation": true,
+      "screenshot": true,
+      "owned_tab": 0,
+      "duration_ms": 4613
+    },
+    "aria_mcp_discovery_memory_benchmarks": {
+      "status": "passed",
+      "execution_tested": true,
+      "registered": 127,
+      "calls": {
+        "tool_contract_status": true,
+        "benchmark_catalog": true,
+        "search_memory": true
+      },
+      "duration_ms": 6877
+    },
+    "hermes_browser": {
+      "status": "passed",
+      "execution_tested": true,
+      "command": [
+        "/Users/ben/Services/data/hermes-home/bin/browser-use"
+      ],
+      "navigation": true,
+      "screenshot": true,
+      "duration_ms": 3272
+    },
+    "hermes_web_search_extract": {
+      "status": "passed",
+      "execution_tested": true,
+      "search": true,
+      "extract": true,
+      "duration_ms": 1455
+    },
+    "hermes_pdf": {
+      "status": "passed",
+      "execution_tested": true,
+      "extracted_document": true,
+      "expected_text_present": true,
+      "duration_ms": 158
+    },
+    "hermes_vision": {
+      "status": "passed",
+      "execution_tested": true,
+      "expected_text_shapes_count": true,
+      "route": {
+        "provider": "custom",
+        "model": "NInfer-3090-Qwen3.8-27B"
+      },
+      "duration_ms": 3493
+    }
+  },
+  "ok": true
+}

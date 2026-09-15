@@ -1,6 +1,6 @@
 # ARIA and Hermes tool repairs — 2026-09-15
 
-The audit's four repair areas are implemented. Browser installations, internal agent records and benchmark targets are repaired live. The API policy/validation changes are tested and ready for release activation; the persistent steward setting is PARO, but the old API process still reports MXFP4 until restart.
+All four repair areas are live and verified. Release 029986d-1a274be96a53 is active; all nine post-activation checks passed. The running API reports the PARO steward, successful web_fetch policy and healthy tool configuration. The repair task is complete.
 
 ## Live repairs
 
@@ -35,3 +35,8 @@ Installation/config backups are under `/Users/ben/Services/backups/aria-tool-rep
 ## Boundaries
 
 ARIA remains available for research and infrastructure/coding. Personal, scheduling and external productivity integrations remain stock Hermes responsibilities. Optional document/research-start exports and external providers from the audit were additions, not repairs, and were not enabled. Retrieval services deliberately disabled to save resources remain off. Red's model runtime, 250 W GPU caps, Hermes/Pi model bindings and existing deployment options were not changed by this work.
+
+
+## Activation verified
+
+All post-activation functional checks passed at 2026-09-15T09:31:19.014543+00:00. The API now reports the PARO steward, accepts web_fetch, and exposes healthy tool configuration. Browser, web, PDF, MCP/memory/benchmark and 3090 vision checks passed. See functional-after-activation.json and api-activation.json.
