@@ -1,0 +1,150 @@
+#!/Users/ben/Services/apps/hermes-agent/venv/bin/python
+"""Fixed Hermes drain/reload controls for the weekly deployment controller.
+
+No shell commands, credentials, personal messages, configuration rewrites, or
+force-kills. The upstream drain acknowledgement closes new-turn admission before
+the adapter installs files. SIGUSR1 uses upstream's graceful restart path.
+"""
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+import time
+import uuid
+
+import psutil
+
+HOME = Path('/Users/ben/Services/data/hermes-home')
+STATE = Path('/Users/ben/.aria/weekly-hermes-drain.json')
+MARKER = HOME/'.drain_request.json'
+
+
+def read(path):
+    return json.loads(path.read_text())
+
+
+def process():
+    status = read(HOME/'gateway_state.json')
+    p = psutil.Process(status['pid'])
+    argv = p.cmdline()
+    if ('gateway' not in argv or 'run' not in argv or '--external-supervisor' not in argv
+            or not any('hermes_cli' in part for part in argv)):
+        raise ValueError('Hermes process identity mismatch')
+    return p, status
+
+
+def wait_for(predicate, seconds=120):
+    deadline = time.monotonic()+seconds
+    while time.monotonic() < deadline:
+        try:
+            if predicate():
+                return
+        except (FileNotFoundError, psutil.NoSuchProcess, json.JSONDecodeError):
+            pass
+        time.sleep(0.5)
+    raise TimeoutError('Hermes did not acknowledge the requested state')
+
+
+def owner():
+    # All hooks in one adapter transaction have the same parent identity.
+    parent = psutil.Process(os.getppid())
+    return {'pid':parent.pid, 'started':parent.create_time()}
+
+
+def same_owner(a, b):
+    return a['pid'] == b['pid'] and abs(a['started']-b['started']) < 0.01
+
+
+def owned_record():
+    record = read(STATE)
+    if not same_owner(record['owner'], owner()) or read(MARKER) != record['marker']:
+        raise ValueError('Another operation owns the Hermes drain')
+    return record
+
+
+def drain():
+    if STATE.exists():
+        record = read(STATE)
+        try:
+            p = psutil.Process(record['owner']['pid'])
+            alive = abs(p.create_time()-record['owner']['started']) < 0.01
+        except psutil.NoSuchProcess:
+            alive = False
+        if alive or not MARKER.exists() or read(MARKER) != record['marker']:
+            raise ValueError('Existing Hermes drain must be reconciled before deployment')
+        # A crashed adapter cannot release its hold. Reclaim only its exact
+        # recorded marker after proving that parent process instance is gone.
+        MARKER.unlink()
+        STATE.unlink()
+        wait_for(lambda: process()[1]['gateway_state'] == 'running',30)
+    if MARKER.exists() or STATE.exists():
+        raise ValueError('Existing Hermes drain must be reconciled before deployment')
+    p, status = process()
+    if status['gateway_state'] != 'running':
+        raise ValueError('Hermes is not running')
+    from datetime import datetime, timezone
+    marker = {'action':'drain', 'requested_at':datetime.now(timezone.utc).isoformat(),
+              'principal':'aria-weekly:'+uuid.uuid4().hex, 'epoch':'', 'suppress_notification':True}
+    record = {'owner':owner(), 'marker':marker, 'gateway_pid':p.pid, 'gateway_started':p.create_time()}
+    STATE.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
+    with STATE.open('x') as f:
+        os.chmod(STATE,0o600)
+        json.dump(record,f)
+    try:
+        with MARKER.open('x') as f:
+            os.chmod(MARKER,0o600)
+            json.dump(marker,f)
+        def acknowledged():
+            current, state = process()
+            owned_record()
+            return (current.pid == p.pid and current.create_time() == record['gateway_started']
+                    and state['gateway_state'] == 'draining' and state['active_agents'] == 0)
+        wait_for(acknowledged)
+    except BaseException:
+        if MARKER.exists() and read(MARKER) == marker:
+            MARKER.unlink()
+        STATE.unlink(missing_ok=True)
+        raise
+
+
+def release():
+    if not STATE.exists():
+        return
+    owned_record()
+    MARKER.unlink()
+    STATE.unlink()
+    wait_for(lambda: process()[1]['gateway_state'] == 'running',30)
+
+
+def health():
+    p, status = process()
+    ready = read(HOME/'aria-tools-ready.json')
+    healthy = (status['gateway_state'] in {'running','draining'}
+               and status.get('platforms',{}).get('signal',{}).get('state') == 'connected'
+               and ready.get('pid') == p.pid and ready.get('ready') is True
+               and not ready.get('missing_required')
+               and ready.get('registered_count',0) > 0
+               and ready.get('registered_count') == ready.get('selected_count'))
+    return {'healthy':healthy,'samples':0,'pid':p.pid,
+            'registered_tools':ready.get('registered_count')}
+
+
+def reload():
+    owned_record()
+    before, state = process()
+    if state['gateway_state'] != 'draining' or state['active_agents'] != 0:
+        raise ValueError('Hermes reload requires acknowledged idle drain')
+    before.send_signal(signal.SIGUSR1)
+    wait_for(lambda: process()[0].pid != before.pid and health()['healthy'])
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2 or sys.argv[1] not in {'health','drain','release','reload'}:
+        raise SystemExit('Expected health, drain, release or reload')
+    operation = sys.argv[1]
+    if operation == 'health':
+        print(json.dumps(health()))
+    else:
+        globals()[operation]()
+        print(json.dumps({'ok':True,'operation':operation}))
