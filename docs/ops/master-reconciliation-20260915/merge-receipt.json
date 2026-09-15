@@ -1,0 +1,10 @@
+{
+  "master": "75f17dc006aa48871eee0a08cb6ceb9d91d557b9",
+  "status": "clean",
+  "merged_repair_head": "440d7766cd23c025eee6c12387d01dc9973a39ce",
+  "original_pending_commit": "eb5e71ef53d03456699cbf330e9719f39e273a87",
+  "recovery_stash": "2fb678828c56e516e09121e7b60dd1b1276a4a6b",
+  "active_release_unchanged": "/Users/ben/Services/releases/ProjectAria/20260915T091340Z-029986d-1a274be96a53",
+  "live_api_ready": true,
+  "live_tool_health_ok": true
+}
