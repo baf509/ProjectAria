@@ -1,0 +1,86 @@
+[
+  {
+    "slug": "pi-coding-red-qwen38-flashnext",
+    "before": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "after": [
+      "filesystem",
+      "shell",
+      "web_fetch"
+    ]
+  },
+  {
+    "slug": "pi-coding-red-qwen38-27b",
+    "before": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "after": [
+      "filesystem",
+      "shell",
+      "web_fetch"
+    ]
+  },
+  {
+    "slug": "pi-coding-ridge",
+    "before": [
+      "filesystem",
+      "shell",
+      "web",
+      "deep_think"
+    ],
+    "after": [
+      "filesystem",
+      "shell",
+      "web_fetch"
+    ]
+  },
+  {
+    "slug": "pi-coding",
+    "before": [
+      "filesystem",
+      "shell",
+      "web",
+      "claude_agent",
+      "pi_coding_agent",
+      "deep_think",
+      "browser_*",
+      "browse_page"
+    ],
+    "after": [
+      "filesystem",
+      "shell",
+      "web_fetch",
+      "pi_coding_agent",
+      "browser_*",
+      "browse_page"
+    ]
+  },
+  {
+    "slug": "aria",
+    "before": [
+      "claude_agent",
+      "pi_coding_agent",
+      "deep_think",
+      "filesystem",
+      "shell",
+      "web",
+      "browser_*",
+      "browse_page"
+    ],
+    "after": [
+      "pi_coding_agent",
+      "filesystem",
+      "shell",
+      "web_fetch",
+      "browser_*",
+      "browse_page"
+    ]
+  }
+]

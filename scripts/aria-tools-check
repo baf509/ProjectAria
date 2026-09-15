@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Explicit functional canary for the Mac ARIA + stock Hermes installation.
+
+Run with Hermes's venv Python. Uses public pages and synthetic files; never
+starts models, optional services, cron jobs, or sends a message. Vision is an
+opt-in inference through ARIA. Exit 1 means at least one check failed; skipped
+checks never count as tested. Report contains summaries, not retrieved memory.
+"""
+from __future__ import annotations
+import argparse
+import asyncio
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import sys
+import tempfile
+import time
+import uuid
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--api-url', default='http://127.0.0.1:8200')
+    parser.add_argument('--hermes-app', type=Path, default=Path('/Users/ben/Services/apps/hermes-agent'))
+    parser.add_argument('--hermes-home', type=Path, default=Path('/Users/ben/Services/data/hermes-home'))
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--vision', action='store_true', help='Run one synthetic vision inference through ARIA')
+    args = parser.parse_args()
+    import httpx
+    from dotenv import load_dotenv
+    os.environ['HERMES_HOME'] = str(args.hermes_home)
+    load_dotenv(args.hermes_home / '.env', override=True)
+    sys.path.insert(0, str(args.hermes_app))
+    # Use the same credential resolver as the operator CLI; never put secrets in argv.
+    resolver = Path(__file__).resolve().with_name('aria-route-task')
+    _, key = runpy.run_path(str(resolver))['resolve_target'](None)
+    client = httpx.Client(base_url=args.api_url, headers={'X-API-Key': key}, timeout=60)
+    checks = {}
+    report = {'checked_at': datetime.now(timezone.utc).isoformat(), 'checks': checks}
+
+    def exception_detail(exc):
+        if isinstance(exc, BaseExceptionGroup):
+            return "; ".join(exception_detail(e) for e in exc.exceptions)
+        return str(exc)
+
+    def check(name, fn, execution=True):
+        started = time.monotonic()
+        try:
+            detail = fn()
+            checks[name] = {'status': 'passed', 'execution_tested': execution, **(detail or {})}
+        except Exception as exc:
+            checks[name] = {'status': 'failed', 'execution_tested': execution,
+                            'error': type(exc).__name__, 'detail': exception_detail(exc)[:700]}
+        checks[name]['duration_ms'] = round((time.monotonic() - started) * 1000)
+        print(name + ': ' + checks[name]['status'], file=sys.stderr, flush=True)
+
+    def get(path):
+        r = client.get(path); r.raise_for_status(); return r.json()
+
+    def execute(name, arguments):
+        r = client.post('/api/v1/tools/execute', json={'tool_name': name, 'arguments': arguments, 'timeout': 45})
+        r.raise_for_status(); j = r.json()
+        assert j.get('status') == 'success', j.get('error') or j.get('output') or 'Tool execution failed'
+        return j
+
+    def configuration():
+        health = get('/api/v1/tools/health')
+        assert health.get('ok'), json.dumps({k: health.get(k) for k in ['problems', 'unregistered_allowlist']})
+        return {'execution_tested': False, 'registered': len(health['registered']),
+                'enabled_agents_valid': True, 'unavailable_optional': health['unavailable_optional']}
+    check('aria_tool_configuration', configuration, execution=False)
+
+    def defaults():
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        main_model = cfg.get('model', {}).get('default')
+        cron = cfg.get('cron', {}).get('model')
+        vision = cfg.get('auxiliary', {}).get('vision', {}).get('model')
+        steward = next(r for r in get('/api/v1/health/config')['models'] if r['setting'] == 'steward_model')
+        assert main_model == 'Red-Qwen3.8-27B-PARO-INT5', 'Hermes main model drift'
+        assert cron == vision == 'NInfer-3090-Qwen3.8-27B', 'Hermes cron/vision model drift'
+        assert steward['value'] == main_model and steward['resolves'], 'Steward model drift: ' + str(steward['value'])
+        return {'execution_tested': False, 'main': main_model, 'cron': cron, 'vision': vision, 'steward': steward['value']}
+    check('model_defaults', defaults, execution=False)
+
+    def fetch():
+        j = execute('web_fetch', {'url': 'https://example.com'})
+        assert 'Example Domain' in str(j['output']), 'Public fixture content missing'
+        return {'expected_text_present': True}
+    check('aria_web_fetch', fetch)
+
+    def browser():
+        created = False
+        index = None
+        try:
+            new = execute('browser_tabs', {'action': 'new'})
+            created = True
+            match = re.search(r'- (\d+): \(current\)', str(new['output']))
+            assert match, 'Could not identify the owned browser tab'
+            index = int(match.group(1))
+            nav = execute('browser_navigate', {'url': 'https://example.com'})
+            assert 'Example Domain' in str(nav['output']), 'Unexpected page title'
+            shot = execute('browser_take_screenshot', {'type': 'png', 'filename': 'aria-canary-' + uuid.uuid4().hex + '.png'})
+            assert 'Screenshot' in str(shot['output']), 'Screenshot artifact missing'
+            return {'navigation': True, 'screenshot': True, 'owned_tab': index}
+        finally:
+            if created and index is not None:
+                execute('browser_tabs', {'action': 'close', 'index': index})
+    check('aria_playwright', browser)
+
+    async def mcp_checks():
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        params = StdioServerParameters(command='/Users/ben/Services/apps/bin/run-aria-mcp',
+                    env={'ARIA_API_URL': args.api_url, 'ARIA_API_KEY': key})
+        with tempfile.TemporaryFile(mode='w+') as log:
+            async with stdio_client(params, errlog=log) as (rd, wr):
+                async with ClientSession(rd, wr) as session:
+                    await session.initialize()
+                    names = set(); cursor = None
+                    while True:
+                        if cursor:
+                            from mcp.types import PaginatedRequestParams
+                            result = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
+                        else:
+                            result = await session.list_tools()
+                        names.update(t.name for t in result.tools)
+                        cursor = getattr(result, "next_cursor", None) or getattr(result, "nextCursor", None)
+                        if not cursor: break
+                    assert {'search_memory', 'benchmark_catalog', 'tool_contract_status'} <= names
+                    results = {}
+                    for name, arguments in [('tool_contract_status', {}), ('benchmark_catalog', {}), ('search_memory', {'query': 'PARO', 'limit': 3})]:
+                        result = await session.call_tool(name, arguments)
+                        assert not (getattr(result, "is_error", False) or getattr(result, "isError", False)), name + ' MCP execution failed'
+                        raw = getattr(result, "structured_content", None) or getattr(result, "structuredContent", None)
+                        if raw is None:
+                            raw = json.loads(next(c.text for c in result.content if c.type == 'text'))
+                        assert not (isinstance(raw, dict) and raw.get('error')), name + ' returned error'
+                        if name == 'benchmark_catalog':
+                            assert all(n in json.dumps(raw) for n in ['red-paro-int5', 'ninfer-3090']), 'Current benchmark targets missing'
+                        if name == 'search_memory':
+                            assert isinstance(raw, (dict, list)) and raw, 'Memory returned no structured response'
+                        results[name] = True
+                    return {'registered': len(names), 'calls': results}
+    check('aria_mcp_discovery_memory_benchmarks', lambda: asyncio.run(asyncio.wait_for(mcp_checks(), 60)))
+
+    def hermes_browser():
+        from tools.browser_use_cli import browser_exec, _find_cli, _base_subprocess_env
+        from tools.browser_tool_lifecycle import cleanup_browser
+        import subprocess
+        name = 'aria-canary-' + uuid.uuid4().hex[:12]
+        try:
+            result = json.loads(browser_exec('new_tab("https://example.com")\nassert wait_for_load(timeout=20)\nassert wait_for_element("h1", timeout=20)\nprint(page_info())\nprint(capture_screenshot())', session=name, timeout_s=90))
+            assert result.get('success'), str(result)
+            assert 'Example Domain' in result.get('output', ''), 'Unexpected page content'
+            assert '.png' in result.get('output', ''), 'Screenshot artifact missing'
+            return {'command': _find_cli(), 'navigation': True, 'screenshot': True}
+        finally:
+            cleanup_browser('bu-named-' + name)
+            # Stop only this canary's harness daemon, not another chat's browser.
+            env = _base_subprocess_env(); env['BU_NAME'] = name
+            subprocess.run(_find_cli() + ['--reload'], env=env, capture_output=True, timeout=15)
+    check('hermes_browser', hermes_browser)
+
+    def web():
+        from tools.web_tools import web_search_tool, web_extract_tool
+        search = json.loads(web_search_tool('Python official documentation', limit=2))
+        extract = json.loads(asyncio.run(web_extract_tool(['https://example.com'], char_limit=500)))
+        assert not search.get('error') and 'python.org' in json.dumps(search), 'Search fixture missing'
+        assert not extract.get('error') and 'Example Domain' in json.dumps(extract), 'Extraction fixture missing'
+        return {'search': True, 'extract': True}
+    check('hermes_web_search_extract', web)
+
+    with tempfile.TemporaryDirectory(prefix='aria-tools-canary-') as tmp:
+        root = Path(tmp)
+        def pdf():
+            from tools.file_tools import read_file_tool
+            fixture = root / 'fixture.pdf'
+            stream = b'BT /F1 18 Tf 50 700 Td (ARIA document test 7319) Tj ET'
+            objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
+                b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+                b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+                b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+                b'<< /Length ' + str(len(stream)).encode() + b' >>\nstream\n' + stream + b'\nendstream']
+            data = b'%PDF-1.4\n'; offsets = [0]
+            for index, obj in enumerate(objects, 1):
+                offsets.append(len(data)); data += str(index).encode() + b' 0 obj\n' + obj + b'\nendobj\n'
+            xref = len(data)
+            data += b'xref\n0 6\n0000000000 65535 f \n' + b''.join(f'{o:010d} 00000 n \n'.encode() for o in offsets[1:])
+            data += b'trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n' + str(xref).encode() + b'\n%%EOF\n'
+            fixture.write_bytes(data)
+            result = json.loads(read_file_tool(str(fixture)))
+            assert result.get('extracted_document') and 'ARIA document test 7319' in result.get('content', ''), 'PDF text extraction failed'
+            return {'extracted_document': True, 'expected_text_present': True}
+        check('hermes_pdf', pdf)
+        if args.vision:
+            def vision():
+                from PIL import Image, ImageDraw, ImageFont
+                from tools import vision_tools as vt
+                from agent.auxiliary_client import async_call_llm
+                image = Image.new('RGB', (700, 420), 'white'); d = ImageDraw.Draw(image)
+                font = ImageFont.truetype('/System/Library/Fonts/Supplemental/Arial.ttf', 48)
+                d.text((35, 25), 'RIVER 582', font=font, fill='black')
+                d.polygon([(65, 280), (145, 120), (225, 280)], fill='blue')
+                d.rectangle((285, 150, 415, 280), fill='orange')
+                for y in [150, 215, 280]: d.ellipse((520, y-22, 564, y+22), fill='green')
+                fixture = root / 'vision.png'; image.save(fixture)
+                route = {}; previous = vt.async_call_llm
+                async def traced(*a, **kw):
+                    kw['route_info'] = route
+                    return await async_call_llm(*a, **kw)
+                vt.async_call_llm = traced
+                try:
+                    result = json.loads(asyncio.run(asyncio.wait_for(vt._handle_vision_analyze({'image_url': str(fixture), 'question': 'What exact text is shown? Identify the large colored shapes and count the small circles. Be concise.'}), 120)))
+                finally:
+                    vt.async_call_llm = previous
+                content = result.get('analysis', '').lower()
+                assert result.get('success') and all(x in content for x in ['river', '582', 'blue', 'triangle', 'orange', 'square']), 'Vision fixture not recognized'
+                assert ('3' in content or 'three' in content) and 'green' in content, 'Vision count/color mismatch'
+                # Deliberately retain only routing identity, never credentials.
+                safe_route = {k: v for k, v in route.items() if k in {'provider', 'model', 'base_url'}}
+                assert safe_route.get('model') == 'NInfer-3090-Qwen3.8-27B', 'Vision backend identity not confirmed'
+                return {'expected_text_shapes_count': True, 'route': safe_route}
+            check('hermes_vision', vision)
+        else:
+            checks['hermes_vision'] = {'status': 'not_tested', 'execution_tested': False, 'reason': 'Use --vision for one ARIA-routed inference'}
+    client.close()
+    report['ok'] = all(c['status'] != 'failed' for c in checks.values())
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.output.with_suffix('.tmp')
+    temporary.write_text(json.dumps(report, indent=2) + '\n'); temporary.replace(args.output)
+    print(json.dumps(report, indent=2))
+    return 0 if report['ok'] else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

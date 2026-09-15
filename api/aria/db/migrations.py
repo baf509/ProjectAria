@@ -38,6 +38,7 @@ async def run_migrations(db: AsyncIOMotorDatabase) -> None:
     await _rename_red_pi_agents(db)
     await _seed_pi_coding_red_qwen38_27b_agent(db)
     await _reconcile_pi_coding_profiles(db)
+    await _rename_legacy_web_tool(db)
     await _normalize_project_status(db)
 
 
@@ -555,7 +556,7 @@ async def _seed_pi_coding_ridge_agent(db: AsyncIOMotorDatabase) -> None:
         },
         # Legacy agent-schema fields retained for launch-profile compatibility;
         # external Pi supplies its own tools rather than ARIA's ToolRouter.
-        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -628,7 +629,7 @@ async def _seed_pi_coding_red_qwen38_27b_agent(db: AsyncIOMotorDatabase) -> None
         },
         # Legacy agent-schema fields retained for launch-profile compatibility;
         # external Pi supplies its own tools rather than ARIA's ToolRouter.
-        "enabled_tools": ["filesystem", "shell", "web", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -686,7 +687,7 @@ async def _seed_pi_coding_agent(db: AsyncIOMotorDatabase) -> None:
             "long_term_results": 5,
             "categories_filter": None,
         },
-        "enabled_tools": ["filesystem", "shell", "web", "claude_agent", "pi_coding_agent", "deep_think"],
+        "enabled_tools": ["filesystem", "shell", "web_fetch", "pi_coding_agent"],
         "is_default": False,
         "created_at": now,
         "updated_at": now,
@@ -735,3 +736,14 @@ async def _reconcile_pi_coding_profiles(db: AsyncIOMotorDatabase) -> None:
         )
 
 
+
+
+async def _rename_legacy_web_tool(db: AsyncIOMotorDatabase) -> None:
+    """Migrate only the known web alias; preserve custom/optional tool choices."""
+    async for agent in db.agents.find({"enabled_tools": "web"}):
+        before = agent["enabled_tools"]
+        after = list(dict.fromkeys("web_fetch" if n == "web" else n for n in before))
+        await db.agents.update_one(
+            {"_id": agent["_id"], "enabled_tools": before},
+            {"$set": {"enabled_tools": after, "updated_at": datetime.now(timezone.utc)}},
+        )

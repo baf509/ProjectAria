@@ -18,3 +18,54 @@ targets:
     reasoning: true
     tags: [remote, aria, flash-next]
     notes: Registered Flash Next deployment; benchmark only while idle.
+  red-flash-next:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: Red-Qwen3.8-Flash-Next-MXFP4
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, flash-next, r9700]
+    notes: >
+      Red's OWN Flash Next deployment (MXFP4/FP8, LRU expert cache, 1 sequence,
+      MTP4). Distinct from the `flash-next` target above, which is Corsair's
+      Qwen3.8-Flash-Next-CUDA-Halo-Candidate (UD-Q4_K_XL GGUF) — different host,
+      GPU and quantisation, so it is NOT a like-for-like comparison against
+      red-radiance. Exclusive with red-radiance on Red: only one can be resident.
+  halogen:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: Halogen-Qwen3.8-Flash-Next-W4B-Halo
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, halogen]
+    notes: >
+      Halogen's new DEFAULT Flash Next deployment (W4B, Halo). Thinking is ON by
+      default; disabled per-request via TOP-LEVEL enable_thinking=false. The
+      chat_template_kwargs.enable_thinking toggle (what the reasoning proxy's
+      mode=disable sends) is rejected by the backend with HTTP 400 — if a
+      content-only harness 400s on it, retry with thinking disabled via the
+      top-level toggle and note the setting in the report.
+
+  red-paro-int5:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: Red-Qwen3.8-27B-PARO-INT5
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, paro, int5, r9700]
+    notes: >
+      Current Red default, two R9700 GPUs capped at 250 W each as of 2026-09-15.
+      PARO int5 W5A8, SPEC=7, I8+PG+ZPE. Verify live runtime and caps before
+      comparing measurements. Exclusive with other Red targets; no lifecycle
+      commands are supplied. Earlier 300 W measurements are historical.
+  ninfer-3090:
+    base_url: http://127.0.0.1:8200/llm/v1
+    model: NInfer-3090-Qwen3.8-27B
+    api_key: env:API_KEY
+    vram_gb: 0
+    reasoning: true
+    tags: [remote, aria, ninfer, rtx3090]
+    notes: >
+      Corsair 3090 Qwen3.8 27B, used by Hermes routine cron and vision.
+      Benchmark only while idle; preserve the shared deployment and record its
+      actual runtime, quantization and power configuration in each result.

@@ -336,12 +336,9 @@ class CodingReviewService:
                 return output, {}, model_id
             backend, base_url, max_tokens = settings.coding_routing_judge_backend, None, 2048
         elif family == FAMILY_QWEN:
-            # The steward endpoint is ARIA's identified gateway, so this follows
-            # whatever `steward_model` names — the Corsair deployment, which is
-            # also pi's coding slot. That sharing is deliberate (2026-09-10): the
-            # gateway's admission queue ranks reviews below interactive coding,
-            # and the deployment's 32 context checkpoints make a displaced prefix
-            # a restore rather than a cold re-prefill.
+            # Qwen reviews share the explicitly configured steward route
+            # (Red PARO on the Mac deployment). ARIA admission ranks reviews
+            # below interactive coding; routine Hermes cron has its own model.
             # ⚠️ Qwen3.8 is a reasoning model — it emits reasoning_content before
             # content, so a tight budget returns finish_reason=length with an
             # EMPTY string. steward_max_tokens is the generous budget; the empty
