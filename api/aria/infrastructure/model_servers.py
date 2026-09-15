@@ -324,6 +324,20 @@ class ModelServerSpec:
     # cannot find `-c` in a shell script the way it finds it in an ExecStart.
     ctx_param: Optional[str] = None
     slots_param: Optional[str] = None
+    # Concurrency the RUNTIME enforces, for deployments whose slot count is not
+    # visible in any launch file this control plane can read. Fallback only:
+    # observed launch geometry always wins. NInfer is the case — it serves one
+    # request at a time with no -np flag, and its unit lives on Corsair — and
+    # without a count here the gateway saw `slots=None`, which it correctly
+    # reads as "not a single-slot backend", so priority admission never engaged
+    # and background work competed first-come-first-served with Hermes.
+    declared_slots: Optional[int] = None
+    # `reasoning_effort` the gateway supplies for BACKGROUND callers (priority 2)
+    # that did not choose one. ARIA's own workers never send it, and a model that
+    # reasons by default otherwise spends the one slot thinking about a JSON
+    # extraction. An explicit caller choice, or chat_template_kwargs.enable_thinking,
+    # always wins; Hermes and foreground callers are never touched.
+    background_reasoning_effort: Optional[str] = None
     # Modern llama.cpp treats -c as the TOTAL KV pool when -np > 1, while the
     # older qualified forks in this registry treat -c as context per slot.
     # Set this only when the live server reports n_ctx_slot=-c/-np.
@@ -824,6 +838,14 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # Halo model is down; this 22.75 GiB slot must not silently become it.
         auto_route=False,
         parameters=(),
+        # "One concurrent request and at most two pending" is enforced by
+        # ninfer-serve itself; declaring it is what engages gateway priority
+        # admission, so Hermes cron and vision stay ahead of ARIA's workers.
+        declared_slots=1,
+        # Measured 2026-09-15 on a transcript-extraction prompt: `none` returned
+        # valid JSON in 3.7s / 288 tokens, `low` in 8.0s / 660 tokens (1,553
+        # chars of reasoning). Background work holds the one slot half as long.
+        background_reasoning_effort="none",
         # Measured: 23,298 MiB, 94K INT8 KV, vision and MTP3 (2026-09-15).
         resident_gib=22.75,
         exclusive_with=_exclusive_with("NInfer-3090-Qwen3.8-27B"),
@@ -2319,7 +2341,7 @@ def _profile_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
     return LaunchGeometry(n_ctx=n_ctx, slots=slots, source=source)
 
 
-def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
+def _read_observed_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
     """Served `-c`/`-np` for one server, read from its launch file.
 
     Cached against the launch file's mtime so an edit is picked up on the next
@@ -2539,6 +2561,25 @@ def _script_defaults(spec: "ModelServerSpec") -> dict[str, str]:
             value = value.replace(token, replacement)
         out[match.group("name")] = value
     return out
+
+
+def read_launch_geometry(spec: "ModelServerSpec") -> LaunchGeometry:
+    """Served context and slot count for one server.
+
+    Observed launch geometry first (`_read_observed_launch_geometry`: launch
+    profile, unit/compose argv, then script parameters). Where none of those
+    can answer the slot count, fall back to `spec.declared_slots`. Applied here,
+    once, rather than at each of the reader's three return paths, so a new
+    geometry source cannot quietly bypass it.
+    """
+    geometry = _read_observed_launch_geometry(spec)
+    if geometry.slots is None and spec.declared_slots:
+        return LaunchGeometry(
+            n_ctx=geometry.n_ctx,
+            slots=spec.declared_slots,
+            source=geometry.source or "declared by the registry (runtime-enforced concurrency)",
+        )
+    return geometry
 
 
 def _script_geometry(spec: "ModelServerSpec") -> LaunchGeometry:

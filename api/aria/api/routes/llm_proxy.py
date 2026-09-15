@@ -169,6 +169,28 @@ def _caller_priority(caller: str) -> int:
     return 1
 
 
+def _background_reasoning_effort(slug: Optional[str], caller: str, body: dict) -> Optional[str]:
+    """The `reasoning_effort` to supply for this request, or None to leave it.
+
+    Only for BACKGROUND callers, and only when the routed model's registry entry
+    asks for it. ARIA's in-process workers send no reasoning control at all, so
+    on a model that reasons by default each extraction spends its turn on the
+    single slot thinking — measured at 2.2x the slot time of `none` for the same
+    valid output. A caller that chose (either field) keeps its choice, and
+    Hermes (priority 0) and foreground coding (priority 1) are never altered.
+    """
+    if _caller_priority(caller) != 2 or not slug:
+        return None
+    if "reasoning_effort" in body:
+        return None
+    template = body.get("chat_template_kwargs")
+    if isinstance(template, dict) and "enable_thinking" in template:
+        return None
+    from aria.infrastructure.model_servers import _BY_SLUG  # local: avoids a cycle
+    spec = _BY_SLUG.get(slug)
+    return getattr(spec, "background_reasoning_effort", None)
+
+
 @dataclass(frozen=True)
 class _AdmissionStats:
     controlled: bool
@@ -1226,6 +1248,9 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
             forwarded = dict(body)
             if model_id:
                 forwarded["model"] = model_id
+            effort = _background_reasoning_effort(slug, caller, forwarded)
+            if effort:
+                forwarded["reasoning_effort"] = effort
 
             # Inject only when the caller could NOT have known the model — i.e.
             # it used the auto alias.  A concrete ARIA model name is already an
