@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Temporary authenticated runtime qualification; no background controllers or route changes.
 
-Task 6aa965a9c5fd25b265732450. Mac forwards: 18109 -> Corsair 18109,
+Task 6aa97711c5fd25b265732665. Mac forwards: 18109 -> Corsair 18109,
 18079 -> Red 8079. Gateway listens on Mac loopback 18201.
 """
 from contextlib import asynccontextmanager
@@ -12,8 +12,11 @@ from pathlib import Path
 import sys
 
 repo = Path(__file__).resolve().parents[1]
-installed = Path('/Users/ben/Services/apps/ProjectAria/current/api')
+installed = Path('/Users/ben/Services/apps/ProjectAria/current/api').resolve()
 sys.path.insert(0, str(installed))
+# Qualify this checkout's proxy with the installed dependencies and config.
+import aria, aria.api, aria.api.routes
+aria.api.routes.__path__.insert(0, str(repo/'api/aria/api/routes'))
 from aria.infrastructure import model_servers
 
 path = repo/'api/aria/infrastructure/red_paro_int5_qualification.py'
@@ -32,7 +35,7 @@ candidate = replace(template,
     # prefix. Lifecycle commands still fail closed; mutation routes are absent.
     remote_start_command=remote_ssh+('false',), remote_stop_command=remote_ssh+('false',),
     not_startable_reason='Temporary qualification: controlled by the bounded runtime-upgrades-20260915 test supervisor.',
-    consumers_note='Task 6aa965a9c5fd25b265732450; isolated mutable paths; restore incumbent after tests.')
+    consumers_note='Task 6aa97711c5fd25b265732665; isolated mutable paths; restore incumbent after tests.')
 halogen = model_servers.ModelServerSpec(
     slug='Halogen-Qwen3.8-Flash-Next-0102-Test',
     description='Temporary Halogen 0.10.2 qualification, existing W4B weights and 4x262144 geometry.',
@@ -44,7 +47,7 @@ halogen = model_servers.ModelServerSpec(
     container_name='halogen-flash-candidate-20260915', port=18109,
     startable=False, allow_force_start=False, auto_route=False,
     exclusive_with=('Halogen-Qwen3.8-Flash-Next-W4B-Halo','Qwen3.8-Flash-Next-CUDA-Halo-Candidate'),
-    consumers_note='Task 6aa965a9c5fd25b265732450; synthetic qualification only; incumbent restored afterwards.')
+    consumers_note='Task 6aa97711c5fd25b265732665; synthetic qualification only; incumbent restored afterwards.')
 baseline = replace(model_servers._BY_SLUG['Red-Qwen3.8-27B-PARO-INT5'], auto_route=False, startable=False)
 model_servers.REGISTRY = (candidate, halogen, baseline)
 model_servers._BY_SLUG.clear()
