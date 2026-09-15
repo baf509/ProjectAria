@@ -1928,21 +1928,32 @@ def test_unknown_remote_state_is_not_servable():
     assert is_servable({**row, "state": "running"})
 
 
-def test_paro_is_a_known_red_option_that_cannot_silently_serve():
-    """Registered so the checkpoint is recorded, not so it can be started.
+def test_paro_is_wired_end_to_end_or_not_offered_at_all():
+    """Registered AND actuable: the 2026-09-12 deployment closed all four gaps.
 
-    Red's restricted forced command exposes a fixed verb set with no paroquant
-    entry, and there is no unit or serve script. Declaring start/stop commands
-    would make ARIA claim an actuation path it does not have — so the spec
-    declares none, which also keeps `remotely_operable` False (it requires both
-    directions; a model that starts but cannot stop strands a woken box).
+    The previous version of this test pinned the opposite state — weights on
+    disk, no verb, no unit, no serve script — and it was right to. What makes
+    the new state safe is not that the flags flipped but that each flag now has
+    a real thing behind it: start-paro/stop-paro in Red's forced command,
+    red-paro.service holding the shared GPU lock, /opt/red-r9700/paro/serve.sh,
+    and a served id distinct from the other two deployments on :8094.
     """
     from aria.infrastructure.llm_route import is_servable
 
     spec = ms._BY_SLUG["Red-Qwen3.8-27B-PARO-MXFP4"]
-    assert spec.catalog_visible, "it must be visible as a Red option"
-    assert not spec.startable and spec.not_startable_reason
-    assert not spec.remotely_operable and not spec.auto_route
+    assert spec.catalog_visible and spec.startable and not spec.not_startable_reason
+
+    # Both directions, or neither: remotely_operable requires start AND stop, so
+    # a half-wired entry cannot strand a woken box holding VRAM.
+    assert spec.remotely_operable
+    assert spec.remote_start_command[-1] == "start-paro"
+    assert spec.remote_stop_command[-1] == "stop-paro"
+    assert spec.remote_start_command[:-1] == spec.remote_stop_command[:-1]
+
+    # Explicit selection only. It is a third option, not a new fallback.
+    assert not spec.auto_route
+    # Three deployments contend for two GPUs and one port; a force flag has
+    # nothing safe to do, and both the hardware lock and control.sh refuse it.
     assert not spec.allow_force_start
 
     # Three deployments share both GPUs and the single forwarded port, so
@@ -1951,18 +1962,27 @@ def test_paro_is_a_known_red_option_that_cannot_silently_serve():
         assert other in spec.exclusive_with
         assert spec.slug in ms._BY_SLUG[other].exclusive_with, other
 
-    # Identity is what keeps those three apart on :8094. Without a pinned
-    # remote_model_id it can never be routed to, even if something started it
-    # outside ARIA — that is the intended fail-safe, not an oversight.
-    assert spec.remote_model_id is None
+    # Identity is what keeps those three apart on :8094, and it must not collide
+    # with either sibling or the gateway would happily route to whichever booted.
+    assert spec.remote_model_id == "red-qwen3.8-27b-paro-mxfp4"
+    siblings = {ms._BY_SLUG[o].remote_model_id
+                for o in ("Red-Qwen3.8-27B-MXFP4", "Red-Qwen3.8-Flash-Next-MXFP4")}
+    assert spec.remote_model_id not in siblings
+    assert is_servable({
+        "slug": spec.slug, "state": "running", "onbox": False,
+        "remote_identity_verified": True,
+        "port": spec.port, "endpoints": {"local": spec.endpoint_override},
+    })
+    # ...and still refuses to route when identity has NOT been verified.
     assert not is_servable({
         "slug": spec.slug, "state": "running", "onbox": False,
-        "remote_identity_verified": bool(spec.remote_model_id),
+        "remote_identity_verified": False,
         "port": spec.port, "endpoints": {"local": spec.endpoint_override},
     })
 
-    # Footprint stays unmeasured: it depends on a KV/TP config that does not
-    # exist yet, and a guessed number is one a preflight gate would trust.
+    # Footprint stays unmeasured on purpose: this profile leaves KV to vLLM's
+    # profiler rather than reusing Radiance's pin, which was measured against a
+    # different weight footprint. A guessed number is one a preflight would trust.
     assert spec.resident_gib is None
     assert spec.weights_gib == 17.75
 

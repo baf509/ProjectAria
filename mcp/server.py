@@ -1083,7 +1083,7 @@ async def list_model_servers() -> Any:
     and which agent (if any) it is bound to.
 
     For Red choices and wake/load/switch, prefer red_model_status and
-    select_red_model. They expose only the two supported Red deployments.
+    select_red_model. They expose only the three supported Red deployments.
 
     Two fields answer "how do I load this differently":
       - `devices` / `memory_pool` — WHERE it runs. Hybrid deployments can use

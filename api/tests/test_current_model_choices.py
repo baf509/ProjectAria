@@ -18,15 +18,19 @@ def test_current_host_choices():
     assert aux.memory_pool == ms.POOL_HOST and not aux.gtt_resident
     assert aux.exclusive_with == ()
     assert not aux.auto_route, 'auxiliary model must be addressed by name, never auto-selected'
-    # PARO joined 2026-09-10: weights downloaded and verified on Red, registered
-    # so the checkpoint is a known option rather than an unrecorded directory.
-    # Visible, but not startable — Red has no paroquant verb, unit or serve
-    # script (see test_paro_is_a_known_red_option_that_cannot_silently_serve).
+    # PARO joined 2026-09-10 as weights-only and became startable on 2026-09-12,
+    # when it got a verb, a unit and a serve script
+    # (see test_paro_is_wired_end_to_end_or_not_offered_at_all). All three Red
+    # deployments are now visible AND startable — one at a time.
     assert {s.slug for s in ms.REGISTRY if s.host_machine == 'machine:red' and s.catalog_visible} == {
         'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'}
     assert {s.slug for s in ms.REGISTRY
             if s.host_machine == 'machine:red' and s.startable} == {
-        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4'}
+        'Red-Qwen3.8-27B-MXFP4', 'Red-Qwen3.8-Flash-Next-MXFP4', 'Red-Qwen3.8-27B-PARO-MXFP4'}
+    # Exactly one of them may be reached automatically; the other two are
+    # explicit-selection options sharing the same two GPUs and the same port.
+    assert {s.slug for s in ms.REGISTRY
+            if s.host_machine == 'machine:red' and s.auto_route} == {'Red-Qwen3.8-27B-MXFP4'}
     assert 'gemma-4-e4b-Q4' not in visible
     assert {'catalog_visible', 'host_machine'} <= _LIST_VIEW_FIELDS
 

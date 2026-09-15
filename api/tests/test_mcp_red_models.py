@@ -14,7 +14,10 @@ class Fleet:
         self.rows = {slug: dict(slug=slug, state="stopped", startable=True,
                                catalog_visible=True, bound_agents=[])
                      for slug in module.RED_MODELS.values()}
-        self.old, self.new = self.rows
+        # `old`/`new` are the switch pair these scenarios exercise; a third
+        # Red deployment exists in RED_MODELS and stays stopped throughout,
+        # which is exactly the state the exclusivity checks have to tolerate.
+        self.old, self.new = list(self.rows)[:2]
         self.pinned = None
         self.busy = self.queued = 0
         self.unknown = False
@@ -69,13 +72,14 @@ async def test_schema_only_offers_supported_choices_and_readonly_status(setup_re
     schema = tools["select_red_model"].inputSchema
     # `force` is offered; `ctx` is injected by the server, not part of the schema.
     assert set(schema["properties"]) == {"model", "force"}
-    assert set(schema["properties"]["model"]["enum"]) == {"qwen3.8-27b", "qwen-flash-next"}
+    assert set(schema["properties"]["model"]["enum"]) == {
+        "qwen3.8-27b", "qwen-flash-next", "qwen-paro"}
     assert tools["red_model_status"].annotations.readOnlyHint is True
     with pytest.raises(Exception):
         await server.call_tool("select_red_model", {"model": "gemma"})
     assert fleet.reads == 0 and fleet.posts == []
     status = await server._tool_manager.get_tool("red_model_status").fn()
-    assert len(status["models"]) == 2 and fleet.posts == []
+    assert len(status["models"]) == 3 and fleet.posts == []
 
 
 @pytest.mark.asyncio

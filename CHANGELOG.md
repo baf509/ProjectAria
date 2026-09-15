@@ -1,5 +1,26 @@
 # ARIA Changelog
 
+## 2026-09-12 — Red gains a third model option: ParoQuant MXFP4
+
+- `Red-Qwen3.8-27B-PARO-MXFP4` moves from weights-only to startable. The
+  2026-09-10 registration listed exactly what was missing — a paroquant runtime,
+  a unit, start/stop verbs, and a pinned identity — and all four now exist.
+- Red's restricted forced command gains `start-paro`/`stop-paro`, and its
+  exclusivity check is now a loop over every installed model unit rather than a
+  hardcoded pair. `status.py` reports the third deployment; `sleep` stops every
+  installed unit. All three still contend for one GPU lock and one forwarded port.
+- `select_red_model` offers `qwen-paro`. Explicit selection only: `auto_route`
+  and `allow_force_start` stay off, so it is a third option, not a new fallback.
+- It is **not** faster than Radiance. Measured on the same box, same day, same
+  corpus and seed: 194.19 tok/s combined at 21.68 ms/step against Radiance's
+  199.87 at 20.61. Upstream's published +21% did not reproduce, and neither did
+  its `SPEC=5` prod default (167.28 tok/s against SPEC=7's 194.19). Registered
+  because the checkpoint is now reproducible and cheap to re-test, not because
+  it wins. Evidence: `CorsairModelHost/red-r9700/paro/results/`.
+- `RADIANCE_SKINNY_GEMM` was investigated and left alone: it is inert at Red's
+  libr4d pin, which only registers the m16 bf16 GEMM. Details in
+  `ProjectAria/Analysis/2026-09-12 RED_MODEL_OPTIONS_AND_PLE_FAULTS.md`.
+
 ## 2026-09-11 — Coding agents must work inside a git repository
 
 - `guard_require_repo` (default on) refuses a coding session whose workspace is
