@@ -1,0 +1,82 @@
+{
+  "status": "complete",
+  "task_id": "6aa95dd2a839573791069505",
+  "live": {
+    "api_release": "/Users/ben/Services/releases/ProjectAria/20260915T150757Z-dbcf639-a56381b9bd75",
+    "api_source": "dbcf63903e828d681e5acb769439466c55a95ab5",
+    "api_manifest_sha256": "cf94b9e1c299b86ab79b409e755e2bc9730a48c1073cb1be5d1f299907d5f78a",
+    "mcp_release": "/Users/ben/Services/releases/aria-mcp/20260915T143633Z-d2e91eab9aa7",
+    "mcp_manifest_sha256": "0ba7c50abd371b115ca66a6c543ab9a319158be5e6e476599a5bc452d3a33a83",
+    "mcp_matches_master": true,
+    "api_ready": true,
+    "tool_configuration_ok": true,
+    "ninfer_state": "running",
+    "ninfer_registry_context_label": "94K (96,256)",
+    "ninfer_resident_gib_estimate": 22.75,
+    "code_matches_master": true
+  },
+  "tests_passed": 25,
+  "functional_checks_passed": 9,
+  "native_cron": {
+    "passed": true,
+    "model": "NInfer-3090-Qwen3.8-27B",
+    "provider": "custom",
+    "base_url": "http://localhost:8200/llm/v1-identified",
+    "effective_context": 96256,
+    "minimum_context": 64000,
+    "native_cron_constructor": true,
+    "tools": 0,
+    "script_executed": false,
+    "delivery_attempted": false,
+    "response": "CRON_CONTEXT_OK",
+    "wall_seconds": 13.18
+  },
+  "ninfer_profile": {
+    "passed": true,
+    "context": 96256,
+    "launcher_matches": true,
+    "unit_matches": true,
+    "boot_enabled": true,
+    "linger": true,
+    "live_flags_match": true,
+    "hermes_context_matches": true,
+    "main_model": "Red-Qwen3.8-27B-PARO-INT5",
+    "cron_model": "NInfer-3090-Qwen3.8-27B",
+    "inference_or_restart_performed": false
+  },
+  "red": {
+    "power_caps": {
+      "/sys/class/drm/card1/device/hwmon/hwmon9/power1_cap": 250000000,
+      "/sys/class/drm/card0/device/hwmon/hwmon8/power1_cap": 250000000
+    },
+    "rule_sha256": "c9fcb6fc709212a6452e5f5256a5d57a04327142306acfc45dc8b557c3d03712",
+    "unit": "ActiveState=active\nUnitFileState=enabled\n"
+  },
+  "pi": {
+    "mac_paro_in_catalog": true,
+    "corsair": {
+      "paro_in_catalog": true,
+      "paro_enabled": true,
+      "default": "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+    }
+  },
+  "scanner": {
+    "id": "cbe4305194da",
+    "enabled": true,
+    "next_run_at": "2026-09-16T09:00:00-04:00",
+    "last_run_at": "2026-09-15T09:01:02.953903-04:00",
+    "last_status": "error",
+    "failure_streak": 5,
+    "model": null,
+    "provider": "aria",
+    "base_url": null
+  },
+  "provider_cleanup": {
+    "field": "providers.aria.model",
+    "before": "Red-Qwen3.8-27B-MXFP4",
+    "after": "Red-Qwen3.8-27B-PARO-INT5"
+  },
+  "evidence": "/Users/ben/Services/backups/aria-final-durability-20260915",
+  "reboot_test_performed": false,
+  "scope": "Session cleanup only; unrelated pre-existing CorsairModelHost experiments preserved."
+}
