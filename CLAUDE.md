@@ -101,18 +101,38 @@ clients remain subject to the charter's unresolved cloud-exception rule.
 
 ## Current model plane
 
+Mirrors `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md`, which is the maintained runbook
+and wins if the two disagree. Reconciled against it, the registry and
+`~/.pi/agent/models.json` on **2026-09-15**.
+
 | Deployment | Host/device | Listener | Role |
 |---|---|---|---|
-| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair RTX 3090 + Strix Halo | `127.0.0.1:8131` | Explicit Hermes/Pi default **and the automatic route for model-omitted requests** (2026-09-10); operator-accepted 1 × 256K, no boot autostart |
-| `Red-Qwen3.8-27B-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Separate alternative; the model-omitted fallback when the candidate is not resident |
-| `Red-Qwen3.8-Flash-Next-MXFP4` | Red dual R9700 | Mac loopback `:8094` | Explicit selection only; exclusive with Radiance on the same GPUs |
+| `Red-Qwen3.8-27B-PARO-INT5` | Red dual R9700 | Mac loopback `:8094` | Main Hermes, steward and Pi default; eight slots, 262K |
+| `NInfer-3090-Qwen3.8-27B` | Corsair RTX 3090 | Mac loopback `:8080` | Routine Hermes cron, vision, and ARIA background work; explicit selection only, never an automatic fallback |
+| `Halogen-Qwen3.8-Flash-Next-W4B-Halo` | Corsair Strix Halo (RTX 3090 unused) | `:8109` | Retained long-context Hermes fallback; temporary Halogen qualification deployments (e.g. `Halogen-Qwen3.8-Flash-Next-0102-Test`) displace it on the Halo while they run |
+| Red MXFP4, PARO-MXFP4, Flash Next MXFP4 | Red dual R9700 | Mac loopback `:8094` | Explicit alternatives; mutually exclusive with PARO-INT5 |
+| `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` | Corsair RTX 3090 + Strix Halo | `127.0.0.1:8131` | Retained explicit deployment; **stopped**, exclusive with NInfer on the 3090 |
 | Ridge | RTX 5090, user-confirmed | Mac loopback `:8092` | On demand; new-card readiness unverified |
-| Gemma | Mac | retained `:8104` configuration | Intentionally stopped; not an auxiliary fallback |
+| Gemma | Mac | retained `:8104` configuration | Intentionally stopped; no LLM runs on the Mac |
+
+Explicit client defaults are separate from model-omitted selection. Model-omitted
+requests go to the largest eligible verified resident server, so check
+`GET /api/v1/infrastructure/llm-route` rather than assuming from this table.
+
+**Background work on the 3090.** NInfer serves one request at a time and holds
+two pending. The registry declares `declared_slots=1`, which engages the
+gateway's priority queue (Hermes 0, foreground 1, `aria-background` and other
+background callers 2), and `background_reasoning_effort="none"`, which the
+gateway supplies to background callers that chose no reasoning setting. Do not
+remove either without an alternative: without the first, background extraction
+competes first-come-first-served with Hermes cron; without the second, each call
+holds the slot reasoning (measured at 2.2x the slot time for the same output).
+Admission state: `/llm/v1-identified/backend?model=NInfer-3090-Qwen3.8-27B`.
 
 Corsair's former R9700 loadouts are retired and cannot be force-started. Retained
 DeepSeek assets are historical/model-engineering material, not default serving.
-The current candidate retains a known intermittent CUDA fault; operator acceptance
-is not sustained-reliability qualification. No further soak is scheduled.
+The CUDA/Halo candidate retains a known intermittent CUDA fault; operator
+acceptance was not sustained-reliability qualification.
 
 ARIA's registry owns desired state; backend identity/readiness and native process
 state own observed state. Routine lifecycle uses the restricted actuator. Direct
@@ -120,9 +140,7 @@ service work is limited to authorized model repair/testing and must be reconcile
 Use `/llm/v1-identified/backend?model=<slug>` for model-specific admission state.
 
 RTX 3090 VRAM and Halo shared memory are separate pools. Resolve GPU identities
-rather than copying device ordinals. The candidate has one 262144-token slot,
-q8_0 K/V, MTP depth 3 and an 8 GiB prompt cache; `kv_unified=false`.
-See `docs/ops/LOCAL_INFERENCE_TOPOLOGY.md` for the maintained model runbook.
+rather than copying device ordinals.
 
 ## Pi Coding invariant
 
@@ -130,9 +148,10 @@ Pi is an external coding harness, not an ARIA persona. Every managed Pi
 installation has exactly:
 
 - provider `aria`;
-- model `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` (default);
+- model `Red-Qwen3.8-27B-PARO-INT5` (default);
 - model `Red-Qwen3.8-27B-MXFP4` (Red's dual-R9700 Radiance instance);
 - model `Red-Qwen3.8-Flash-Next-MXFP4` (Red's dual-R9700 Flash Next instance);
+- model `Qwen3.8-Flash-Next-CUDA-Halo-Candidate` (retained explicit; stopped while NInfer holds the 3090);
 - base URL `/llm/v1-identified` on the Mac;
 - an inference-only scoped credential.
 

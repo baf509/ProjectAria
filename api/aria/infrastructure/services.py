@@ -185,13 +185,14 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         "`search` retrieval capability (memory/capabilities.py): with that "
         "switch off, recall degrades to a mongod-native scan and health stops "
         "probing this row, so a stopped container is not an incident. "
-        "SWITCHED OFF 2026-09-03 and the devbox-mongot container is stopped. "
-        "The Lima VM stays up because devbox-mongod shares it. See "
-        "docs/ops/RETRIEVAL_CAPABILITIES.md.",
+        "Off 2026-09-03 to 2026-09-15; RESTORED 2026-09-15 with a 1 GiB heap "
+        "cap (`--jvm-flags -Xmx1g` in the VM's compose.yml, outside this repo). "
+        "The Lima VM stays up because devbox-mongod shares it; recreate only "
+        "this container. See docs/ops/RETRIEVAL_CAPABILITIES.md.",
     ),
     ServiceSpec(
         slug="shared-embeddings",
-        description="voyage-4-nano (1024-dim MRL) via sentence-transformers, CPU.",
+        description="voyage-4-nano (1024-dim MRL) via sentence-transformers on the Apple GPU (MPS).",
         expected_state="always_up",
         kind="service",
         container_name="shared-embeddings",
@@ -204,7 +205,10 @@ REGISTRY: tuple[ServiceSpec, ...] = (
         "2026-08-15): with the `embeddings` retrieval capability off, writes "
         "land flagged embedding_pending and are re-embedded by the backfill "
         "worker on re-enable, while recall degrades to lexical/fallback. "
-        "STOPPED + SWITCHED OFF 2026-08-15. expected_state stays always_up "
+        "Off 2026-09-07 to 2026-09-15; RESTORED 2026-09-15. It runs on MPS, "
+        "not CPU: its GPU memory is invisible to process RSS, so size it from "
+        "the driver, not `ps` (about 1 GiB with the batch-4 cap in "
+        "Services/apps/embeddings/server.py). expected_state stays always_up "
         "because that is still the normal policy — health consults the "
         "capability switch, not this field, to tell 'off on purpose' apart "
         "from 'down'. See docs/ops/RETRIEVAL_CAPABILITIES.md.",
