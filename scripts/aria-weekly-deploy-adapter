@@ -6,10 +6,12 @@ commands and health probes come from the operator registry, never from Codex.
 """
 from __future__ import annotations
 import fcntl
+from contextlib import contextmanager
 import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -42,9 +44,30 @@ def command(value):
                           timeout=value.get('timeout_seconds',120), env={'PATH':'/usr/bin:/bin:/opt/homebrew/bin','HOME':str(Path.home())})
 
 
+@contextmanager
+def quiescence(target, operation):
+    """Admission remains held through install, recovery, restart and health."""
+    if operation not in {'apply','rollback','reconcile'} or not target.get('quiesce_command'):
+        yield
+        return
+    if not target.get('resume_command'):
+        raise ValueError('Quiescence requires a registered resume command')
+    # A failing drain hook must undo its own partial acquisition. Never release
+    # another operation's admission hold after an unsuccessful acquisition.
+    command(target['quiesce_command'])
+    try:
+        yield
+    finally:
+        command(target['resume_command'])
+
+
 def identity(target):
     if target['kind']=='aria':
         return str(Path(target['current']).resolve(strict=True))
+    for name in target['destinations']:
+        path = Path(name)
+        if not path.is_file() or path.is_symlink():
+            raise ValueError('Deployment destination must be a regular file: '+name)
     return digest(json.dumps({p:digest(Path(p).read_bytes()) for p in target['destinations']},sort_keys=True).encode())
 
 
@@ -52,7 +75,8 @@ def probe(target):
     if 'health_command' in target:
         result=command(target['health_command'])
         value=json.loads(result.stdout.decode().splitlines()[-1])
-        if not isinstance(value.get('healthy'),bool):
+        if (type(value.get('healthy')) is not bool
+                or type(value.get('samples')) is not int or value['samples'] < 0):
             raise ValueError('Health command must return a boolean healthy and measured samples')
         return value
     with urllib.request.urlopen(target['health_url'], timeout=10) as response:
@@ -87,12 +111,14 @@ def field_updates(before,after,rules):
     updates={}
     for name,rule in rules.items():
         old,new=field_value(before,name),field_value(after,name)
-        if old==new:
+        if type(old) is type(new) and old==new:
             continue
         types={'int':int,'float':(int,float),'bool':bool,'string':str}
         wanted=types[rule['type']]
         if not isinstance(new,wanted) or isinstance(new,bool) and rule['type']!='bool':
             raise ValueError('Invalid setting type: '+name)
+        if isinstance(new,float) and not math.isfinite(new):
+            raise ValueError('Non-finite setting: '+name)
         if 'min' in rule and new<rule['min'] or 'max' in rule and new>rule['max']:
             raise ValueError('Setting outside approved range: '+name)
         if 'choices' in rule and new not in rule['choices']:
@@ -106,6 +132,21 @@ def field_updates(before,after,rules):
     if not updates:
         raise ValueError('No configuration changes')
     return updates
+
+
+def restore_files(receipt):
+    """Check every preimage before writing any file, including failure recovery."""
+    for destination,backup in receipt['backups'].items():
+        path = Path(destination)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError('Recovery refused: destination replaced at '+destination)
+        previous = Path(backup).read_bytes()
+        if digest(previous) != receipt['backup_hashes'][destination]:
+            raise ValueError('Recovery refused: backup changed at '+destination)
+        if digest(path.read_bytes()) not in {digest(previous),receipt.get('planned_hashes',{}).get(destination)}:
+            raise ValueError('Recovery refused: later live edit at '+destination)
+    for destination,backup in receipt['backups'].items():
+        atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
 
 
 def load_release_controller(target):
@@ -130,6 +171,11 @@ def main():
     root.mkdir(parents=True,exist_ok=True,mode=0o700)
     with (root/'deployment.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        with quiescence(target, operation):
+            perform(operation, request, target, root)
+
+
+def perform(operation, request, target, root):
         if operation=='preflight':
             if target['kind']=='aria':
                 controller=load_release_controller(target)
@@ -176,13 +222,7 @@ def main():
                     load_release_controller(target).rollback(file.parent)
                     receipt['status']='rolled_back'
             else:
-                # Restore only bytes this transaction wrote, never a later edit.
-                for destination,backup in receipt['backups'].items():
-                    actual=digest(Path(destination).read_bytes())
-                    if actual not in {digest(Path(backup).read_bytes()),receipt.get('planned_hashes',{}).get(destination)}:
-                        raise ValueError('Reconciliation refused: later live edit at '+destination)
-                for destination,backup in receipt['backups'].items():
-                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                restore_files(receipt)
                 if target.get('restart_command'):
                     command(target['restart_command'])
                 if not probe(target)['healthy']:
@@ -200,8 +240,7 @@ def main():
             if target['kind']=='aria':
                 load_release_controller(target).rollback(Path(receipt['backup']))
             else:
-                for destination,backup in receipt['backups'].items():
-                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                restore_files(receipt)
                 if target.get('restart_command'):
                     command(target['restart_command'])
             if not probe(target)['healthy']:
@@ -216,7 +255,7 @@ def main():
         if Path(request['repository']).resolve()!=Path(target['repository']).resolve():
             raise ValueError('Candidate repository does not match registered target')
         receipt={'status':'staging','previous':request['expected_identity'],'candidate':request['candidate'],
-                 'finding_id':finding,'backups':{},'modes':{}}
+                 'finding_id':finding,'backups':{},'backup_hashes':{},'modes':{}}
         atomic(receipt_path,json.dumps(receipt).encode())
         try:
             if target['kind']=='aria':
@@ -248,6 +287,8 @@ def main():
                     for source,destination in target['files'].items():
                         if destination not in target['destinations']:
                             raise ValueError('Destination is not registered')
+                        if Path(destination).read_bytes()!=read_blob(target['repository'],request['base_revision'],source):
+                            raise ValueError('Live file differs from the reviewed baseline: '+source)
                         planned[destination]=read_blob(target['repository'],request['candidate'],source)
                 else:
                     raise ValueError('Unqualified deployment kind')
@@ -255,6 +296,7 @@ def main():
                     backup=root/(finding+'-before-'+str(i))
                     atomic(backup,Path(destination).read_bytes())
                     receipt['backups'][destination]=str(backup)
+                    receipt['backup_hashes'][destination]=digest(backup.read_bytes())
                     receipt['modes'][destination]=Path(destination).stat().st_mode&0o777
                 receipt['planned_hashes']={destination:digest(data) for destination,data in planned.items()}
                 receipt['status']='activating'
@@ -270,8 +312,12 @@ def main():
             print(json.dumps({'ok':True,**receipt,'receipt':str(receipt_path)}))
         except BaseException:
             if target['kind']!='aria' and receipt['backups']:
-                for destination,backup in receipt['backups'].items():
-                    atomic(destination,Path(backup).read_bytes(),receipt['modes'][destination])
+                try:
+                    restore_files(receipt)
+                except ValueError:
+                    receipt['status']='recovery_blocked_later_edit_or_backup_changed'
+                    atomic(receipt_path,json.dumps(receipt).encode())
+                    raise
                 if target.get('restart_command'):
                     command(target['restart_command'])
                 receipt['status']='rolled_back' if probe(target)['healthy'] else 'rollback_unhealthy'

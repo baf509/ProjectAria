@@ -92,6 +92,14 @@ class Workspace:
         candidate = await self.git.snapshot(self.path, self.base, self.stage)
         paths = await self.git.changes(self.base, candidate)
         validate_changes(paths, self.policy)
+        if self.policy.model_profile:
+            from .platform_contracts import MODEL_PROFILES, validate_model_change
+            source = MODEL_PROFILES[self.policy.model_profile]['source']
+            # Read immutable snapshots from the private repository, never import
+            # or execute the candidate's launcher on the controller host.
+            texts = [await git('--git-dir', self.git.git_dir, 'show', revision+':'+source)
+                     for revision in (self.base, candidate)]
+            validate_model_change(self.policy.model_profile, *(text.decode() for text in texts))
         before = await self.checks(self.base, [check_id], 'before')
         after = await self.checks(candidate, list(dict.fromkeys([check_id]+self.policy.regression_check_ids)), 'after')
         if before[check_id]['exit_code'] == 0:

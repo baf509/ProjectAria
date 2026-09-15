@@ -60,9 +60,14 @@ class Target(StrictModel):
     deployment: Deployment | None = None
     memory_mb: int = Field(2048, ge=128, le=32768)
     cpus: int = Field(2, ge=1, le=16)
+    model_profile: Literal['red-paro-int5', 'corsair-ninfer'] | None = None
 
     @model_validator(mode="after")
     def scope(self):
+        if self.model_profile:
+            from .platform_contracts import MODEL_PROFILES
+            if self.allowed_paths != [MODEL_PROFILES[self.model_profile]['source']]:
+                raise ValueError('Model profile requires its exact registered source file')
         if not self.branch or self.branch.startswith("-") or any(c.isspace() for c in self.branch):
             raise ValueError("Invalid destination branch")
         for path in self.allowed_paths + self.protected_paths:
@@ -122,7 +127,13 @@ def load_policy(config: WeeklySettings) -> tuple[Policy, str]:
                 raise ValueError("Deployment adapter must be outside the candidate repository")
         target.repository, target.assets = str(repo), str(assets)
         fingerprints[key] = assets_digest(assets)
-    return policy, digest({"policy": policy.model_dump(), "assets": fingerprints})
+    serialized = policy.model_dump()
+    # Adding an opt-in contract must not change existing policy identities or
+    # invalidate regression watches during an ordinary Aria code deployment.
+    for target in serialized['targets'].values():
+        if target['model_profile'] is None:
+            target.pop('model_profile')
+    return policy, digest({"policy": serialized, "assets": fingerprints})
 
 
 class Finding(StrictModel):
