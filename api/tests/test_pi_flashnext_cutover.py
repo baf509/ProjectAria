@@ -119,7 +119,15 @@ def test_independent_red_is_not_a_candidate_exclusivity_conflict():
     from aria.infrastructure.model_servers import ModelServerManager
     manager = ModelServerManager()
     candidate = manager.get_spec(cutover.MODEL)
-    red = manager.get_spec("Red-Qwen3.8-27B-MXFP4")
+    # Red's auto-routing deployment is PARO-INT5 since the 2026-09-15 cutover;
+    # the original MXFP4 deployment is an explicit alternative.
+    red = manager.get_spec("Red-Qwen3.8-27B-PARO-INT5")
     assert not red.onbox and red.startable and red.auto_route
-    assert red.slug not in candidate.exclusive_with
-    assert candidate.slug not in red.exclusive_with
+    # Red is separate hardware: no Red deployment, default or alternative, may
+    # be recorded as conflicting with the Corsair candidate.
+    for slug in ("Red-Qwen3.8-27B-PARO-INT5", "Red-Qwen3.8-27B-MXFP4",
+                 "Red-Qwen3.8-Flash-Next-MXFP4", "Red-Qwen3.8-27B-PARO-MXFP4"):
+        spec = manager.get_spec(slug)
+        assert not spec.onbox
+        assert slug not in candidate.exclusive_with
+        assert candidate.slug not in spec.exclusive_with

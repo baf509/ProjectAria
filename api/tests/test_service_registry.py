@@ -62,9 +62,17 @@ def test_remote_shared_port_is_only_the_documented_red_transport():
     # them explicitly keeps this a documented exception rather than a waiver.
     assert shared == {("Red-Qwen3.8-27B-MXFP4", "red-proxy", 8094),
                       ("Red-Qwen3.8-Flash-Next-MXFP4", "red-proxy", 8094),
-                      ("Red-Qwen3.8-27B-PARO-MXFP4", "red-proxy", 8094)}
-    red = next(m for m in MODEL_SERVERS if m.slug == "Red-Qwen3.8-27B-MXFP4")
-    assert red.endpoint_override == "http://127.0.0.1:8094/v1"
+                      ("Red-Qwen3.8-27B-PARO-MXFP4", "red-proxy", 8094),
+                      ("Red-Qwen3.8-27B-PARO-INT5", "red-proxy", 8094)}
+    behind_forward = [m for m in MODEL_SERVERS if (m.slug, "red-proxy", 8094) in shared]
+    # The exception is only safe because of mutual exclusivity. Assert it here
+    # rather than trust the comment: a new Red deployment added to :8094
+    # without excluding the others could be routed alongside one of them.
+    for a in behind_forward:
+        assert a.endpoint_override == "http://127.0.0.1:8094/v1"
+        for b in behind_forward:
+            if a.slug != b.slug:
+                assert b.slug in a.exclusive_with, f"{a.slug} does not exclude {b.slug}"
 
 
 def test_service_specs_carry_no_llm_routing_fields():
