@@ -35,7 +35,12 @@ def test_experimental_engine_claims_both_pools_and_all_corsair_gpu_conflicts():
     # Other engineering/retired deployments are now ineligible too. In
     # particular, the historical production control needs the removed R9700.
     assert specs[PRODUCTION].auto_route is False
-    assert specs["Red-Qwen3.8-27B-MXFP4"].auto_route is True
+    # Red stays eligible for automatic fallback, through its current default.
+    # The 2026-09-15 PARO-INT5 cutover moved that role off the original MXFP4
+    # deployment, which is now an explicit alternative
+    # (docs/ops/LOCAL_INFERENCE_TOPOLOGY.md).
+    assert specs["Red-Qwen3.8-27B-PARO-INT5"].auto_route is True
+    assert specs["Red-Qwen3.8-27B-MXFP4"].auto_route is False
 
 
 def test_experimental_launcher_identity_and_fixed_geometry_are_explicit():
