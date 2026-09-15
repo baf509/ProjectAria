@@ -49,7 +49,15 @@ halogen = model_servers.ModelServerSpec(
     exclusive_with=('Halogen-Qwen3.8-Flash-Next-W4B-Halo','Qwen3.8-Flash-Next-CUDA-Halo-Candidate'),
     consumers_note='Task 6aa97711c5fd25b265732665; synthetic qualification only; incumbent restored afterwards.')
 baseline = replace(model_servers._BY_SLUG['Red-Qwen3.8-27B-PARO-INT5'], auto_route=False, startable=False)
-model_servers.REGISTRY = (candidate, halogen, baseline)
+vllm029 = replace(candidate,
+    slug='Red-PARO-vLLM029-Test', port=18078,
+    runtime_ref='3368c488916644e5730c55a519260c51e16affb0;image:abca6f048d8c624b1bc9c4f3f4cb76aa830b95b3d4222b709b41e95458a6edc4',
+    description='Separate full vLLM 0.29.0 build qualification; existing int5 weights and DFlash2 FP8.',
+    container_name='red-paro-vllm029-candidate-20260915',
+    remote_model_id='red-paro-vllm029-test',
+    remote_health_url='http://127.0.0.1:18078/health',
+    endpoint_override='http://127.0.0.1:18078/v1')
+model_servers.REGISTRY = (candidate, halogen, baseline, vllm029)
 model_servers._BY_SLUG.clear()
 model_servers._BY_SLUG.update({s.slug:s for s in model_servers.REGISTRY})
 
