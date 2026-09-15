@@ -35,7 +35,8 @@ def _request(
     async def receive():
         nonlocal sent
         if sent:
-            return {"type": "http.disconnect"}
+            # An open peer waits after delivering the complete request body.
+            await asyncio.Event().wait()
         sent = True
         return {"type": "http.request", "body": raw, "more_body": False}
 
@@ -220,7 +221,8 @@ def _request_with_agent(
     async def receive():
         nonlocal sent
         if sent:
-            return {"type": "http.disconnect"}
+            # An open peer waits after delivering the complete request body.
+            await asyncio.Event().wait()
         sent = True
         return {"type": "http.request", "body": raw, "more_body": False}
 

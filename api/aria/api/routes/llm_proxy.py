@@ -49,7 +49,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any, AsyncIterator, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -1145,6 +1145,44 @@ def _inject_identity(body: dict, line: str) -> dict:
     return body
 
 
+class _ClientDisconnected(Exception):
+    """The downstream peer left before its non-streaming request completed."""
+
+
+async def _while_connected(
+    request: Request, operation: Callable[[], Awaitable[Any]]
+) -> Any:
+    """Cancel admission/upstream work when the downstream connection closes.
+
+    The request body has already been consumed. A completed response wins a
+    simultaneous disconnect; every unfinished child is joined before returning.
+    """
+    # Starlette polls receive inside an AnyIO cancellation scope. That scope
+    # can consume task cancellation, so give the watcher an explicit stop flag.
+    stopped = asyncio.Event()
+
+    async def disconnected():
+        while not stopped.is_set():
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(0.05)
+
+    work = asyncio.create_task(operation())
+    watcher = asyncio.create_task(disconnected())
+    try:
+        await asyncio.wait((work, watcher), return_when=asyncio.FIRST_COMPLETED)
+        if work.done():
+            return await work
+        await watcher  # Propagate observer failures rather than inventing a disconnect.
+        raise _ClientDisconnected()
+    finally:
+        stopped.set()
+        for task in (work, watcher):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(work, watcher, return_exceptions=True)
+
+
 async def _proxy(path: str, request: Request, manager: ModelServerManager,
                  db: AsyncIOMotorDatabase, identify: bool = False) -> Any:
     started = time.monotonic()
@@ -1251,11 +1289,36 @@ async def _proxy(path: str, request: Request, manager: ModelServerManager,
         admission_stats: Optional[_AdmissionStats] = None
         backend_started: Optional[float] = None
         transport = _UpstreamTrace()
-        try:
+
+        async def send():
+            nonlocal admission_stats, backend_started
             async with _admit(route, caller) as admission_stats:
                 backend_started = time.monotonic()
-                resp = await _client().post(url, content=payload, headers=headers,
-                                            extensions={"trace": transport.observe})
+                return await _client().post(
+                    url, content=payload, headers=headers,
+                    extensions={"trace": transport.observe},
+                )
+
+        try:
+            resp = await _while_connected(request, send)
+        except (_ClientDisconnected, asyncio.CancelledError) as exc:
+            await asyncio.shield(_record_gateway_usage(
+                db, request=request, route=route, requested_model=requested,
+                backend_model_id=model_id, path=path, identify=identify,
+                started=started, status_code=499,
+                error=("client disconnected" if isinstance(exc, _ClientDisconnected)
+                       else "request cancelled"),
+                admission=admission_stats, trace_id=trace_id, preamble=preamble,
+                model_recognised=model_recognised, routing_ms=routing_ms,
+                backend_ms=round((time.monotonic() - backend_started) * 1000, 2)
+                    if backend_started is not None else None,
+            ))
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise HTTPException(
+                status_code=499, detail="Client disconnected",
+                headers={"X-Aria-Trace-ID": trace_id},
+            ) from exc
         except httpx.HTTPError as exc:
             logger.warning("llm-proxy: %s failed against %s: %s trace=%s stages=%s",
                            path, slug, type(exc).__name__, trace_id, sorted(transport.stages))
