@@ -1,0 +1,8 @@
+{
+  "release": "/Users/ben/Services/releases/ProjectAria/20260915T091340Z-029986d-1a274be96a53",
+  "build": "029986d-1a274be96a53",
+  "source_head": "029986df929fae17820adae1f7f2b0e3275f3cc1",
+  "activation_script": "/Users/ben/Development/Infrastructure/ProjectAria-tool-repairs/docs/ops/tool-repairs-20260915/activate-aria.sh",
+  "source_commit": "029986d",
+  "status": "staged"
+}

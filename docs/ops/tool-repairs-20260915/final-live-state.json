@@ -1,0 +1,13 @@
+{
+  "ready": true,
+  "benchmark_targets": [
+    "red-radiance",
+    "flash-next",
+    "red-flash-next",
+    "halogen",
+    "red-paro-int5",
+    "ninfer-3090"
+  ],
+  "hermes_default": "Red-Qwen3.8-27B-PARO-INT5",
+  "api_activation_pending": true
+}
