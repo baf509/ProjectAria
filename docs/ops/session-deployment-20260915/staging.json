@@ -1,0 +1,14 @@
+{
+  "status": "staged-awaiting-password-required-activation",
+  "task_id": "6aa93854ea2ccb4b7f2c8d15",
+  "source_head": "b070d82e9a3c0bf5a9df3f6abde6a0505f09f539",
+  "api_release": "/Users/ben/Services/releases/ProjectAria/20260915T122214Z-b070d82-cd796da4b148",
+  "api_manifest_sha256": "1c75c06637668d8b7ad1566b2bbf76bb07de92d768fe7bf37a49e15a908127ee",
+  "mcp_release": "/Users/ben/Services/releases/aria-mcp/20260915T122207Z-f1885fc5d81e",
+  "mcp_manifest_sha256": "ce6682106fc8d080ca65457e7151151fc45441e933333cc1caa44f4688685980",
+  "activation_sha256": "efe286d416406f33416fcc11d8d8d829c103f11d2fee663e0d77ae72e51289a8",
+  "evidence": "/Users/ben/Services/backups/aria-session-deploy-20260915",
+  "pushed_aria_master": "0a223206766b2317b8a5b21c297b69b7631d2cb9",
+  "pushed_model_host_master": "f101337",
+  "model_runtime_changes": false
+}
