@@ -50,6 +50,7 @@ from aria.infrastructure.model_servers import (
     ModelServerSafetyError,
     check_pi_slot_budget,
     probe_runtime,
+    base_url_for_spec,
 )
 from aria.infrastructure.services import (
     ServiceError,
@@ -413,6 +414,20 @@ async def model_server_utilization(
                         total_slots=stats.total_slots if stats.total_slots is not None else server.get("slots"),
                         served_ctx=stats.served_ctx or server.get("served_ctx"),
                         ctx_per_slot=stats.ctx_per_slot or server.get("ctx_per_slot"))
+        # A single-slot runtime that reports no occupancy of its own (ninfer-serve
+        # has no /slots or /metrics) is still fully observable: every routed
+        # request passes the gateway's admission queue, which knows whether the
+        # slot is taken and how many are waiting. Only ever FILLS unknowns — a
+        # runtime that reports its own occupancy is never overridden.
+        occupancy_source = None
+        if stats.busy_slots is None and stats.total_slots == 1:
+            from aria.api.routes.llm_proxy import admission_occupancy  # local: avoids a cycle
+            queue = await admission_occupancy(base_url_for_spec(_sp))
+            if queue is not None:
+                active = 1 if queue.get("active") else 0
+                stats = replace(stats, busy_slots=active, requests_processing=active,
+                                requests_deferred=int(queue.get("queued") or 0))
+                occupancy_source = "gateway-admission"
         out.append({
             "slug": server["slug"],
             "reachable": True,
@@ -426,6 +441,8 @@ async def model_server_utilization(
             "declared_slots": server.get("slots"),
             "declared_ctx_per_slot": server.get("ctx_per_slot"),
             "saturated": stats.saturated,
+            # Where busy/queued came from when the runtime cannot say itself.
+            "occupancy_source": occupancy_source,
             "requests_processing": stats.requests_processing,
             "requests_deferred": stats.requests_deferred,
             "prompt_tokens_per_second": stats.prompt_tokens_per_second,
