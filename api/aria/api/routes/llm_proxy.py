@@ -299,6 +299,20 @@ class _PriorityAdmission:
 _admissions: dict[str, _PriorityAdmission] = {}
 
 
+async def admission_occupancy(base_url: Optional[str]) -> Optional[dict[str, Any]]:
+    """The gateway's live queue state for one backend, READ-ONLY, for telemetry.
+
+    Deliberately never creates a queue: `_admission_for` would, and a telemetry
+    read that instantiated one would leave an empty queue behind for a backend
+    that has no admission control. None means "the gateway has admitted nothing
+    to this backend since it started" — which is unknown occupancy, not idle.
+    """
+    admission = _admissions.get(base_url) if base_url else None
+    if admission is None:
+        return None
+    return await admission.snapshot()
+
+
 def _route_slots(route: "_Route") -> Optional[int]:
     for server in route.servers:
         if server.get("slug") != route.slug:

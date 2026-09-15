@@ -81,6 +81,11 @@ def test_restricted_corsair_actuator_accepts_the_slug():
 
 @pytest.mark.asyncio
 async def test_ninfer_is_not_probed_as_llamacpp():
-    with patch.object(ms, "_probe_llamacpp", AsyncMock()) as llamacpp:
+    # ninfer-serve 404s llama.cpp's /slots and /metrics, so it must never be
+    # probed that way. It has its own identity-checked probe (2026-09-15);
+    # both are patched so this stays hermetic rather than reaching a live :8080.
+    with patch.object(ms, "_probe_llamacpp", AsyncMock()) as llamacpp, \
+         patch.object(ms, "_probe_ninfer", AsyncMock(return_value=None)) as ninfer:
         assert await ms.probe_runtime(ms._BY_SLUG[SLUG]) is None
     llamacpp.assert_not_awaited()
+    ninfer.assert_awaited_once()

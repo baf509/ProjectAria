@@ -805,10 +805,12 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # Keep isolated speed samples out of fleet benchmark claims.
         resident_gib=100,
         exclusive_with=_exclusive_with("Qwen3.8-Flash-Next-CUDA-Halo-Candidate"),
-        consumers_note="Explicit default for managed Hermes and Pi clients, and the automatic "
-        "route for requests that name no model; 256K context, 32K output budget and compaction "
-        "at 75% (196608). Background callers share this one slot behind gateway admission "
-        "priority. Hash-pinned operator acceptance is not a passed reliability qualification.",
+        consumers_note="Retained explicit deployment; STOPPED. It was the Hermes/Pi default and "
+        "the model-omitted route until PARO-INT5 took over (2026-09-14), and it cannot run "
+        "while NInfer holds the RTX 3090 — the two are exclusive. Still listed in managed Pi "
+        "installations for explicit selection. When run: 256K context, 32K output budget and "
+        "compaction at 75% (196608). Hash-pinned operator acceptance is not a passed "
+        "reliability qualification.",
     ),
     ModelServerSpec(
         slug="NInfer-3090-Qwen3.8-27B",
@@ -849,7 +851,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # Measured: 23,298 MiB, 94K INT8 KV, vision and MTP3 (2026-09-15).
         resident_gib=22.75,
         exclusive_with=_exclusive_with("NInfer-3090-Qwen3.8-27B"),
-        consumers_note="Hermes routine cron, vision and selected auxiliaries use this model. "
+        consumers_note="Hermes routine cron, vision, and ARIA's background LLM work — planning, heartbeat, "
+        "triage, ontology and shell extraction; the steward stays on PARO-INT5 — use this model, behind "
+        "gateway priority admission (declared_slots=1) with background reasoning_effort=none. "
         "Main Hermes and Red Pi defaults remain PARO-int5. Reached through "
         "the gateway by exact slug over the Mac's 127.0.0.1:8080 forward; ninfer-serve has auth "
         "disabled, so it must stay loopback-only. Exclusive with the CUDA/Halo candidate, which "
@@ -1633,9 +1637,10 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         # which is the entire point of putting it on the CPU.
         exclusive_with=(),
         endpoint_override="http://127.0.0.1:8105/v1",
-        consumers_note="ARIA background callers only: planning_ambient_model, heartbeat_model "
-        "and ontology_extraction_model. Not offered to Pi or Hermes, and deliberately outside "
-        "automatic routing.",
+        consumers_note="Retained; currently assigned to no caller. planning_ambient_model, "
+        "heartbeat_model and ontology_extraction_model moved to NInfer-3090-Qwen3.8-27B on "
+        "2026-09-15, which keeps background work off any Mac-local model. Not offered to Pi "
+        "or Hermes, and deliberately outside automatic routing.",
     ),
     ModelServerSpec(
         slug="gemma-4-e4b-Q4",
@@ -1903,7 +1908,9 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         remote_model_id="qwen3.8-27b",
         remote_ready_deadline=900.0,
         endpoint_override="http://127.0.0.1:8094/v1",
-        consumers_note="Qualified automatic fallback and pi-coding-red-qwen38-27b profile; also selectable in Pi and Hermes. "
+        consumers_note="Explicit alternative since the 2026-09-14 PARO-INT5 cutover (no longer an "
+        "automatic fallback; mutually exclusive with PARO-INT5 on Red's GPUs). Serves the "
+        "pi-coding-red-qwen38-27b profile and is selectable in Pi and Hermes. "
         "Start wakes Linux through Corsair's LAN relay; "
         "Sleep stops the model and suspends Red. Windows remains a separate boot mode.",
     ),
@@ -3052,7 +3059,9 @@ async def probe_runtime(spec: "ModelServerSpec", timeout: float = 4.0) -> Option
         return await _probe_vllm(spec, root, timeout)
     if family == "dwarfstar":
         return await _probe_dwarfstar(spec, base, timeout)
-    if family in ("halogen", "ninfer"):
+    if family == "ninfer":
+        return await _probe_ninfer(spec, base, timeout)
+    if family == "halogen":
         # No llama.cpp /slots or /metrics to read (both 404); probing them only
         # produces errors. Occupancy stays UNKNOWN rather than a misleading zero.
         return None
@@ -3280,6 +3289,59 @@ async def _unit_start_epoch(unit: str) -> float:
     return boot + mono_us / 1_000_000
 
 
+async def _probe_ninfer(spec, base: str, timeout: float) -> Optional[RuntimeStats]:
+    """ninfer-serve exposes `/v1/models` and `/health` and nothing else.
+
+    Verified 2026-09-15 against the running RTX 3090 deployment: `/metrics`,
+    `/slots`, `/stats` and `/status` all return 404. Before this probe existed
+    the family returned None, which the utilization endpoint reports as
+    `reachable: false` — so a healthy, serving model read as unobserved, and the
+    Operate verdict raised it as a finding.
+
+    Reachability is proven by identity, not by an open port: `:8080` was also
+    used by retired R9700 bundles, so a 200 from something else must not count.
+    `/v1/models` has to name a model owned by `ninfer`.
+
+    Occupancy is left UNKNOWN here. For a single-slot deployment the gateway's
+    admission queue is the authoritative occupancy source, and the utilization
+    route overlays it; this layer cannot import the gateway without a cycle.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            resp = await client.get(f"{base}/models")
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("model_servers: ninfer probe failed for %s: %s", spec.slug, exc)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        models = resp.json().get("data") or []
+    except (ValueError, AttributeError):
+        return None
+    if not any(isinstance(m, dict) and m.get("owned_by") == "ninfer" for m in models):
+        logger.debug("model_servers: %s answered /v1/models but not as ninfer", spec.slug)
+        return None
+
+    geom = read_launch_geometry(spec)
+    return RuntimeStats(
+        runtime_family="ninfer",
+        total_slots=geom.slots,
+        busy_slots=None,
+        ctx_per_slot=geom.ctx_per_slot,
+        served_ctx=geom.n_ctx,
+        metrics_available=False,
+        telemetry_hint=(
+            "ninfer-serve exposes /v1/models and /health only — /metrics and "
+            "/slots return 404 — so the server itself reports no occupancy, "
+            "throughput or cache counters. Those fields are UNKNOWN, not zero. "
+            "Occupancy, where shown, is the gateway's admission queue for this "
+            "single-slot deployment (occupancy_source=gateway-admission): it "
+            "counts requests routed through ARIA, not any made directly on "
+            "Corsair."
+        ),
+    )
+
+
 async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeStats]:
     """DwarfStar exposes `/v1/models` and NOTHING else.
 
@@ -3368,7 +3430,8 @@ async def _probe_dwarfstar(spec, base: str, timeout: float) -> Optional[RuntimeS
 # The server pi's coding profile actually runs on. ONE definition, because
 # the slot-budget check below defaulted to a retired slug for weeks and passed
 # by naming a deployment that no longer existed. Re-point this when pi moves.
-PI_CODING_SLUG = "Qwen3.8-Flash-Next-CUDA-Halo-Candidate"
+# Re-pointed 2026-09-15: ~/.pi/agent/models.json defaultModel is PARO-INT5.
+PI_CODING_SLUG = "Red-Qwen3.8-27B-PARO-INT5"
 
 
 def check_pi_slot_budget(
