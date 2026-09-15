@@ -1179,15 +1179,16 @@ async def _while_connected(
     The request body has already been consumed. A completed response wins a
     simultaneous disconnect; every unfinished child is joined before returning.
     """
-    # Starlette polls receive inside an AnyIO cancellation scope. That scope
-    # can consume task cancellation, so give the watcher an explicit stop flag.
     stopped = asyncio.Event()
 
     async def disconnected():
         while not stopped.is_set():
-            if await request.is_disconnected():
+            # The body is consumed. Wait for the ASGI disconnect directly:
+            # is_disconnected() immediately cancels its receive poll, which
+            # cannot traverse middleware that checkpoints before receiving.
+            message = await request.receive()
+            if message['type'] == 'http.disconnect':
                 return
-            await asyncio.sleep(0.05)
 
     work = asyncio.create_task(operation())
     watcher = asyncio.create_task(disconnected())

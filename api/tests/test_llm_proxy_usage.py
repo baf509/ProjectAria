@@ -21,6 +21,7 @@ def _request(
     caller: str | None = None,
     conversation_id: str | None = None,
     session_id: str | None = None,
+    disconnected: asyncio.Event | None = None,
 ) -> Request:
     headers = [(b"user-agent", b"gateway-test/1.0")]
     if caller:
@@ -36,7 +37,8 @@ def _request(
         nonlocal sent
         if sent:
             # An open peer waits after delivering the complete request body.
-            await asyncio.Event().wait()
+            await (disconnected or asyncio.Event()).wait()
+            return {'type': 'http.disconnect'}
         sent = True
         return {"type": "http.request", "body": raw, "more_body": False}
 
