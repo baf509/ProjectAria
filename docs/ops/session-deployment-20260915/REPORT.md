@@ -13,9 +13,9 @@ The API/UI and independent MCP releases are staged from the tested session merge
 
 The source merge passed 448 API/contract tests and 28 UI tests. This staging passed a fresh production build, TypeScript and UI class checks. Staged MCP verification passed through installed Hermes: 127 bridge tools, 131 registered tools, native search/describe, Signal tool selection and read-only live dispatch, including all four Red choices and PARO-int5 as default.
 
-## Activation still required
+## Activation completed — September 15, 2026
 
-Mac system-service activation requires Ben's administrator password. No API/UI/MCP activation or gateway restart has occurred during preparation. Run:
+Ben ran the prepared command at 14:26 UTC. The recorded result is `verified`: API/UI and MCP activated, Hermes reloaded with Signal connected, and all nine functional checks passed. The task was completed. Subsequent weekly-platform deployment superseded the API release and MCP bundle; use the live `current` links for today's exact identities. The original command is retained for provenance and must not be rerun over a newer release:
 
 ```sh
 bash /Users/ben/Development/Infrastructure/ProjectAria/docs/ops/session-deployment-20260915/activate.sh

@@ -5,8 +5,8 @@
 # stays the single source of the launch flags (it execs ninfer-serve, so the
 # unit's MainPID is the server itself).
 #
-# No [Install] section on purpose: no boot autostart, matching the other
-# Corsair model servers. Restart=no: a crash must be seen, not hidden.
+# Boot-enabled for Hermes routine cron and vision. User lingering starts this
+# unit without an interactive login. Restart=no keeps crashes observable.
 [Unit]
 Description=NInfer-3090 ninfer-serve 0.6.1 Qwen3.8-27B on RTX 3090 (ARIA NInfer-3090-Qwen3.8-27B)
 
@@ -22,3 +22,6 @@ StandardError=append:/home/ben/staging/ninfer3090/logs/serve.log
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=no
+
+[Install]
+WantedBy=default.target

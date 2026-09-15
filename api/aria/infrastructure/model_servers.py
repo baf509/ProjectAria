@@ -801,10 +801,11 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         description="Qwen3.8-27B on the Corsair RTX 3090 under the ninfer-serve 0.6.1 sm_86 "
         "release (registered 2026-09-13). Serves the 18.2 GB model-card artifact "
         "qwen3_8_27b_card.ninfer (sha256 eec39564993d6e9c…), because the 20.4 GB DFlash2 "
-        "artifact is not supported by this runtime. One 65,536-token KV region, one "
-        "concurrent request with up to 16 pending, MTP speculation active (observed in the "
-        "serve log); reasoning_effort is per request (none/low/medium/xhigh; the eval "
-        "default is medium). Uses its own staged CUDA 12.8 runtime via LD_LIBRARY_PATH.",
+        "artifact is not supported by this runtime. Verified 94K (96,256-token) INT8 KV region, "
+        "vision enabled, one concurrent request and at most two pending. MTP3 and lm-head "
+        "draft are active; reasoning_effort is per request (none/low/medium/xhigh). "
+        "Uses its own staged CUDA 12.8 runtime via LD_LIBRARY_PATH. Boot-enabled for "
+        "routine Hermes cron and vision; interactive Hermes remains on Red PARO-int5.",
         runtime_repo="ninfer-rtx3090-linux-x64-0.6.1-rtx3090 (prebuilt release tarball)",
         runtime_ref="ninfer-serve 0.6.1-rtx3090; CUDA 12.8 libcudart staged under "
         "/home/ben/staging/ninfer3090/cuda12; launcher /home/ben/staging/ninfer3090/deploy/run-serve.sh",
@@ -820,13 +821,14 @@ REGISTRY: tuple[ModelServerSpec, ...] = (
         startable=True,
         allow_force_start=False,
         # Explicit selection only. Red stays the model-omitted fallback when the
-        # Halo model is down; this 20 GiB slot must not silently become it.
+        # Halo model is down; this 22.75 GiB slot must not silently become it.
         auto_route=False,
         parameters=(),
-        # Measured: 20,074 MiB on the 3090 at 65,536 KV tokens (2026-09-13).
-        resident_gib=19.7,
+        # Measured: 23,298 MiB, 94K INT8 KV, vision and MTP3 (2026-09-15).
+        resident_gib=22.75,
         exclusive_with=_exclusive_with("NInfer-3090-Qwen3.8-27B"),
-        consumers_note="Not a Hermes or Pi model (Pi stays fixed at its three). Reached through "
+        consumers_note="Hermes routine cron, vision and selected auxiliaries use this model. "
+        "Main Hermes and Red Pi defaults remain PARO-int5. Reached through "
         "the gateway by exact slug over the Mac's 127.0.0.1:8080 forward; ninfer-serve has auth "
         "disabled, so it must stay loopback-only. Exclusive with the CUDA/Halo candidate, which "
         "also allocates on the 3090.",

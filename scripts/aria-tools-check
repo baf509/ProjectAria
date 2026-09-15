@@ -21,6 +21,17 @@ import time
 import uuid
 
 
+def cron_model_context(cfg, minimum_context):
+    """Fail before inference when the cron model cannot initialize a Hermes agent."""
+    cron = cfg.get('cron') or {}
+    provider = cron.get('model_provider')
+    model = cron.get('model')
+    context = (((cfg.get('providers') or {}).get(provider) or {}).get('models') or {}).get(model, {}).get('context_length')
+    if isinstance(context, bool) or not isinstance(context, int) or context < minimum_context:
+        raise ValueError(f'Cron model {model} requires a verified context of at least {minimum_context}; configured: {context}')
+    return context
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--api-url', default='http://127.0.0.1:8200')
@@ -75,6 +86,7 @@ def main():
 
     def defaults():
         from hermes_cli.config import load_config
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
         cfg = load_config()
         main_model = cfg.get('model', {}).get('default')
         cron = cfg.get('cron', {}).get('model')
@@ -82,8 +94,10 @@ def main():
         steward = next(r for r in get('/api/v1/health/config')['models'] if r['setting'] == 'steward_model')
         assert main_model == 'Red-Qwen3.8-27B-PARO-INT5', 'Hermes main model drift'
         assert cron == vision == 'NInfer-3090-Qwen3.8-27B', 'Hermes cron/vision model drift'
+        context = cron_model_context(cfg, MINIMUM_CONTEXT_LENGTH)
         assert steward['value'] == main_model and steward['resolves'], 'Steward model drift: ' + str(steward['value'])
-        return {'execution_tested': False, 'main': main_model, 'cron': cron, 'vision': vision, 'steward': steward['value']}
+        return {'execution_tested': False, 'main': main_model, 'cron': cron, 'vision': vision,
+                'steward': steward['value'], 'cron_context': context, 'hermes_minimum_context': MINIMUM_CONTEXT_LENGTH}
     check('model_defaults', defaults, execution=False)
 
     def fetch():
