@@ -20,15 +20,17 @@ path = repo/'api/aria/infrastructure/red_paro_int5_qualification.py'
 loader = importlib.util.spec_from_file_location('red_paro_int5_qualification_spec', path)
 module = importlib.util.module_from_spec(loader)
 loader.loader.exec_module(module)
-candidate = replace(module.make_spec(model_servers.ModelServerSpec),
+template = module.make_spec(model_servers.ModelServerSpec)
+remote_ssh = template.remote_start_command[:-1]
+candidate = replace(template,
     slug='Red-PARO-Source-3368c48-Test',
     runtime_ref='3368c488916644e5730c55a519260c51e16affb0',
     description='Temporary source-only qualification; pinned Radiance 0.9.3/vLLM 0.27.1 and existing int5 weights.',
     container_name='red-paro-source-candidate-20260915',
     remote_model_id='red-paro-source-3368c48-test',
-    # Remote identity probes require both command fields. All lifecycle routes
-    # are removed below; these commands fail closed even if invoked directly.
-    remote_start_command=('false',), remote_stop_command=('false',),
+    # Reachability replaces the remote command with 'exit', so retain the SSH
+    # prefix. Lifecycle commands still fail closed; mutation routes are absent.
+    remote_start_command=remote_ssh+('false',), remote_stop_command=remote_ssh+('false',),
     not_startable_reason='Temporary qualification: controlled by the bounded runtime-upgrades-20260915 test supervisor.',
     consumers_note='Task 6aa965a9c5fd25b265732450; isolated mutable paths; restore incumbent after tests.')
 halogen = model_servers.ModelServerSpec(
